@@ -1,0 +1,11 @@
+config BR2_PACKAGE_PCI_DEBUG
+	bool "pci_debug"
+	default n
+	select BR2_PACKAGE_READLINE
+	select BR2_PACKAGE_NCURSES
+	help
+	  this package allows writing/reading from PCI device registers
+	  using their BARs
+
+	  http://www.armadeus.org/wiki/index.php?title=Pci_debug
+          #Buildroot_configuration

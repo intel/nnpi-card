@@ -1,0 +1,63 @@
+#! /bin/bash
+
+#This script is invoked at system startup (from /etc/init.d/S99-sph) - before login session
+
+KVER=`uname -r`
+
+echo "**********************************************************************"
+echo "** Running /usr/local/bin/sph_platform_start_main (kernel $KVER)... **"
+echo "**********************************************************************"
+
+dmesg -c > /dev/null 2>&1
+mount -t debugfs none /sys/kernel/debug
+
+if [ -e /sys/kernel/debug/kmemleak ]; then
+        echo clear > /sys/kernel/debug/kmemleak
+fi
+
+error_check () {
+    ret=$?
+    if [ $ret != 0 ]; then
+        echo "$1 failed, return value $ret"
+        exit $ret
+    fi
+}
+
+#set paths to that daemons can use it
+source /usr/local/bin/set-global-sph-paths
+
+if [ ! -f /etc/version ]; then
+	echo "*****************************************************************"
+	echo "** /usr/local/bin/sph_platform_Start: This is a VANILLA OS     **"
+        echo "** No SPH HW/SW initializations                                **"
+	echo "*****************************************************************"
+	exit 0
+fi
+#signal /etc/profile.d/sph.sh that this is a full OS
+touch /sph_tmp/THIS_IS_A_FULL_OS
+#platform startup actions
+mv /sph_tmp/* /tmp/ 
+rm -rf /sph_tmp
+
+#symlinks for backward compatibility with modules new location
+ln -s /opt/intel_nnpi/modules/* /lib/modules/$(uname -r)/extra 
+ln -s /opt/intel_nnpi/lib/* /usr/local/lib 
+ln -s /opt/intel_nnpi/bin/* /usr/local/bin
+ln -sf /opt/intel_nnpi/bin/sph_runtime_psw  /usr/bin/sph_runtime_psw
+ln -sf /opt/intel_nnpi/bin/sph_counterd /usr/bin/sph_counterd
+ln -sf /opt/intel_nnpi/bin/sph_logger   /usr/bin/sph_logger
+ln -sf /opt/intel_nnpi/bin/sph_trace    /usr/bin/sph_trace
+ln -sf /opt/intel_nnpi/bin/sph_hwtrace    /usr/bin/sph_hwtrace
+ln -sf /opt/intel_nnpi/bin/sph_maintenance /usr/bin/sph_maintenance
+
+
+#post_build will replace by memalloc_sph_sa or memalloc_sph_ep
+. sph_memalloc_placeholder
+
+#TEMPORARY PATCH: ice_driver is loaded by init_ice_driver after it performs some mapping of good/bad ICEs
+HOSTNAME=`hostname`
+FLAVOR=`echo $HOSTNAME | cut -d "[" -f2 | cut -d "]" -f1`
+init_ice_driver ${FLAVOR}
+
+#post_build will replace by start_spa_sa ot start_eph_ep
+. sph_start_placeholder 

@@ -1,0 +1,138 @@
+From dadf4718ff9893379d9b81e393231f4f78ef1f84 Mon Sep 17 00:00:00 2001
+From: Alexey Skidanov <alexey.skidanov@intel.com>
+Date: Fri, 2 Nov 2018 10:49:25 +0200
+Subject: [PATCH 2/2] lib/genaloc: Fix allocation of aligned buffer from
+ non-aligned chunk
+
+gen_pool_first_fit_align() returns non properly aligned buffer, if the
+base address of the chunk isn't aligned.
+
+To fix this, align offset is provided (exactly as it done in CMA).
+
+In-Reply-To: <a170cf65-6884-3592-1de9-4c235888cc8a@intel.com>
+Signed-off-by: Alexey Skidanov <alexey.skidanov@intel.com>
+---
+ include/linux/genalloc.h | 13 +++++++------
+ lib/genalloc.c           | 20 ++++++++++++--------
+ 2 files changed, 19 insertions(+), 14 deletions(-)
+
+diff --git a/include/linux/genalloc.h b/include/linux/genalloc.h
+index 872f930..dd0a452 100644
+--- a/include/linux/genalloc.h
++++ b/include/linux/genalloc.h
+@@ -51,7 +51,8 @@ typedef unsigned long (*genpool_algo_t)(unsigned long *map,
+ 			unsigned long size,
+ 			unsigned long start,
+ 			unsigned int nr,
+-			void *data, struct gen_pool *pool);
++			void *data, struct gen_pool *pool,
++			unsigned long start_addr);
+ 
+ /*
+  *  General purpose special memory pool descriptor.
+@@ -131,24 +132,24 @@ extern void gen_pool_set_algo(struct gen_pool *pool, genpool_algo_t algo,
+ 
+ extern unsigned long gen_pool_first_fit(unsigned long *map, unsigned long size,
+ 		unsigned long start, unsigned int nr, void *data,
+-		struct gen_pool *pool);
++		struct gen_pool *pool, unsigned long start_addr);
+ 
+ extern unsigned long gen_pool_fixed_alloc(unsigned long *map,
+ 		unsigned long size, unsigned long start, unsigned int nr,
+-		void *data, struct gen_pool *pool);
++		void *data, struct gen_pool *pool, unsigned long start_addr);
+ 
+ extern unsigned long gen_pool_first_fit_align(unsigned long *map,
+ 		unsigned long size, unsigned long start, unsigned int nr,
+-		void *data, struct gen_pool *pool);
++		void *data, struct gen_pool *pool, unsigned long start_addr);
+ 
+ 
+ extern unsigned long gen_pool_first_fit_order_align(unsigned long *map,
+ 		unsigned long size, unsigned long start, unsigned int nr,
+-		void *data, struct gen_pool *pool);
++		void *data, struct gen_pool *pool, unsigned long start_addr);
+ 
+ extern unsigned long gen_pool_best_fit(unsigned long *map, unsigned long size,
+ 		unsigned long start, unsigned int nr, void *data,
+-		struct gen_pool *pool);
++		struct gen_pool *pool, unsigned long start_addr);
+ 
+ 
+ extern struct gen_pool *devm_gen_pool_create(struct device *dev,
+diff --git a/lib/genalloc.c b/lib/genalloc.c
+index ca06adc..dd9d5b6 100644
+--- a/lib/genalloc.c
++++ b/lib/genalloc.c
+@@ -311,7 +311,7 @@ unsigned long gen_pool_alloc_algo(struct gen_pool *pool, size_t size,
+ 		end_bit = chunk_size(chunk) >> order;
+ retry:
+ 		start_bit = algo(chunk->bits, end_bit, start_bit,
+-				 nbits, data, pool);
++				 nbits, data, pool, chunk->start_addr);
+ 		if (start_bit >= end_bit)
+ 			continue;
+ 		remain = bitmap_set_ll(chunk->bits, start_bit, nbits);
+@@ -525,7 +525,7 @@ EXPORT_SYMBOL(gen_pool_set_algo);
+  */
+ unsigned long gen_pool_first_fit(unsigned long *map, unsigned long size,
+ 		unsigned long start, unsigned int nr, void *data,
+-		struct gen_pool *pool)
++		struct gen_pool *pool, unsigned long start_add)
+ {
+ 	return bitmap_find_next_zero_area(map, size, start, nr, 0);
+ }
+@@ -543,16 +543,19 @@ EXPORT_SYMBOL(gen_pool_first_fit);
+  */
+ unsigned long gen_pool_first_fit_align(unsigned long *map, unsigned long size,
+ 		unsigned long start, unsigned int nr, void *data,
+-		struct gen_pool *pool)
++		struct gen_pool *pool, unsigned long start_addr)
+ {
+ 	struct genpool_data_align *alignment;
+-	unsigned long align_mask;
++	unsigned long align_mask, align_off;
+ 	int order;
+ 
+ 	alignment = data;
+ 	order = pool->min_alloc_order;
+ 	align_mask = ((alignment->align + (1UL << order) - 1) >> order) - 1;
+-	return bitmap_find_next_zero_area(map, size, start, nr, align_mask);
++	align_off = (start_addr & (alignment->align - 1)) >> order;
++
++	return bitmap_find_next_zero_area_off(map, size, start, nr, align_mask,
++					      align_off);
+ }
+ EXPORT_SYMBOL(gen_pool_first_fit_align);
+ 
+@@ -567,7 +570,7 @@ EXPORT_SYMBOL(gen_pool_first_fit_align);
+  */
+ unsigned long gen_pool_fixed_alloc(unsigned long *map, unsigned long size,
+ 		unsigned long start, unsigned int nr, void *data,
+-		struct gen_pool *pool)
++		struct gen_pool *pool, unsigned long start_add)
+ {
+ 	struct genpool_data_fixed *fixed_data;
+ 	int order;
+@@ -601,7 +604,8 @@ EXPORT_SYMBOL(gen_pool_fixed_alloc);
+  */
+ unsigned long gen_pool_first_fit_order_align(unsigned long *map,
+ 		unsigned long size, unsigned long start,
+-		unsigned int nr, void *data, struct gen_pool *pool)
++		unsigned int nr, void *data, struct gen_pool *pool,
++		unsigned long start_addr)
+ {
+ 	unsigned long align_mask = roundup_pow_of_two(nr) - 1;
+ 
+@@ -624,7 +628,7 @@ EXPORT_SYMBOL(gen_pool_first_fit_order_align);
+  */
+ unsigned long gen_pool_best_fit(unsigned long *map, unsigned long size,
+ 		unsigned long start, unsigned int nr, void *data,
+-		struct gen_pool *pool)
++		struct gen_pool *pool, unsigned long start_add)
+ {
+ 	unsigned long start_bit = size;
+ 	unsigned long len = size + 1;
+-- 
+2.7.4
+

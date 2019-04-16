@@ -1,0 +1,127 @@
+#
+# NNP-I Linux Driver
+# Copyright (c) 2017-2019, Intel Corporation.
+# 
+# This program is free software; you can redistribute it and/or modify it
+# under the terms and conditions of the GNU General Public License,
+# version 2, as published by the Free Software Foundation.
+# 
+# This program is distributed in the hope it will be useful, but WITHOUT
+# ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+# FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
+# more details.
+# 
+
+MODULE_NAME := intel_nnpi
+CONFIG_INTEL_NNPI ?= m
+
+obj-$(CONFIG_INTEL_NNPI) += $(MODULE_NAME).o
+
+# project flavor to build
+# SPH flavor
+ifdef SPH
+CONFIG_SPH := y
+ifdef FPGA
+CVE_PCI_SUPPORT := y
+#else
+#CVE_PLATFORM_SUPPORT := y
+endif
+endif
+
+# Treats warnings as errors
+subdir-ccflags-y := -Werror
+
+ifdef FPGA
+subdir-ccflags-y += -DFPGA
+endif
+
+ifdef SIMICS 
+subdir-ccflags-y += -DSIMICS
+endif
+
+ifdef IDC_ENABLE 
+subdir-ccflags-y += -DIDC_ENABLE
+endif
+
+ifdef NEXT_E2E
+subdir-ccflags-y += -DNEXT_E2E
+endif
+
+ifdef DEBUG
+subdir-ccflags-y += -D_DEBUG
+subdir-ccflags-y += -g
+endif
+
+subdir-ccflags-y += -I$(src)/../../release_artifacts/platform_sw/src/driver/include/
+subdir-ccflags-y += -I$(src)/../automation/version
+subdir-ccflags-y += -I$(src)/linux
+subdir-ccflags-y += -I$(src)
+subdir-ccflags-y += -D_LINUX_
+
+subdir-ccflags-y += -DFW_FILES_DIR="\"$(MODULE_NAME)\""
+subdir-ccflags-y += -DFW_PACK_DIR="\"$(MODULE_NAME)/release\""
+subdir-ccflags-y += -DMODULE_NAME="\"$(MODULE_NAME)\""
+subdir-ccflags-y += -DGIT_HASH=$(GIT_HASH)
+
+# Enable memory detection in KMD
+# Should be removed for performence optimization
+subdir-ccflags-y += -DENABLE_MEM_DETECT
+
+subdir-ccflags-$(CONFIG_SPH) += -I$(src)/../external/hw_interface/ice2.9
+subdir-ccflags-$(CONFIG_SPH) += -I$(src)/sph
+
+ifdef NULL_DEVICE_RING0
+subdir-ccflags-y += -DNULL_DEVICE_RING0
+subdir-ccflags-y += -I$(src)/../null_device/common
+subdir-ccflags-y += -I$(src)/../null_device/nulldev_kmd_ring0
+endif
+
+$(MODULE_NAME)-y := cve_driver.o
+$(MODULE_NAME)-y += ../automation/version/version.o
+$(MODULE_NAME)-y += cve_device.o
+$(MODULE_NAME)-y += cve_driver_utils.o
+$(MODULE_NAME)-y += cve_firmware.o
+$(MODULE_NAME)-y += device_interface.o
+$(MODULE_NAME)-y += dev_context.o
+$(MODULE_NAME)-y += dispatcher.o
+$(MODULE_NAME)-y += doubly_linked_list.o
+$(MODULE_NAME)-y += iova_allocator.o
+$(MODULE_NAME)-y += memory_manager.o
+$(MODULE_NAME)-y += linux/lin_mm_dma.o
+$(MODULE_NAME)-y += linux/lin_mm_mmu.o
+$(MODULE_NAME)-y += linux/os_interface_impl.o
+$(MODULE_NAME)-y += linux/lin_debug_fs.o
+$(MODULE_NAME)-y += cve_device_group.o
+$(MODULE_NAME)-y += cve_context_process.o
+$(MODULE_NAME)-y += scheduler.o
+$(MODULE_NAME)-y += ice_sw_counters.o
+$(MODULE_NAME)-y += sw_counters.o
+$(MODULE_NAME)-y += icedrv_sw_trace.o
+$(MODULE_NAME)-y += ice_debug.o
+$(MODULE_NAME)-y += icedrv_internal_sw_counter_funcs.o
+
+#to include null device specific files
+ifdef NULL_DEVICE_RING0
+$(MODULE_NAME)-y += ../null_device/nulldev_kmd_ring0/dummy_icedc.o
+$(MODULE_NAME)-y += ../null_device/nulldev_kmd_ring0/dummy_pci.o
+$(MODULE_NAME)-y += ../null_device/common/null_dev.o
+endif
+
+# SPH project specific files
+$(MODULE_NAME)-$(CONFIG_SPH) += sph/sph_device_interface.o
+$(MODULE_NAME)-$(CONFIG_SPH) += sph/sph_os_interface_impl.o
+$(MODULE_NAME)-$(CONFIG_SPH) += sph/project_settings.o
+$(MODULE_NAME)-$(CONFIG_SPH) += sph/sph_trace_device_interface.o
+$(MODULE_NAME)-$(CONFIG_SPH) += sph/icedrv_uncore.o
+
+# feature specified based on project settings
+subdir-ccflags-$(CVE_PCI_SUPPORT) += -I$(src)/linux/pci
+$(MODULE_NAME)-$(CVE_PCI_SUPPORT) += linux/pci/cve_pci_driver.o
+$(MODULE_NAME)-$(CVE_PLATFORM_SUPPORT) += linux/platform/cve_platform_driver.o
+
+# DTF/DSO trace interface
+$(MODULE_NAME)-y += ice_trace.o
+
+# ICE Debug event flow interface
+$(MODULE_NAME)-y += ice_debug_event.o
+

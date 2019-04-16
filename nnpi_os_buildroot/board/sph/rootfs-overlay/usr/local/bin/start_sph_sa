@@ -1,0 +1,24 @@
+#SPH_PLAFRORM_START_SA
+#Loading ingredients that are specific for sph_sa configuration only
+
+echo "sph_platform_start_sa Enter"
+
+# load sph_local module
+insmod /opt/intel_nnpi/modules/sph_local.ko
+error_check "insmod sph_local.ko"
+insmod /opt/intel_nnpi/modules/sphcs.ko
+error_check "insmod sphcs.ko"
+
+#register counters
+/opt/intel_nnpi/bin/sph_maintenance -reg_counters
+error_check "'sph_maintenance"
+
+#start daemon
+/opt/intel_nnpi/bin/sph_daemon
+error_check "sph_daemon"
+
+# load host modules
+insmod /opt/intel_nnpi/modules/sphdrv.ko
+error_check "insmod sphdrv.ko"
+
+echo "sph_platform_start_sa Exit"

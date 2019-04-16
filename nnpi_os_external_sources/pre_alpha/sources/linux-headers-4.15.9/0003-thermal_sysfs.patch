@@ -1,0 +1,16 @@
+diff --git a/drivers/thermal/thermal_sysfs.c b/drivers/thermal/thermal_sysfs.c
+index 2241cea..2e61802 100644
+--- a/drivers/thermal/thermal_sysfs.c
++++ b/drivers/thermal/thermal_sysfs.c
+@@ -139,6 +139,11 @@ trip_point_temp_store(struct device *dev, struct device_attribute *attr,
+ 	if (ret)
+ 		return ret;
+ 
++	if (!temperature)
++		set_bit(trip, &tz->trips_disabled);
++	else
++		clear_bit(trip, &tz->trips_disabled);
++
+ 	thermal_zone_device_update(tz, THERMAL_EVENT_UNSPECIFIED);
+ 
+ 	return count;

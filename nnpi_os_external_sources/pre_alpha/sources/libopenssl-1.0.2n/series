@@ -1,0 +1,7 @@
+openssl-1.0.2d-parallel-build.patch?id=c8abcbe8de5d3b6cdd68c162f398c011ff6e2d9d
+openssl-1.0.2a-parallel-obj-headers.patch?id=c8abcbe8de5d3b6cdd68c162f398c011ff6e2d9d
+openssl-1.0.2a-parallel-install-dirs.patch?id=c8abcbe8de5d3b6cdd68c162f398c011ff6e2d9d
+openssl-1.0.2a-parallel-symlinking.patch?id=c8abcbe8de5d3b6cdd68c162f398c011ff6e2d9d
+0001-Dont-waste-time-building-manpages-if-we-re-not-going.patch
+0002-cryptodev-Fix-issue-with-signature-generation.patch
+0003-Reproducible-build-do-not-leak-compiler-path.patch

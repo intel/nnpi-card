@@ -1,0 +1,18 @@
+#SPH_PLATFORM_START_EP
+#loading components required for EP mode
+
+echo "sph_platform_start_ep Enter..."
+
+insmod /opt/intel_nnpi/modules/sphcs.ko
+error_check "insmod sphcs.ko"
+
+#register counters
+/opt/intel_nnpi/bin/sph_maintenance -reg_counters
+error_check "sph_maintenance"
+
+#start daemon
+/opt/intel_nnpi/bin/sph_daemon
+error_check "sph_daemon"
+~
+
+echo "sph_platform_start_ep Exit..."

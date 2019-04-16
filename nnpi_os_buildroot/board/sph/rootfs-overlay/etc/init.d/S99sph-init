@@ -1,0 +1,21 @@
+#!/bin/sh
+#
+# This file invokes intel SPH startup/shutdown actions
+
+PATH=/sbin:/usr/sbin:/bin:/usr/bin:/usr/local/bin
+
+case "$1" in
+    start)
+	/usr/local/bin/sph_platform_start
+        ;;
+    stop)
+	/usr/local/bin/sph_platform_stop
+        ;;
+    *)
+        echo "Usage: $0 {start|stop}"
+        exit 1
+        ;;
+esac
+
+
+exit 0

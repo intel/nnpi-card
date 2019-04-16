@@ -1,0 +1,8 @@
+0001-stanging-android-ion-Change-to-support-new-SPH-memor.patch
+0002-lib-genaloc-Fix-allocation-of-aligned-buffer-from-no.patch
+0003-thermal_sysfs.patch
+0004-mei-me-4.15-add-ice-lake-point-device-ids.patch
+0005-intel_th_support.patch
+0006-uart8250_force_polling.patch
+0007-Added-support-for-ICELAKE_LP_SMBUS-device-id-in-i2c-i801.patch
+0008-Added-INTEL_FAM6_ICELAKE_NNPI-to-intel-family.h-and-intel_rapl.c.patch

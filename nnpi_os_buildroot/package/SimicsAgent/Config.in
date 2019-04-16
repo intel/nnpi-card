@@ -1,0 +1,6 @@
+config BR2_PACKAGE_SimicsAgent
+    bool "SimicsAgent"
+    default y
+    help
+      Simics agent will allow coping files from to Simics and Host machine
+

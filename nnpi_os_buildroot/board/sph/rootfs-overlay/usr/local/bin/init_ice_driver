@@ -1,0 +1,63 @@
+#! /bin/bash
+
+#############################
+# The output results go to /tmp/Test_all_ICEs.log
+# This is for debug SW. For Release, need to remove  ice_fw_select=1  from all lines
+# Can add more tests, but then for each test need to add the 4 lines which update the good_ICE
+#############################
+# set -x
+FLAVOR=$1
+if [ "${FLAVOR}" = "Debug" ]
+then
+   INTEL_NNPI_COMMON_ARGS="ice_fw_select=1 sph_soc=1 "
+else
+   INTEL_NNPI_COMMON_ARGS="sph_soc=1 "
+fi
+
+echo "Start " > /tmp/Test_all_ICEs.log
+mask_after=0
+for i in {0..11};
+do
+        mask=$(printf "0x%X\n" $((0xFFF - (1<<i))));
+        echo $mask
+        rmmod intel_nnpi
+	INTEL_NNPI_ARGS="${INTEL_NNPI_COMMON_ARGS} icemask_user=$mask"  
+        modprobe intel_nnpi $INTEL_NNPI_ARGS 
+	echo "loaded intel_nnpi with args: $INTEL_NNPI_ARGS"
+        good_ICE=1
+        for j in {1..2};
+        do
+                echo "-------           *       *       *   Ice# = $i     Mask = $mask   Run = $j       *       *       *"
+# Can put multiple tests here:
+                /opt/intel_nnpi/tests/driver/driver_test --gtest_filter="*1_ctxt_1_createIR_1_exeIR/0" --scenarios_path /opt/intel_nnpi/tests/driver/scenarios/ --scenario ivp_complement_dl --num_ice 1
+                pass_test1=$?
+                echo "Ice# = $i Run# = $j test #1 = $pass_test1" >>/tmp/Test_all_ICEs.log
+
+                /opt/intel_nnpi/tests/driver/driver_test --gtest_filter="*1_ctxt_1_createIR_1_exeIR/0" --scenarios_path /opt/intel_nnpi/tests/driver/scenarios/ --scenario conv1 --num_ice 1
+                pass_test2=$?
+                echo "Ice# = $i Run# = $j test #2 = $pass_test2" >>/tmp/Test_all_ICEs.log
+
+#               /opt/intel_nnpi/bin/tests --gtest_filter=*BMP_bear* --artifacts_path=/opt/intel_nnpi/artifacts/
+#                pass_test3=$?
+                pass_test3=0
+                echo "Ice# = $i Run# = $j test #3 = $pass_test3" >>/tmp/Test_all_ICEs.log
+
+                if [ $pass_test1 != 0 ] || [ $pass_test2 != 0 ] || [ $pass_test3 != 0 ]
+                then
+                    good_ICE=0
+                fi
+        done
+        if [ $good_ICE == 0 ]
+        then
+           echo "Ice #$i masked"
+           mask_ICE_i=$(( 2 ** i ))
+           mask_after=$(( $mask_after + $mask_ICE_i ))
+        fi
+
+done
+mask_new=$(printf "0x%X\n" $mask_after)
+rmmod intel_nnpi
+INTEL_NNPI_ARGS="${INTEL_NNPI_COMMON_ARGS} icemask_user=$mask_new"  
+modprobe intel_nnpi ${INTEL_NNPI_ARGS} 
+echo "loaded intel_nnpi with args: ${INTEL_NNPI_ARGS}" >> /tmp/Test_all_ICEs.log
+echo "loaded intel_nnpi with args: ${INTEL_NNPI_ARGS}"

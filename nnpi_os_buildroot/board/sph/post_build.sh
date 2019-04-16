@@ -1,0 +1,279 @@
+#!/bin/bash
+
+set -x
+
+KVER=4.15.9
+ROOTFS_PATH=$1
+BUILD_FLAVOUR=$4
+BUILD_FLAVOUR_LC=${BUILD_FLAVOUR,,}
+#sph_sa or sph_ep
+BUILD_CONFIGURATION=$5 
+FULL_STACK_VER_TAG=$6
+echo "Buildroot Build Flavour is: "${BUILD_FLAVOUR}
+
+KERNEL_SRC_DIR="$BUILD_DIR/linux-$KVER"
+KERNEL_HEADERS_DIR="$BUILD_DIR/linux-headers-$KVER"
+TOOLCHAIN_DIR="$HOST_DIR"
+echo "PWD="$PWD
+
+
+THIS_MANIFEST_BASE_PATH=${PWD}/../../../
+PLATFORM_KERNEL_AUTO=${PWD}/../../automation/
+pushd ${PLATFORM_KERNEL_AUTO}
+. common_defs.sh  -f ${BUILD_FLAVOUR_LC}
+curr_maj_ver=`grep BR2_TARGET_GENERIC_ISSUE $DEFCONFIG_SIMICS_SRC_PATH | sed "s/\(BR2_TARGET_GENERIC_ISSUE=\"Welcome\ to\ SPH\ OS\ -\ V\)\([0-9]*\).\([0-9]*\).*/\2/"`
+curr_min_ver=`grep BR2_TARGET_GENERIC_ISSUE $DEFCONFIG_SIMICS_SRC_PATH | sed "s/\(BR2_TARGET_GENERIC_ISSUE=\"Welcome\ to\ SPH\ OS\ -\ V\)\([0-9]*\).\([0-9]*\).*/\3/"`
+curr_ver=`grep BR2_TARGET_GENERIC_ISSUE $DEFCONFIG_SIMICS_SRC_PATH | sed "s/\(BR2_TARGET_GENERIC_ISSUE=\"Welcome\ to\ SPH\ OS\ -\ V\)\([0-9]*\).\([0-9]*\).\([0-9]*\).*/\4/"`
+VANILLA_VER_TAG="V$curr_maj_ver.$curr_min_ver.$curr_ver"
+popd
+ARTIFACTS_BASE_PATH=${THIS_MANIFEST_BASE_PATH}/release_artifacts
+REL_ART_PLAT_SW_BASE_PATH=${ARTIFACTS_BASE_PATH}/platform_sw/build_artifact/${BUILD_CONFIGURATION}/${BUILD_FLAVOUR}
+
+#Platform SW
+CARD_DRIVER_ARTIFACT=*${BUILD_CONFIGURATION}-card_driver.tar.gz
+CARD_TEST_ARTIFACT=*${BUILD_CONFIGURATION}-card_tests.tar.gz
+HOST_DRIVER_ARTIFACT=*${BUILD_CONFIGURATION}-host_driver.tar.gz
+HOST_TEST_ARTIFACT=*${BUILD_CONFIGURATION}-host_tests.tar.gz
+#inferene API
+INFERENCE_API_ARTIFACT_PATH=${ARTIFACTS_BASE_PATH}/inference_api/build_artifact/${BUILD_CONFIGURATION}/${BUILD_FLAVOUR}
+INFERENCE_API_DRIVER=*-${BUILD_CONFIGURATION}-host_driver_inf_api.tar.gz
+INFERENCE_API_TESTS=*-${BUILD_CONFIGURATION}-host_tests_inf_api.tar.gz
+
+#Firmware
+FIRMWARE_ARTIFACT=${ARTIFACTS_BASE_PATH}/fw_pkgs/build_artifact/ice_driver_fw_pkg_rtl_${BUILD_FLAVOUR_LC}*.tar.gz
+RUNTIME_ASIP_FW=${THIS_MANIFEST_BASE_PATH}/runtime_asip_fw
+RUNTIME_IVP_FW=${THIS_MANIFEST_BASE_PATH}/runtime_ivp_fw
+
+#ice driver
+ICE_DRIVER_KERNEL_ARTIFACT_TAR_PATH=${ARTIFACTS_BASE_PATH}/driver_kernel/build_artifact/${BUILD_CONFIGURATION}/${BUILD_FLAVOUR_LC}/ice_kmd-*-${BUILD_CONFIGURATION}-${BUILD_FLAVOUR_LC}_64_driver.tar.gz
+ICE_DRIVER_USER_ARTIFACT=${ARTIFACTS_BASE_PATH}/driver_user/build_artifact/${BUILD_CONFIGURATION}/${BUILD_FLAVOUR_LC}/ice_umd-*-${BUILD_CONFIGURATION}-${BUILD_FLAVOUR_LC}_64_driver.tar.gz
+
+ICE_DRIVER_USER_TESTS_ARTIFACT=${ARTIFACTS_BASE_PATH}/driver_user/build_artifact/${BUILD_CONFIGURATION}/${BUILD_FLAVOUR_LC}/ice_umd-*-${BUILD_CONFIGURATION}-${BUILD_FLAVOUR_LC}_64_tests.tar.gz
+ICE_DRIVER_USER_LIBS_ARTIFACT=${ARTIFACTS_BASE_PATH}/driver_user/build_artifact/${BUILD_CONFIGURATION}/${BUILD_FLAVOUR_LC}/libs
+
+#runtime
+RUNTIME_ARTIFACT=${ARTIFACTS_BASE_PATH}/runtime/build_artifact/${BUILD_CONFIGURATION}/${BUILD_FLAVOUR}/sph_runtime_*_${BUILD_CONFIGURATION}_${BUILD_FLAVOUR}.tar.gz
+RUNTIME_TEST=${ARTIFACTS_BASE_PATH}/runtime/build_artifact/${BUILD_CONFIGURATION}/${BUILD_FLAVOUR}/runtime_test_*_${BUILD_CONFIGURATION}_${BUILD_FLAVOUR}.tar.gz
+
+function add_line_to_file() {
+	line=$1
+	file=$2
+	n=`grep -x -F "${line}" "${file}" | wc -l`
+	if [ "${n}" -eq "0" ]; then
+		echo "Adding ${line} into ${file}"
+		echo "${line}">>"${file}"
+	fi	
+}
+function check_success() {
+	retcode=$1
+	action=$2
+	filename=$3
+	if [ ${retcode} -eq 0 ]; then
+    		echo "${action} on ${filename} OK"
+	else
+    		echo "${action} on ${filename} FAILED"
+		read -p "Press Enter..."
+	fi	
+}
+
+#GETTY
+add_line_to_file "### SPH ### put a getty on tty1 (VGA)" "${ROOTFS_PATH}/etc/inittab"
+add_line_to_file "tty1::respawn:/sbin/getty -L  tty1 0 vt100 # VGA" "${ROOTFS_PATH}/etc/inittab" 
+
+#SSHD_CONFIG
+add_line_to_file "### SPH ### Enable ssh login from "root" user" "${ROOTFS_PATH}/etc/ssh/sshd_config"
+add_line_to_file "PermitRootLogin yes" "${ROOTFS_PATH}/etc/ssh/sshd_config"
+
+#Add mount of /sys/kernel/debug debugfs filesystem only for Debug flabour
+if [ "${BUILD_FLAVOUR}" == "Debug" ]; then
+	add_line_to_file "debugfs /sys/kernel/debug debugfs defaults" "${ROOTFS_PATH}/etc/fstab"
+fi
+
+#If its a vanilla os then we do not pack any ingredients on ROOTFS
+if [ "${BUILD_CONFIGURATION}" == "" ]
+then
+	echo "$0: Exiting as it's a Vanilla OS"
+	exit 0
+fi
+VERSION_PATH=${ROOTFS_PATH}/etc/version
+touch ${VERSION_PATH}
+
+# prepare ingredients on rootfs image
+
+if [ ! -d ${ROOTFS_PATH}/lib/modules/${KVER}/extra ]; then
+	echo "Creating directory for our kernel modules"
+	mkdir -p ${ROOTFS_PATH}/lib/modules/${KVER}/extra
+fi
+
+if [ ! -d "${ROOTFS_PATH}/usr/sbin/" ]; then
+	mkdir -p "${ROOTFS_PATH}/usr/sbin/" 
+fi
+
+mkdir -p ${ROOTFS_PATH}/sph_tmp/driver
+mkdir -p ${ROOTFS_PATH}/sph_tmp/inference_api
+mkdir -p ${ROOTFS_PATH}/sph_tmp/runtime
+mkdir -p ${ROOTFS_PATH}/sph_tmp/platform
+mkdir -p ${ROOTFS_PATH}/usr/local/bin
+mkdir -p ${ROOTFS_PATH}/usr/local/lib
+mkdir -p ${ROOTFS_PATH}/opt/intel_nnpi/bin
+mkdir -p ${ROOTFS_PATH}/opt/intel_nnpi/lib
+mkdir -p ${ROOTFS_PATH}/opt/intel_nnpi/modules
+mkdir -p ${ROOTFS_PATH}/lib/modules/${KVER}/extra
+
+add_line_to_file "FULL_STACK SPH_OS ${BUILD_CONFIGURATION} ${FULL_STACK_VER_TAG}" ${VERSION_PATH}
+add_line_to_file "SPH_OS VANILLA ${VANILLA_VER_TAG}" ${VERSION_PATH}
+
+add_line_to_file "PLATFORM_SW"  ${VERSION_PATH}
+#platform sw
+if [ "${BUILD_CONFIGURATION}" == "sph_sa" ]; then
+	PLAT_SW_TAR_PATH_ARR=(${CARD_DRIVER_ARTIFACT} ${CARD_TEST_ARTIFACT} ${HOST_DRIVER_ARTIFACT} ${HOST_TEST_ARTIFACT})
+else
+	PLAT_SW_TAR_PATH_ARR=(${CARD_DRIVER_ARTIFACT} ${CARD_TEST_ARTIFACT})
+fi
+#PLAT_SW_UNTAR_DEST_PATH=${ROOTFS_PATH}/sph_tmp/platform
+#platform SW is untarred to /opt/sph/{bin,modules}
+PLAT_SW_UNTAR_DEST_PATH=${ROOTFS_PATH}/
+pushd ${REL_ART_PLAT_SW_BASE_PATH}
+for tar_path in "${PLAT_SW_TAR_PATH_ARR[@]}"
+do
+	tar_file=${tar_path}
+	filename=$(ls $tar_file)
+	ver_file=$(basename -- "$filename")
+	ver_file=$(echo "$ver_file" | sed 's/\.tar.gz//g')
+	add_line_to_file $ver_file  ${VERSION_PATH}
+	tar -xvzf  ${tar_file} -C ${PLAT_SW_UNTAR_DEST_PATH}
+	check_success "$?" "tar -xvzf" "${tar_file}" 
+done
+popd
+#move modules to their actual place in linux (/lib/modules/$KVER/extra)
+
+find ${ROOTFS_PATH}/opt/intel_nnpi/bin -type f -exec chmod a+x {} \; 
+
+PLAT_SW_KO_MODS_ARR=(sph_local sphcs nnpi_eth sphdrv)
+for ko_mod in "${PLAT_SW_KO_MODS_ARR[@]}"
+do
+	add_line_to_file "extra/${ko_mod}.ko:" "${ROOTFS_PATH}/lib/modules/${KVER}/modules.dep"
+done 
+
+#inference api
+if [ "${BUILD_CONFIGURATION}" == "sph_sa" ]; then
+	pushd ${INFERENCE_API_ARTIFACT_PATH}
+	filename=$(ls $INFERENCE_API_DRIVER)
+	ver_file=$(basename -- "$filename")
+	add_line_to_file "INFERENCE_API"  ${VERSION_PATH}
+	ver_file=$(echo "$ver_file" | sed 's/\.tar.gz//g')
+	echo $ver_file
+	add_line_to_file $ver_file  ${VERSION_PATH}
+	tar -xvzf ${filename} -C ${ROOTFS_PATH}
+	check_success "$?" "tar -xvzf" "${filename}" 
+	filename=$(ls $INFERENCE_API_TESTS)
+	ver_file=$(basename -- "$filename")
+	add_line_to_file "INFERENCE_API_TESTS"  ${VERSION_PATH}
+	ver_file=$(echo "$ver_file" | sed 's/\.tar.gz//g')
+	echo $ver_file
+	add_line_to_file $ver_file  ${VERSION_PATH}
+	tar -xvzf ${filename} -C ${ROOTFS_PATH}
+	check_success "$?" "tar -xvzf" "${filename}" 
+
+	#/tmp/artifacts folder will stay in /tmp. The rest will move to /usr/local/lib and to /opt/sph/bin
+	chmod 755 ${ROOTFS_PATH}/opt/intel_nnpi/bin/tests
+	chmod 755 ${ROOTFS_PATH}/opt/intel_nnpi/bin/genericTests
+	chmod 755 ${ROOTFS_PATH}/opt/intel_nnpi/artifacts
+	popd
+fi
+
+#firmware
+add_line_to_file "FIRMWARE"  ${VERSION_PATH}
+
+rm -rf ${ROOTFS_PATH}/lib/firmware/intel_nnpi
+cd ${THIS_MANIFEST_BASE_PATH}
+rm -rf runtime_asip_fw && rm -rf runtime_ivp_fw
+./aipg_inference_validation-automation/tools/artifact_cli.py -d --from test_artifacts/runtime/asip_fw/  --to runtime_asip_fw/ -p latest=true
+./aipg_inference_validation-automation/tools/artifact_cli.py -d --from test_artifacts/runtime/ivp_fw/  --to runtime_ivp_fw/ -p latest=true
+pushd runtime_asip_fw && rename 's/image0/image5/' *
+popd
+pushd runtime_ivp_fw && rename 's/image0/image2/' *
+popd
+mkdir -p ${ROOTFS_PATH}/lib/firmware/intel_nnpi
+mkdir -p ${ROOTFS_PATH}/sph_tmp/firmware
+#TODO-FW has no version in its tar.gz
+tar_file=${tar_path}
+filename=$(ls $FIRMWARE_ARTIFACT)
+ver_file=$(basename -- "$filename")
+ver_file=$(echo "$ver_file" | sed 's/\.tar.gz//g')
+add_line_to_file $ver_file  ${VERSION_PATH}
+tar -xvzf  ${filename} -C ${ROOTFS_PATH}
+check_success "$?" "tar -xvzf" "${filename}" 
+
+cp -r ${RUNTIME_ASIP_FW} ${ROOTFS_PATH}/sph_tmp/
+mv ${ROOTFS_PATH}/sph_tmp/runtime_asip_fw/*cve_image* ${ROOTFS_PATH}/lib/firmware/intel_nnpi
+cp -r ${RUNTIME_IVP_FW} ${ROOTFS_PATH}/sph_tmp/
+mv ${ROOTFS_PATH}/sph_tmp/runtime_ivp_fw/*cve_image* ${ROOTFS_PATH}/lib/firmware/intel_nnpi
+
+#driver
+add_line_to_file "ICE DRIVER KERNEL"  ${VERSION_PATH}
+filename=$(ls $ICE_DRIVER_KERNEL_ARTIFACT_TAR_PATH)
+ver_file=$(basename -- "$filename")
+ver_file=$(echo "$ver_file" | sed 's/\.tar.gz//g')
+add_line_to_file $ver_file  ${VERSION_PATH}
+
+tar -xvzf ${filename} -C ${ROOTFS_PATH}
+check_success "$?" "tar -xvzf" "${filename}" 
+
+add_line_to_file "extra/intel_nnpi.ko:" "${ROOTFS_PATH}/lib/modules/${KVER}/modules.dep"
+ver_file=$(basename -- "$ICE_DRIVER_USER_ARTIFACT")
+
+add_line_to_file "ICE DRIVER USER"  ${VERSION_PATH}
+filename=$(ls $ICE_DRIVER_USER_ARTIFACT)
+ver_file=$(basename -- "$filename")
+ver_file=$(echo "$ver_file" | sed 's/\.tar.gz//g')
+add_line_to_file $ver_file  ${VERSION_PATH}
+
+tar -xvzf $filename -C ${ROOTFS_PATH}
+check_success "$?" "tar -xvzf" "${filename}" 
+
+#driver_tests is moved to /opt/sph/bin, scenarios/ will stay at /sph_tmp/driver/driver_tests
+
+filename=$(ls $ICE_DRIVER_USER_TESTS_ARTIFACT)
+ver_file=$(basename -- "$filename")
+ver_file=$(echo "$ver_file" | sed 's/\.tar.gz//g')
+add_line_to_file $ver_file  ${VERSION_PATH}
+
+tar -xvzf $filename -C ${ROOTFS_PATH}
+check_success "$?" "tar -xvzf" "${filename}" 
+#runtime 
+tar -xvf ${RUNTIME_ARTIFACT} -C ${ROOTFS_PATH}
+check_success "$?" "tar -xvf" "${RUNTIME_ARTIFACT}" 
+
+ver_file=$(basename -- "$RUNTIME_ARTIFACT")
+add_line_to_file "RUNTIME"  ${VERSION_PATH}
+ver_file=$(echo "$ver_file" | sed 's/\.tar.gz//g')
+add_line_to_file $ver_file  ${VERSION_PATH}
+
+tar -xvf ${RUNTIME_TEST} -C ${ROOTFS_PATH}
+check_success "$?" "tar -xvf" "${RUNTIME_TEST}" 
+
+ver_file=$(basename -- "$RUNTIME_TEST")
+add_line_to_file "RUNTIME_TEST"  ${VERSION_PATH}
+ver_file=$(echo "$ver_file" | sed 's/\.tar.gz//g')
+add_line_to_file $ver_file  ${VERSION_PATH}
+
+chmod +x ${ROOTFS_PATH}/opt/intel_nnpi/bin/sph_runtime
+
+if [ "${BUILD_CONFIGURATION}" == "sph_sa" ]; then
+	sed -i 's/sph_memalloc_placeholder/memalloc_sph_sa/' ${ROOTFS_PATH}/usr/local/bin/sph_platform_start 
+else
+	sed -i 's/sph_memalloc_placeholder/memalloc_sph_ep/' ${ROOTFS_PATH}/usr/local/bin/sph_platform_start 
+fi
+
+if [ "${BUILD_CONFIGURATION}" == "sph_sa" ]; then
+	sed -i 's/sph_start_placeholder/start_sph_sa/' ${ROOTFS_PATH}/usr/local/bin/sph_platform_start 
+else
+	sed -i 's/sph_start_placeholder/start_sph_ep/' ${ROOTFS_PATH}/usr/local/bin/sph_platform_start 
+fi
+if [ "${BUILD_CONFIGURATION}" == "sph_sa" ]; then
+	sed -i 's/default="1"/default="0"/g' ${ROOTFS_PATH}/../../board/sph/grub-efi.cfg
+else
+	sed -i 's/default="0"/default="1"/g' ${ROOTFS_PATH}/../../board/sph/grub-efi.cfg
+fi
+

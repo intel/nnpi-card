@@ -1,0 +1,31 @@
+/* Enable PCI endpoint */
+# echo 1 > /sys/bus/pci/devices/0000\:00\:0b.0/enable
+
+/* Start the pci_debug utility */
+
+# pci_debug 00:0b.0
+
+/*within  PCI_DEBUG utility check value of endpoint at offset 0x38000c+0*/
+
+PCI> d 38000c 20                         
+
+0038000C: 00000000 00000000 00000000 00008421 
+0038001C: 00008421 00000000 00000000 00000000 
+
+/*value received is 0 (default) let's try to chnage it...*/
+
+PCI> c32 38000c 1
+
+/*now within  PCI_DEBUG utility check value of endpoint at offset 0x38000c+0 to verify we did change it ok*/
+
+PCI> d 38000c 20
+
+0038000C: 00000001 00000000 00000000 00008421 
+0038001C: 00008421 00000000 00000000 00000000 
+
+/*indeed - it changed from 00000000 to 00000001*
+
+
+PCI>
+
+
