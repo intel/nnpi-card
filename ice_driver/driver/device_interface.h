@@ -112,14 +112,6 @@ int cve_di_create_subjob(cve_virtual_address_t cb_address,
 		cve_di_job_handle_t *out_subjob_handle);
 
 /*
- * flush the device's TLB fully
- * inputs : cve_dev - cve device
- * outputs:
- * returns:
- */
-void cve_di_tlb_flush_full(struct cve_device *cve_dev);
-
-/*
  * ISR for handling CVE interrupts.
  * it is assumed to run in highest priority with interrupts disabled
  * returns 1 if a DPC should be invoked 0 otherwise
@@ -131,8 +123,6 @@ void cve_set_hw_sync_regs(struct idc_device *idc_dev,
 		u32 counter_number, int8_t pool_id);
 void cve_reset_hw_sync_regs(struct idc_device *idc_dev,
 					u32 counter_number);
-void cve_executed_cbs_time_log(struct cve_device *dev, u64 *exec_time);
-
 int cve_di_interrupt_handler(struct idc_device *idc_dev);
 #else
 int cve_di_interrupt_handler(struct cve_device *cve_dev);
@@ -215,8 +205,7 @@ int cve_di_handle_submit_job(
  */
 void cve_di_dispatch_job(struct cve_device *cve_dev,
 		cve_di_job_handle_t hjob,
-		cve_di_subjob_handle_t *e_cbs,
-		enum SCB_STATE scb);
+		cve_di_subjob_handle_t *e_cbs);
 
 /* sets device interface reset flag
  * inputs :
@@ -331,5 +320,7 @@ int ice_di_mmu_block_entrance(struct cve_device *cve_dev);
 struct cve_device *get_first_device(void);
 
 void ice_di_reset_counter(uint32_t cntr_id);
+
+u8 ice_di_is_cold_run(cve_di_job_handle_t hjob);
 
 #endif /* _DEVICE_INTERFACE_H_ */

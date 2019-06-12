@@ -39,59 +39,53 @@ void icedrv_sw_trace_init(void);
 #define SPH_TP_printk        TP_printk
 
 TRACE_EVENT(SPH_TRACE_ICEDRV_CREATE_CONTEXT,
-	TP_PROTO(u32 command, u8 state, u64  contextID, u8 status, int reason),
-	TP_ARGS(command, state, contextID, status, reason),
+	TP_PROTO(u8 state, u64  ctxID, u8 status, int reason),
+	TP_ARGS(state, ctxID, status, reason),
 	SPH_TP_STRUCT__entry(
-			__field(u32, command)
 			__field(u8, state)
-			__field(u64, contextID)
+			__field(u64, ctxID)
 			__field(u8, status)
 			__field(int, reason)
 	),
 	SPH_TP_fast_assign(
-			__entry->command = command;
 			__entry->state = state;
-			__entry->contextID = contextID;
+			__entry->ctxID = ctxID;
 			__entry->status = status;
 			__entry->reason = reason;
 	),
-	SPH_TP_printk("command=%s state=%s contextID=%llu status=%s reason=%d",
-		sph_trace_drv_command_to_str[__entry->command],
+	SPH_TP_printk("state=%s ctxID=%llu status=%s reason=%d",
 		sph_trace_op_state_to_str[__entry->state],
-		__entry->contextID,
+		__entry->ctxID,
 		sph_trace_op_status_to_str[__entry->status],
 		__entry->reason)
 );
 
 TRACE_EVENT(SPH_TRACE_ICEDRV_CREATE_NETWORK,
-	TP_PROTO(u32 command, u8 state, u64  contextID,
-			u64 networkID, u32 *resource,
+	TP_PROTO(u8 state, u64  ctxID,
+			u64 netID, u32 *resource,
 				u8 status, int reason),
-	TP_ARGS(command, state, contextID, networkID, resource, status, reason),
+	TP_ARGS(state, ctxID, netID, resource, status, reason),
 	SPH_TP_STRUCT__entry(
-			__field(u32, command)
 			__field(u8, state)
-			__field(u64, contextID)
-			__field(u64, networkID)
+			__field(u64, ctxID)
+			__field(u64, netID)
 			__array(u32, resource, 3)
 			__field(u8, status)
 			__field(int, reason)
 	),
 	SPH_TP_fast_assign(
-			__entry->command = command;
 			__entry->state = state;
-			__entry->contextID = contextID;
-			__entry->networkID = networkID;
+			__entry->ctxID = ctxID;
+			__entry->netID = netID;
 			__memcpy(__entry->resource, resource, sizeof(u32)*3);
 			__entry->status = status;
 			__entry->reason = reason;
 	),
 	SPH_TP_printk(
-		"command=%s state=%s contextID=%llu networkID=0x%llx resources:ice=%u llc=%u counters=%u  status=%s reason=%d",
-		sph_trace_drv_command_to_str[__entry->command],
+		"state=%s ctxID=%llu netID=0x%llx resources:ice=%u llc=%u counters=%u  status=%s reason=%d",
 		sph_trace_op_state_to_str[__entry->state],
-		__entry->contextID,
-		__entry->networkID,
+		__entry->ctxID,
+		__entry->netID,
 		__entry->resource[0],
 		__entry->resource[1],
 		__entry->resource[2],
@@ -101,117 +95,108 @@ TRACE_EVENT(SPH_TRACE_ICEDRV_CREATE_NETWORK,
 
 
 TRACE_EVENT(SPH_TRACE_ICEDRV_EXECUTE_NETWORK,
-	TP_PROTO(u32 command, u8 state, u64  contextID,
-			u64 networkID, u64 inferID, u8 status, int reason),
-	TP_ARGS(command, state, contextID, networkID, inferID, status, reason),
+	TP_PROTO(u8 state, u64  ctxID,
+			u64 netID, u64 inferID, u8 status, int reason),
+	TP_ARGS(state, ctxID, netID, inferID, status, reason),
 	SPH_TP_STRUCT__entry(
-			__field(u32, command)
 			__field(u8, state)
-			__field(u64, contextID)
-			__field(u64, networkID)
+			__field(u64, ctxID)
+			__field(u64, netID)
 			__field(u64, inferID)
 			__field(u8, status)
 			__field(int, reason)
 	),
 	SPH_TP_fast_assign(
-			__entry->command = command;
 			__entry->state = state;
-			__entry->contextID = contextID;
-			__entry->networkID = networkID;
+			__entry->ctxID = ctxID;
+			__entry->netID = netID;
 			__entry->inferID = inferID;
 			__entry->status = status;
 			__entry->reason = reason;
 	),
 	SPH_TP_printk(
-		"command=%s state=%s contextID=%llu networkID=0x%llx inferID=0x%llx status=%s reason=%d",
-		sph_trace_drv_command_to_str[__entry->command],
+		"state=%s ctxID=%llu netID=0x%llx inferID=0x%llx status=%s reason=%d",
 		sph_trace_op_state_to_str[__entry->state],
-		__entry->contextID,
-		__entry->networkID,
+		__entry->ctxID,
+		__entry->netID,
 		__entry->inferID,
 		sph_trace_op_status_to_str[__entry->status],
 		__entry->reason)
 );
 
 TRACE_EVENT(SPH_TRACE_ICEDRV_NETWORK_RESOURCE,
-	TP_PROTO(u32 command, u64 networkID, u64 icesReserved,
+	TP_PROTO(u64 ctxID, u64 netID, u64 icesReserved,
 			u64 countersReserved, u64 llcReserved),
-	TP_ARGS(command, networkID, icesReserved, countersReserved,
+	TP_ARGS(ctxID, netID, icesReserved, countersReserved,
 				llcReserved),
 	SPH_TP_STRUCT__entry(
-			__field(u32, command)
-			__field(u64, networkID)
+			__field(u64, ctxID)
+			__field(u64, netID)
 			__field(u64, icesReserved)
 			__field(u64, countersReserved)
 			__field(u64, llcReserved)
 	),
 	SPH_TP_fast_assign(
-			__entry->command = command;
-			__entry->networkID = networkID;
+			__entry->ctxID = ctxID;
+			__entry->netID = netID;
 			__entry->icesReserved = icesReserved;
 			__entry->countersReserved = countersReserved;
 			__entry->llcReserved = llcReserved;
 	),
 	SPH_TP_printk(
-		"command=%s networkID=0x%llx Reserved (ICEMask=%llu, CounterMask=%llu, llc=%llu)",
-		sph_trace_drv_command_to_str[__entry->command],
-		__entry->networkID,
+		"ctxID=%llu netID=0x%llx Reserved (ICEMask=%llu, CounterMask=%llu, llc=%llu)",
+		__entry->ctxID,
+		__entry->netID,
 		__entry->icesReserved,
 		__entry->countersReserved,
 		__entry->llcReserved)
 );
 
 TRACE_EVENT(SPH_TRACE_ICEDRV_DESTROY_NETWORK,
-	TP_PROTO(u32 command, u8 state, u64  contextID,
-			u64 networkID, u8 status, int reason),
-	TP_ARGS(command, state, contextID, networkID, status, reason),
+	TP_PROTO(u8 state, u64  ctxID,
+			u64 netID, u8 status, int reason),
+	TP_ARGS(state, ctxID, netID, status, reason),
 	SPH_TP_STRUCT__entry(
-			__field(u32, command)
 			__field(u8, state)
-			__field(u64, contextID)
-			__field(u64, networkID)
+			__field(u64, ctxID)
+			__field(u64, netID)
 			__field(u8, status)
 			__field(int, reason)
 	),
 	SPH_TP_fast_assign(
-			__entry->command = command;
 			__entry->state = state;
-			__entry->contextID = contextID;
-			__entry->networkID = networkID;
+			__entry->ctxID = ctxID;
+			__entry->netID = netID;
 			__entry->status = status;
 			__entry->reason = reason;
 	),
 	SPH_TP_printk(
-		"command=%s state=%s contextID=%llu networkID=0x%llx status=%s reason=%d",
-		sph_trace_drv_command_to_str[__entry->command],
+		"state=%s ctxID=%llu netID=0x%llx status=%s reason=%d",
 		sph_trace_op_state_to_str[__entry->state],
-		__entry->contextID,
-		__entry->networkID,
+		__entry->ctxID,
+		__entry->netID,
 		sph_trace_op_status_to_str[__entry->status],
 		__entry->reason)
 );
 
 TRACE_EVENT(SPH_TRACE_ICEDRV_DESTROY_CONTEXT,
-	TP_PROTO(u32 command, u8 state, u64  contextID, u8 status, int reason),
-	TP_ARGS(command, state, contextID, status, reason),
+	TP_PROTO(u8 state, u64  ctxID, u8 status, int reason),
+	TP_ARGS(state, ctxID, status, reason),
 	SPH_TP_STRUCT__entry(
-			__field(u32, command)
 			__field(u8, state)
-			__field(u64, contextID)
+			__field(u64, ctxID)
 			__field(u8, status)
 			__field(int, reason)
 	),
 	SPH_TP_fast_assign(
-			__entry->command = command;
 			__entry->state = state;
-			__entry->contextID = contextID;
+			__entry->ctxID = ctxID;
 			__entry->status = status;
 			__entry->reason = reason;
 	),
-	SPH_TP_printk("command=%s state=%s contextID=%llu status=%s reason=%d",
-		sph_trace_drv_command_to_str[__entry->command],
+	SPH_TP_printk("state=%s ctxID=%llu status=%s reason=%d",
 		sph_trace_op_state_to_str[__entry->state],
-		__entry->contextID,
+		__entry->ctxID,
 		sph_trace_op_status_to_str[__entry->status],
 		__entry->reason)
 );

@@ -1,3 +1,7 @@
+
+
+
+
 /*******************************************************************************
  * INTEL CORPORATION CONFIDENTIAL Copyright(c) 2017-2019 Intel Corporation. All Rights Reserved.
  *
@@ -17,23 +21,6 @@
  * otherwise. Any license under such intellectual property rights must be express
  * and approved by Intel in writing.
  ********************************************************************************/
-#ifndef _SPH_VERSION_H
-#define _SPH_VERSION_H
+#define ECC_PROTECTED_HEAP_NAME "ecc_protected_heap"
+#define ECC_NON_PROTECTED_HEAP_NAME "ecc_non_protected_heap"
 
-#define _STR(x) #x
-#define STR(x) _STR(x)
-
-#define SPH_MAJOR 0
-#define SPH_MINOR 3
-#define SPH_PATCH 1
-
-#define SPH_VERSION  STR(VERSION: v.SPH_MAJOR.SPH_MINOR.SPH_PATCH)
-#define AUTHOR_STR   STR(AUTHOR: Intel Corporation 2018)
-#define SPH_GIT_HASH STR(gh.GIT_HASH)
-
-#ident SPH_VERSION
-#ident AUTHOR_STR
-#ifdef DEBUG
-#ident SPH_GIT_HASH
-#endif
-#endif

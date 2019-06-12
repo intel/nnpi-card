@@ -453,6 +453,19 @@ static int cve_fw_load_firmware_from_user_mem(struct cve_device *cve_dev,
 		sections_impl[i].permissions = sections[i].permissions;
 		sections_impl[i].size_bytes = sections[i].size_bytes;
 
+		/* The test with non page aligned IOVA address crashes on [SI]
+		 * To avoid the crash, error check is performed here.
+		 * TODO: analyse the crash after removing this sanity
+		 * check from here.
+		 */
+		if (!IS_ADDR_ALIGNED(sections_impl[i].cve_addr)) {
+			cve_os_log(CVE_LOGLEVEL_WARNING,
+			"ice_addr not page aligned 0x%x\n",
+				sections_impl[i].cve_addr);
+			retval = -ICEDRV_KERROR_IOVA_PAGE_ALIGNMENT;
+			goto out;
+		}
+
 		/* Allocate DMA'able memory and get its kernel virt address */
 		retval = OS_ALLOC_DMA_SG(cve_dev,
 				s->size_bytes,

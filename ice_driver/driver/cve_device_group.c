@@ -20,6 +20,10 @@
 #include "dispatcher.h"
 #include "device_interface.h"
 
+#ifndef RING3_VALIDATION
+#include "ice_sw_counters.h"
+#endif
+
 static struct cve_device_groups_config config_param_single_dg_all_dev =
 		DG_CONFIG_SINGLE_GROUP_ALL_DEVICES;
 
@@ -74,13 +78,15 @@ out:
 
 static void cve_dg_remove_hw_counter(struct cve_device_group *p)
 {
+	struct cve_hw_cntr_descriptor *cntr = p->base_addr_hw_cntr;
+
 	while (p->hw_cntr_list) {
 		struct cve_hw_cntr_descriptor *cur_cntr = p->hw_cntr_list;
 
 		cve_dle_remove_from_list(p->hw_cntr_list, list, cur_cntr);
 	}
 
-	OS_FREE(p->hw_cntr_list, sizeof(*p->hw_cntr_list) * NUM_COUNTER_REG);
+	OS_FREE(cntr, sizeof(*cntr) * NUM_COUNTER_REG);
 	cve_os_log(CVE_LOGLEVEL_DEBUG,
 		"SUCCESS> DG:%p, CountersNr:%d removed from the DG\n",
 		p, p->counters_nr);
@@ -494,6 +500,12 @@ int cve_dg_add_device(struct cve_device *cve_dev)
 				ASSERT(false);
 
 			cve_dev->dg = p;
+
+#ifndef RING3_VALIDATION
+			ice_swc_counter_set(g_sph_swc_global,
+				ICEDRV_SWC_GLOBAL_ACTIVE_ICE_COUNT,
+				p->dev_info.active_device_nr);
+#endif
 
 			/* indicate success */
 			retval = 0;

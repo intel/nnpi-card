@@ -157,14 +157,15 @@ static long send_sys_info(void __user *arg)
 						  dma_data.host_handle);
 		return ret;
 	}
-
+	memset(vptr, 0, SPH_PAGE_SIZE);
 	memcpy(vptr, &sys_info, sizeof(sys_info));
+	memcpy(vptr + sizeof(sys_info), &s_fpga_rev, sizeof(s_fpga_rev));
 
 	ret = sphcs_dma_sched_start_xfer_single(g_the_sphcs->dmaSched,
 						&g_dma_desc_c2h_low,
 						dma_data.dma_addr,
 						dma_data.host_dma_addr,
-						sizeof(sys_info),
+						sizeof(sys_info) + sizeof(s_fpga_rev),
 						send_sys_info_dma_completed,
 						NULL,
 						&dma_data,

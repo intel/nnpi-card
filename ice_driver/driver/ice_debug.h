@@ -27,8 +27,6 @@
 #define COLOR_YELLOW(a) "\033[0;33m" a "\033[0m;"
 #define COLOR_BLUE(a) "\033[0;34m" a "\033[0m;"
 
-const char *get_SCB_STATE_str(uint32_t state);
-
 const char *get_cve_jobs_group_status_str(uint32_t status);
 
 const char *get_osmm_memory_type_str(uint32_t type);
@@ -42,4 +40,7 @@ const char *get_fw_binary_type_str(uint32_t type);
 const char *get_regs_str(uint32_t offset);
 
 const char *get_idc_regs_str(uint32_t offset);
+
+const char *get_other_regs_str(uint32_t offset);
+
 #endif /* _ICE_DEBUG_H_ */

@@ -98,34 +98,6 @@ is_workqueue_contain_network(struct cve_workqueue *wq)
 }
 
 /*
- * Indicate whether dispatch not started.
- * inputs :
- * jobgroup - the given jobgroup
- * outputs:
- * returns: 1 iff no dispatch was started from this jobgroup.
- */
-static inline u32
-is_jobgroup_dispatch_not_started(
-		struct jobgroup_descriptor *jobgroup)
-{
-	return (jobgroup->dispatched_jobs_nr == 0);
-}
-
-/*
- * Indicate whether all jobs within the jobgroup were dispatched.
- * inputs :
- * jobgroup - the given jobgroup
- * outputs:
- * returns: 1 iff all jobs were dispatched
- */
-static inline u32
-is_jobgroup_dispatch_completed(struct jobgroup_descriptor *jobgroup)
-{
-	return (jobgroup->dispatched_jobs_nr ==
-			jobgroup->submitted_jobs_nr);
-}
-
-/*
  * Starts a separate Kernel thread that powers off ICEs after 1sec.
  * returns: 0 iff success
  */

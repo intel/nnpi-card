@@ -18,7 +18,6 @@
 #include <linux/uaccess.h>
 #include <linux/dma-mapping.h>
 #include <linux/interrupt.h>
-#include <linux/reset.h>
 #include <linux/of.h>
 
 #include "cve_driver_internal.h"

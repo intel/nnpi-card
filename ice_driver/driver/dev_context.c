@@ -40,6 +40,7 @@ struct dev_context {
 	struct dev_alloc cve_dump_alloc;
 	/* pointer to the device */
 	struct cve_device *cve_dev;
+	cve_mm_allocation_t bar1_alloc_handle;
 };
 
 /* INTERNAL FUNCTIONS */
@@ -59,10 +60,8 @@ static int cve_dev_map_base_package_fws(struct dev_context *context)
 }
 
 #ifdef IDC_ENABLE
-#ifdef NEXT_E2E
 int cve_bar1_map(struct cve_device *cve_dev,
 		os_domain_handle hdom,
-		struct cve_dma_handle *out_dma_handle,
 		cve_mm_allocation_t *out_alloc_handle)
 {
 	int retval;
@@ -119,12 +118,10 @@ int cve_bar1_map(struct cve_device *cve_dev,
 		COLOR_GREEN("Stop Mapping BAR1\n"));
 
 	cve_addr = va;
-	*out_dma_handle = mapped_dma_handles;
 	*out_alloc_handle = alloc_handles;
 out:
 	return retval;
 }
-#endif
 #endif
 
 static void cve_dev_fw_unload_and_unmap(cve_dev_context_handle_t hcontext)
@@ -164,18 +161,15 @@ static int cve_dev_init_per_cve_ctx(struct dev_context *dev_ctx,
 	nc->cve_dev = cve_dev;
 
 #ifdef IDC_ENABLE
-#ifdef NEXT_E2E
 		retval = cve_bar1_map(nc->cve_dev,
 				nc->hdom,
-				&nc->cve_dev->bar1_dma_handle,
-				&nc->cve_dev->bar1_alloc_handle);
+				&nc->bar1_alloc_handle);
 		if (retval != 0) {
 			cve_os_log(CVE_LOGLEVEL_ERROR,
 					"Failed to map bar1 %d\n",
 					retval);
 			goto failed_to_map_fw;
 		}
-#endif
 #endif
 
 	/* load the base package FWs. add fws to context */
@@ -239,6 +233,13 @@ static void cve_dev_release_per_cve_ctx(struct dev_context *dev_ctx)
 				context->cve_dump_alloc.alloc_handle);
 		}
 
+		if (context->bar1_alloc_handle) {
+			cve_os_dev_log(CVE_LOGLEVEL_DEBUG,
+				context->cve_dev->dev_index,
+				"Reclaim BAR1 allocation\n");
+			cve_mm_reclaim_allocation(
+				context->bar1_alloc_handle);
+		}
 		cve_os_dev_log(CVE_LOGLEVEL_DEBUG,
 				context->cve_dev->dev_index,
 				"Remove domain\n");
@@ -425,23 +426,6 @@ void cve_dev_restore_fws(struct cve_device *cve_dev,
 
 	/* restore the FWs just before the reset */
 	cve_fw_restore(cve_dev, context->mapped_fw_sections);
-}
-
-void cve_dev_reset_fifo(struct cve_device *dev,
-			struct fifo_descriptor *fifo_desc)
-{
-	/* Device FIFO pointer will now point to the given FIFO */
-	dev->fifo = &fifo_desc->fifo;
-
-	/* reset the TLC FIFO indexes */
-	cve_os_write_mmio_32(dev,
-	 CVE_MMIO_HUB_COMMAND_BUFFER_DESCRIPTORS_BASE_ADDRESS_MMOFFSET,
-	 fifo_desc->fifo_alloc.ice_vaddr);
-	cve_os_write_mmio_32(dev,
-	 CVE_MMIO_HUB_COMMAND_BUFFER_DESCRIPTORS_ENTRIES_NR_MMOFFSET,
-	 fifo_desc->fifo.size_bytes / sizeof(union cve_shared_cb_descriptor));
-
-	do_fifo_reset(&fifo_desc->fifo);
 }
 
 int cve_dev_open_all_contexts(cve_dev_context_handle_t *out_hctx_list)
@@ -635,8 +619,6 @@ int cve_dev_alloc_and_map_cbdt(cve_dev_context_handle_t dev_ctx,
 	fifo_desc->fifo.cb_desc_vaddr = vaddr;
 	fifo_desc->fifo.size_bytes = size_bytes;
 	fifo_desc->fifo.entries = max_cbdt_entries;
-
-	do_fifo_reset(&fifo_desc->fifo);
 
 	memset(&surf, 0, sizeof(struct cve_surface_descriptor));
 	surf.llc_policy = CVE_FIFO_LLC_CONFIG;

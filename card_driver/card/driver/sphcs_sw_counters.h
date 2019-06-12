@@ -221,7 +221,7 @@ static const struct sph_sw_counter_info g_ctx_sphcs_sw_counters_info[] = {
 	 "Number of completed inference requests per context"},
 	/*CTX_SPHCS_SW_COUNTERS_INFERENCE_SUBMITTED_INF_REQ*/
 	{CTX_SPHCS_SW_COUNTERS_GROUP_INFERENCE, "submitted_inf_req",
-	 "Number of uncompleted inference requests per context"},
+	 "Number of submitted inference requests per context"},
 	/*CTX_SPHCS_SW_COUNTERS_INFERENCE_RUNTIME_BUSY_TIME */
 	{CTX_SPHCS_SW_COUNTERS_GROUP_INFERENCE, "runtime_busy_time",
 	 "Total time in which the runtime has some request in its request queue which did not finished per context"},

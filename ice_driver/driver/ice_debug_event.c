@@ -58,7 +58,8 @@ int ice_debug_wake_up_event(enum ice_debug_event_type event, void *event_info)
 			(struct ice_debug_event_info_power_on *) event_info,
 			sizeof(g_po_evt_info));
 
-		cve_os_log(CVE_LOGLEVEL_DEBUG, "evt %d:ntw %llu,devmask 0x%x\n",
+		cve_os_log(CVE_LOGLEVEL_DEBUG,
+				"event:%d, NtwID:0x%llx, devmask:0x%x\n",
 						event,
 						g_po_evt_info.network_id,
 						g_po_evt_info.powered_on_ices);

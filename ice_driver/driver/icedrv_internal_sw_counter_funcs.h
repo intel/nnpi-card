@@ -23,5 +23,5 @@
 #include "cve_device.h"
 
 void ice_swc_create_infer_device_node(struct ice_network *ntw);
-
+void ice_swc_destroy_infer_device_node(struct ice_network *ntw);
 #endif /* _ICEDRV_INTERNAL_SW_COUNTER_FUNCS_H_ */

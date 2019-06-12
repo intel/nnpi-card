@@ -68,9 +68,7 @@
 
 #define CVE_FIFO_LLC_CONFIG 0	/* 0x00 ==> cache bypass */
 #define CVE_DUMP_LLC_CONFIG 0
-#ifdef NEXT_E2E
 #define ICE_BAR1_LLC_CONFIG 0
-#endif
 
 /*
  * Registers that should be set for default Tensilica cores configuration
@@ -97,15 +95,15 @@
 #define CVE_LLC_BIT_SHIFT 24U
 #define CVE_LLC_MAX_POLICY_NR 16U
 #define CVE_PCI_DEVICE_ID 0x45c4
+#define AXI_MAX_INFLIGHT_READ_TRANSACTION 63
+#define AXI_MAX_INFLIGHT_WRITE_TRANSACTION 63
 
 #define DUMMY_CHACHLINE_SZ 10
 #define PLAFTORM_CACHELINE_SZ DUMMY_CHACHLINE_SZ
 
 #ifdef IDC_ENABLE
 #define ICE_OFFSET(i) (1048576 + (i * 262144)) /* 1 MB + 0.25MB per ICE */
-#ifdef NEXT_E2E
 #define ICE_BAR1_OFFSET(i) (i * 16384)
-#endif
 #endif
 
 /* timeout counter threshold bits [19:10]. Counted in Uclks */

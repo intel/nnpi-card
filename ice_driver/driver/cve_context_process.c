@@ -121,14 +121,6 @@ int cve_context_process_destroy(
 		cve_destroy_context(context_process, ctx);
 	}
 
-	/* clean events */
-	while (context_process->events) {
-		struct cve_completion_event *event = context_process->events;
-
-		cve_dle_remove_from_list(context_process->events, list, event);
-		OS_FREE(event, sizeof(*event));
-	}
-
 	/* remove the process from the list */
 	cve_dle_remove_from_list(
 			g_context_process_list,

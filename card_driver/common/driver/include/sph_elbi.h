@@ -16,6 +16,8 @@
 #define ELBI_BF_SET(regval, val, mask, shift)     \
 	((regval) = (((regval) & ~(mask)) | ELBI_BF_VAL((val), (mask), (shift))))
 
+#define ELBI_LINE_BDF                         (ELBI_BASE + 0x4)
+
 /*
  * COMMAND FIFO registers
  */

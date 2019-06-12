@@ -96,7 +96,11 @@ enum ice_kerror_type {
 	/** Invalid max shared distance argument */
 	ICEDRV_KERROR_INVAL_MAX_SHARED_DISTANCE, /* [1130] */
 	/** Inference already scheduled to ICE */
-	ICEDRV_KERROR_INF_EALREADY /* [1131] */
+	ICEDRV_KERROR_INF_EALREADY, /* [1131] */
+	/** Infer buffer index is invalid */
+	ICEDRV_KERROR_INF_INDEX_INVAL_ID, /* [1132] */
+	/** Inference ID/Handle  is invalid */
+	ICEDRV_KERROR_INF_INVAL_ID /* [1133] */
 };
 
 #endif /* _ICE_DRIVER_ERROR_H_ */

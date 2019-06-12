@@ -18,10 +18,8 @@
 
 #include "cve_device.h"
 
-int ice_schedule_is_dev_free(struct ice_network *ntw);
 void ice_schedule_network(struct ice_network *ntw);
 int ice_schedule_remove_network(struct ice_network *ntw);
-int ice_schedule_jg(struct jobgroup_descriptor *jobgroup);
 void ice_scheduler_engine(void);
 void ice_deschedule_network(struct ice_network *ntw);
 #endif /* DRIVER_SCHEDULER_H_ */

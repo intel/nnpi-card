@@ -194,12 +194,10 @@ enum cve_memory_protection {
 #define ICE_VA_RANGE_LOW_IDC_BAR1_START 0xFFFF0000
 #define ICE_VA_RANGE_LOW_IDC_BAR1_END 0xFFFF7FFF
 
-#ifdef NEXT_E2E
 #define IDC_BAR1_COUNTERS_ADDRESS_START 0xFFFF0000
 #define IDC_BAR1_COUNTERS_NOTI_ADDR 0xFFFF0800
 #define BAR1_ICE_SPACE 16384 /*16KB*/
 #define BAR1_ICE_PERMISSION 3 /*rw-*/
-#endif
 
 /* For each ICE IDC reserves 16KB area in BAR1
  * within which first 2KB is for counters and immediately following that
@@ -223,6 +221,14 @@ enum cve_memory_protection {
 
 #define round_up_cve_pagesize(v, page_sz) \
 	(((v)+page_sz - 1) & ~(page_sz - 1))
+
+#define CHECK_ALIGNMENT(x, a)	(((x) & ((u64)(a) - 1)) == 0)
+
+/* test whether an address (unsigned long long) is aligned to
+ * ICE_DEFAULT_PAGE_SZ
+ */
+#define IS_ADDR_ALIGNED(addr) \
+	CHECK_ALIGNMENT((u64)(addr), ICE_DEFAULT_PAGE_SZ)
 
 static inline u32 bytes_to_cve_pages(u32 size_byte, u8 page_shift)
 {

@@ -134,18 +134,6 @@ void ice_ds_handle_ntw_error(struct cve_device *dev,
 void ice_ds_handle_ice_error(struct cve_device *dev,
 		u64 ice_err_status);
 
-/*
- * dispatch a single job from this jobgroup
- * inputs :
- *	cve_dev - CVE device object
-  *	jobgroup - the jobgroup to dispatch from
- * outputs:
- * returns:
- */
-int cve_ds_dispatch_single_job(
-		struct cve_device *cve_dev,
-		struct jobgroup_descriptor *jobgroup);
-
 /**
  * Destroy context.
  * This function will be called either by close context or
@@ -197,10 +185,6 @@ void *cve_ds_get_di_context(cve_context_id_t context_id);
 
 #ifdef IDC_ENABLE
 void free_assigned_counters(struct jobgroup_descriptor *jobgroup);
-int set_hw_sync_regs(struct cve_device *cve_dev,
-					struct jobgroup_descriptor *jobgroup);
-u32 cve_ds_map_hw_cntr(struct jobgroup_descriptor *jobgroup);
-void cve_ds_undo_map_hw_cntr(struct jobgroup_descriptor *jobgroup, u32 bitmap);
 enum pool_status cve_ds_map_pool_context(struct ds_context *context);
 void cve_ds_unmap_pool_context(struct ds_context *context);
 #endif
@@ -213,5 +197,7 @@ void ice_ds_ntw_resource_release(struct ice_network *ntw);
 int ice_ds_debug_control(struct ice_debug_control_params *dc);
 
 int ice_di_get_core_blob_sz(void);
+
+int ice_ds_dispatch_jg(struct jobgroup_descriptor *jobgroup);
 
 #endif /* _DISPATCHER_H_ */

@@ -49,17 +49,6 @@ int cve_mm_get_page_directory_base_addr(
 		u32 *out_dma_addr);
 
 /*
- * invalidate the tlb if pages were added
- * inputs :
- *	hdom - domain structure associated with the tlb
- *	cve_dev - cve device associated with the tlb
- * outputs:
- * returns:
- */
-void cve_mm_invalidate_tlb(os_domain_handle hdom,
-		struct cve_device *cve_dev);
-
-/*
  * reset the internal page table flags state
  * inputs :
  *	context - the mm context

@@ -47,6 +47,10 @@ ifdef NEXT_E2E
 subdir-ccflags-y += -DNEXT_E2E
 endif
 
+ifdef B_STEP
+subdir-ccflags-y += -DENABLE_SPH_STEP_B
+endif
+
 ifdef DEBUG
 subdir-ccflags-y += -D_DEBUG
 subdir-ccflags-y += -g

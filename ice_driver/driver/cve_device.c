@@ -52,10 +52,6 @@ int cve_device_init(struct cve_device *dev, int index)
 	dev->interrupts_status = 0;
 
 	dev->di_cve_needs_reset = 0;
-	/* INVALID_CONTEXT_ID (0) will trigger
-	 * a reset on the first time.
-	 */
-	dev->last_context_id = INVALID_CONTEXT_ID;
 
 	/* on power up the counters are disabled */
 	dev->is_hw_counters_enabled = 0;
@@ -64,7 +60,7 @@ int cve_device_init(struct cve_device *dev, int index)
 	dev->version_info.format = "Revision = %x.%x\n";
 
 	/* Initializes Invalid Persistent Nw*/
-	dev->pnetwork_id = INVALID_NETWORK_ID;
+	dev->dev_network_id = INVALID_NETWORK_ID;
 
 	/* Power state of device is not known at this point */
 	dev->power_state = ICE_POWER_UNKNOWN;
@@ -132,6 +128,11 @@ void cve_device_clean(struct cve_device *dev)
 {
 	cve_dg_remove_device(dev);
 
+#ifndef RING3_VALIDATION
+	if (ice_swc_destroy_node(ICEDRV_SWC_CLASS_DEVICE, dev->dev_index))
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+		"FAILED to delete the ICEDRV_SWC_CLASS_DEVICE SW Counter\n");
+#endif
 	/* Remove ice debug event flow*/
 	term_icedrv_debug_event();
 
@@ -147,5 +148,6 @@ void cve_device_clean(struct cve_device *dev)
 	cleanup_platform_data(dev);
 
 	project_hook_free_cve_dump_buffer(dev);
+
 }
 

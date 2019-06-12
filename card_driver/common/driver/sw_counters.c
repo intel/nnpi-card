@@ -10,6 +10,7 @@
 #include <linux/file.h>
 #include <linux/fs.h>
 #include <linux/spinlock.h>
+#include <linux/mutex.h>
 #include <linux/anon_inodes.h>
 #include <linux/uaccess.h>
 #include <linux/fcntl.h>
@@ -81,7 +82,7 @@ struct sph_internal_sw_counters {
 	const struct sph_sw_counters_set		*counters_set;
 	struct list_head				children_List;
 	struct list_head				kobject_list;
-	spinlock_t					list_lock;
+	struct mutex					list_lock;
 	u64						*dirty;
 	struct sph_internal_sw_counters			*info_node;
 	struct sph_sw_counters				sw_counters;
@@ -735,14 +736,14 @@ int sph_create_sw_counters_info_node(struct kobject *kobj,
 
 	/* initialize global list of buffer of sw_counters_info children */
 	INIT_LIST_HEAD(&sw_counters_info->children_List);
-	spin_lock_init(&sw_counters_info->list_lock);
+	mutex_init(&sw_counters_info->list_lock);
 
 	/* in case this is not a root node - we need to register this node for it's parent */
 	if (sw_counters_info->parent) {
-		spin_lock(&sw_counters_info->parent->list_lock);
+		mutex_lock(&sw_counters_info->parent->list_lock);
 		list_add_tail(&sw_counters_info->node,
 			      &sw_counters_info->parent->children_List);
-		spin_unlock(&sw_counters_info->parent->list_lock);
+		mutex_unlock(&sw_counters_info->parent->list_lock);
 	}
 
 	*hNewInfo = (void *)sw_counters_info;
@@ -781,9 +782,9 @@ int sph_remove_sw_counters_info_node(void *hInfoNode)
 	struct sph_internal_sw_counters *tmp_sw_counters_info = sw_counters_info;
 
 	if (sw_counters_info->parent) {
-		spin_lock(&sw_counters_info->parent->list_lock);
+		mutex_lock(&sw_counters_info->parent->list_lock);
 		list_del(&sw_counters_info->node);
-		spin_unlock(&sw_counters_info->parent->list_lock);
+		mutex_unlock(&sw_counters_info->parent->list_lock);
 	}
 
 	remove_group_files(sw_counters_info);
@@ -812,6 +813,7 @@ int sph_remove_sw_counters_info_node(void *hInfoNode)
 	}
 
 
+	mutex_destroy(&sw_counters_info->list_lock);
 	kfree(sw_counters_info);
 
 	return 0;
@@ -859,14 +861,14 @@ int sph_create_sw_counters_values_node(void *hInfoNode,
 
 		if (sw_counters_values->parent->kobj_owner) {
 			kobj = NULL;
-			spin_lock(&sw_counters_values->parent->list_lock);
+			mutex_lock(&sw_counters_values->parent->list_lock);
 			list_for_each_entry(kobj_node, &sw_counters_values->parent->kobject_list, node) {
 				if (strcmp(kobj_node->kobj->name, sw_counters_info->counters_set->name) == 0) {
 					kobj = kobj_node->kobj;
 					break;
 				}
 			}
-			spin_unlock(&sw_counters_values->parent->list_lock);
+			mutex_unlock(&sw_counters_values->parent->list_lock);
 
 			/* in case it was not allocated before (new instance of info node)- we will create required directory */
 			if (!kobj) {
@@ -879,9 +881,9 @@ int sph_create_sw_counters_values_node(void *hInfoNode,
 					ret = -ENOMEM;
 					goto cleanup_sw_counters_values;
 				}
-				spin_lock(&sw_counters_values->parent->list_lock);
+				mutex_lock(&sw_counters_values->parent->list_lock);
 				list_add_tail(&new_kobj->node, &sw_counters_values->parent->kobject_list);
-				spin_unlock(&sw_counters_values->parent->list_lock);
+				mutex_unlock(&sw_counters_values->parent->list_lock);
 				kobj = new_kobj->kobj;
 			}
 		}
@@ -979,13 +981,13 @@ int sph_create_sw_counters_values_node(void *hInfoNode,
 
 	/* initialize global list of buffer descriptions */
 	INIT_LIST_HEAD(&sw_counters_values->kobject_list);
-	spin_lock_init(&sw_counters_info->list_lock);
+	mutex_init(&sw_counters_values->list_lock);
 
 	/* in case this is a new counter set perID driver will allocate all required directories set in info file */
 	if (sw_counters_info->counters_set->perID) {
 		struct sph_internal_sw_counters *infoNode;
 
-		spin_lock(&sw_counters_info->list_lock);
+		mutex_lock(&sw_counters_info->list_lock);
 		list_for_each_entry(infoNode, &sw_counters_info->children_List, node) {
 			const char *name = infoNode->counters_set->name;
 			struct kobj_node *new_kobj = kzalloc(sizeof(*new_kobj), GFP_KERNEL);
@@ -993,16 +995,16 @@ int sph_create_sw_counters_values_node(void *hInfoNode,
 			if (new_kobj == NULL) {
 				sph_log_err(GENERAL_LOG, "unable to allocate memory for new_kobj\n");
 				ret = -ENOMEM;
-				spin_unlock(&sw_counters_info->list_lock);
+				mutex_unlock(&sw_counters_info->list_lock);
 				goto cleanup_sw_counters_children_kobject_list;
 			}
 
 			new_kobj->kobj = kobject_create_and_add(name, kobj);
-			spin_lock(&sw_counters_values->list_lock);
+			mutex_lock(&sw_counters_values->list_lock);
 			list_add_tail(&new_kobj->node, &sw_counters_values->kobject_list);
-			spin_unlock(&sw_counters_values->list_lock);
+			mutex_unlock(&sw_counters_values->list_lock);
 		}
-		spin_unlock(&sw_counters_info->list_lock);
+		mutex_unlock(&sw_counters_info->list_lock);
 	}
 
 	/* set counters values, in case of global counters we save the first value for updates in case of new object*/
@@ -1059,16 +1061,14 @@ cleanup_sw_counters_children_kobject_list:
 if (sw_counters_info->counters_set->perID) {
 	struct kobj_node *kobjNode;
 	/* cleanup child directories*/
-	spin_lock(&sw_counters_values->list_lock);
+	mutex_lock(&sw_counters_values->list_lock);
 	while (!list_empty(&sw_counters_values->kobject_list)) {
 		kobjNode = list_first_entry(&sw_counters_values->kobject_list, struct kobj_node, node);
-		spin_unlock(&sw_counters_values->list_lock);
 		list_del(&kobjNode->node);
 		kobject_put(kobjNode->kobj);
 		kfree(kobjNode);
-		spin_lock(&sw_counters_values->list_lock);
 	}
-	spin_unlock(&sw_counters_values->list_lock);
+	mutex_unlock(&sw_counters_values->list_lock);
 }
 cleanup_sw_counters_groups_buffer:
 	kfree(sw_counters_values->sw_counters.groups);
@@ -1094,17 +1094,15 @@ int sph_sw_counters_release_values_node(struct sph_internal_sw_counters *sw_coun
 	u64 root_dirty = 0;
 
 	/* cleanup child directories*/
-	spin_lock(&sw_counters_values->list_lock);
+	mutex_lock(&sw_counters_values->list_lock);
 	while (!list_empty(&sw_counters_values->kobject_list)) {
 		kobjNode = list_first_entry(&sw_counters_values->kobject_list,
 					    struct kobj_node, node);
 		list_del(&kobjNode->node);
-		spin_unlock(&sw_counters_values->list_lock);
 		kobject_put(kobjNode->kobj);
 		kfree(kobjNode);
-		spin_lock(&sw_counters_values->list_lock);
 	}
-	spin_unlock(&sw_counters_values->list_lock);
+	mutex_unlock(&sw_counters_values->list_lock);
 
 
 	/* once new object was deleted we will update node to root */
@@ -1150,6 +1148,7 @@ int sph_sw_counters_release_values_node(struct sph_internal_sw_counters *sw_coun
 
 	kfree(sw_counters_values->sw_counters.spinlocks);
 
+	mutex_destroy(&sw_counters_values->list_lock);
 	kfree(sw_counters_values);
 
 	return 0;

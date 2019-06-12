@@ -23,9 +23,7 @@
 #include <linux/types.h>
 #endif
 #include "osmm_interface.h"
-#ifdef NEXT_E2E
 #include "cve_linux_internal.h"
-#endif
 
 /*
  * allocated a list of dev contexts per cve device according to num
@@ -95,17 +93,6 @@ int cve_dev_fw_load_and_map(cve_dev_context_handle_t hcontext,
 		const u64 fw_binmap,
 		const u32 fw_binmap_size_bytes);
 
-/*
- * Set Device FIFO pointer to the given FIFO.
- * Set FIFO size and address into appropriate registers
- * and marks FIFO as empty.
- *
- * input: dev - CVE device to be set
- * input: fifo_desc - FIFO to be used
- */
-void cve_dev_reset_fifo(struct cve_device *dev,
-			struct fifo_descriptor *fifo_desc);
-
 void cve_dev_get_emb_cb_list(cve_dev_context_handle_t hcontext,
 		cve_di_subjob_handle_t **out_embedded_cbs_subjobs);
 
@@ -120,12 +107,9 @@ void cve_dev_get_custom_fw_version_per_context(
 void cve_di_reset_cve_dump(struct cve_device *dev,  uint8_t dumpTrigger,
 		struct di_cve_dump_buffer ice_dump_buf);
 
-#ifdef NEXT_E2E
 int cve_bar1_map(struct cve_device *cve_dev,
 		os_domain_handle hdom,
-		struct cve_dma_handle *out_dma_handle,
 		cve_mm_allocation_t *out_alloc_handle);
-#endif
 
 /*
  * Allocate and map CBDT memory for given Device and Context

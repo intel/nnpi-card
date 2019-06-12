@@ -18,7 +18,6 @@
 
 char *sph_trace_op_state_to_str[SPH_TRACE_OP_STATE_NUM + 1];
 char *sph_trace_op_status_to_str[SPH_TRACE_OP_STATUS_NUM + 1];
-char *sph_trace_drv_command_to_str[SPH_TRACE_DRV_COMMAND_NUM + 1];
 
 void icedrv_sw_trace_init(void)
 {
@@ -34,21 +33,5 @@ sph_trace_op_status_to_str[SPH_TRACE_OP_STATUS_PASS]   = SPH_TRACE_STR_PASS;
 sph_trace_op_status_to_str[SPH_TRACE_OP_STATUS_FAIL]   = SPH_TRACE_STR_FAIL;
 sph_trace_op_status_to_str[SPH_TRACE_OP_STATUS_NULL]   = SPH_TRACE_STR_NULL;
 sph_trace_op_status_to_str[SPH_TRACE_OP_STATUS_NUM]    = SPH_TRACE_STR_UNDEF;
-
-/*fill sph_trace_inf_create_to_str array*/
-sph_trace_drv_command_to_str[SPH_TRACE_DRV_CREATE_CONTEXT] =
-					SPH_TRACE_STR_CREATE_CTXT;
-sph_trace_drv_command_to_str[SPH_TRACE_DRV_CREATE_NETWORK] =
-					SPH_TRACE_STR_CREATE_NTW;
-sph_trace_drv_command_to_str[SPH_TRACE_DRV_EXECUTE_NETWORK] =
-					SPH_TRACE_STR_EXECUTE_NTW;
-sph_trace_drv_command_to_str[SPH_TRACE_DRV_NETWORK_RESOURCE] =
-					SPH_TRACE_STR_NTW_RESOURCE;
-sph_trace_drv_command_to_str[SPH_TRACE_DRV_DESTROY_NETWORK] =
-					SPH_TRACE_STR_DESTROY_NTW;
-sph_trace_drv_command_to_str[SPH_TRACE_DRV_DESTROY_CONTEXT] =
-					SPH_TRACE_STR_DESTROY_CTXT;
-sph_trace_drv_command_to_str[SPH_TRACE_DRV_COMMAND_NUM] =
-					SPH_TRACE_STR_UNDEF;
 
 }

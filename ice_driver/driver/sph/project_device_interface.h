@@ -23,15 +23,14 @@
 
 #include "cve_linux_internal.h"
 
-#define ENABLE_SPH_STEP_B 0
-
 struct hw_revision_t {
 	u16	major_rev;
 	u16	minor_rev;
 };
 
 int is_wd_error(u32 status);
-void get_hw_revision(struct cve_device *cve_dev, struct hw_revision_t *hw_rev);
+void get_hw_revision(struct cve_device *cve_dev,
+				struct hw_revision_t *hw_rev);
 int do_reset_device(struct cve_device *cve_dev, uint8_t idc_reset);
 void cve_print_mmio_regs(struct cve_device *cve_dev);
 void store_ecc_err_count(struct cve_device *cve_dev);
@@ -62,8 +61,7 @@ inline void cve_decouple_debugger_reset(void);
 #define project_hook_interrupt_dpc_handler_exit(cve_dev, status)
 
 void project_hook_interrupt_handler_exit(struct cve_device *cve_dev,
-		u32 status,
-		bool is_last_cb);
+		u32 status);
 void project_hook_dispatch_new_job(struct cve_device *cve_dev,
 					struct ice_network *ntw);
 void ice_di_update_page_sz(struct cve_device *cve_dev, u32 *page_sz_array);
@@ -78,7 +76,7 @@ int cve_sync_sgt_to_llc(struct sg_table *sgt);
 
 void ice_di_disable_clk_squashing_step_a(struct cve_device *dev);
 
-#if ENABLE_SPH_STEP_B
+#ifdef ENABLE_SPH_STEP_B
 #define ice_di_disable_clk_squashing(dev) do {} while (0)
 #else /* ENABLE_SPH_STEP_B */
 #define ice_di_disable_clk_squashing(dev)\

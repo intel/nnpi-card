@@ -24,6 +24,7 @@
 #include "sphcs_sw_counters.h"
 #include "sphcs_trace.h"
 #include "hw_wa.h"
+#include "int_stats.h"
 
 /*
  * SpringHill PCI card identity settings
@@ -154,6 +155,7 @@ static struct sphcs_pcie_callbacks *s_callbacks;
 
 #ifdef ULT
 static struct dentry *s_debugfs_dir;
+static DEFINE_INT_STAT(int_stats, 8);
 #endif
 
 /* interrupt mask bits we enable and handle at interrupt level */
@@ -333,25 +335,12 @@ static void set_bus_master_state(struct sph_pci_device *sph_pci)
 
 static void sph_warm_reset(void)
 {
-	/**
-	 * warm reset should be made by writing to port 0xCF9,
-	 * The linux emergency_restart does it only when the kernel
-	 * is booting with command line option "reboot=p,w"
-	 * Once the grub config will be updated to use that option the "#if 0"
-	 * can be removed, until then we just directly issue the warm reset from
-	 * here.
+	/*
+	 * Here we assume that the following argument was givven
+	 * in the linux command line: "reboot=p,w"
+	 * That ensures that a warm reset will be initiated.
 	 */
-#if 0
 	emergency_restart();
-#else
-	u8 boot_mode = 0x6;  /* 0x6 = WARM, 0xe = COLD */
-	u8 cf9 = inb(0xcf9) & ~boot_mode;
-
-	outb(cf9|2, 0xcf9); /* Request hard reset */
-	udelay(50);
-	outb(cf9|boot_mode, 0xcf9); /* Actually Do reset */
-	udelay(50);
-#endif
 }
 
 static void handle_dma_interrupt(struct sph_pci_device *sph_pci, u32 dma_read_status, u32 dma_write_status)
@@ -496,6 +485,12 @@ static irqreturn_t interrupt_handler(int irq, void *data)
 		       UINT_MAX);
 
 	sph_pci->host_status = sph_mmio_read(sph_pci, ELBI_IOSF_STATUS);
+
+#ifdef ULT
+	INT_STAT_INC(int_stats,
+		     (sph_pci->host_status &
+		      (s_host_status_int_mask | s_host_status_threaded_mask)));
+#endif
 
 	/* early exit if spurious interrupt */
 	if ((sph_pci->host_status &
@@ -1401,6 +1396,8 @@ static const struct file_operations debug_cmdq_fops = {
 	.release	= single_release,
 };
 
+DEFINE_INT_STAT_DEBUGFS(int_stats);
+
 void sph_init_debugfs(struct sph_pci_device *sph_pci)
 {
 	struct dentry *f;
@@ -1419,6 +1416,10 @@ void sph_init_debugfs(struct sph_pci_device *sph_pci)
 				s_debugfs_dir,
 				sph_pci,
 				&debug_cmdq_fops);
+	if (IS_ERR_OR_NULL(f))
+		goto err;
+
+	f = INT_STAT_DEBUGFS_CREATE(int_stats, s_debugfs_dir);
 	if (IS_ERR_OR_NULL(f))
 		goto err;
 

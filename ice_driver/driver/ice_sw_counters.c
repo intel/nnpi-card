@@ -33,7 +33,7 @@ struct swc_value *g_swc_value_list[ICEDRV_SWC_CLASS_MAX];
 
 static const struct sph_sw_counters_group_info g_swc_global_group_info[] = {
 	/* ICEDRV_SWC_GLOBAL_GROUP_GEN */
-	{"general", "placeholder for actual global groups"}
+	{"-general", "placeholder for actual global groups"}
 };
 
 static const struct sph_sw_counter_info g_swc_global_info[] = {
@@ -45,7 +45,10 @@ static const struct sph_sw_counter_info g_swc_global_info[] = {
 	 "Number of Context that are currently active"},
 	/* ICEDRV_SWC_GLOBAL_COUNTER_CTX_DES */
 	{ICEDRV_SWC_GLOBAL_GROUP_GEN, "contextDestroyed",
-	 "Total number of Destroyed Context"}
+	 "Total number of Destroyed Context"},
+	/* ICEDRV_SWC_GLOBAL_ACTIVE_ICE_COUNT */
+	{ICEDRV_SWC_GLOBAL_GROUP_GEN, "activeICECount",
+	 "Total number of Active ICE"}
 };
 
 static const struct sph_sw_counters_set g_swc_global_set = {
@@ -59,7 +62,7 @@ static const struct sph_sw_counters_set g_swc_global_set = {
 
 static const struct sph_sw_counters_group_info g_swc_context_group_info[] = {
 	/* ICEDRV_SWC_CONTEXT_GROUP_GEN */
-	{"general", "placeholder for actual context groups"},
+	{"-general", "placeholder for actual context groups"},
 };
 
 static const struct sph_sw_counter_info g_swc_context_info[] = {
@@ -75,7 +78,7 @@ static const struct sph_sw_counter_info g_swc_context_info[] = {
 };
 
 static const struct sph_sw_counters_set g_swc_context_set = {
-	"context",
+	"inference.context",
 	true,
 	g_swc_context_info,
 	ARRAY_SIZE(g_swc_context_info),
@@ -85,7 +88,7 @@ static const struct sph_sw_counters_set g_swc_context_set = {
 
 static const struct sph_sw_counters_group_info g_swc_infer_group_info[] = {
 	/* ICEDRV_SWC_INFER_GROUP_GEN */
-	{"general", "placeholder for actual Infer groups"},
+	{"-general", "placeholder for actual Infer groups"},
 };
 
 static const struct sph_sw_counter_info g_swc_infer_info[] = {
@@ -95,7 +98,7 @@ static const struct sph_sw_counter_info g_swc_infer_info[] = {
 };
 
 static const struct sph_sw_counters_set g_swc_infer_set = {
-	"infer",
+	"infercmd",
 	true,
 	g_swc_infer_info,
 	ARRAY_SIZE(g_swc_infer_info),
@@ -105,7 +108,7 @@ static const struct sph_sw_counters_set g_swc_infer_set = {
 
 static const struct sph_sw_counters_group_info g_swc_device_group_info[] = {
 	/* ICEDRV_SWC_INFER_GROUP_GEN */
-	{"general", "placeholder for actual Device groups"},
+	{"-general", "placeholder for actual Device groups"},
 };
 
 static const struct sph_sw_counter_info g_swc_device_info[] = {
@@ -118,7 +121,7 @@ static const struct sph_sw_counter_info g_swc_device_info[] = {
 };
 
 static const struct sph_sw_counters_set g_swc_device_set = {
-	"device",
+	"ice",
 	true,
 	g_swc_device_info,
 	ARRAY_SIZE(g_swc_device_info),
@@ -129,7 +132,7 @@ static const struct sph_sw_counters_set g_swc_device_set = {
 static const struct sph_sw_counters_group_info
 		g_swc_infer_device_group_info[] = {
 	/* ICEDRV_SWC_INFER_DEVICE_GROUP_GEN */
-	{"general", "placeholder for actual Infer Device groups"},
+	{"-general", "placeholder for actual Infer Device groups"},
 };
 
 static const struct sph_sw_counter_info g_swc_infer_device_info[] = {
@@ -148,7 +151,7 @@ static const struct sph_sw_counter_info g_swc_infer_device_info[] = {
 };
 
 static const struct sph_sw_counters_set g_swc_infer_device_set = {
-	"infer_device",
+	"ice",
 	true,
 	g_swc_infer_device_info,
 	ARRAY_SIZE(g_swc_infer_device_info),
@@ -224,7 +227,7 @@ int ice_swc_destroy_node(enum ICEDRV_SWC_CLASS class,
 
 	sph_remove_sw_counters_values_node(value->sw_counters);
 	cve_dle_remove_from_list(g_swc_value_list[class], list, value);
-	OS_FREE(value, sizeof(struct sph_sw_counters));
+	OS_FREE(value, sizeof(struct swc_value));
 
 	return 0;
 exit:

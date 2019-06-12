@@ -1,7 +1,3 @@
-
-
-
-
 /*******************************************************************************
  * INTEL CORPORATION CONFIDENTIAL Copyright(c) 2017-2019 Intel Corporation. All Rights Reserved.
  *
@@ -35,7 +31,7 @@
 
 #define IOCTL_GENMSG_REGISTER_SERVICE	_IOW('G', 0, struct ioctl_register_service)
 #define IOCTL_GENMSG_ACCEPT_CLIENT	_IOR('G', 1, int)
-#define IOCTL_GENMSG_WRITE_RESPONSE_WAIT _IOWR('G', 2, int)
+#define IOCTL_GENMSG_WRITE_RESPONSE_WAIT _IO('G', 2)
 #define IOCTL_GENMSG_IS_PRIVILEGED      _IOR('G', 3, int)
 
 struct ioctl_register_service {

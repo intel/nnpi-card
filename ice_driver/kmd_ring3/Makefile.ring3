@@ -103,7 +103,8 @@ SRCS+=$(VERSION_DIR)/version.c\
 	$(DRIVER_DIR)/ice_trace.c\
 	$(DRIVER_DIR)/ice_debug_event.c\
 	$(DRIVER_DIR)/ice_debug.c\
-	$(DRIVER_DIR)/icedrv_internal_sw_counter_funcs.c
+	$(DRIVER_DIR)/icedrv_internal_sw_counter_funcs.c \
+        icedrv_sw_trace_stub.c
 
 CFLAGS  += -DRING3_VALIDATION -I$(CORAL_DIR)/src
 LDFLAGS += -shared -lcoral_drv -L$(CORAL_DRIVER_DLL_DIR) -Wl,-rpath,'$$ORIGIN'
@@ -128,10 +129,9 @@ CFLAGS+=-DFW_PACK_DIR_BASE="\"$(FW_PACK_DIR_BASE)\""
 # Should be removed for performence optimization
 CFLAGS+=-DENABLE_MEM_DETECT
 
-ifeq ($(NEXT_E2E), 1)
-	CFLAGS+=-DNEXT_E2E
+ifeq ($(B_STEP), 1)
+	CFLAGS+=-DENABLE_SPH_STEP_B
 endif
-
 TARGET=$(OUTPUTDIR)/libcvedriver.so
 
 all: $(TARGET)

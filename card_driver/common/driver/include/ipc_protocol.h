@@ -105,6 +105,7 @@ struct sph_sys_info {
 	char bios_version[SPH_BIOS_VERSION_LEN];
 	char board_name[SPH_BOARD_NAME_LEN];
 	char image_version[SPH_IMAGE_VERSION_LEN];
+	u16  fpga_rev;
 };
 
 #define NENTS_PER_PAGE ((SPH_PAGE_SIZE - sizeof(struct dma_chain_header)) / sizeof(struct dma_chain_entry))

@@ -25,21 +25,7 @@
 #include "CVG_MMU_1_system_map_regs.h"
 #include "mmio_semaphore_regs.h"
 #include "ice_mmu_inner_regs.h"
-
-const char *get_SCB_STATE_str(uint32_t state)
-{
-	switch (state) {
-
-	case SCB_STATE_ABSENT:
-		return "SCB_STATE_ABSENT";
-	case SCB_STATE_RUN:
-		return "SCB_STATE_RUN";
-	case SCB_STATE_SKIP:
-		return "SCB_STATE_SKIP";
-	default:
-		return "Unknown";
-	}
-}
+#include "project_device_interface.h"
 
 const char *get_cve_jobs_group_status_str(uint32_t status)
 {
@@ -251,12 +237,28 @@ const char *get_idc_regs_str(uint32_t offset)
 		return "Unknown";
 	}
 }
+#ifdef ENABLE_SPH_STEP_B
+const char *get_other_regs_str(uint32_t offset)
+{
+	switch (offset) {
+	default:
+		return "Unknown";
+	}
+}
+#else
+const char *get_other_regs_str(uint32_t offset)
+{
+	switch (offset) {
+	case CVE_MMIO_HUB_HW_REVISION_MMOFFSET:
+		return "HW_REVISION_REG";
+	default:
+		return "Unknown";
+	}
+}
+#endif
 const char *get_regs_str(uint32_t offset)
 {
 	switch (offset) {
-
-	case CVE_MMIO_HUB_HW_REVISION_MMOFFSET:
-		return "HW_REVISION_REG";
 	case ICE_MMU_BASE + ICE_MMU_AXI_TABLE_PT_INDEX_BITS_MMOFFSET:
 		return "AXI_TABLE_PT_INDEX_REG";
 	case ICE_MMU_BASE + ICE_MMU_TLC_AXI_ATTRIBUTES_MMOFFSET:
@@ -360,6 +362,6 @@ CVE_SEMAPHORE_MMIO_CVE_REGISTER_DEMON_CONTROL_MMOFFSET:
 	case CVE_MMIO_HUB_UNMAPPED_ERR_ID_MMOFFSET:
 		return "UNMAPPED_ERR_ID_REG";
 	default:
-		return "Unknown";
+		return get_other_regs_str(offset);
 	}
 }

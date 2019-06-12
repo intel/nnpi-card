@@ -42,9 +42,7 @@ struct idc_device {
 	atomic64_t idc_err_intr_enable;
 	struct cve_device cve_dev[NUM_ICE_UNIT];
 #ifdef RING3_VALIDATION
-#ifdef NEXT_E2E
 	uint64_t bar1_base_address;
-#endif
 #else
 	dma_addr_t bar1_base_address;
 #endif

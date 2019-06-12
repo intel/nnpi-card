@@ -22,8 +22,8 @@ mkfile_path := $(abspath $(lastword $(MAKEFILE_LIST)))
 mkfile_dir := $(dir $(mkfile_path))
 
 #KDIR ?= /lib/modules/`uname -r`/build
-KDIR ?= $(mkfile_dir)/../../sph_os/intel/sph/Toolchain/src/linux-headers-4.15.9
 SPH_TOOLCHAIN = $(mkfile_dir)/../../sph_os/intel/sph/Toolchain/bin/x86_64-buildroot-linux-gnu-
+KDIR ?= $(wildcard $(mkfile_dir)/../../sph_os/intel/sph/Toolchain/src/linux-headers-*)
 
 default:
 	$(MAKE) -C $(KDIR) M=$$PWD SPH=1 CROSS_COMPILE=$(SPH_TOOLCHAIN)

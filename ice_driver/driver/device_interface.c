@@ -81,8 +81,6 @@ struct sub_job {
 	struct cve_dle_t list;
 	/* parent job. May be NULL*/
 	struct di_job *parent;
-	/* index to the dispatched cb_desc */
-	u32 cb_dispatched_index;
 	/* should this subjob be deleted at the end of the parent job
 	 * (used by designated cb loading)
 	 */
@@ -111,6 +109,16 @@ struct di_job {
 	u32 allocated_subjobs_nr;
 	/* number of remaining sub-jobs to dispatch */
 	u32 remaining_subjobs_nr;
+	/* Index of first CBD in the CBDT. Corresponding ICEVA
+	 * will be written to CBD Base Address Register.
+	 */
+	u32 first_cb_desc;
+	/* Index of last valid CBD in CBDT */
+	u32 last_cb_desc;
+	/* Is this the Cold run of Job */
+	u8 cold_run;
+	/* Does this Job has SCB */
+	u8 has_scb;
 };
 
 /* MODULE LEVEL VARIABLES */
@@ -376,39 +384,22 @@ static void ice_di_enable_tlc_bp(struct cve_device *ice_dev)
 						"Wrote to TLC BP register\n");
 }
 
-/*
- * dispatch the next subjobs of the given job
- */
-static void dispatch_next_subjobs(struct di_job *job,
+static void __prepare_cbdt(struct di_job *job,
 		struct cve_device *dev)
 {
-	u32 dispatched_count = 0;
+	u32 i;
 	u32 last_cb_desc = 0;
-	u32 raise_index;
-	u32 free_slots_nr = fifo_free_slots_nr(dev->fifo);
-	struct ice_network *ntw = (struct ice_network *) dev->last_network_id;
 
-	/* calculate where to request a completion interrupt */
-	if (free_slots_nr >= job->remaining_subjobs_nr) {
-		raise_index = fifo_ptr_add(dev->fifo->head,
-				job->remaining_subjobs_nr - 1,
-				dev->fifo->entries);
-		dev->fifo->is_final = 1;
-	} else {
-		cve_os_dev_log(CVE_LOGLEVEL_ERROR,
-			dev->dev_index,
-			"Error free slots not available!\n");
-		return;
-	}
-	while (!fifo_is_full(dev->fifo) &&
-			(job->remaining_subjobs_nr > 0)) {
+	last_cb_desc = (job->remaining_subjobs_nr - 1);
+
+	for (i = 0; i < job->remaining_subjobs_nr; i++) {
 		u64 cb = 0;
 		union cve_shared_cb_descriptor *descp = NULL;
 		union cve_shared_cb_descriptor desc;
 		struct sub_job *subjob = &job->sub_jobs[job->next_subjob];
 
 		cb = subjob->cb.command_buffer;
-		descp = &dev->fifo->cb_desc_vaddr[dev->fifo->head];
+		descp = &dev->fifo_desc->fifo.cb_desc_vaddr[i];
 
 		/* initialize the command buffer descriptor */
 		desc.address = subjob->cb.address;
@@ -418,9 +409,11 @@ static void dispatch_next_subjobs(struct di_job *job,
 		desc.commands_nr = subjob->cb.commands_nr;
 		set_desc_subjob(&desc, subjob);
 		desc.status = CVE_STATUS_DISPATCHED;
-		desc.flags.isReloadable = subjob->cb.is_reloadable;
-		desc.flags.disable_CB_COMPLETED_int =
-				(dev->fifo->head != raise_index);
+		/* Always setting this flag because same CBD is being executed
+		 * by all InferRequests. No CBD reset is performed by Driver.
+		 */
+		desc.flags.isReloadable = 1;
+		desc.flags.disable_CB_COMPLETED_int = (i != last_cb_desc);
 		desc.flags.isPreloadable = 1;
 
 		if (subjob->embedded_sub_job)
@@ -433,63 +426,114 @@ static void dispatch_next_subjobs(struct di_job *job,
 				desc.commands_nr << TLC_COMMAND_SIZE_SHIFT,
 				"Command Buffer");
 
-		/* minimize memory accesses in case UC memory is used */
 		*descp = desc;
 
-		/* flush and invalidate CBdesc to memory to assure
-		 *  device is reading the updated CB contents
-		 *  from memory.
-		 */
 		print_kernel_buffer(descp,
 				sizeof(*descp), "Command Buffer Descriptor");
 
 		cve_os_dev_log(CVE_LOGLEVEL_DEBUG,
 			dev->dev_index,
 			"CBD_Idx=%u, CBD_ID=0x%lx:\n\tICEVA=0x%x\n\tCommandsCount=%u\n\tFlags=0x%x\n",
-			dev->fifo->head, (uintptr_t)descp,
+			i, (uintptr_t)descp,
 			desc.address, desc.commands_nr, desc.flags.fixed_size);
 
-		last_cb_desc = dev->fifo->head;
-		subjob->cb_dispatched_index = last_cb_desc;
-
-		fifo_head_increment(dev->fifo);
-
-		dispatched_count++;
-		free_slots_nr--;
-		job->remaining_subjobs_nr--;
 		job->next_subjob++;
 	}
 
-	if (dispatched_count > 0) {
-		/* allow CVE to send NEW memory transactions to MMU */
-		mmu_transactions_unblock(dev);
+	job->remaining_subjobs_nr = 0;
+	job->last_cb_desc = last_cb_desc;
+}
 
-		/* call project hook right before ringing the doorbell */
-		project_hook_dispatch_new_job(dev, ntw);
+/*
+ * dispatch the next subjobs of the given job
+ */
+static void dispatch_next_subjobs(struct di_job *job,
+		struct cve_device *dev)
+{
+	u32 db = 0;
+	u32 cbd_size = sizeof(union cve_shared_cb_descriptor);
+	cve_virtual_address_t iceva;
+	struct ice_network *ntw = (struct ice_network *) dev->dev_network_id;
 
-		/* make sure the compiler doesn't reorder the instructions */
-		cve_os_memory_barrier();
+	if (job->cold_run)
+		__prepare_cbdt(job, dev);
+
+	job->first_cb_desc = 0;
+	iceva = dev->fifo_desc->fifo_alloc.ice_vaddr;
+	db = job->last_cb_desc;
+
+	if (job->cold_run) {
+		/* Cold Run */
+		if (disable_embcb) {
+			job->first_cb_desc = 1;
+
+			cve_os_log(CVE_LOGLEVEL_INFO,
+				"Cold Run (Skipping EmbCB)\n");
+		} else {
+			cve_os_log(CVE_LOGLEVEL_INFO,
+				"Cold Run (With EmbCB)\n");
+		}
+
+		job->cold_run = 0;
+
+	} else if (job->has_scb) {
+		/* Warm Run with SCB */
+		job->first_cb_desc = 2;
+
+		cve_os_log(CVE_LOGLEVEL_INFO,
+			"Warm Run (Skipping SCB)\n");
+
+	} else {
+		/* Warm run without SCB */
+		job->first_cb_desc = 1;
+
+		cve_os_log(CVE_LOGLEVEL_INFO,
+			"Warm Run\n");
+	}
+
+	iceva += (job->first_cb_desc * cbd_size);
+	db -= job->first_cb_desc;
+
+	cve_os_log(CVE_LOGLEVEL_DEBUG,
+		"CBDT Base Address = %x, CBDT Entries = %d, Doorbell = %d\n",
+		iceva, dev->fifo_desc->fifo.entries, db);
+
+	/* allow CVE to send NEW memory transactions to MMU */
+	mmu_transactions_unblock(dev);
+
+	/* call project hook right before ringing the doorbell */
+	project_hook_dispatch_new_job(dev, ntw);
+
+	/* make sure the compiler doesn't reorder the instructions */
+	cve_os_memory_barrier();
 
 #ifndef RING3_VALIDATION
-		ice_swc_counter_add(dev->hswc,
-			ICEDRV_SWC_DEVICE_COUNTER_COMMANDS,
-			dispatched_count);
+	ice_swc_counter_add(dev->hswc,
+		ICEDRV_SWC_DEVICE_COUNTER_COMMANDS,
+		(db + 1));
 #endif
 
-		cve_os_dev_log(CVE_LOGLEVEL_INFO,
-			dev->dev_index,
-			"NTW:%p Ring the doorbell\n",
-			ntw);
+	cve_os_dev_log(CVE_LOGLEVEL_INFO,
+		dev->dev_index,
+		"NtwID:0x%llx Ring the doorbell\n",
+		ntw->network_id);
 
-		/* To check if break point needs to be set */
-		if (ntw->reserve_resource & ICE_SET_BREAK_POINT)
-			ice_di_enable_tlc_bp(dev);
+	/* To check if break point needs to be set */
+	if (ntw->reserve_resource & ICE_SET_BREAK_POINT)
+		ice_di_enable_tlc_bp(dev);
 
-		/* ring the doorbell once with the last descriptor */
-		cve_os_write_mmio_32(dev,
-			CVE_MMIO_HUB_NEW_COMMAND_BUFFER_DOOR_BELL_MMOFFSET,
-			last_cb_desc);
-	}
+	/* reset the TLC FIFO indexes */
+	cve_os_write_mmio_32(dev,
+	 CVE_MMIO_HUB_COMMAND_BUFFER_DESCRIPTORS_BASE_ADDRESS_MMOFFSET,
+	 iceva);
+	cve_os_write_mmio_32(dev,
+	 CVE_MMIO_HUB_COMMAND_BUFFER_DESCRIPTORS_ENTRIES_NR_MMOFFSET,
+	 dev->fifo_desc->fifo.entries);
+
+	/* ring the doorbell once with the last descriptor */
+	cve_os_write_mmio_32(dev,
+		CVE_MMIO_HUB_NEW_COMMAND_BUFFER_DOOR_BELL_MMOFFSET,
+		db);
 }
 
 
@@ -505,8 +549,6 @@ static void do_tlb_flush_full(struct cve_device *cve_dev)
 				CVG_MMU_1_SYSTEM_MAP_MEM_INVALIDATE_OFFSET;
 		ASSERT(((offset_bytes >> 2) << 2) == offset_bytes);
 		cve_os_write_mmio_32(cve_dev, offset_bytes, reg.val);
-		/* read the register to make sure the invalidation completed */
-		cve_os_read_mmio_32(cve_dev, offset_bytes);
 	}
 }
 
@@ -516,21 +558,10 @@ static inline void write_to_page_table_base_address(
 	const union CVG_MMU_1_SYSTEM_MAP_MEM_PAGE_TABLE_BASE_ADDRESS_t reg)
 {
 	u32 i;
-	int is_need_unblock;
 
 	cve_os_dev_log(CVE_LOGLEVEL_DEBUG,
 			cve_dev->dev_index,
 			"write_to_page_table_base_address executed\n");
-
-	/* Wait till active memory transactions finished and block
-	 * CVE to send any NEW memory transactions to MMU
-	 *
-	 * Note: Following function validate that MMU
-	 * transactions are not blocked already.
-	 * If they are already blocked, there is no need
-	 * to block again --> return "0".
-	 */
-	is_need_unblock = mmu_transactions_wait_and_block(cve_dev);
 
 	for (i = 0; i < ARRAY_SIZE(m_atu_mmio_offset_bytes); i++) {
 		u32 offset_bytes = m_atu_mmio_offset_bytes[i] +
@@ -548,13 +579,6 @@ static inline void write_to_page_table_base_address(
 	/* flush the TLB */
 	do_tlb_flush_full(cve_dev);
 
-	/* If someone else blocked the MMU transactions,
-	 * this is not our responsibility to unblock them
-	 */
-	if (is_need_unblock)
-		/* allow CVE to send NEW memory transactions to MMU */
-		mmu_transactions_unblock(cve_dev);
-
 #ifdef _DEBUG
 	cve_os_write_mmio_32(cve_dev,
 		ICE_DEBUG_CFG_REG, reg.val);
@@ -564,34 +588,6 @@ static inline void write_to_page_table_base_address(
 
 
 /* INTERFACE FUNCTIONS */
-
-void cve_di_tlb_flush_full(struct cve_device *cve_dev)
-{
-	int is_need_unblock;
-
-	cve_os_dev_log(CVE_LOGLEVEL_DEBUG,
-		cve_dev->dev_index,
-		"Perform Table Flush\n");
-
-	/* Wait till active memory transactions finished
-	 * and block CVE to send any NEW memory transactions
-	 * to MMU.
-	 * Note: Following function validate that MMU transactions
-	 * are not blocked already. If they are already blocked,
-	 * there is no need to block again --> return "0".
-	 */
-	is_need_unblock = mmu_transactions_wait_and_block(cve_dev);
-
-	do_tlb_flush_full(cve_dev);
-
-	/* If someone else blocked the MMU transactions,
-	 * this is not our responsibility to unblock them.
-	 */
-	if (is_need_unblock)
-		/* allow CVE to send NEW memory transactions to MMU */
-		mmu_transactions_unblock(cve_dev);
-
-}
 
 void cve_di_mask_interrupts(struct cve_device *cve_dev)
 {
@@ -666,21 +662,21 @@ int set_idc_registers(struct cve_device *dev, uint8_t lock)
 		}
 	}
 
+	if (dev->power_state == ICE_POWER_ON) {
+
+		cve_os_log(CVE_LOGLEVEL_INFO,
+			"ICE-%d is already Power enabled\n",
+			dev->dev_index);
+
+		goto out;
+	}
+
 	/* TODO HACK: Always check if its enabled by reading MMIO */
 	mask = (1ULL << dev->dev_index) << 4;
 
 	/*PE 1 ICE without disturbing other  */
 	value = cve_os_read_idc_mmio(dev,
 		IDC_REGS_IDC_MMIO_BAR0_MEM_ICEPE_MMOFFSET);
-
-	if (dev->power_state == ICE_POWER_ON) {
-		/* Device is already ON */
-		if ((value & mask) != mask) {
-			cve_os_log(CVE_LOGLEVEL_ERROR,
-					"ICE-%d is set as ON but is actually OFF\n",
-					dev->dev_index);
-		}
-	}
 
 	/* Device is already ON */
 	if ((value & mask) == mask) {
@@ -880,12 +876,7 @@ int unset_idc_registers_multi(u32 icemask, uint8_t lock)
 void cve_di_reset_device(struct cve_device *cve_dev)
 {
 	uint8_t idc_reset;
-#if 0
-#ifdef IDC_ENABLE
-	/* We are PE in reset flow. Must implement proper reset flow */
-	set_idc_registers(cve_dev);
-#endif
-#endif
+
 	/* Wait till active memory transactions
 	 * finished and block CVE to send any
 	 * NEW memory transactions to MMU.
@@ -895,9 +886,8 @@ void cve_di_reset_device(struct cve_device *cve_dev)
 	/* Do not perform IDC reset for this ICE if
 	 * it was just powered on
 	 */
-	/* TODO */
 	idc_reset = (cve_dev->di_cve_needs_reset & CVE_DI_RESET_DUE_POWER_ON) ?
-			1 : 1;
+			0 : 1;
 
 	if (do_reset_device(cve_dev, idc_reset))
 		cve_os_dev_log(CVE_LOGLEVEL_ERROR,
@@ -940,6 +930,7 @@ void cve_di_start_running(struct cve_device *cve_dev)
 	/* TODO: 2000 is a temporary initial value for CVE bring-up
 	 * (should be between 100 to 200)
 	 */
+
 	cve_os_write_mmio_32(cve_dev,
 			CVE_MMIO_HUB_PRE_IDLE_DELAY_COUNT_MMOFFSET,
 			2000);
@@ -976,6 +967,8 @@ void cve_di_start_running(struct cve_device *cve_dev)
 #ifdef _DEBUG
 	cve_os_write_mmio_32(cve_dev,
 		ICE_DEBUG_CFG_REG, 0xabababab);
+	cve_os_write_mmio_32(cve_dev,
+		ICE_DEBUG_CFG_REG, get_process_pid());
 #endif
 }
 
@@ -1003,8 +996,6 @@ int cve_di_create_subjob(cve_virtual_address_t cb_address,
 out:
 	return retval;
 }
-
-#ifdef IDC_ENABLE
 
 void ice_di_reset_counter(uint32_t cntr_id)
 {
@@ -1148,19 +1139,17 @@ static int is_embedded_cb_error(struct cve_device *cve_dev)
 	return ((reg_val == ECB_SUCCESS_STATUS) ? 0 : 1);
 }
 
-void cve_executed_cbs_time_log(struct cve_device *dev, u64 *exec_time)
+static void cve_executed_cbs_time_log(struct cve_device *dev,
+	struct di_job *job, u64 *exec_time)
 {
-	union cve_shared_cb_descriptor *cb_descriptor = NULL;
 	u32 i;
+	union cve_shared_cb_descriptor *cb_descriptor = NULL;
 
 	*exec_time = 0;
 
-	if (dev->fifo->is_empty)
-		return;
+	for (i = job->first_cb_desc; i <= job->last_cb_desc; i++) {
 
-	i = dev->fifo->tail;
-	do {
-		cb_descriptor = &dev->fifo->cb_desc_vaddr[i];
+		cb_descriptor = &dev->fifo_desc->fifo.cb_desc_vaddr[i];
 
 #ifndef RING3_VALIDATION
 		ice_swc_counter_add(dev->hswc,
@@ -1174,11 +1163,10 @@ void cve_executed_cbs_time_log(struct cve_device *dev, u64 *exec_time)
 			(uintptr_t)cb_descriptor,
 			cb_descriptor->start_time,
 			cb_descriptor->completion_time);
+
 		*exec_time += (cb_descriptor->completion_time -
 				cb_descriptor->start_time);
-
-		i = fifo_ptr_add(i, 1, dev->fifo->entries);
-	} while (i != dev->fifo->head);
+	}
 }
 
 /* Return ntw if counter has overflowed */
@@ -1200,7 +1188,7 @@ static struct ice_network *__get_ntw_of_overflowed_cntr(int cntr_id,
 		evct_prot_reg.val = cve_os_read_idc_mmio(dev->cve_dev, reg);
 		if (evct_prot_reg.field.OVF) {
 			cve_os_log(CVE_LOGLEVEL_ERROR,
-			"Error: NTW_ID:%llu Counter:%x overflow\n",
+			"Error: NtwID:0x%llx Counter:%x overflow\n",
 			dg->base_addr_hw_cntr[cntr_id].network_id, cntr_id);
 			ntw = (struct ice_network *)
 				dg->base_addr_hw_cntr[cntr_id].network_id;
@@ -1310,8 +1298,7 @@ int cve_di_interrupt_handler(struct idc_device *idc_dev)
 		isr_status_node->valid = need_dpc;
 
 		project_hook_interrupt_handler_exit(cve_dev,
-				status_32,
-				cve_dev->fifo->is_final);
+				status_32);
 	}
 
 	head = ((head + 1) % IDC_ISR_BH_QUEUE_SZ);
@@ -1378,6 +1365,7 @@ void cve_di_interrupt_handler_deferred_proc(struct idc_device *dev)
 	enum cve_job_status job_status;
 	struct cve_device *cve_dev = NULL;
 	struct sub_job *sub_job;
+	struct di_fifo *fifo;
 
 	u32 head, tail;
 	struct dev_isr_status *isr_status_node;
@@ -1403,6 +1391,8 @@ void cve_di_interrupt_handler_deferred_proc(struct idc_device *dev)
 	}
 
 	__read_isr_q(dev, &idc_status, &ice_status, &tail);
+
+	atomic_set(&dev->status_q_tail, tail);
 
 	idc_err_status.val = idc_status;
 
@@ -1495,12 +1485,16 @@ void cve_di_interrupt_handler_deferred_proc(struct idc_device *dev)
 			continue;
 		}
 
+		fifo = &cve_dev->fifo_desc->fifo;
 
-		cb_descriptor =
-			&cve_dev->fifo->cb_desc_vaddr[cve_dev->fifo->tail];
-		cve_executed_cbs_time_log(cve_dev, &exec_time);
+		cb_descriptor = &fifo->cb_desc_vaddr[0];
 		job = get_desc_subjob(cb_descriptor)->parent;
+
+		/* Get the first CBD that was executed by this Job */
+		cb_descriptor = &fifo->cb_desc_vaddr[job->first_cb_desc];
 		sub_job = get_desc_subjob(cb_descriptor);
+
+		cve_executed_cbs_time_log(cve_dev, job, &exec_time);
 
 		if (is_tlc_bp_interrupt(status)) {
 			cve_os_dev_log(CVE_LOGLEVEL_ERROR,
@@ -1577,12 +1571,12 @@ void cve_di_interrupt_handler_deferred_proc(struct idc_device *dev)
 			}
 
 		} else {
-			if (ice_ds_is_network_active(cve_dev->last_network_id)
+			if (ice_ds_is_network_active(cve_dev->dev_network_id)
 					== 0) {
 				job_status = CVE_JOBSTATUS_ABORTED;
 				cve_os_log(CVE_LOGLEVEL_INFO,
-						"NTWID:0x%llx is not active\n",
-						cve_dev->last_network_id);
+						"NtwID:0x%llx is not active\n",
+						cve_dev->dev_network_id);
 			} else {
 				/* if job is entirely completed */
 				cve_os_log(CVE_LOGLEVEL_DEBUG,
@@ -1594,13 +1588,11 @@ void cve_di_interrupt_handler_deferred_proc(struct idc_device *dev)
 		}
 
 handle_interrupt_check_completion:
-		/* Make FIFO empty*/
-		fifo_set_empty(cve_dev->fifo);
 
 		cve_os_dev_log(CVE_LOGLEVEL_DEBUG,
 				cve_dev->dev_index,
-				"NTWID:0x%llx Block MMU transactions in Bottom Half\n",
-				cve_dev->last_network_id);
+				"NtwID:0x%llx Block MMU transactions in Bottom Half\n",
+				cve_dev->dev_network_id);
 		project_hook_interrupt_dpc_handler_entry(cve_dev);
 		mmu_transactions_wait_and_block(cve_dev);
 		project_hook_interrupt_dpc_handler_exit(cve_dev, status);
@@ -1612,7 +1604,6 @@ handle_interrupt_check_completion:
 				exec_time);
 	}
 
-	atomic_set(&dev->status_q_tail, tail);
 end:
 #ifdef RING3_VALIDATION
 	cve_os_log(CVE_LOGLEVEL_DEBUG, "Execute ICEs\n");
@@ -1622,175 +1613,50 @@ end:
 	cve_os_unlock(&g_cve_driver_biglock);
 }
 
-#else
-
-int cve_di_interrupt_handler(struct cve_device *cve_dev)
-{
-	int need_dpc;
-	u32 status;
-
-	project_hook_interrupt_handler_entry(cve_dev);
-
-	cve_os_log(CVE_LOGLEVEL_DEBUG,
-			"Recieved interrupt from device\n");
-
-	/* It's imperative to read the interrupt status word before
-	 * accessing memory that is shared between the device and the host,
-	 * e.g. the CB descriptors. failing to do that can result with
-	 * incoherent contents of memory
-	 */
-	status = cve_os_read_mmio_32(cve_dev,
-			CVE_MMIO_HUB_INTERRUPT_STATUS_MMOFFSET);
-
-
-	need_dpc = (status != 0);
-
-	project_hook_interrupt_handler_exit(cve_dev,
-			status,
-			cve_dev->fifo.is_final);
-	return need_dpc;
-}
-
-void cve_di_interrupt_handler_deferred_proc(struct cve_device *dev)
-{
-	u32 status;
-	struct di_job *job;
-	union cve_shared_cb_descriptor *cb_descriptor;
-	enum cve_job_status job_status;
-
-	cve_os_lock(&g_cve_driver_biglock, CVE_NON_INTERRUPTIBLE);
-
-	/* we might enter here with status 0
-	 * this is a valid situation.
-	 */
-	if (!status)
-		goto end;
-
-	if (dev->state == CVE_DEVICE_IDLE) {
-		cve_os_dev_log(CVE_LOGLEVEL_ERROR,
-			dev->dev_index,
-			"device IDLE interrupt out of context status= 0x%08x",
-			 status);
-		cve_di_set_device_reset_flag(dev, CVE_DI_RESET_DUE_CVE_ERROR);
-		goto end;
-	}
-
-
-	cb_descriptor = &dev->fifo.cb_desc_vaddr[dev->fifo.tail];
-	job = get_desc_subjob(cb_descriptor)->parent;
-	cve_executed_cbs_time_log(&dev);
-	/*If error detected and recovery enabled*/
-	if (is_cve_error(status)) {
-		job_status = CVE_JOBSTATUS_ABORTED;
-		cve_di_set_device_reset_flag(dev, CVE_DI_RESET_DUE_CVE_ERROR);
-		cve_os_dev_log(CVE_LOGLEVEL_ERROR,
-				dev->dev_index,
-				"It seems that some errors occurred\n");
-		cve_os_log(CVE_LOGLEVEL_ERROR,
-				"Interrupt Status = 0x%08x, TLC ERROR = %d, MMU Error = %d\n CB Completed = %d, Queue Empty = %d, Page Fault Error = %d\n Bus Error = %d WD Error =%d , BTRS Error = %d\n",
-				status,
-				is_tlc_error(status),
-				is_mmu_error(status),
-				is_cb_complete(status),
-				is_que_empty(status),
-				is_page_fault_error(status),
-				is_bus_error(status),
-				is_wd_error(status),
-				is_butress_error(status));
-		cve_print_mmio_regs(dev);
-
-
-		/* Signal dump was created */
-		if (dev->cve_dump_buf.is_allowed_tlc_dump == 1) {
-			dev->cve_dump_buf.is_cve_dump_on_error = 1;
-			cve_os_wakeup(&dev->cve_dump_buf.dump_wqs_que);
-		}
-		/* Don't allow TLC to further write to cve dump buffer */
-		dev->cve_dump_buf.is_allowed_tlc_dump = 0;
-		cve_di_set_cve_dump_control_register(dev);
-
-
-	} else { /* If previously dispatched CBs successfully completed*/
-		/* check if the network to which this job belongs
-		 * is still active?
-		 */
-		if (ice_ds_is_network_active(dev->last_network_id) == 0) {
-			job_status = CVE_JOBSTATUS_ABORTED;
-			cve_os_log(CVE_LOGLEVEL_INFO,
-					"NTWID:%llu is not active\n",
-					dev->last_network_id);
-		} else {
-			/* if job is entirely completed */
-			cve_os_log(CVE_LOGLEVEL_DEBUG,
-				"job completed\n");
-			job_status = CVE_JOBSTATUS_COMPLETED;
-		}
-	}
-
-	/* Make FIFO empty*/
-	fifo_set_empty(&dev->fifo);
-
-	cve_os_dev_log(CVE_LOGLEVEL_DEBUG,
-			dev->dev_index,
-			"Block MMU transactions in Bottom Half\n");
-	project_hook_interrupt_dpc_handler_entry(dev);
-	mmu_transactions_wait_and_block(dev);
-	project_hook_interrupt_dpc_handler_exit(dev, status);
-
-	/* notify the dispatcher */
-	cve_ds_handle_job_completion(dev,
-			job->ds_hjob,
-			job_status);
-
-end:
-	cve_os_unlock(&g_cve_driver_biglock);
-}
-
-#endif
-
 void cve_di_dispatch_job(struct cve_device *cve_dev,
 		cve_di_job_handle_t hjob,
-		cve_di_subjob_handle_t *e_cbs,
-		enum SCB_STATE scb_state)
+		cve_di_subjob_handle_t *e_cbs)
 {
 	struct di_job *job = (struct di_job *)hjob;
 
 	ASSERT(job->sub_jobs);
-	if (job->sub_jobs) {
-		if (e_cbs != NULL) {
-			/* Add the context switch embedded command buffer
-			 * to the list of subjobs. SCB, if any, will always
-			 * be executed in this case.
-			 */
-			add_embedded_cb_to_job(job,
-					e_cbs[GET_CB_INDEX(CVE_FW_CB1_TYPE)]);
 
-			cve_os_dev_log(CVE_LOGLEVEL_DEBUG,
-					cve_dev->dev_index,
-					"Embedded CB was added to job = 0x%p\n",
-					job);
-			job->next_subjob = 0;
-			job->remaining_subjobs_nr = job->subjobs_nr + 1;
+	if (e_cbs != NULL) {
+		/* Add the context switch embedded command buffer
+		 * to the list of subjobs. SCB, if any, will always
+		 * be executed in this case.
+		 * Can only be executed during Cold run.
+		 */
+		ASSERT(job->cold_run);
+
+		add_embedded_cb_to_job(job,
+				e_cbs[GET_CB_INDEX(CVE_FW_CB1_TYPE)]);
+
+		cve_os_dev_log(CVE_LOGLEVEL_DEBUG,
+				cve_dev->dev_index,
+				"Embedded CB was added to job = 0x%p\n",
+				job);
+		job->next_subjob = 0;
+		job->remaining_subjobs_nr = job->subjobs_nr + 1;
+	} else {
+		/* Can only be executed during Warm run */
+		ASSERT(!job->cold_run);
+
+		if (job->has_scb) {
+			job->next_subjob = 2;
+			job->remaining_subjobs_nr = job->subjobs_nr - 1;
+
+			if (!job->remaining_subjobs_nr)
+				return;
 		} else {
 			job->next_subjob = 1;
 			job->remaining_subjobs_nr = job->subjobs_nr;
-
-			if (scb_state == SCB_STATE_SKIP) {
-				job->next_subjob = 2;
-				job->remaining_subjobs_nr = job->subjobs_nr - 1;
-
-				/* If a Job had only SCB then it should
-				 * not be executed
-				 */
-				if (!job->remaining_subjobs_nr)
-					return;
-			}
 		}
-
-		job->dispatch_time_stamp = cve_os_get_time_stamp();
-
-		dispatch_next_subjobs(job, cve_dev);
 	}
+
+	job->dispatch_time_stamp = cve_os_get_time_stamp();
+
+	dispatch_next_subjobs(job, cve_dev);
 }
 
 void cve_di_set_page_directory_base_addr(struct cve_device *cve_dev,
@@ -1842,6 +1708,7 @@ int cve_di_handle_submit_job(
 	/* one per CB plus one more for embedded CB*/
 	job->allocated_subjobs_nr = command_buffers_nr + 1;
 	job->subjobs_nr = command_buffers_nr;
+	job->has_scb = 0;
 
 	/* allocate "sub_jobs": one per CB plus one more for embedded CB*/
 	retval = OS_ALLOC_ZERO(sizeof(struct sub_job)*job->allocated_subjobs_nr,
@@ -1884,6 +1751,12 @@ int cve_di_handle_submit_job(
 			cb_idx, sub_job_idx, kcb_descriptor[cb_idx].bufferid,
 			cve_vaddr, (uintptr_t)address, offset);
 
+		if ((cb_idx == 0) &&
+		 (buffer->surface_type == ICE_BUFFER_TYPE_DEEP_SRAM_CB)) {
+
+			job->has_scb = 1;
+		}
+
 		job->sub_jobs[sub_job_idx].cb.address =
 			((u32)cve_vaddr) + offset;
 		job->sub_jobs[sub_job_idx].cb.command_buffer = address;
@@ -1906,6 +1779,7 @@ int cve_di_handle_submit_job(
 	}
 
 	/* success */
+	job->cold_run = 1;
 	job->ds_hjob = ds_hjob;
 	*out_hjob = job;
 
@@ -1959,8 +1833,8 @@ void ice_di_reset_cbdt_cb_addr(struct cve_device *dev)
 	union cve_shared_cb_descriptor *cb_descriptor = NULL;
 	u32 i;
 
-	for (i = dev->fifo->tail; i < dev->fifo->head; i++) {
-		cb_descriptor = &dev->fifo->cb_desc_vaddr[i];
+	for (i = 0; i < dev->fifo_desc->fifo.entries; i++) {
+		cb_descriptor = &dev->fifo_desc->fifo.cb_desc_vaddr[i];
 		cb_descriptor->address = 0;
 	}
 }
@@ -1977,7 +1851,7 @@ int ice_di_is_network_under_execution(u64 ntw_id, struct cve_device_group *dg)
 		if (!dev)
 			continue;
 		do {
-			if (dev->last_network_id == ntw_id &&
+			if (dev->dev_network_id == ntw_id &&
 				dev->state == CVE_DEVICE_BUSY) {
 				count++;
 
@@ -1997,13 +1871,13 @@ u32 ice_di_get_icemask(struct idc_device *dev)
 	return ((cve_os_read_icemask(dev) >> 4) & VALID_ICE_MASK);
 }
 
-void ice_di_get_job_handle(struct cve_device *ice,
+void ice_di_get_job_handle(struct cve_device *dev,
 		cve_ds_job_handle_t *ds_job_handle)
 {
 	struct di_job *job;
 	union cve_shared_cb_descriptor *cb_descriptor;
 
-	cb_descriptor = &ice->fifo->cb_desc_vaddr[ice->fifo->tail];
+	cb_descriptor = &dev->fifo_desc->fifo.cb_desc_vaddr[0];
 	job = get_desc_subjob(cb_descriptor)->parent;
 	*ds_job_handle = job->ds_hjob;
 }
@@ -2031,5 +1905,12 @@ void ice_di_set_mmu_address_mode(struct cve_device *ice)
 		reg.field.ATU_WITH_LARGER_LINEAR_ADDRESS = 0x0;
 
 	cve_os_write_mmio_32(ice, offset_bytes, reg.val);
+}
+
+u8 ice_di_is_cold_run(cve_di_job_handle_t hjob)
+{
+	struct di_job *job = (struct di_job *)hjob;
+
+	return job->cold_run;
 }
 

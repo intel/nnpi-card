@@ -61,6 +61,12 @@
 struct cve_os_device *idc_os_device = NULL;
 #endif
 
+#ifdef ENABLE_SPH_STEP_B
+#define HW_FOLDER "ice_2.9_hw_m0"
+#else
+#define HW_FOLDER "ice_2.9_hw"
+#endif
+
 u32 g_icemask;
 u32 disable_embcb;
 u32 core_mask;
@@ -281,8 +287,7 @@ int cve_os_interface_init(void)
 				"WORKSPACE env variable is not set");
 			ASSERT(workspace == NULL);
 		}
-		strncpy(coral_default_config, workspace, sizeof(coral_default_config));
-		strcat(coral_default_config, "/release_artifacts/ice_2.9_hw/config");
+		snprintf(coral_default_config, sizeof(coral_default_config), "%s%s%s%s", workspace, "/release_artifacts/", HW_FOLDER, "/config");
 
 		if(coral_mode == NULL) {
 					strcat(coral_default_config, "/coral.cfg");
@@ -339,7 +344,6 @@ int cve_os_interface_init(void)
 	idc_os_device->dev = NULL;
 
 #ifdef IDC_ENABLE
-#ifdef NEXT_E2E
 	u64 *bar1_ptr = NULL;
 
 	bar1_ptr = (u64 *)coral_get_bar1_base();
@@ -351,7 +355,6 @@ int cve_os_interface_init(void)
 	cve_os_log(CVE_LOGLEVEL_DEBUG, "coral - bar1 address PA=0x%lx IAVA=0x%x\n",
 			idc_os_device->idc_dev.bar1_base_address,
 			(uintptr_t)bar1_ptr);
-#endif
 #endif
 
 	icemask_reg = ice_di_get_icemask(&idc_os_device->idc_dev);
@@ -1290,4 +1293,7 @@ int cve_sync_sgt_to_llc(struct sg_table *sgt)
 	return 0;
 }
 
-
+uint32_t get_process_pid(void)
+{
+	return getpid();
+}

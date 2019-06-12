@@ -122,7 +122,7 @@ static void dump(struct kmsg_dumper *dumper, enum kmsg_dump_reason reason)
 
 	if (host_dma_addr) {
 		rc = sphcs_dma_sched_start_xfer_single(g_the_sphcs->dmaSched,
-						       &g_dma_desc_c2h_high_nowait,
+						       &g_dma_desc_c2h_high,
 						       crash_dump_desc.card_dma_addr,
 						       host_dma_addr,
 						       crash_dump_desc.actually_copied,

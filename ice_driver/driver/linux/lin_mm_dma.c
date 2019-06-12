@@ -250,7 +250,6 @@ static int get_iova(cve_iova_allocator_handle_t allocator,
 			goto out;
 		}
 #ifdef IDC_ENABLE
-#ifdef NEXT_E2E
 		/* We are not claiming iova region for counters as it is not
 		 * in top 3 GB.
 		 * TBD: Move counters IOVA region to driver maintained space
@@ -260,7 +259,6 @@ static int get_iova(cve_iova_allocator_handle_t allocator,
 			retval = 0;
 			goto out;
 		}
-#endif
 #endif
 		retval = cve_iova_claim(allocator, iova, cve_pages_nr);
 		if (retval != 0) {
@@ -834,6 +832,9 @@ static int ice_osmm_release_iceva(struct lin_mm_allocation *alloc)
 	u8 pid = alloc->buf_meta_data.partition_id;
 	int retval = 0;
 
+	if (alloc->cve_vaddr == IDC_BAR1_COUNTERS_ADDRESS_START)
+		goto out;
+
 	for (i = 0; i < alloc->dma_domain_array_size; i++) {
 		struct cve_lin_mm_domain *domain =
 			(struct cve_lin_mm_domain *)alloc->hdomain[i];
@@ -849,6 +850,7 @@ static int ice_osmm_release_iceva(struct lin_mm_allocation *alloc)
 		}
 	}
 
+out:
 	alloc->cve_vaddr = 0;
 
 	return retval;
@@ -1235,7 +1237,7 @@ int cve_osmm_inf_dma_buf_map(u64 inf_id,
 	inf_alloc->size_bytes = ntw_alloc->size_bytes;
 	inf_alloc->actual_sz = ntw_alloc->actual_sz;
 	inf_alloc->buf_meta_data = ntw_alloc->buf_meta_data;
-	inf_alloc->mem_type = ntw_alloc->mem_type;
+	inf_alloc->mem_type = mem_type;
 	inf_alloc->cve_vaddr = ntw_alloc->cve_vaddr;
 	inf_alloc->page_sz = ntw_alloc->page_sz;
 	inf_alloc->page_shift = ntw_alloc->page_shift;

@@ -962,9 +962,97 @@ static ssize_t show_dso_filter(struct kobject *kobj,
 				struct kobj_attribute *attr,
 				char *buf)
 {
-	cve_os_log(CVE_LOGLEVEL_DEBUG, "Not supported\n");
+	int ret = 0;
+	u32 dev_index;
+	u8 reg_index = MAX_DSO_CONFIG_REG;
+	struct cve_device *ice_dev;
+	u32 value;
+	u16 croffset;
 
-	return 0;
+	ret = sscanf(kobj->name, "ice%d", &dev_index);
+	if (ret < 1) {
+		cve_os_log(CVE_LOGLEVEL_ERROR, "failed getting ice id %s\n",
+						kobj->name);
+		return -EFAULT;
+	}
+	if (dev_index >= NUM_ICE_UNIT) {
+		cve_os_log(CVE_LOGLEVEL_ERROR, "wrong ice id %d\n", dev_index);
+		return -EFAULT;
+	}
+
+	cve_os_log(CVE_LOGLEVEL_DEBUG, "ICE number %d\n", dev_index);
+	cve_os_log(CVE_LOGLEVEL_DEBUG, "attr: %s\n", attr->attr.name);
+
+	if (strcmp(attr->attr.name, "dtf_encoder_config") == 0) {
+		reg_index = DSO_DTF_ENCODER_CONFIG_REG_INDEX;
+	} else if (strcmp(attr->attr.name, "cfg_dtf_src_config") == 0) {
+		reg_index = DSO_CFG_DTF_SRC_CONFIG_REG_INDEX;
+	} else if (strcmp(attr->attr.name, "cfg_ptype_filter_ch0") == 0) {
+		reg_index = DSO_CFG_PTYPE_FILTER_CH0_REG_INDEX;
+	} else if (strcmp(attr->attr.name, "filter_match_low_ch0") == 0) {
+		reg_index = DSO_FILTER_MATCH_LOW_CH0_REG_INDEX;
+	} else if (strcmp(attr->attr.name, "filter_match_high_ch0") == 0) {
+		reg_index = DSO_FILTER_MATCH_HIGH_CH0_REG_INDEX;
+	} else if (strcmp(attr->attr.name, "filter_mask_low_ch0") == 0) {
+		reg_index = DSO_FILTER_MASK_LOW_CH0_REG_INDEX;
+	} else if (strcmp(attr->attr.name, "filter_mask_high_ch0") == 0) {
+		reg_index = DSO_FILTER_MASK_HIGH_CH0_REG_INDEX;
+	} else if (strcmp(attr->attr.name, "filter_inv_ch0") == 0) {
+		reg_index = DSO_FILTER_INV_CH0_REG_INDEX;
+	} else if (strcmp(attr->attr.name, "cfg_ptype_filter_ch1") == 0) {
+		reg_index = DSO_CFG_PTYPE_FILTER_CH1_REG_INDEX;
+	} else if (strcmp(attr->attr.name, "filter_match_low_ch1") == 0) {
+		reg_index = DSO_FILTER_MATCH_LOW_CH1_REG_INDEX;
+	} else if (strcmp(attr->attr.name, "filter_match_high_ch1") == 0) {
+		reg_index = DSO_FILTER_MATCH_HIGH_CH1_REG_INDEX;
+	} else if (strcmp(attr->attr.name, "filter_mask_low_ch1") == 0) {
+		reg_index = DSO_FILTER_MASK_LOW_CH1_REG_INDEX;
+	} else if (strcmp(attr->attr.name, "filter_mask_high_ch1") == 0) {
+		reg_index = DSO_FILTER_MASK_HIGH_CH1_REG_INDEX;
+	} else if (strcmp(attr->attr.name, "filter_inv_ch1") == 0) {
+		reg_index = DSO_FILTER_INV_CH1_REG_INDEX;
+	} else {
+		reg_index = MAX_DSO_CONFIG_REG;
+		cve_os_log(CVE_LOGLEVEL_ERROR, "bad filter param\n");
+	}
+
+	if (reg_index >= MAX_DSO_CONFIG_REG) {
+		cve_os_log(CVE_LOGLEVEL_ERROR, "bad dso reg index\n");
+		return -EINVAL;
+	}
+
+	ret = cve_os_lock(&g_cve_driver_biglock, CVE_INTERRUPTIBLE);
+	if (ret != 0)
+		return -ERESTARTSYS;
+
+	ice_dev = cve_device_get(dev_index);
+	if (!ice_dev) {
+		cve_os_log(CVE_LOGLEVEL_ERROR, "NULL ice_dev pointer\n");
+		ret = -ENODEV;
+		return ret;
+	}
+
+	croffset = ice_dev->dso.reg_offsets[reg_index].croffset;
+	value = ice_dev->dso.reg_vals[reg_index];
+
+	/* for DSO_CFG_DTF_SRC_CONFIG_REG ignore
+	 *30,31 bits value while reading
+	 */
+	if (croffset == dso_reg_offsets[1]
+		|| croffset == (dso_reg_offsets[1] | 0x4000)) {
+		value = value & 0x3fffffff;
+	}
+
+	cve_os_log(CVE_LOGLEVEL_DEBUG,
+			"DSO readback value 0x%x\n",
+			value);
+
+	ret += sprintf((buf + ret),
+			"0x%x\n",
+			value);
+	cve_os_unlock(&g_cve_driver_biglock);
+
+	return ret;
 }
 
 static ssize_t store_dso_filter(struct kobject *kobj,

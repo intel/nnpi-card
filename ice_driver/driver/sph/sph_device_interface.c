@@ -19,7 +19,6 @@
 	#include "coral.h"
 #else /* Ring0 platforms (Simics, FPGA and Sil) */
 	#include <linux/types.h>
-	#include <linux/reset.h>
 	#include <linux/delay.h>
 	#include <linux/log2.h>
 	#ifdef FPGA
@@ -53,6 +52,7 @@
 #include "TLC_command_formats_values_no_ifdef.h"
 #include "ice_trace.h"
 #include "cve_dump.h"
+#include "project_device_interface.h"
 
 #define ICE_CORE_BLOB_SIZE sizeof(cveCoreBlob_t)
 #define CVE_DUMP_BLOB_NR 1
@@ -79,12 +79,13 @@ inline void cve_decouple_debugger_reset(struct cve_device *cve_dev)
 #endif
 
 /* this variable will be updated in init_hw_revision */
-static struct hw_revision_t hw_rev_value;
-static int hw_rev_initialized;
-
-void get_hw_revision(struct cve_device *cve_dev, struct hw_revision_t *hw_rev)
+#ifndef ENABLE_SPH_STEP_B
+void get_hw_revision(struct cve_device *cve_dev,
+				struct hw_revision_t *hw_rev)
 {
 	u32 hw_rev_mmio_val;
+	static struct hw_revision_t hw_rev_value;
+	static int hw_rev_initialized;
 
 	if (!hw_rev_initialized) {
 		hw_rev_mmio_val = cve_os_read_mmio_32(cve_dev,
@@ -101,7 +102,15 @@ void get_hw_revision(struct cve_device *cve_dev, struct hw_revision_t *hw_rev)
 	hw_rev->major_rev = hw_rev_value.major_rev;
 	hw_rev->minor_rev = hw_rev_value.minor_rev;
 }
+#else
+void get_hw_revision(struct cve_device *cve_dev,
+				struct hw_revision_t *hw_rev)
+{
+	hw_rev->major_rev = 0;
+	hw_rev->minor_rev = 0;
+}
 
+#endif
 int is_wd_error(u32 status)
 {
 	if (!enable_wdt_debugfs)
@@ -109,6 +118,21 @@ int is_wd_error(u32 status)
 	return ((status &
 	MMIO_HUB_MEM_INTERRUPT_STATUS_INTERNAL_CVE_WATCHDOG_INTERRUPT_MASK)
 	!= 0);
+}
+
+static void configure_axi_max_inflight(struct cve_device *cve_dev)
+{
+	union CVE_DSE_MEM_AXI_MAX_INFLIGHT_t axi_inflight;
+
+	axi_inflight.val = 0;
+	axi_inflight.field.AXI_MAX_WRITE_INFLIGHT =
+		AXI_MAX_INFLIGHT_WRITE_TRANSACTION;
+	axi_inflight.field.AXI_MAX_READ_INFLIGHT =
+		AXI_MAX_INFLIGHT_READ_TRANSACTION;
+
+	cve_os_write_mmio_32(cve_dev,
+		CVE_DSE_BASE + CVE_DSE_AXI_MAX_INFLIGHT_MMOFFSET,
+		axi_inflight.val);
 }
 
 static void configure_dtf(struct cve_device *cve_dev)
@@ -394,6 +418,11 @@ int do_reset_device(struct cve_device *cve_dev, uint8_t idc_reset)
 	ice_restore_trace_hw_regs(cve_dev);
 #endif
 
+	/* TODO: This is SW workaround for HW bug. To be removed.
+	 * https://jira.devtools.intel.com/browse/ICE-14586
+	 */
+	configure_axi_max_inflight(cve_dev);
+
 	configure_dtf(cve_dev);
 
 	/* configure the LLC after reset */
@@ -480,7 +509,7 @@ void cleanup_platform_data(struct cve_device *cve_dev)
 }
 
 void project_hook_interrupt_handler_exit(struct cve_device *cve_dev,
-		u32 status, bool is_last_cb)
+		u32 status)
 {
 	union MMIO_HUB_MEM_CVE_CONFIG_t cve_config;
 

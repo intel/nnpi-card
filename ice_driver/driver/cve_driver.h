@@ -301,6 +301,7 @@ struct ice_network_descriptor {
 	enum icebo_req_type icebo_req;
 	__u8 shared_read;
 	__u8 max_shared_distance;
+	__u32 infer_buf_count;
 };
 
 struct ice_infer_descriptor {
@@ -453,10 +454,14 @@ struct cve_get_event {
 #define KMD_NUM_ICE 12
 	/*in, timeout in milliseconds */
 	__u32 timeout_msec;
+	/* in, id of the context */
+	__u64 contextid;
+	/*in, id of the network */
+	__u64 networkid;
 	/* out, wait status*/
 	enum cve_wait_event_status wait_status;
-	/* out, jobs group id */
-	__u64 jobs_group_id;
+	/* in/out, inference id */
+	__u64 infer_id;
 	/*out, job status*/
 	enum cve_jobs_group_status jobs_group_status;
 	/* out, user data*/

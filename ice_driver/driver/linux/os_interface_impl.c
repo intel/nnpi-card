@@ -253,6 +253,10 @@ u32 cve_os_cve_devices_nr(void)
 #endif
 }
 
+uint32_t get_process_pid(void)
+{
+	return current->pid;
+}
 int cve_os_interface_init(void)
 {
 	FUNC_ENTER();

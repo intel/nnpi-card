@@ -53,16 +53,6 @@ enum ICEDC_DEVICE_STATE {
 	ICEDC_STATE_CARD_RESET_REQUIRED
 };
 
-/* Action required on SCB (Special CB) */
-enum SCB_STATE {
-	/* SCB is not present */
-	SCB_STATE_ABSENT,
-	/* SCB is present and has to be executed */
-	SCB_STATE_RUN,
-	/* SCB is present but should not be executed */
-	SCB_STATE_SKIP
-};
-
 /* States of ICEBO */
 enum ICEBO_STATE {
 	/* Zero ICE available for NTW */
@@ -177,8 +167,8 @@ struct cve_device {
 	struct cve_dle_t poweroff_list;
 	/* Timestamp of when Power Off request was raised */
 	struct timespec poweroff_ts;
-	/* Pointer to FIFO of current Network */
-	struct di_fifo *fifo;
+	/* Pointer to FIFO Descriptor of current Network */
+	struct fifo_descriptor *fifo_desc;
 	struct di_cve_dump_buffer cve_dump_buf;
 	/* ice dump buffer descriptor - for GET_ICE_DUMP_NOW debug control*/
 	struct di_cve_dump_buffer debug_control_buf;
@@ -194,26 +184,17 @@ struct cve_device {
 	enum CVE_DEVICE_STATE state;
 	/* power state of device */
 	enum ICE_POWER_STATE power_state;
-	/* last context id that ran on this device */
-	cve_context_id_t last_context_id;
 	/* last network id that ran on this device */
-	cve_network_id_t last_network_id;
+	cve_network_id_t dev_network_id;
 	/* are hw counters enabled */
 	u32 is_hw_counters_enabled;
 	/* copy of DTF registers to maintain during device reset */
 	u32 dtf_regs_data[DTF_REGS_DATA_ARRAY_SIZE];
 	bool dtf_sem_bit_acquired;
-#ifdef IDC_ENABLE
 #ifdef NEXT_E2E
 	struct cve_dma_handle bar1_dma_handle;
 	cve_mm_allocation_t bar1_alloc_handle;
 #endif
-	/*
-	 * In case of persistent NW an ICE is linked to one NW
-	 * If (pnetwork_id != 0) then this ICE will be allocated
-	 * to the Jobs of only given NW
-	 */
-	u64 pnetwork_id;
 	struct ice_dso_regs_data dso;
 	struct ice_read_daemon_config daemon;
 	struct ice_observer_config observer;
@@ -221,7 +202,6 @@ struct cve_device {
 	 *evolve with debug code maturity
 	 */
 	struct ice_perf_counter_config perf_counter;
-#endif
 
 #ifndef RING3_VALIDATION
 	/* SW Counter handle */
@@ -325,22 +305,8 @@ struct cve_hw_cntr_descriptor {
 	u16 hw_cntr_id;
 	/* Counter ID assigned by graph */
 	u16 graph_cntr_id;
-	/* list of jobgroup
-	 * required to handle counter
-	 * release after each JG completion
-	 */
-	struct cve_cntr_jg *jg_list;
 	/* network ID to which this Counter is attached */
 	u64 network_id;
-	/* refcount used for counter sharing */
-	u16 ref_count;
-};
-
-/* holds the reference of a jobgroup */
-struct cve_cntr_jg {
-	/* links to the jobgroups associated with a particular counter */
-	struct cve_dle_t list;
-	struct jobgroup_descriptor *jg;
 };
 
 enum cve_workqueue_state {
@@ -387,8 +353,8 @@ struct job_descriptor {
 	struct cve_allocation_descriptor *cve_alloc_desc;
 	/* Graph ICE Id */
 	u8 graph_ice_id;
-	/* To indicate if SCB is present and should be executed or skipped */
-	enum SCB_STATE scb_state;
+	/* Hw ICE Id. Actual ICE allocated by Driver */
+	u8 hw_ice_id;
 	/* total counters patch point
 	 * of all the jobs within this job
 	 */
@@ -422,15 +388,8 @@ struct jobgroup_descriptor {
 	struct job_descriptor *next_dispatch;
 	/* total job in this job group */
 	u32 total_jobs;
-	/* enable the flag if the JG is scheduled */
-	uint8_t scheduled;
-	/* enable the flag if the JG is completed */
-	uint8_t completed;
-
 	/* submitted jobs number */
 	u32 submitted_jobs_nr;
-	/* dispatched jobs number */
-	u32 dispatched_jobs_nr;
 	/* completed/aborted jobs number */
 	u32 ended_jobs_nr;
 	/* aborted jobs number */
@@ -438,17 +397,6 @@ struct jobgroup_descriptor {
 
 	/* Completion event required*/
 	u32 produce_completion;
-
-	/* array of pointers to jobgroups that this jobgroup
-	 * depends on
-	 */
-	struct jobgroup_descriptor **dependencies;
-
-	/* number of dependencies */
-	u32 dependencies_nr;
-
-	/* ref count for total active dependencies */
-	u32 cur_dep_count;
 
 	/* available llc size requested
 	 * in order to run this jobgroup.
@@ -460,10 +408,6 @@ struct jobgroup_descriptor {
 
 	/* Bit number indicates if that counter is being used */
 	u32 cntr_bitmap;
-
-	/* number of current cves executing this jobgroup. */
-	u32 exe_num_of_cves;
-
 };
 
 /* hold information about a counter patch point */
@@ -498,7 +442,6 @@ struct ntw_pjob_info {
 	 * persistent jobs that are to be executed on this ICE
 	 */
 	u32 num_pjob[MAX_CVE_DEVICES_NR];
-	u32 num_pjob_remaining[MAX_CVE_DEVICES_NR];
 	/* picebo[N] is 1 only if both the ICE of ICEBOn
 	 * belongs to this NTW
 	 */
@@ -549,9 +492,6 @@ enum ntw_exe_status {
 
 /* hold information about a network */
 struct ice_network {
-	/* a monotonic id for reference count */
-	u64 id;
-
 	/* stores a reference to self, should always be first member */
 	u64 network_id;
 
@@ -583,12 +523,6 @@ struct ice_network {
 	/* number of job group in the network*/
 	u32 num_jg;
 
-	/* number of job group executed*/
-	u32 num_jg_completed;
-
-	/* number of job group scheduled*/
-	u32 num_jg_scheduled;
-
 	/* list of job groups within the network */
 	struct jobgroup_descriptor *jg_list;
 
@@ -608,7 +542,6 @@ struct ice_network {
 	u32 cntr_bitmap;
 	/****/
 	u8 has_resource;
-	u8 num_ice_idle;
 	struct cve_device *ice_list;
 	struct cve_hw_cntr_descriptor *cntr_list;
 	/******/
@@ -626,10 +559,6 @@ struct ice_network {
 	/* SW Counter handle */
 	void *hswc;
 #endif
-	/* set to true when atleast 1 job within the network has been
-	 * scheduled
-	 */
-	u8 scheduled;
 
 	/* Flag, set to true if deletion is initiated */
 	uint8_t abort_ntw;
@@ -680,6 +609,10 @@ struct ice_network {
 	struct ice_infer *inf_list;
 	struct ice_infer *inf_exe_list;
 	enum ntw_exe_status exe_status;
+
+	/* Array of indexes corresponding to inference buffer */
+	u64 *infer_idx_list;
+	u32 infer_buf_count;
 };
 
 enum inf_exe_status {
@@ -711,6 +644,10 @@ struct ice_infer {
 	enum inf_exe_status exe_status;
 	/* Infer specific handle for PT info */
 	void *inf_hdom;
+	/* events wait queue - signaled when new event object added */
+	cve_os_wait_que_t events_wait_queue;
+	/* list of available event nodes */
+	struct cve_completion_event *infer_events;
 };
 
 /* hold information about user buffer allocation (surface or cb) */
@@ -784,17 +721,25 @@ struct cve_context_process {
 	cve_context_process_id_t context_pid;
 	/* cyclic list to contexts */
 	struct ds_context *list_contexts;
-	/* events wait queue - signaled when new event object created */
+	/* events wait queue - signaled when new event object added */
 	cve_os_wait_que_t events_wait_queue;
-	/* list of completion events*/
+	/* list of available event nodes */
 	struct cve_completion_event *events;
+	/* list of allocated event nodes */
+	struct cve_completion_event *alloc_events;
 };
 
 struct cve_completion_event {
-	/* list element */
-	struct cve_dle_t list;
-	/* jobs group id */
-	u64 jobs_group_id;
+	/* list of empty event nodes */
+	struct cve_dle_t main_list;
+	/* list of allocated event nodes */
+	struct cve_dle_t sub_list;
+	/* inference list of allocated event nodes */
+	struct cve_dle_t infer_list;
+	/* inference id */
+	u64 infer_id;
+	/* network id*/
+	u64 ntw_id;
 	/* job status*/
 	enum cve_jobs_group_status jobs_group_status;
 	/* user data*/

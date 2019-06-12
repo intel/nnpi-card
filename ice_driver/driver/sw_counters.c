@@ -26,6 +26,7 @@
 #include <linux/file.h>
 #include <linux/fs.h>
 #include <linux/spinlock.h>
+#include <linux/mutex.h>
 #include <linux/anon_inodes.h>
 #include <linux/uaccess.h>
 #include <linux/fcntl.h>
@@ -104,6 +105,7 @@ struct sph_internal_sw_counters {
 	const struct sph_sw_counters_set		*counters_set;
 	struct list_head				children_List;
 	struct list_head				kobject_list;
+	struct mutex					list_lock;
 	u64						*dirty;
 	struct sph_internal_sw_counters			*info_node;
 	struct sph_sw_counters				sw_counters;
@@ -229,7 +231,6 @@ static ssize_t read_sph_counter_bin_values(struct file *f,
 					   size_t count)
 {
 	ssize_t ret;
-	u64 *ptr;
 
 	struct sph_sw_counters_bin_file_attr *counters_att = (struct sph_sw_counters_bin_file_attr *)attr;
 
@@ -241,8 +242,6 @@ static ssize_t read_sph_counter_bin_values(struct file *f,
 					      &offset,
 					      page_address(counters_att->bin_page),
 					      counters_att->page_count * PAGE_SIZE);
-
-	ptr = (u64 *)buf;
 	return ret;
 }
 
@@ -257,23 +256,19 @@ ssize_t read_counters_descriptor(struct file *file,
 	struct sph_sw_counters_bin_file_attr *counters_att = (struct sph_sw_counters_bin_file_attr *)attr;
 
 	/* check for minimum value - buffer length or requested count */
-
-	count = min((u32)(counters_att->info_size), (u32)(pos + count)) - (u32)pos;
+	count = min((u32)(counters_att->info_size - (u32)pos), (u32)count);
 
 	/* copy output to buffer */
-	memcpy(buf,
-	       counters_att->info_buf + pos,
-	       count);
-
+	memcpy(buf, counters_att->info_buf + pos, count);
 
 	return count;
 }
 
 /* set counter groups to enable for sph_internal_sw_counters */
 static ssize_t store_sph_sw_counters_group_enable(struct kobject *kobj,
-					    struct attribute *attr,
-					    const char *buf,
-					    size_t count)
+						  struct attribute *attr,
+						  const char *buf,
+						  size_t count)
 {
 	struct sph_sw_counters_group_file_attr *counters_att = (struct sph_sw_counters_group_file_attr *)attr;
 	u32 val;
@@ -296,8 +291,8 @@ sph_counters_bad_input:
 
 /* set counter groups to enable for sph_internal_sw_counters */
 static ssize_t  show_sph_sw_counters_group_enable(struct kobject *kobj,
-					    struct attribute *attr,
-					    char *buf)
+						  struct attribute *attr,
+						  char *buf)
 {
 	struct sph_sw_counters_group_file_attr *counters_att = (struct sph_sw_counters_group_file_attr *)attr;
 
@@ -394,7 +389,7 @@ static void move_to_stale_list(struct gen_sync_attr                 *gen_sync,
 		goto fail_alloc;
 
 	stale_node->kobj = kobject_get(kobj);
-	memcpy(&stale_node->bin_file, attr, sizeof(*stale_node));
+	memcpy(&stale_node->bin_file, attr, sizeof(struct sph_sw_counters_bin_file_attr));
 
 	spin_lock(&gen_sync->lock);
 	if (++gen_sync->stale_seq == 0)
@@ -483,9 +478,8 @@ static int create_group_files(struct kobject *kobj,
 		sw_counters->groups_files[i].enable = &(buffer[i]);
 
 		ret = create_sph_file(sw_counters->groups_kobj, (struct attribute *)&sw_counters->groups_files[i]);
-		if (ret) {
+		if (unlikely(ret < 0)) {
 			sw_counters_log_err("unable to create group %s file for groups\n", sw_counters->counters_set->groups_info[i].name);
-			ret = -EINVAL;
 			goto failed_to_create_file;
 		}
 
@@ -529,10 +523,12 @@ static void client_refresh_dirty_updated(struct gen_sync_attr *gen_sync)
 		struct sync_client *client;
 		u64 min_dirty_val = U64_MAX;
 
+		spin_lock(&gen_sync->lock);
 		list_for_each_entry(client, &gen_sync->sync_clients, node) {
 			if (client->last_refresh_dirty < min_dirty_val)
 				min_dirty_val = client->last_refresh_dirty;
 		}
+		spin_unlock(&gen_sync->lock);
 
 		if (min_dirty_val > gen_sync->last_remove_dirty_val) {
 			remove_stale_bin_files(gen_sync, min_dirty_val, false);
@@ -597,7 +593,6 @@ static ssize_t  show_gen_sync(struct kobject *kobj,
 	if (!client)
 		goto done;
 
-	INIT_LIST_HEAD(&client->node);
 	client->gen_sync = gen_sync;
 
 	fd = anon_inode_getfd("sph_counters_gen_sync",
@@ -678,7 +673,8 @@ int sph_create_sw_counters_info_node(struct kobject *kobj,
 
 		if (!module) {
 			sw_counters_log_err("Could not retrieve module owner!\n");
-			return -EINVAL;
+			ret = -EINVAL;
+			goto cleanup_sw_counters_info;
 		}
 
 		kobj =  &module->mkobj.kobj;
@@ -705,9 +701,14 @@ int sph_create_sw_counters_info_node(struct kobject *kobj,
 	if (sw_counters_info->parent)
 		sw_counters_info->gen_sync_attr =
 			sw_counters_info->parent->gen_sync_attr;
-	else
-		sw_counters_info->gen_sync_attr =
-			create_gen_sync_attr(kobj);
+	else {
+		sw_counters_info->gen_sync_attr = create_gen_sync_attr(kobj);
+		if (sw_counters_info->gen_sync_attr == NULL) {
+			sw_counters_log_err("failed to create sync attr\n");
+			ret = -ENOMEM;
+			goto cleanup_sw_counters_info;
+		}
+	}
 
 	/* define counters info - this is a readonly binary file */
 	/* in case of counters set input as perID info file name will end with .perID */
@@ -758,11 +759,14 @@ int sph_create_sw_counters_info_node(struct kobject *kobj,
 
 	/* initialize global list of buffer of sw_counters_info children */
 	INIT_LIST_HEAD(&sw_counters_info->children_List);
+	mutex_init(&sw_counters_info->list_lock);
 
 	/* in case this is not a root node - we need to register this node for it's parent */
 	if (sw_counters_info->parent) {
+		mutex_lock(&sw_counters_info->parent->list_lock);
 		list_add_tail(&sw_counters_info->node,
 			      &sw_counters_info->parent->children_List);
+		mutex_unlock(&sw_counters_info->parent->list_lock);
 	}
 
 	*hNewInfo = (void *)sw_counters_info;
@@ -785,6 +789,8 @@ cleanup_sw_counters_bin_file:
 cleanup_sw_counters_description_data:
 	kfree(sw_counters_info->bin_file.info_buf);
 cleanup_sw_counters_kobj:
+	if (!sw_counters_info->parent)
+		kfree(sw_counters_info->gen_sync_attr);
 	if (sw_counters_info->kobj_owner)
 		kobject_put(sw_counters_info->kobj);
 cleanup_sw_counters_info:
@@ -799,14 +805,9 @@ int sph_remove_sw_counters_info_node(void *hInfoNode)
 	struct sph_internal_sw_counters *tmp_sw_counters_info = sw_counters_info;
 
 	if (sw_counters_info->parent) {
-		struct sph_internal_sw_counters *cntNode, *tmpCntNode;
-
-		/* search if description buffer was already allocated */
-		list_for_each_entry_safe(cntNode, tmpCntNode, &sw_counters_info->parent->children_List, node) {
-			if (cntNode == sw_counters_info)
-				list_del(&cntNode->node);
-		}
-
+		mutex_lock(&sw_counters_info->parent->list_lock);
+		list_del(&sw_counters_info->node);
+		mutex_unlock(&sw_counters_info->parent->list_lock);
 	}
 
 	remove_group_files(sw_counters_info);
@@ -835,6 +836,7 @@ int sph_remove_sw_counters_info_node(void *hInfoNode)
 	}
 
 
+	mutex_destroy(&sw_counters_info->list_lock);
 	kfree(sw_counters_info);
 
 	return 0;
@@ -882,26 +884,29 @@ int sph_create_sw_counters_values_node(void *hInfoNode,
 
 		if (sw_counters_values->parent->kobj_owner) {
 			kobj = NULL;
+			mutex_lock(&sw_counters_values->parent->list_lock);
 			list_for_each_entry(kobj_node, &sw_counters_values->parent->kobject_list, node) {
 				if (strcmp(kobj_node->kobj->name, sw_counters_info->counters_set->name) == 0) {
 					kobj = kobj_node->kobj;
 					break;
 				}
 			}
+			mutex_unlock(&sw_counters_values->parent->list_lock);
 
 			/* in case it was not allocated before (new instance of info node)- we will create required directory */
 			if (!kobj) {
 				struct kobj_node *new_kobj = kzalloc(sizeof(*new_kobj), GFP_KERNEL);
 				const char *name = sw_counters_info->counters_set->name;
 
-				INIT_LIST_HEAD(&new_kobj->node);
 				new_kobj->kobj = kobject_create_and_add(name, kobj);
 				if (!new_kobj->kobj) {
 					sw_counters_log_err("unable to create dirname for counters values - %s\n", name);
 					ret = -ENOMEM;
 					goto cleanup_sw_counters_values;
 				}
+				mutex_lock(&sw_counters_values->parent->list_lock);
 				list_add_tail(&new_kobj->node, &sw_counters_values->parent->kobject_list);
+				mutex_unlock(&sw_counters_values->parent->list_lock);
 				kobj = new_kobj->kobj;
 			}
 		}
@@ -998,24 +1003,32 @@ int sph_create_sw_counters_values_node(void *hInfoNode,
 	}
 
 	/* initialize global list of buffer descriptions */
-	INIT_LIST_HEAD(&sw_counters_values->children_List);
 	INIT_LIST_HEAD(&sw_counters_values->kobject_list);
+	mutex_init(&sw_counters_values->list_lock);
 
 	/* in case this is a new counter set perID driver will allocate all required directories set in info file */
 	if (sw_counters_info->counters_set->perID) {
 		struct sph_internal_sw_counters *infoNode;
 
+		mutex_lock(&sw_counters_info->list_lock);
 		list_for_each_entry(infoNode, &sw_counters_info->children_List, node) {
-			struct kobj_node *new_kobj = kzalloc(sizeof(*new_kobj), GFP_KERNEL);
 			const char *name = infoNode->counters_set->name;
+			struct kobj_node *new_kobj = kzalloc(sizeof(*new_kobj), GFP_KERNEL);
 
-			INIT_LIST_HEAD(&new_kobj->node);
+			if (new_kobj == NULL) {
+				sw_counters_log_err("unable to allocate memory for new_kobj\n");
+				ret = -ENOMEM;
+				mutex_unlock(&sw_counters_info->list_lock);
+				goto cleanup_sw_counters_children_kobject_list;
+			}
+
 			new_kobj->kobj = kobject_create_and_add(name, kobj);
+			mutex_lock(&sw_counters_values->list_lock);
 			list_add_tail(&new_kobj->node, &sw_counters_values->kobject_list);
+			mutex_unlock(&sw_counters_values->list_lock);
 		}
+		mutex_unlock(&sw_counters_info->list_lock);
 	}
-
-
 
 	/* set counters values, in case of global counters we save the first value for updates in case of new object*/
 	sw_counters_values->sw_counters.values = ((u64 *)page_address(sw_counters_values->bin_file.bin_page));
@@ -1034,20 +1047,18 @@ int sph_create_sw_counters_values_node(void *hInfoNode,
 	}
 
 
-	/* add to new node to parent node */
-	if (sw_counters_values->parent) {
-		INIT_LIST_HEAD(&sw_counters_values->node);
-		list_add_tail(&sw_counters_values->node,
-			      &sw_counters_values->parent->children_List);
-	}
-
-
 	/* initialize spinlocks for atomic counters update */
 	n = counters_size / SPH_COUNTER_SIZE;
 	if (n > 0) {
 		sw_counters_values->sw_counters.spinlocks = kmalloc_array(n,
 									  sizeof(spinlock_t),
 									  GFP_KERNEL);
+		if (sw_counters_values->sw_counters.spinlocks == NULL) {
+			sw_counters_log_err("unable to allocate memory for spinlocks\n");
+			ret = -ENOMEM;
+			goto cleanup_sw_counters_children_kobject_list;
+		}
+
 		do {
 			n--;
 			spin_lock_init(&sw_counters_values->sw_counters.spinlocks[n]);
@@ -1068,6 +1079,20 @@ int sph_create_sw_counters_values_node(void *hInfoNode,
 
 
 	return 0;
+
+cleanup_sw_counters_children_kobject_list:
+if (sw_counters_info->counters_set->perID) {
+	struct kobj_node *kobjNode;
+	/* cleanup child directories*/
+	mutex_lock(&sw_counters_values->list_lock);
+	while (!list_empty(&sw_counters_values->kobject_list)) {
+		kobjNode = list_first_entry(&sw_counters_values->kobject_list, struct kobj_node, node);
+		list_del(&kobjNode->node);
+		kobject_put(kobjNode->kobj);
+		kfree(kobjNode);
+	}
+	mutex_unlock(&sw_counters_values->list_lock);
+}
 cleanup_sw_counters_groups_buffer:
 	kfree(sw_counters_values->sw_counters.groups);
 cleanup_sw_counters_bin_file:
@@ -1088,32 +1113,27 @@ int sph_sw_counters_release_values_node(struct sph_internal_sw_counters *sw_coun
 {
 	bool bGroupsOwner = (sw_counters_values->groups_kobj != NULL);
 	struct sph_internal_sw_counters *tmp_sw_counters_values = sw_counters_values;
-	struct kobj_node *kobjNode, *tmpKobjNode;
+	struct kobj_node *kobjNode;
 	u64 root_dirty = 0;
 
-	if (sw_counters_values->parent) {
-		struct sph_internal_sw_counters *cntNode, *tmpCntNode;
-
-		/* search if description buffer was already allocated */
-		list_for_each_entry_safe(cntNode, tmpCntNode, &sw_counters_values->parent->children_List, node) {
-			if (cntNode == sw_counters_values)
-				list_del(&cntNode->node);
-		}
-	}
-
 	/* cleanup child directories*/
-	list_for_each_entry_safe(kobjNode, tmpKobjNode, &sw_counters_values->kobject_list, node) {
+	mutex_lock(&sw_counters_values->list_lock);
+	while (!list_empty(&sw_counters_values->kobject_list)) {
+		kobjNode = list_first_entry(&sw_counters_values->kobject_list,
+					    struct kobj_node, node);
 		list_del(&kobjNode->node);
 		kobject_put(kobjNode->kobj);
 		kfree(kobjNode);
 	}
+	mutex_unlock(&sw_counters_values->list_lock);
 
 
 	/* once new object was deleted we will update node to root */
-	while (tmp_sw_counters_values != NULL) {
-		root_dirty = ++(*tmp_sw_counters_values->dirty);
+	while (tmp_sw_counters_values->parent != NULL) {
+		++(*tmp_sw_counters_values->dirty);
 		tmp_sw_counters_values = tmp_sw_counters_values->parent;
 	}
+	root_dirty = ++(*tmp_sw_counters_values->dirty);
 
 
 
@@ -1151,6 +1171,7 @@ int sph_sw_counters_release_values_node(struct sph_internal_sw_counters *sw_coun
 
 	kfree(sw_counters_values->sw_counters.spinlocks);
 
+	mutex_destroy(&sw_counters_values->list_lock);
 	kfree(sw_counters_values);
 
 	return 0;
@@ -1169,3 +1190,4 @@ int sph_remove_sw_counters_values_node(struct sph_sw_counters *counters)
 
 	return 0;
 }
+

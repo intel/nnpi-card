@@ -57,6 +57,8 @@ struct allocation_desc {
 	bool is_mapped;
 	/* IOVA descriptor */
 	struct ice_iova_desc iova_desc;
+	/* Type of Memory i.e. Kernel/User/Shared/Infer */
+	enum osmm_memory_type mem_type;
 };
 
 struct inf_domain {
@@ -160,6 +162,7 @@ static int create_new_allocation(
 
 	alloc->size_bytes = size_bytes;
 	alloc->direction = direction;
+	alloc->mem_type = alloc_type;
 	/* dirty cache/dram flags are currently for user buffs only */
 	alloc->dirty_cache = 0;
 	alloc->dirty_dram = 0;
@@ -186,15 +189,11 @@ out:
 void cve_mm_reclaim_allocation(cve_mm_allocation_t halloc)
 {
 	struct allocation_desc *alloc = (struct allocation_desc *)halloc;
-	enum osmm_memory_type alloc_type = OSMM_UNKNOWN_MEM_TYPE;
 
 	if (alloc == NULL)
 		return;
 
-	if (!alloc->fd && !alloc->vaddr)
-		alloc_type = OSMM_INFER_MEMORY;
-
-	cve_osmm_dma_buf_unmap(alloc->halloc, alloc_type);
+	cve_osmm_dma_buf_unmap(alloc->halloc, alloc->mem_type);
 
 	OS_FREE(alloc, sizeof(*alloc));
 }
@@ -266,18 +265,6 @@ int cve_mm_sync_mem_to_host(cve_mm_allocation_t halloc,
 
 out:
 	return retval;
-}
-
-void cve_mm_invalidate_tlb(os_domain_handle hdom,
-	struct cve_device *cve_dev)
-{
-	/* if pages were added to the page table and the
-	 * driver settings requires tlb invalidation.
-	 * do tlb invalidation and clear the pages added flag.
-	 */
-	if (cve_osmm_is_need_tlb_invalidation(hdom))
-		/* flush the tlb */
-		cve_di_tlb_flush_full(cve_dev);
 }
 
 void cve_mm_reset_page_table_flags(os_domain_handle hdom)
@@ -542,6 +529,7 @@ int cve_mm_create_infer_buffer(
 	 * to shared and set the propriatery print
 	 */
 	if (!inf_buf->fd && !inf_buf->base_address) {
+		retval = -EINVAL;
 		ASSERT(false);
 		goto out;
 	} else if (inf_buf->fd) {
@@ -952,8 +940,8 @@ static void __calc_cntr_va(struct jobgroup_descriptor *jobgroup,
 	/* Guaranteed that all required counters are mapped */
 	j = jobgroup->network->cntr_info.cntr_id_map[pp_desc->cntr_id];
 	cve_os_log(CVE_LOGLEVEL_DEBUG,
-		"CntrSwID=%u already Mapped to CntrHwID=%u. NtwID=%lx\n",
-		pp_desc->cntr_id, j, (uintptr_t)jobgroup->network);
+		"CntrSwID=%u already Mapped to CntrHwID=%u. NtwID:0x%llx\n",
+		pp_desc->cntr_id, j, jobgroup->network->network_id);
 
 	if (pp_desc->patch_point_type ==
 				ICE_PP_TYPE_CNTR_SET) {
@@ -971,12 +959,12 @@ static void __calc_cntr_va(struct jobgroup_descriptor *jobgroup,
 		base_surf_va = IDC_BAR1_COUNTERS_NOTI_ADDR;
 		if (ice_is_soc())
 			base_surf_va += (dev->dev_index % 2) ?
-					IDC_BAR1_ICE_REGION_SPILL_SZ : 0;
+				IDC_BAR1_ICE_REGION_SPILL_SZ : 0;
 	} else {
 		base_surf_va = cve_start_address + (increase_value * j);
 		if (ice_is_soc())
 			base_surf_va += (dev->dev_index % 2) ?
-					IDC_BAR1_ICE_REGION_SPILL_SZ : 0;
+				IDC_BAR1_ICE_REGION_SPILL_SZ : 0;
 	}
 
 	__calc_pp_va(base_surf_va, 0, pp_desc, surf_ice_va);

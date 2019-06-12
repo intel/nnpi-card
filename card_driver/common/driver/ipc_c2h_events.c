@@ -97,6 +97,10 @@ const char *event_code_name(u32 eventCode)
 		return "RECOVER_CONTEXT_SUCCESS";
 	case SPH_IPC_THERMAL_TRIP_EVENT:
 		return "THERMAL_TRIP_EVENT";
+	case SPH_IPC_DEVNET_ADD_RES_SUCCESS:
+		return "DEVNET_ADD_RES_SUCCESS";
+	case SPH_IPC_DEVICE_STATE_CHANGED:
+		return "DEVICE_STATE_CHANGED";
 	case SPH_IPC_CREATE_CONTEXT_FAILED:
 		return "CREATE_CONTEXT_FAILED";
 	case SPH_IPC_CREATE_DEVRES_FAILED:
@@ -150,9 +154,10 @@ const char *event_code_name(u32 eventCode)
 
 void log_c2h_event(const char *msg, const union c2h_EventReport *ev)
 {
-	sph_log_debug(IPC_LOG, "%s: %s val=%u ctx_id=%u (valid=%u) objID=%u (valid=%u) objID_2=%u (valid=%u)\n",
+	sph_log_debug(IPC_LOG, "%s: %s(%u) val=%u ctx_id=%u (valid=%u) objID=%u (valid=%u) objID_2=%u (valid=%u)\n",
 		      msg,
 		      event_code_name(ev->eventCode),
+		      ev->eventCode,
 		      ev->eventVal,
 		      ev->contextID, ev->ctxValid,
 		      ev->objID, ev->objValid,

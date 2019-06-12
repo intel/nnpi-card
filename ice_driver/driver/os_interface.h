@@ -19,9 +19,11 @@
 
 #ifdef RING3_VALIDATION
 #include "os_interface_stub.h"
+#include "unistd.h"
 #else
 #include "os_interface_impl.h"
 #include "sph_log.h"
+#include "linux/sched.h"
 #endif
 
 #include "cve_fw_structs.h"
@@ -168,30 +170,27 @@ enum cve_log_level {
 #endif
 
 #if SPH_LOGGER == 1
-#define cve_os_log(level, fmt, ...) do {\
-		if (level == CVE_LOGLEVEL_ERROR) {\
-			_cve_os_log(level, "%s(%d) : [ERROR_LOG] " fmt, \
-				__FILENAME__, __LINE__, ##__VA_ARGS__);\
-		} else {\
-			_cve_os_log(level, "%s(%d) : " fmt, __FILENAME__, \
-					__LINE__, ##__VA_ARGS__);\
-		} \
-	} while (0)
+#define cve_os_log(level, fmt, ...) \
+		_cve_os_log(level, "[PID:%d] %s(%d): " fmt, \
+				current->pid, __FILENAME__, __LINE__, \
+					##__VA_ARGS__)
 #else
 #define cve_os_log(level, fmt, ...)\
-		_cve_os_log(level, "ICE : %s(%d) :%s: "fmt, __FILENAME__, \
+		_cve_os_log(level, "ICE : [PID:%d] %s(%d) :%s: "fmt,\
+				 getpid(), __FILENAME__, \
 				__LINE__, __func__, ##__VA_ARGS__)
 #endif
 
 #if SPH_LOGGER == 1
 #define cve_os_dev_log(level, cve_dev, fmt, ...) \
 		_cve_os_log(level, \
-			"%s(%d) : ICE%d: "fmt, __FILENAME__, \
-			__LINE__, cve_dev, ##__VA_ARGS__)
+			"[PID:%d] %s(%d) : ICE%d: "fmt, current->pid, \
+			__FILENAME__, __LINE__, cve_dev, ##__VA_ARGS__)
 #else
 #define cve_os_dev_log(level, cve_dev, fmt, ...) \
 		_cve_os_log(level, \
-			"ICE : %s(%d) :%s: ICE%d: "fmt, __FILENAME__, \
+			"ICE : [PID:%d] %s(%d) :%s: ICE%d: "fmt, \
+			getpid(), __FILENAME__, \
 			__LINE__, __func__, cve_dev, ##__VA_ARGS__)
 #endif
 
@@ -708,6 +707,8 @@ void *cve_os_vmap_dma_handle(struct cve_dma_handle *dma_handle);
  * @param vaddr
  */
 void cve_os_vunmap_dma_handle(void *vaddr);
+
+uint32_t get_process_pid(void);
 
 
 #endif /* _OS_INTERFACE_H_ */

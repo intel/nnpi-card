@@ -1,3 +1,6 @@
+
+
+
 /*******************************************************************************
  * INTEL CORPORATION CONFIDENTIAL Copyright(c) 2017-2019 Intel Corporation. All Rights Reserved.
  *
@@ -17,23 +20,54 @@
  * otherwise. Any license under such intellectual property rights must be express
  * and approved by Intel in writing.
  ********************************************************************************/
-#ifndef _SPH_VERSION_H
-#define _SPH_VERSION_H
 
-#define _STR(x) #x
-#define STR(x) _STR(x)
+/* logs to be displayed always */
+#define GENERAL_LOG "SPHLOG_GENERAL"
 
-#define SPH_MAJOR 0
-#define SPH_MINOR 3
-#define SPH_PATCH 1
+/* logs while init flow */
+#define START_UP_LOG "SPHLOG_START_UP"
 
-#define SPH_VERSION  STR(VERSION: v.SPH_MAJOR.SPH_MINOR.SPH_PATCH)
-#define AUTHOR_STR   STR(AUTHOR: Intel Corporation 2018)
-#define SPH_GIT_HASH STR(gh.GIT_HASH)
+/* logs while removing driver or go down flow */
+#define GO_DOWN_LOG "SPHLOG_GO_DOWN"
 
-#ident SPH_VERSION
-#ident AUTHOR_STR
-#ifdef DEBUG
-#ident SPH_GIT_HASH
-#endif
-#endif
+/* DMA scehduler debug prints only */
+#define DMA_LOG "SPHLOG_DMA"
+
+/* context state logs */
+#define CONTEXT_STATE_LOG "SPHLOG_CONTEXT_STATE"
+
+/* IPC logs */
+#define IPC_LOG "SPHLOG_IPC"
+
+/* all create/destroy inference commands */
+#define CREATE_COMMAND_LOG "SPHLOG_CREATE_COMMAND"
+
+/* inference schedule commands */
+#define SCHEDULE_COMMAND_LOG "SPHLOG_SCHEDULE_COMMAND"
+
+/* inference execute commands */
+#define EXECUTE_COMMAND_LOG "SPHLOG_EXECUTE_COMMAND"
+
+/* all generic_messaging related stuff */
+#define SERVICE_LOG "SPHLOG_SERVICE"
+
+/* all maintenance related stuff */
+#define MAINTENANCE_LOG "SPHLOG_MAINTENANCE"
+
+/* all related logs of eth network device */
+#define ETH_LOG "SPHLOG_ETH"
+
+/* all logs comes from runtime */
+#define INFERENCE_LOG "SPHLOG_INFERENCE"
+
+/* all logs comes from ICE driver */
+#define ICE_LOG "SPHLOG_ICE"
+
+/* all logs related to MCE */
+#define MCE_LOG "SPHLOG_MCE"
+
+/* all logs related to hw trace collection */
+#define HWTRACE_LOG "SPHLOG_HWTRACE"
+
+
+
