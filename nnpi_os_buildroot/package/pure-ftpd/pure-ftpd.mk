@@ -31,6 +31,13 @@ ifeq ($(BR2_PACKAGE_LIBSODIUM),y)
 PURE_FTPD_DEPENDENCIES += libsodium
 endif
 
+ifeq ($(BR2_PACKAGE_OPENLDAP),y)
+PURE_FTPD_CONF_OPTS += --with-ldap
+PURE_FTPD_DEPENDENCIES += openldap
+else
+PURE_FTPD_CONF_OPTS += --without-ldap
+endif
+
 ifeq ($(BR2_PACKAGE_OPENSSL),y)
 PURE_FTPD_CONF_OPTS += --with-tls
 PURE_FTPD_DEPENDENCIES += openssl
@@ -55,6 +62,13 @@ endif
 
 ifeq ($(BR2_PACKAGE_PURE_FTPD_UPLOADSCRIPT),y)
 PURE_FTPD_CONF_OPTS += --with-uploadscript
+endif
+
+ifeq ($(BR2_PACKAGE_LINUX_PAM),y)
+PURE_FTPD_CONF_OPTS += --with-pam
+PURE_FTPD_DEPENDENCIES += linux-pam
+else
+PURE_FTPD_CONF_OPTS += --without-pam
 endif
 
 $(eval $(autotools-package))

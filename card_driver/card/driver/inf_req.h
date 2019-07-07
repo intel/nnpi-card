@@ -12,6 +12,7 @@
 #include "ioctl_inf.h"
 #include "ipc_protocol.h"
 #include "inf_types.h"
+#include "sphcs_sw_counters.h"
 
 struct inf_devnet;
 struct inf_devres;
@@ -43,6 +44,12 @@ struct inf_req {
 	enum create_status status;
 	// 0 - not destroyed, 1 - destroyed by user, -1 - failed to create
 	int                destroyed;
+
+	struct sph_sw_counters *sw_counters;
+	u64                min_block_time;
+	u64                max_block_time;
+	u64                min_exec_time;
+	u64                max_exec_time;
 };
 
 int inf_req_create(uint16_t            protocolID,
@@ -68,5 +75,6 @@ int inf_req_schedule(struct inf_req *infreq,
 bool inf_req_ready(struct inf_exec_req *req);
 int inf_req_execute(struct inf_exec_req *req);
 void inf_req_complete(struct inf_exec_req *req, int err);
+void inf_req_release(struct inf_exec_req *req);
 
 #endif

@@ -15,8 +15,7 @@
 int inf_devres_create(uint16_t            protocolID,
 		      struct inf_context *context,
 		      uint32_t            size,
-		      int                 is_input,
-		      int                 is_output,
+		      uint32_t            usage_flags,
 		      struct inf_devres **out_devres)
 {
 	struct inf_devres *devres;
@@ -37,11 +36,13 @@ int inf_devres_create(uint16_t            protocolID,
 
 	spin_lock_init(&devres->lock_irq);
 	devres->size = size;
-	if (is_input && is_output)
+	devres->usage_flags = usage_flags;
+	if ((usage_flags & IOCTL_INF_RES_INPUT) &&
+	    (usage_flags & IOCTL_INF_RES_OUTPUT))
 		devres->dir = DMA_BIDIRECTIONAL;
-	else if (is_input)
+	else if (usage_flags & IOCTL_INF_RES_INPUT)
 		devres->dir = DMA_FROM_DEVICE;
-	else if (is_output)
+	else if (usage_flags & IOCTL_INF_RES_OUTPUT)
 		devres->dir = DMA_TO_DEVICE;
 	else
 		devres->dir = DMA_NONE;
@@ -276,18 +277,24 @@ void inf_devres_try_execute(struct inf_devres *devres)
 	// try all reads
 	SPH_SPIN_LOCK_IRQSAVE(&devres->lock_irq, flags);
 	list_for_each_entry(pos, &devres->exec_queue, node) {
+		bool is_write = !pos->read;
+
 		// if pos is write and it is not the first in the queue exit
-		if (!pos->read && pos->node.prev != &devres->exec_queue)
+		if (is_write && pos->node.prev != &devres->exec_queue)
 			break;
 
+		// if get in_use failed, the req is being destroyed
+		if (inf_exec_req_get(pos->req) == 0)
+			break;
 		old_ver = devres->queue_version;
 		SPH_SPIN_UNLOCK_IRQRESTORE(&devres->lock_irq, flags);
 		inf_req_try_execute(pos->req);
+		inf_exec_req_put(pos->req);
 		SPH_SPIN_LOCK_IRQSAVE(&devres->lock_irq, flags);
 
 		// if from exec_queue was removed entries or
 		// we tried to execute write don't continue
-		if (old_ver != devres->queue_version || !pos->read)
+		if (old_ver != devres->queue_version || is_write)
 			break;
 	}
 	SPH_SPIN_UNLOCK_IRQRESTORE(&devres->lock_irq, flags);

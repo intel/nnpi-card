@@ -106,6 +106,7 @@ u32 g_icemask;
 u32 disable_embcb;
 u32 core_mask;
 u32 ice_fw_select;
+u32 block_mmu;
 
 static u32 icemask_user;
 static u32 enable_llc_config_via_axi_reg;
@@ -136,6 +137,9 @@ MODULE_PARM_DESC(ice_fw_select, "Permit the use of rtl debug FW (0=rtl/release F
 
 module_param(ice_power_off_delay_ms, int, 0);
 MODULE_PARM_DESC(ice_power_off_delay_ms, "Delay in ms to power off ICEs after WL completion(value less than 0 signifies no power off)");
+
+module_param(block_mmu, int, 0);
+MODULE_PARM_DESC(block_mmu, "Enables MMU Block/Unblock for each Doorbell");
 
 /* UITILITY FUNCTIONS */
 
@@ -238,6 +242,53 @@ static ssize_t cve_dump_read(struct file *fp,
 	}
 #endif
 	return 0;
+}
+
+void ice_os_update_clos(void *pmclos)
+{
+	u32 lo, hi, msr;
+	u32 clos_shift;
+	u64 val;
+	struct clos_manager *mclos = (struct clos_manager *)pmclos;
+
+	/* CLOS 0 */
+	msr = 0xC90;
+	lo = (1 << mclos->clos_size[0]) - 1;
+	hi = 0;
+	native_write_msr(msr, lo, hi);
+	val = native_read_msr(msr);
+	cve_os_log(CVE_LOGLEVEL_DEBUG, "CLOS0=0x%llx\n",
+		val);
+
+	/* CLOS 1 */
+	clos_shift = (24 - mclos->clos_size[1]);
+	msr = 0xC91;
+	lo = ((1 << mclos->clos_size[1]) - 1) << clos_shift;
+	hi = 0;
+	native_write_msr(msr, lo, hi);
+	val = native_read_msr(msr);
+	cve_os_log(CVE_LOGLEVEL_DEBUG, "CLOS1=0x%llx\n",
+		val);
+
+	/* CLOS 2 */
+	clos_shift = mclos->clos_size[0];
+	msr = 0xC92;
+	lo = ((1 << mclos->clos_size[2]) - 1) << clos_shift;
+	hi = 0;
+	native_write_msr(msr, lo, hi);
+	val = native_read_msr(msr);
+	cve_os_log(CVE_LOGLEVEL_DEBUG, "CLOS2=0x%llx\n",
+		val);
+
+	/* IA32_PQR_ASSOC.COS */
+	msr = 0xC8F;
+	lo = 0x0;
+	hi = 0x0;
+	native_write_msr(msr, lo, hi);
+	val = native_read_msr(msr);
+	cve_os_log(CVE_LOGLEVEL_DEBUG, "IA32_PQR_ASSOC=0x%llx\n",
+		val);
+
 }
 
 /* INTERFACE FUNCTIONS */
@@ -1524,7 +1575,7 @@ static long cve_ioctl_misc(
 
 			cve_os_log(CVE_LOGLEVEL_DEBUG,
 					"CVE_IOCTL_CREATE_CONTEXT n/a\n");
-			retval = cve_ds_open_context(context_pid,
+			retval = cve_ds_open_context(context_pid, p->obj_id,
 					&p->out_contextid);
 		}
 		break;
@@ -1601,6 +1652,18 @@ static long cve_ioctl_misc(
 					p->contextid,
 					p->networkid,
 					p->inferid);
+			break;
+		}
+	case CVE_IOCTL_MANAGE_RESOURCE:
+		{
+			struct ice_manage_resource *p = &kparam.manage_resource;
+
+			cve_os_log(CVE_LOGLEVEL_DEBUG,
+					"CVE_IOCTL_MANAGE_RESOURCE\n");
+			cve_ds_handle_manage_resource(context_pid,
+					p->contextid,
+					p->networkid,
+					&p->resource);
 			break;
 		}
 	case CVE_IOCTL_LOAD_FIRMWARE:

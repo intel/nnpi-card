@@ -1,0 +1,31 @@
+From 9f10d309f99f6859965425c57c1018d4cbedb6d3 Mon Sep 17 00:00:00 2001
+From: Gil Montag <gil.montag@intel.com>
+Date: Wed, 26 Jun 2019 11:46:06 +0300
+Subject: [PATCH] Temporary fix for buggy IFWI that keeps using boot memory
+ regions, also after ExitBootService() was called
+
+---
+ arch/x86/platform/efi/quirks.c | 7 ++++++-
+ 1 file changed, 6 insertions(+), 1 deletion(-)
+
+diff --git a/arch/x86/platform/efi/quirks.c b/arch/x86/platform/efi/quirks.c
+index a25a9fd987a9..930f7dda1571 100644
+--- a/arch/x86/platform/efi/quirks.c
++++ b/arch/x86/platform/efi/quirks.c
+@@ -432,7 +432,12 @@ void __init efi_free_boot_services(void)
+ 		 * code/data regions were mapped as a quirk for buggy firmware.
+ 		 * Unmap them from efi_pgd before freeing them up.
+ 		 */
+-		efi_unmap_pages(md);
++		/* Temporary patch until IFWI will stop using the boot service memory regions
++		 * also after boot ended. i.e. during SystemReset() runtime service
++		 * so we keep those areas mapped - therefore the problem  of page fault during
++		 * SystemReset() with pending capsule will go away
++		 */
++		//efi_unmap_pages(md);
+ 
+ 		/*
+ 		 * Nasty quirk: if all sub-1MB memory is used for boot
+-- 
+2.17.1
+

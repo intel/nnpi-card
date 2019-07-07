@@ -61,12 +61,6 @@ struct allocation_desc {
 	enum osmm_memory_type mem_type;
 };
 
-struct inf_domain {
-	/* ICE specific domain handle */
-	os_domain_handle inf_hdom[MAX_CVE_DEVICES_NR];
-	/* Placeholer for future variables*/
-};
-
 /* INTERNAL FUNCTIONS */
 static int __get_patch_point_addr_and_val(
 		struct allocation_desc *cb_alloc_desc,
@@ -198,11 +192,11 @@ void cve_mm_reclaim_allocation(cve_mm_allocation_t halloc)
 	OS_FREE(alloc, sizeof(*alloc));
 }
 
-void cve_mm_set_dirty_dram(struct cve_user_buffer *user_buf,
+void cve_mm_set_dirty_dram(struct cve_ntw_buffer *user_buf,
 	struct cve_device *cve_dev)
 {
 	struct allocation_desc *alloc =
-		(struct allocation_desc *)user_buf->allocation;
+		(struct allocation_desc *)user_buf->ntw_buf_alloc;
 
 	cve_os_dev_log(CVE_LOGLEVEL_DEBUG,
 		cve_dev->dev_index,
@@ -213,35 +207,27 @@ void cve_mm_set_dirty_dram(struct cve_user_buffer *user_buf,
 	alloc->dirty_dram_src_cve = cve_dev;
 }
 
-void cve_mm_set_dirty_cache(struct cve_user_buffer *user_buf)
+void cve_mm_set_dirty_cache(cve_mm_allocation_t *halloc)
 {
-	struct allocation_desc *alloc =
-		(struct allocation_desc *)user_buf->allocation;
-
-	cve_os_log(CVE_LOGLEVEL_DEBUG,
-		"[CACHE] Set Dirty Cache Flag for BufferID=0x%llx\n",
-		user_buf->buffer_id);
+	struct allocation_desc *alloc = (struct allocation_desc *)halloc;
 
 	alloc->dirty_cache = 1;
 }
 
 void cve_mm_sync_mem_to_dev(cve_mm_allocation_t halloc,
-	u64 inf_id,
 	struct cve_device *cve_dev)
 {
 	struct allocation_desc *alloc = (struct allocation_desc *)halloc;
 
 	if (alloc->dirty_cache) {
 		cve_osmm_cache_allocation_op(alloc->halloc,
-			inf_id,
 			cve_dev,
 			SYNC_TO_DEVICE);
 		alloc->dirty_cache = 0;
 	}
 }
 
-int cve_mm_sync_mem_to_host(cve_mm_allocation_t halloc,
-		u64 inf_id)
+int cve_mm_sync_mem_to_host(cve_mm_allocation_t halloc)
 {
 	struct allocation_desc *alloc = (struct allocation_desc *)halloc;
 	int retval = CVE_DEFAULT_ERROR_CODE;
@@ -253,7 +239,6 @@ int cve_mm_sync_mem_to_host(cve_mm_allocation_t halloc,
 			goto out;
 		}
 		cve_osmm_cache_allocation_op(alloc->halloc,
-			inf_id,
 			alloc->dirty_dram_src_cve,
 			SYNC_TO_HOST);
 		alloc->dirty_dram = 0;
@@ -265,6 +250,17 @@ int cve_mm_sync_mem_to_host(cve_mm_allocation_t halloc,
 
 out:
 	return retval;
+}
+
+void cve_mm_invalidate_tlb(os_domain_handle hdom,
+	struct cve_device *cve_dev)
+{
+	/* if pages were added to the page table and the
+	 * driver settings requires tlb invalidation.
+	 * do tlb invalidation and clear the pages added flag.
+	 */
+	if (cve_osmm_is_need_tlb_invalidation(hdom))
+		ice_di_tlb_invalidate_full(cve_dev);
 }
 
 void cve_mm_reset_page_table_flags(os_domain_handle hdom)
@@ -363,41 +359,22 @@ int ice_mm_domain_copy(os_domain_handle *hdom_src,
 	u32 domain_array_size)
 {
 	int retval = 0;
-	struct inf_domain *dom = NULL;
 
-	retval = OS_ALLOC_ZERO(sizeof(struct inf_domain), (void **)&dom);
-	if (retval < 0) {
-		cve_os_log(CVE_LOGLEVEL_ERROR,
-				"os_malloc_zero failed %d\n", retval);
-		goto out;
-	}
-
-	retval = cve_osmm_domain_copy(hdom_src, dom->inf_hdom,
+	retval = cve_osmm_domain_copy(hdom_src, hdom_inf,
 		domain_array_size);
 	if (retval < 0) {
 		cve_os_log(CVE_LOGLEVEL_ERROR,
 				"os_malloc_zero failed %d\n", retval);
-		goto free_mem;
 	}
 
-	*hdom_inf = (void *)dom;
-	goto out;
-
-free_mem:
-	OS_FREE(dom, sizeof(*dom));
-out:
 	return retval;
 }
 
 void ice_mm_domain_destroy(void *hdom_inf,
 	u32 domain_array_size)
 {
-	struct inf_domain *dom = (struct inf_domain *)hdom_inf;
-
-	cve_osmm_domain_destroy(dom->inf_hdom,
+	cve_osmm_domain_destroy(hdom_inf,
 		domain_array_size);
-
-	OS_FREE(dom, sizeof(*dom));
 }
 
 int cve_mm_create_kernel_mem_allocation(
@@ -486,9 +463,7 @@ void ice_mm_get_domain_by_cve_idx(
 	struct cve_device *dev,
 	os_domain_handle *os_hdom)
 {
-	struct inf_domain *dom = (struct inf_domain *)hdom_inf;
-
-	ice_osmm_get_inf_ice_domain(dom->inf_hdom,
+	ice_osmm_get_inf_ice_domain(hdom_inf,
 		dma_domain_array_size, dev->dev_index, os_hdom);
 }
 
@@ -516,14 +491,22 @@ int cve_mm_create_infer_buffer(
 	u64 inf_id,
 	void *hdom_inf,
 	u32 domain_array_size,
-	struct cve_infer_buffer *inf_buf)
+	cve_mm_allocation_t buf_alloc,
+	struct cve_inf_buffer *inf_buf)
 {
 	int retval = 0;
-	struct allocation_desc *alloc =
-			(struct allocation_desc *)inf_buf->allocation;
 	enum osmm_memory_type alloc_type;
 	union allocation_address alloc_addr = {0};
-	struct inf_domain *dom = (struct inf_domain *)hdom_inf;
+	struct allocation_desc *inf_alloc;
+	struct allocation_desc *ntw_alloc =
+		(struct allocation_desc *)buf_alloc;
+
+	retval = OS_ALLOC_ZERO(sizeof(*inf_alloc), (void **)&inf_alloc);
+	if (retval < 0) {
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+			"os_alloc_zero failed %d\n", retval);
+		goto out;
+	}
 
 	/* if using buffer sharing, set the allocation flag type
 	 * to shared and set the propriatery print
@@ -531,7 +514,7 @@ int cve_mm_create_infer_buffer(
 	if (!inf_buf->fd && !inf_buf->base_address) {
 		retval = -EINVAL;
 		ASSERT(false);
-		goto out;
+		goto free_mem;
 	} else if (inf_buf->fd) {
 		alloc_type = OSMM_SHARED_MEMORY;
 		alloc_addr.fd = inf_buf->fd;
@@ -546,29 +529,37 @@ int cve_mm_create_infer_buffer(
 
 	retval = cve_osmm_inf_dma_buf_map(
 			inf_id,
-			dom->inf_hdom,
+			hdom_inf,
 			domain_array_size,
 			alloc_addr,
 			alloc_type,
-			alloc->halloc);
+			ntw_alloc->halloc,
+			&inf_alloc->halloc);
 	if (retval < 0) {
 		cve_os_log(CVE_LOGLEVEL_ERROR,
 				"create_new_allocation failed %d\n", retval);
-		goto out;
+		goto free_mem;
 	}
 
+	inf_buf->inf_buf_alloc = (cve_mm_allocation_t)inf_alloc;
+
+	goto out;
+
+free_mem:
+	OS_FREE(inf_alloc, sizeof(*inf_alloc));
 out:
 	return retval;
 }
 
 void cve_mm_destroy_infer_buffer(
 		u64 inf_id,
-		struct cve_infer_buffer *inf_buf)
+		struct cve_inf_buffer *inf_buf)
 {
-	struct allocation_desc *alloc =
-		(struct allocation_desc *)inf_buf->allocation;
+	struct allocation_desc *inf_alloc =
+		(struct allocation_desc *)inf_buf->inf_buf_alloc;
 
-	cve_osmm_inf_dma_buf_unmap(inf_id, alloc->halloc);
+	cve_osmm_inf_dma_buf_unmap(inf_alloc->halloc);
+	OS_FREE(inf_alloc, sizeof(*inf_alloc));
 }
 
 int cve_mm_create_buffer(
@@ -756,7 +747,7 @@ void print_cur_page_table(os_domain_handle hdom)
 #endif
 
 
-static int __patch_inter_cb_offset(struct cve_user_buffer *buf_info,
+static int __patch_inter_cb_offset(struct cve_ntw_buffer *buf_info,
 	u32 *patch_address, s16 inter_cb_offset)
 {
 	u32  original_val;
@@ -764,7 +755,7 @@ static int __patch_inter_cb_offset(struct cve_user_buffer *buf_info,
 	bool is_dma_buf = false;
 	int ret = 0;
 
-	alloc_desc = (struct allocation_desc *)buf_info->allocation;
+	alloc_desc = (struct allocation_desc *)buf_info->ntw_buf_alloc;
 	is_dma_buf = (alloc_desc->fd > 0) ? true : false;
 
 	if (is_dma_buf) {
@@ -813,69 +804,47 @@ static int __patch_inter_cb_offset(struct cve_user_buffer *buf_info,
 	 * find the buffer that was patched and set the dirty
 	 * cache bit for this buffer - for cache flush operation
 	 */
-	cve_mm_set_dirty_cache(buf_info);
+	cve_mm_set_dirty_cache(buf_info->ntw_buf_alloc);
 
 
 out:
 	return ret;
 }
 
-static int __patch_surface(struct cve_user_buffer *buf_info,
+static int __patch_surface(struct cve_ntw_buffer *buf_info,
 	u64 *patch_address, u64 ks_value)
 {
-	u64  ks_original_val;
 	struct allocation_desc *alloc_desc;
 	bool is_dma_buf = false;
 	int ret = 0;
 
-	alloc_desc = (struct allocation_desc *)buf_info->allocation;
+	alloc_desc = (struct allocation_desc *)buf_info->ntw_buf_alloc;
 	is_dma_buf = (alloc_desc->fd > 0) ? true : false;
 
+	cve_os_log(CVE_LOGLEVEL_DEBUG,
+		 "Patching BufferID=0x%llx with PatchValue=0x%llx at IAVA=0x%lx\n",
+		 buf_info->buffer_id,
+		 ks_value,
+		 (uintptr_t)patch_address);
+
 	if (is_dma_buf) {
-		ks_original_val = *(patch_address);
+		*patch_address = ks_value;
 	} else {
-		ret = cve_os_read_user_memory_64(patch_address,
-			&ks_original_val);
+		ret = cve_os_write_user_memory_64(patch_address,
+				ks_value);
 		if (ret < 0) {
 			cve_os_log(CVE_LOGLEVEL_ERROR,
-				"os_read_user_memory_64 failed %d\n", ret);
+				"os_write_user_memory_64 failed %d\n",
+				ret);
 			goto out;
 		}
 	}
 
-	if (ks_original_val != ks_value) {
-
-		cve_os_log(CVE_LOGLEVEL_DEBUG,
-			 "Patching BufferID=0x%llx with PatchValue=0x%llx at IAVA=0x%lx. OrgValue=0x%llx\n",
-			 buf_info->buffer_id,
-			 ks_value,
-			 (uintptr_t)patch_address,
-			 ks_original_val);
-
-		if (is_dma_buf) {
-			*patch_address = ks_value;
-		} else {
-			ret = cve_os_write_user_memory_64(patch_address,
-					ks_value);
-			if (ret < 0) {
-				cve_os_log(CVE_LOGLEVEL_ERROR,
-					"os_write_user_memory_64 failed %d\n",
-					ret);
-				goto out;
-			}
-		}
-
-		/*
-		* find the buffer that was patched and set the dirty
-		* cache bit for this buffer - for cache flush operation
-		*/
-		cve_mm_set_dirty_cache(buf_info);
-	} else {
-		cve_os_log(CVE_LOGLEVEL_DEBUG,
-			"BufferID=0x%llx was not patched with new data. Already contains PatchValue=0x%llx\n",
-			buf_info->buffer_id,
-			ks_value);
-	}
+	/*
+	* find the buffer that was patched and set the dirty
+	* cache bit for this buffer - for cache flush operation
+	*/
+	cve_mm_set_dirty_cache(buf_info->ntw_buf_alloc);
 
 out:
 	return ret;
@@ -971,8 +940,7 @@ static void __calc_cntr_va(struct jobgroup_descriptor *jobgroup,
 }
 
 static void __calc_surf_va(struct allocation_desc *alloc_desc,
-	struct cve_patch_point_descriptor *pp_desc,
-	u64 *surf_ice_va, struct jobgroup_descriptor *jobgroup)
+	struct cve_patch_point_descriptor *pp_desc, u64 *surf_ice_va)
 {
 	ice_va_t base_surf_va = 0;
 
@@ -986,17 +954,20 @@ static void __calc_surf_va(struct allocation_desc *alloc_desc,
 
 }
 
-static int __create_cntr_pp_mirror_image(
+static int  __create_pp_mirror_image(
 	struct cve_patch_point_descriptor *cur_pp_desc,
-	struct job_descriptor *job)
+	struct job_descriptor *job,
+	struct ice_pp_copy **out_pp)
 {
-	struct cve_cntr_pp *cntr_pp;
+	struct ice_pp_copy *pp = NULL;
+	struct ice_network *ntw = job->jobgroup->network;
 	int ret = 0;
 	u32 sz = 0;
 
 	/* allocate structure for the counter patch point mirror image */
-	sz = (sizeof(*cntr_pp));
-	ret = OS_ALLOC_ZERO(sz, (void **)&cntr_pp);
+	sz = (sizeof(*pp));
+	/* TODO: Free this memory during DestroyNetwork */
+	ret = OS_ALLOC_ZERO(sz, (void **)&pp);
 	if (ret < 0) {
 		cve_os_log(CVE_LOGLEVEL_ERROR,
 			"Allocation for counter patch point failed %d. JobID=%lx\n",
@@ -1004,34 +975,61 @@ static int __create_cntr_pp_mirror_image(
 		goto out;
 	}
 	/* Mirroring is required to store counter patch point information */
-	memcpy(&cntr_pp->cntr_pp_desc_list, cur_pp_desc, sizeof(*cur_pp_desc));
-	cve_dle_add_to_list_before(job->counter_pp_desc_list, list,
-			cntr_pp);
+	memcpy(&pp->pp_desc, cur_pp_desc, sizeof(*cur_pp_desc));
+
+	if (cur_pp_desc->patch_point_type == ICE_PP_TYPE_SURFACE) {
+		/* Add this PP desc to Ntw list */
+		cve_dle_add_to_list_before(ntw->ntw_surf_pp_list, list, pp);
+	} else {
+		/* TODO: Move this PP desc to Ntw list */
+		cve_dle_add_to_list_before(job->job_cntr_pp_list, list, pp);
+	}
+
+	*out_pp = pp;
 
 out:
 	return ret;
 }
 
-static int __process_surf_pp(struct cve_patch_point_descriptor *cur_pp_desc,
-		struct cve_user_buffer *buf_list,
-		struct jobgroup_descriptor *jobgroup)
+int ice_mm_patch_inf_pp_arr(struct ice_infer *inf)
 {
-	u32 buf_idx = 0;
+	u32 i;
 	int ret = 0;
-	struct cve_user_buffer *ad, *cb_buf_info;
+	struct ice_pp_value *pp_value;
+
+	if (inf->inf_pp_arr == NULL)
+		goto out;
+
+	for (i = 0; i < inf->ntw->ntw_surf_pp_count; i++) {
+
+		/* IAVA and Value of PP is stored in this object */
+		pp_value = &inf->inf_pp_arr[i];
+
+		ret = __patch_surface(pp_value->ntw_buf,
+				pp_value->pp_address, pp_value->pp_value);
+		if (ret < 0) {
+			cve_os_log(CVE_LOGLEVEL_ERROR,
+				"ERROR:%d __patch_surface() failed\n", ret);
+			goto out;
+		}
+	}
+
+out:
+	return ret;
+}
+
+static int __process_inf_surf_pp(struct cve_patch_point_descriptor *cur_pp_desc,
+		struct cve_ntw_buffer *ntw_buf,
+		struct cve_inf_buffer *inf_buf,
+		struct ice_pp_value *pp_value)
+{
+	int ret = 0;
 	struct allocation_desc *alloc_desc, *cb_alloc_desc;
 	u64  ks_value;
 	u64 *patch_address = NULL;
 
-	buf_idx = cur_pp_desc->patching_buf_index;
-	cb_buf_info = &buf_list[buf_idx];
-
-	buf_idx = cur_pp_desc->allocation_buf_index;
-	ad = &buf_list[buf_idx];
-
-	cb_alloc_desc =
-		(struct allocation_desc *)cb_buf_info->allocation;
-	alloc_desc = (struct allocation_desc *)ad->allocation;
+	cb_alloc_desc = (struct allocation_desc *)ntw_buf->ntw_buf_alloc;
+	alloc_desc = (struct allocation_desc *)inf_buf->inf_buf_alloc;
 
 	ret = __get_patch_point_addr_and_val(cb_alloc_desc,
 			cur_pp_desc, &patch_address, &ks_value);
@@ -1042,7 +1040,108 @@ static int __process_surf_pp(struct cve_patch_point_descriptor *cur_pp_desc,
 		goto out;
 	}
 
-	__calc_surf_va(alloc_desc, cur_pp_desc, &ks_value, jobgroup);
+	__calc_surf_va(alloc_desc, cur_pp_desc, &ks_value);
+
+	pp_value->ntw_buf = ntw_buf;
+	pp_value->pp_address = patch_address;
+	pp_value->pp_value = ks_value;
+
+out:
+	return ret;
+}
+
+int ice_mm_process_inf_pp_arr(struct ice_infer *inf)
+{
+	u32 i;
+	int ret = 0;
+	struct ice_network *ntw = inf->ntw;
+	struct ice_pp_copy *pp_copy = ntw->ntw_surf_pp_list;
+	struct ice_pp_value *pp_value;
+	struct cve_patch_point_descriptor *pp_desc;
+	struct cve_ntw_buffer *ntw_buf, *ntw_buf_user;
+	struct cve_inf_buffer *inf_buf;
+
+	for (i = 0; i < ntw->ntw_surf_pp_count; i++) {
+
+		/* PP desc for this iteration */
+		pp_desc = &pp_copy->pp_desc;
+
+		/* IAVA and Value of PP will be store in this object */
+		pp_value = &inf->inf_pp_arr[i];
+
+		/* Get CB buffer from Ntw list */
+		ntw_buf = &ntw->buf_list[pp_desc->patching_buf_index];
+
+		/* Get User buffer from Inf list*/
+		ntw_buf_user = &ntw->buf_list[pp_desc->allocation_buf_index];
+		inf_buf = &inf->buf_list[ntw_buf_user->index_in_inf];
+
+		ret = __process_inf_surf_pp(pp_desc, ntw_buf, inf_buf,
+				pp_value);
+		if (ret < 0) {
+			cve_os_log(CVE_LOGLEVEL_ERROR,
+				"__process_inf_surf_pp failed %d\n", ret);
+			goto out;
+		}
+
+		pp_copy = cve_dle_next(pp_copy, list);
+	}
+
+out:
+	return ret;
+}
+
+static int __process_surf_pp(struct cve_patch_point_descriptor *cur_pp_desc,
+		struct cve_ntw_buffer *buf_list,
+		struct job_descriptor *job)
+{
+	u32 buf_idx = 0;
+	int ret = 0;
+	struct cve_ntw_buffer *ad, *cb_buf_info;
+	struct allocation_desc *alloc_desc, *cb_alloc_desc;
+	u64  ks_value;
+	u64 *patch_address = NULL;
+	struct ice_pp_copy *surf_pp;
+
+	buf_idx = cur_pp_desc->patching_buf_index;
+	cb_buf_info = &buf_list[buf_idx];
+
+	buf_idx = cur_pp_desc->allocation_buf_index;
+	ad = &buf_list[buf_idx];
+
+	cb_alloc_desc =
+		(struct allocation_desc *)cb_buf_info->ntw_buf_alloc;
+	alloc_desc = (struct allocation_desc *)ad->ntw_buf_alloc;
+
+	ret = __get_patch_point_addr_and_val(cb_alloc_desc,
+			cur_pp_desc, &patch_address, &ks_value);
+	if (ret < 0) {
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+				"Failed(%d) to read from patch point location\n",
+				ret);
+		goto out;
+	}
+
+	if (alloc_desc->mem_type == OSMM_INFER_MEMORY) {
+		ret = __create_pp_mirror_image(cur_pp_desc, job, &surf_pp);
+		if (ret < 0) {
+			cve_os_log(CVE_LOGLEVEL_ERROR,
+				"Failed(%d) to create patch point copy\n",
+				ret);
+			goto out;
+		}
+
+		job->jobgroup->network->ntw_surf_pp_count++;
+
+		cve_os_log(CVE_LOGLEVEL_DEBUG,
+			"Creating PP copy for Infer Buffer. BufferIdx=%d, JobID=%lx",
+			buf_idx, (uintptr_t)job);
+#if 1
+		goto out;
+#endif
+	}
+
+	__calc_surf_va(alloc_desc, cur_pp_desc, &ks_value);
 
 	ret = __patch_surface(cb_buf_info, patch_address, ks_value);
 	if (ret < 0) {
@@ -1057,12 +1156,12 @@ out:
 
 static int __process_inter_cb_loop_pp(
 		struct cve_patch_point_descriptor *cur_pp_desc,
-		struct cve_user_buffer *buf_list,
+		struct cve_ntw_buffer *buf_list,
 		struct jobgroup_descriptor *jobgroup)
 {
 	u32 buf_idx = 0;
 	int ret = 0;
-	struct cve_user_buffer *cb_buf_info;
+	struct cve_ntw_buffer *cb_buf_info;
 	struct allocation_desc *cb_alloc_desc;
 	u64  ks_value;
 	u64 *patch_address = NULL;
@@ -1071,7 +1170,7 @@ static int __process_inter_cb_loop_pp(
 	cb_buf_info = &buf_list[buf_idx];
 
 	cb_alloc_desc =
-		(struct allocation_desc *)cb_buf_info->allocation;
+		(struct allocation_desc *)cb_buf_info->ntw_buf_alloc;
 
 	ret = __get_patch_point_addr_and_val(cb_alloc_desc,
 			cur_pp_desc, &patch_address, &ks_value);
@@ -1095,7 +1194,7 @@ out:
 	return ret;
 }
 
-int ice_mm_process_patch_point(struct cve_user_buffer *buf_list,
+int ice_mm_process_patch_point(struct cve_ntw_buffer *buf_list,
 		struct cve_patch_point_descriptor *patch_desc_list,
 		u32 patch_list_sz, struct job_descriptor *job)
 {
@@ -1105,6 +1204,7 @@ int ice_mm_process_patch_point(struct cve_user_buffer *buf_list,
 	u32 cntr_pp_count = 0;
 	enum ice_pp_type pp_type;
 	struct jobgroup_descriptor *jobgroup = job->jobgroup;
+	struct ice_pp_copy *pp;
 
 	for (i = 0; i < patch_list_sz; ++i) {
 		cur_pp_desc = &patch_desc_list[i];
@@ -1121,8 +1221,7 @@ int ice_mm_process_patch_point(struct cve_user_buffer *buf_list,
 		case ICE_PP_TYPE_CNTR_INC:
 		case ICE_PP_TYPE_CNTR_NOTIFY:
 		case ICE_PP_TYPE_CNTR_NOTIFY_ADDR:
-			ret = __create_cntr_pp_mirror_image(cur_pp_desc,
-					job);
+			ret = __create_pp_mirror_image(cur_pp_desc, job, &pp);
 			cntr_pp_count++;
 			/* KMD is assuming that cntr_id will never be
 			 * -1 here. Creating Bitmap of graph_ctr_id
@@ -1132,8 +1231,7 @@ int ice_mm_process_patch_point(struct cve_user_buffer *buf_list,
 				(1 << cur_pp_desc->cntr_id);
 			break;
 		case ICE_PP_TYPE_SURFACE:
-			ret = __process_surf_pp(cur_pp_desc, buf_list,
-				jobgroup);
+			ret = __process_surf_pp(cur_pp_desc, buf_list, job);
 			break;
 		case ICE_PP_TYPE_INTER_CB:
 			ret = __process_inter_cb_loop_pp(cur_pp_desc,
@@ -1156,48 +1254,39 @@ int ice_mm_process_patch_point(struct cve_user_buffer *buf_list,
 		}
 	}
 
-	job->cntr_patch_points_nr += cntr_pp_count;
-
 out:
 	return ret;
 }
 
-int ice_mm_patch_cntrs(struct cve_user_buffer *buf_list,
+int ice_mm_patch_cntrs(struct cve_ntw_buffer *buf_list,
 	struct job_descriptor *job,
 	struct cve_device *dev)
 {
 	u32 buf_idx = 0;
 	int ret = 0;
-	struct cve_cntr_pp *head_des;
-	struct cve_cntr_pp *next_des;
-	struct cve_user_buffer *cb_buf_info;
-	struct allocation_desc *cb_alloc_desc, *prev_alloc_desc;
+	struct ice_pp_copy *head_des;
+	struct ice_pp_copy *next_des;
+	struct cve_ntw_buffer *cb_buf_info;
+	struct allocation_desc *cb_alloc_desc;
 	u64  ks_value;
 	u64 *patch_address = NULL;
 
-	prev_alloc_desc = NULL;
-	head_des = job->counter_pp_desc_list;
+	head_des = job->job_cntr_pp_list;
 	next_des = head_des;
 
 	/* This invalid case should have reached here */
 	ASSERT(head_des != NULL);
 
 	do {
-		buf_idx = next_des->cntr_pp_desc_list.patching_buf_index;
+		buf_idx = next_des->pp_desc.patching_buf_index;
 		cb_buf_info = &buf_list[buf_idx];
 
 		cb_alloc_desc =
-			(struct allocation_desc *)cb_buf_info->allocation;
-
-		if (prev_alloc_desc != cb_alloc_desc) {
-			if (prev_alloc_desc != NULL)
-				cve_mm_unmap_kva(prev_alloc_desc);
-			cve_mm_map_kva(cb_alloc_desc);
-		}
+			(struct allocation_desc *)cb_buf_info->ntw_buf_alloc;
 
 		/* Gets PP address and current Value in that address */
 		ret = __get_patch_point_addr_and_val(cb_alloc_desc,
-		&next_des->cntr_pp_desc_list, &patch_address, &ks_value);
+		&next_des->pp_desc, &patch_address, &ks_value);
 		if (ret < 0) {
 			cve_os_log(CVE_LOGLEVEL_ERROR,
 				"Failed(%d) to read from patch point location\n",
@@ -1206,7 +1295,7 @@ int ice_mm_patch_cntrs(struct cve_user_buffer *buf_list,
 		}
 
 		/* Calculate newValue for PP address */
-		__calc_cntr_va(job->jobgroup, &next_des->cntr_pp_desc_list,
+		__calc_cntr_va(job->jobgroup, &next_des->pp_desc,
 				dev, &ks_value);
 
 		/* Perform patching. Patching done if newValue is different */
@@ -1217,24 +1306,21 @@ int ice_mm_patch_cntrs(struct cve_user_buffer *buf_list,
 			goto out;
 		}
 
-		prev_alloc_desc = cb_alloc_desc;
-		cve_mm_set_dirty_cache(cb_buf_info);
-		cve_mm_sync_mem_to_dev(cb_buf_info->allocation, 0, dev);
+		cve_mm_set_dirty_cache(cb_buf_info->ntw_buf_alloc);
+		cve_mm_sync_mem_to_dev(cb_buf_info->ntw_buf_alloc, dev);
 
 		next_des = cve_dle_next(next_des, list);
 	} while (head_des != next_des);
-
-	cve_mm_unmap_kva(prev_alloc_desc);
 
 out:
 	return ret;
 }
 
-cve_virtual_address_t ice_mm_get_iova(struct cve_user_buffer *buffer)
+cve_virtual_address_t ice_mm_get_iova(struct cve_ntw_buffer *buffer)
 {
 	struct allocation_desc *alloc_desc;
 
-	alloc_desc = (struct allocation_desc *)buffer->allocation;
+	alloc_desc = (struct allocation_desc *)buffer->ntw_buf_alloc;
 
 	return cve_osmm_alloc_get_iova(alloc_desc->halloc);
 }

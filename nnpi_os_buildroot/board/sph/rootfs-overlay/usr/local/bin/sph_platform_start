@@ -1,4 +1,4 @@
-#! /bin/bash
+#! /bin/sh
 
 #This script is invoked at system startup (from /etc/init.d/S99-sph) - before login session
 
@@ -25,7 +25,6 @@ error_check () {
 
 #set paths to that daemons can use it
 source /usr/local/bin/set-global-sph-paths
-
 if [ ! -f /etc/version ]; then
 	echo "*****************************************************************"
 	echo "** /usr/local/bin/sph_platform_Start: This is a VANILLA OS     **"
@@ -34,7 +33,7 @@ if [ ! -f /etc/version ]; then
 	exit 0
 fi
 #signal /etc/profile.d/sph.sh that this is a full OS
-touch /sph_tmp/THIS_IS_A_FULL_OS
+touch /tmp/THIS_IS_A_FULL_OS
 #platform startup actions
 mv /sph_tmp/* /tmp/ 
 rm -rf /sph_tmp
@@ -57,7 +56,25 @@ ln -sf /opt/intel_nnpi/bin/sph_maintenance /usr/bin/sph_maintenance
 #TEMPORARY PATCH: ice_driver is loaded by init_ice_driver after it performs some mapping of good/bad ICEs
 HOSTNAME=`hostname`
 FLAVOR=`echo $HOSTNAME | cut -d "[" -f2 | cut -d "]" -f1`
-init_ice_driver ${FLAVOR}
 
 #post_build will replace by start_spa_sa ot start_eph_ep
 . sph_start_placeholder 
+
+#initializing SPH card driver
+echo "initializing SPH card driver"
+insmod /opt/intel_nnpi/modules/sphcs.ko
+error_check "insmod sphcs.ko"
+
+export LD_LIBRARY_PATH=/usr/local/lib
+
+init_ice_driver ${FLAVOR}
+
+#register counters
+echo "initializing register counters"
+/opt/intel_nnpi/bin/sph_maintenance -reg_counters
+error_check "sph_maintenance"
+
+#start daemon
+echo "initializing daemon"
+/opt/intel_nnpi/bin/sph_daemon
+error_check "sph_daemon"

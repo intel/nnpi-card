@@ -22,10 +22,8 @@
 #include "cve_firmware.h"
 #include "ice_trace.h"
 
-#ifndef RING3_VALIDATION
 #include "ice_sw_counters.h"
-#endif
-
+#include "icedrv_internal_sw_counter_funcs.h"
 #include "ice_debug_event.h"
 
 int cve_device_init(struct cve_device *dev, int index)
@@ -86,12 +84,14 @@ int cve_device_init(struct cve_device *dev, int index)
 				"init_platform_data failed %d\n", retval);
 		goto init_platform_data_failed;
 	}
+
 	/* initialize trace specific fops*/
 	retval = init_icedrv_trace(dev);
 	if (retval != 0) {
 		cve_os_log(CVE_LOGLEVEL_WARNING,
 				"failed in init_icedrv_trace() %d\n", retval);
 	}
+
 	/* initialize ice debug event flow*/
 	retval = init_icedrv_debug_event();
 	if (retval != 0) {
@@ -102,17 +102,7 @@ int cve_device_init(struct cve_device *dev, int index)
 	/*Add to list of devices in the device group */
 	cve_dg_add_device(dev);
 
-#ifndef RING3_VALIDATION
-	retval = ice_swc_create_node(ICEDRV_SWC_CLASS_DEVICE,
-					dev->dev_index,
-					0,
-					&dev->hswc);
-	if (retval < 0) {
-		cve_os_log(CVE_LOGLEVEL_DEBUG,
-			"Unable to create SW Counter's Device node\n");
-		goto init_platform_data_failed;
-	}
-#endif
+	ice_swc_create_dev_node(dev);
 
 	/* success */
 	return 0;
@@ -128,11 +118,8 @@ void cve_device_clean(struct cve_device *dev)
 {
 	cve_dg_remove_device(dev);
 
-#ifndef RING3_VALIDATION
-	if (ice_swc_destroy_node(ICEDRV_SWC_CLASS_DEVICE, dev->dev_index))
-		cve_os_log(CVE_LOGLEVEL_ERROR,
-		"FAILED to delete the ICEDRV_SWC_CLASS_DEVICE SW Counter\n");
-#endif
+	ice_swc_destroy_dev_node(dev);
+
 	/* Remove ice debug event flow*/
 	term_icedrv_debug_event();
 

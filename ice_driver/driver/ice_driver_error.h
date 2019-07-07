@@ -84,7 +84,7 @@ enum ice_kerror_type {
 	/** ICE Power UP sequence failed */
 	ICEDRV_KERROR_ICE_DOWN, /* [1124] */
 	/** no free pool available */
-	ICEDRV_KERROR_ICEDC_POOL_BUSY, /* [1125] */
+	ICEDRV_KERROR_RR_POOL_BUSY, /* [1125] */
 	/** Device reset required */
 	ICEDRV_KERROR_CARD_RESET_NEEDED, /* [1126] */
 	/** Invalid Patch Point Type */
@@ -100,7 +100,15 @@ enum ice_kerror_type {
 	/** Infer buffer index is invalid */
 	ICEDRV_KERROR_INF_INDEX_INVAL_ID, /* [1132] */
 	/** Inference ID/Handle  is invalid */
-	ICEDRV_KERROR_INF_INVAL_ID /* [1133] */
+	ICEDRV_KERROR_INF_INVAL_ID, /* [1133] */
+	/** No free ICE available */
+	ICEDRV_KERROR_RR_ICE_BUSY, /* [1134] */
+	/** No free Counter available */
+	ICEDRV_KERROR_RR_COUNTERS_BUSY, /* [1135] */
+	/** Running out of CLOS space */
+	ICEDRV_KERROR_RR_CLOS_BUSY, /* [1136] */
+	/** Cannot allocate resource because other network is in queue */
+	ICEDRV_KERROR_RR_NETWORK_IN_QUEUE /* [1137] */
 };
 
 #endif /* _ICE_DRIVER_ERROR_H_ */

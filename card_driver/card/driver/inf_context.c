@@ -51,14 +51,17 @@ int inf_context_create(uint16_t             protocolID,
 {
 	struct inf_context *context;
 	struct periodic_timer_data periodic_timer_data;
+	char slab_name[16];
 	int ret;
 
 	context = kzalloc(sizeof(*context), GFP_KERNEL);
 	if (unlikely(context == NULL))
 		return -ENOMEM;
 
-	context->exec_req_slab_cache = kmem_cache_create("context_slabCache", sizeof(struct inf_exec_req),
-												0, SLAB_HWCACHE_ALIGN, NULL);
+	snprintf(slab_name, sizeof(slab_name), "sph_ctxslab%03d", protocolID);
+	context->exec_req_slab_cache = kmem_cache_create(slab_name,
+							 sizeof(struct inf_exec_req),
+							 0, SLAB_HWCACHE_ALIGN, NULL);
 	if (unlikely(context->exec_req_slab_cache == NULL)) {
 		sph_log_err(CREATE_COMMAND_LOG, "failed to create context slab cache\n");
 		ret = -ENOMEM;
@@ -207,14 +210,14 @@ static void release_context(struct kref *kref)
 
 	SPH_ASSERT(context->attached != 1);
 
+	kmem_cache_destroy(context->exec_req_slab_cache);
+
 	if (likely(context->destroyed))
 		sphcs_send_event_report(g_the_sphcs,
 					SPH_IPC_CONTEXT_DESTROYED,
 					0,
 					context->protocolID,
 					-1);
-
-	kmem_cache_destroy(context->exec_req_slab_cache);
 
 	kfree(context);
 }
@@ -558,8 +561,7 @@ void inf_context_add_sync_point(struct inf_context *context,
 int inf_context_create_devres(struct inf_context *context,
 			      uint16_t            protocolID,
 			      uint32_t            byte_size,
-			      int                 is_input,
-			      int                 is_output,
+			      uint32_t            usage_flags,
 			      struct inf_devres **out_devres)
 {
 	struct inf_create_resource cmd_args;
@@ -569,8 +571,7 @@ int inf_context_create_devres(struct inf_context *context,
 	ret = inf_devres_create(protocolID,
 				context,
 				byte_size,
-				is_input,
-				is_output,
+				usage_flags,
 				&devres);
 	if (unlikely(ret < 0))
 		return ret;
@@ -578,6 +579,7 @@ int inf_context_create_devres(struct inf_context *context,
 	/* place a create device resource command for the runtime */
 	cmd_args.drv_handle = (uint64_t)(uintptr_t)devres;
 	cmd_args.size = byte_size;
+	cmd_args.usage_flags = usage_flags;
 
 	SPH_SPIN_LOCK(&context->lock);
 	hash_add(context->devres_hash,
@@ -824,7 +826,7 @@ void inf_req_try_execute(struct inf_exec_req *req)
 
 	if (unlikely(err < 0)) {
 		if (req->is_copy)
-			inf_copy_req_complete(req, err);
+			inf_copy_req_complete(req, err, 0);
 		else
 			inf_req_complete(req, err);
 	}
@@ -914,4 +916,23 @@ void inf_context_remove_subres_load_session(struct inf_context *context, uint16_
 	SPH_SPIN_UNLOCK(&context->lock);
 }
 
+static inline void release_exec_req(struct kref *kref)
+{
+	struct inf_exec_req *req = container_of(kref,
+						struct inf_exec_req,
+						in_use);
 
+	if (req->is_copy)
+		inf_copy_req_release(req);
+	else
+		inf_req_release(req);
+}
+
+int inf_exec_req_get(struct inf_exec_req *req) {
+	return kref_get_unless_zero(&req->in_use);
+}
+
+int inf_exec_req_put(struct inf_exec_req *req)
+{
+	return kref_put(&req->in_use, release_exec_req);
+}

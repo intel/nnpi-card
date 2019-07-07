@@ -8,6 +8,7 @@
 #include <linux/kernel.h>
 #include <linux/slab.h>
 #include <linux/scatterlist.h>
+#include <linux/limits.h>
 #include "sphcs_cs.h"
 #include "sphcs_inf.h"
 #include "sph_log.h"
@@ -92,11 +93,15 @@ int host_page_list_dma_completed(struct sphcs *sphcs, void *ctx, const void *use
 		current_sgl = sg_next(current_sgl);
 	}
 
-	// might need to fix the size of last entry
-	// this is a bit confusing, need to remember that last entry in current page
-	// doesn't necessarily mean last in sg table. But last in sg table for sure
-	// means this is last enrty in the last page.
-	if (sg_is_last(current_sgl)) {
+	// This is a bit confusing, need to remember that: last entry
+	// in the current page doesn't necessarily mean last in sg table.
+	// But last in sg table for sure means this is last enrty
+	// in the last page.
+	if (i >= NENTS_PER_PAGE) { // Finished with this page
+		SPH_ASSERT(chain_header->size == total_entries_bytes);
+		dma_req_data->sgl_curr = current_sgl;
+	} else { // Still in the page and got to the last entry in sg table
+		SPH_ASSERT(sg_is_last(current_sgl));
 		SPH_ASSERT(chain_header->size > total_entries_bytes);
 		SPH_ASSERT(dma_src_addr == 0x0);
 		current_sgl->dma_address = SPH_IPC_DMA_PFN_TO_ADDR(chain_entry[i].dma_chunk_pfn);
@@ -104,9 +109,6 @@ int host_page_list_dma_completed(struct sphcs *sphcs, void *ctx, const void *use
 		// update the length of last entry
 		SPH_ASSERT(chain_entry[i].n_pages * SPH_PAGE_SIZE >= chain_header->size - total_entries_bytes);
 		current_sgl->length = chain_header->size - total_entries_bytes;
-	} else {
-		SPH_ASSERT(chain_header->size == total_entries_bytes);
-		dma_req_data->sgl_curr = current_sgl;
 	}
 
 	/* Finished to iterate the current page and update host sg table */
@@ -214,7 +216,7 @@ static int copy_complete_cb(struct sphcs *sphcs, void *ctx, const void *user_dat
 		err = 0;
 	}
 
-	inf_copy_req_complete(*((struct inf_exec_req **)user_data), err);
+	inf_copy_req_complete(*((struct inf_exec_req **)user_data), err, xferTimeUS);
 
 	return err;
 }
@@ -224,6 +226,7 @@ int inf_copy_create(uint16_t protocolCopyID, struct inf_context *context, struct
 {
 	struct copy_dma_command_data *dma_req_data;
 	dma_addr_t dma_src_addr;
+	struct inf_copy *copy;
 	int res;
 
 	inf_devres_get(devres);
@@ -235,33 +238,49 @@ int inf_copy_create(uint16_t protocolCopyID, struct inf_context *context, struct
 		return -ENOMEM;
 	}
 
-	dma_req_data->copy = kzalloc(sizeof(*dma_req_data->copy), GFP_KERNEL);
-	if (unlikely(dma_req_data->copy == NULL)) {
+	copy = kzalloc(sizeof(struct inf_copy), GFP_KERNEL);
+	if (unlikely(copy == NULL)) {
 		sph_log_err(CREATE_COMMAND_LOG, "FATAL: %s():%u failed to allocate copy object\n", __func__, __LINE__);
 		res = -ENOMEM;
 		inf_devres_put(devres);
 		goto free_dma_req;
 	}
 
-	kref_init(&dma_req_data->copy->ref);
-	dma_req_data->copy->magic = inf_copy_create;
-	dma_req_data->copy->protocolID = protocolCopyID;
-	dma_req_data->copy->context = context;
-	dma_req_data->copy->devres = devres;
-	dma_req_data->copy->card2Host = card2Host;
-	dma_req_data->copy->lli_buf = NULL;
-	dma_req_data->copy->destroyed = false;
+	dma_req_data->copy = copy;
+
+	kref_init(&copy->ref);
+	copy->magic = inf_copy_create;
+	copy->protocolID = protocolCopyID;
+	copy->context = context;
+	copy->devres = devres;
+	copy->card2Host = card2Host;
+	copy->lli_buf = NULL;
+	copy->destroyed = false;
+	copy->min_block_time = U64_MAX;
+	copy->max_block_time = 0;
+	copy->min_exec_time = U64_MAX;
+	copy->max_exec_time = 0;
+	copy->min_hw_exec_time = U64_MAX;
+	copy->max_hw_exec_time = 0;
 #ifdef _DEBUG
-	dma_req_data->copy->hostres_size = 0;
+	copy->hostres_size = 0;
 #endif
+
+	res = sph_create_sw_counters_values_node(g_hSwCountersInfo_copy,
+						 (u32)protocolCopyID,
+						 context->sw_counters,
+						 &copy->sw_counters);
+	if (unlikely(res < 0))
+		goto free_copy;
+
 
 	/* make sure the context will exist for the copy handle life */
 	inf_context_get(context);
-	SPH_SPIN_LOCK(&dma_req_data->copy->context->lock);
-	hash_add(dma_req_data->copy->context->copy_hash,
-		 &dma_req_data->copy->hash_node,
-		 dma_req_data->copy->protocolID);
-	SPH_SPIN_UNLOCK(&dma_req_data->copy->context->lock);
+	SPH_SPIN_LOCK(&copy->context->lock);
+	hash_add(copy->context->copy_hash,
+		 &copy->hash_node,
+		 copy->protocolID);
+	SPH_SPIN_UNLOCK(&copy->context->lock);
 
 	// get free page from pool to hold the page DMA'ed from host
 	res = dma_page_pool_get_free_page(g_the_sphcs->dma_page_pool,
@@ -270,7 +289,7 @@ int inf_copy_create(uint16_t protocolCopyID, struct inf_context *context, struct
 					  &dma_req_data->card_dma_addr);
 	if (unlikely(res < 0)) {
 		sph_log_err(CREATE_COMMAND_LOG, "FATAL: %s():%u err=%u failed to get free page for host dma page list\n", __func__, __LINE__, res);
-		goto free_copy;
+		goto free_sw_counters;
 	}
 	// get DMA from host address
 	dma_src_addr = hostDmaAddr;
@@ -278,7 +297,7 @@ int inf_copy_create(uint16_t protocolCopyID, struct inf_context *context, struct
 	dma_req_data->pages_count = 0;
 
 	// get ref to ensure copy will not be destoyed in the middle of create
-	inf_copy_get(dma_req_data->copy);
+	inf_copy_get(copy);
 	res = sphcs_dma_sched_start_xfer_single(g_the_sphcs->dmaSched,
 						&g_dma_desc_h2c_normal,
 						dma_src_addr,
@@ -293,15 +312,17 @@ int inf_copy_create(uint16_t protocolCopyID, struct inf_context *context, struct
 		goto free_page;
 	}
 
-	*out_copy = dma_req_data->copy;
+	*out_copy = copy;
 
 	return 0;
 
 free_page:
-	inf_copy_put(dma_req_data->copy);
+	inf_copy_put(copy);
 	dma_page_pool_set_page_free(g_the_sphcs->dma_page_pool, dma_req_data->card_dma_page_hndl);
+free_sw_counters:
+	sph_remove_sw_counters_values_node(copy->sw_counters);
 free_copy:
-	destroy_copy_on_create_failed(dma_req_data->copy);
+	destroy_copy_on_create_failed(copy);
 free_dma_req:
 	kfree(dma_req_data);
 
@@ -325,6 +346,8 @@ static void release_copy(struct work_struct *work)
 				0,
 				copy->context->protocolID,
 				copy->protocolID);
+
+	sph_remove_sw_counters_values_node(copy->sw_counters);
 
 	inf_context_put(copy->context);
 	inf_devres_put(copy->devres);
@@ -355,6 +378,18 @@ inline int inf_copy_put(struct inf_copy *copy)
 	return kref_put(&copy->ref, sched_release_copy);
 }
 
+void inf_copy_req_release(struct inf_exec_req *copy_req)
+{
+	SPH_ASSERT(copy_req->is_copy);
+
+	inf_devres_del_req_from_queue(copy_req->copy->devres, copy_req);
+	inf_context_seq_id_fini(copy_req->copy->context, &copy_req->seq);
+
+	inf_copy_put(copy_req->copy);
+	kmem_cache_free(copy_req->copy->context->exec_req_slab_cache,
+			copy_req);
+}
+
 int inf_copy_sched(struct inf_copy *copy, size_t size)
 {
 	int err;
@@ -368,12 +403,21 @@ int inf_copy_sched(struct inf_copy *copy, size_t size)
 
 	inf_copy_get(copy);
 
+	kref_init(&req->in_use);
 	spin_lock_init(&req->lock_irq);
 	req->in_progress = false;
 	req->is_copy = true;
 	req->copy = copy;
 	req->size = size;
+	req->time = 0;
 	inf_context_seq_id_init(req->copy->context, &req->seq);
+
+	if (SPH_SW_GROUP_IS_ENABLE(req->copy->sw_counters,
+				   COPY_SPHCS_SW_COUNTERS_GROUP)) {
+		req->time = sph_time_us();
+	}
+
+	inf_exec_req_get(req);
 
 	err = inf_devres_add_req_to_queue(copy->devres, req, copy->card2Host);
 	if (unlikely(err < 0)) {
@@ -386,6 +430,8 @@ int inf_copy_sched(struct inf_copy *copy, size_t size)
 
 	// First try to execute
 	inf_req_try_execute(req);
+
+	inf_exec_req_put(req);
 
 	return 0;
 }
@@ -412,6 +458,40 @@ int inf_copy_req_execute(struct inf_exec_req *copy_req)
 		   copy_req->copy->card2Host,
 		   copy_req->size ? copy_req->size : copy_req->copy->devres->size));
 
+	if (SPH_SW_GROUP_IS_ENABLE(copy_req->copy->sw_counters,
+				   COPY_SPHCS_SW_COUNTERS_GROUP)) {
+		u64 now;
+
+		now = sph_time_us();
+		if (copy_req->time) {
+			u64 dt;
+
+			dt = now - copy_req->time;
+			SPH_SW_COUNTER_ADD(copy_req->copy->sw_counters,
+					   COPY_SPHCS_SW_COUNTERS_BLOCK_TOTAL_TIME,
+					   dt);
+
+			SPH_SW_COUNTER_INC(copy_req->copy->sw_counters,
+					   COPY_SPHCS_SW_COUNTERS_BLOCK_COUNT);
+
+			if (dt < copy_req->copy->min_block_time) {
+				SPH_SW_COUNTER_SET(copy_req->copy->sw_counters,
+						   COPY_SPHCS_SW_COUNTERS_BLOCK_MIN_TIME,
+						   dt);
+				copy_req->copy->min_block_time = dt;
+			}
+
+			if (dt > copy_req->copy->max_block_time) {
+				SPH_SW_COUNTER_SET(copy_req->copy->sw_counters,
+						   COPY_SPHCS_SW_COUNTERS_BLOCK_MAX_TIME,
+						   dt);
+				copy_req->copy->max_block_time = dt;
+			}
+		}
+		copy_req->time = now;
+	} else
+		copy_req->time = 0;
+
 	if (copy_req->copy->card2Host)
 		desc = &g_dma_desc_c2h_high_nowait;
 	else
@@ -431,7 +511,7 @@ int inf_copy_req_execute(struct inf_exec_req *copy_req)
 					  &copy_req, sizeof(copy_req));
 }
 
-void inf_copy_req_complete(struct inf_exec_req *req, int err)
+void inf_copy_req_complete(struct inf_exec_req *req, int err, u32 xferTimeUS)
 {
 	uint16_t status;
 	enum event_val eventVal;
@@ -445,6 +525,58 @@ void inf_copy_req_complete(struct inf_exec_req *req, int err)
 		   req->copy->protocolID,
 		   req->copy->card2Host,
 		   req->size ? req->size : req->copy->devres->size));
+
+	if (SPH_SW_GROUP_IS_ENABLE(req->copy->sw_counters,
+				   COPY_SPHCS_SW_COUNTERS_GROUP)) {
+		u64 now;
+
+		now = sph_time_us();
+		if (req->time) {
+			u64 dt;
+
+			dt = now - req->time;
+			SPH_SW_COUNTER_ADD(req->copy->sw_counters,
+					   COPY_SPHCS_SW_COUNTERS_EXEC_TOTAL_TIME,
+					   dt);
+
+			SPH_SW_COUNTER_INC(req->copy->sw_counters,
+					   COPY_SPHCS_SW_COUNTERS_EXEC_COUNT);
+
+			if (dt < req->copy->min_exec_time) {
+				SPH_SW_COUNTER_SET(req->copy->sw_counters,
+						   COPY_SPHCS_SW_COUNTERS_EXEC_MIN_TIME,
+						   dt);
+				req->copy->min_exec_time = dt;
+			}
+
+			if (dt > req->copy->max_exec_time) {
+				SPH_SW_COUNTER_SET(req->copy->sw_counters,
+						   COPY_SPHCS_SW_COUNTERS_EXEC_MAX_TIME,
+						   dt);
+				req->copy->max_exec_time = dt;
+			}
+
+			SPH_SW_COUNTER_ADD(req->copy->sw_counters,
+					   COPY_SPHCS_SW_COUNTERS_HWEXEC_TOTAL_TIME,
+					   xferTimeUS);
+
+			if (xferTimeUS < req->copy->min_hw_exec_time) {
+				SPH_SW_COUNTER_SET(req->copy->sw_counters,
+						   COPY_SPHCS_SW_COUNTERS_HWEXEC_MIN_TIME,
+						   xferTimeUS);
+				req->copy->min_hw_exec_time = xferTimeUS;
+			}
+
+			if (xferTimeUS > req->copy->max_hw_exec_time) {
+				SPH_SW_COUNTER_SET(req->copy->sw_counters,
+						   COPY_SPHCS_SW_COUNTERS_HWEXEC_MAX_TIME,
+						   xferTimeUS);
+				req->copy->max_hw_exec_time = xferTimeUS;
+			}
+		}
+	}
+	req->time = 0;
+
 
 	if (unlikely(err < 0)) {
 		sph_log_err(EXECUTE_COMMAND_LOG, "Execute copy failed with err=%d\n", err);
@@ -475,9 +607,5 @@ void inf_copy_req_complete(struct inf_exec_req *req, int err)
 
 	req->copy->active = false;
 
-	inf_devres_del_req_from_queue(req->copy->devres, req);
-
-	inf_context_seq_id_fini(req->copy->context, &req->seq);
-	inf_copy_put(req->copy);
-	kmem_cache_free(req->copy->context->exec_req_slab_cache, req);
+	inf_exec_req_put(req);
 }

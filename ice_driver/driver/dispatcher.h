@@ -33,6 +33,13 @@ enum pool_status {
 	POOL_EXHAUSTED
 };
 
+struct resource_info {
+	u32 num_ice;
+	u32 num_cntr;
+	u32 num_pool;
+	u32 clos[ICE_CLOS_MAX];
+};
+
 /*
  * starts a connection channel with a user
  * inputs :
@@ -44,6 +51,7 @@ enum pool_status {
  */
 int cve_ds_open_context(
 		cve_context_process_id_t context_pid,
+		int64_t obj_id,
 		u64 *out_context_id);
 
 /*
@@ -92,6 +100,12 @@ int cve_ds_handle_destroy_infer(
 		cve_context_id_t context_id,
 		cve_network_id_t ntw_id,
 		cve_infer_id_t inf_id);
+
+int cve_ds_handle_manage_resource(
+		cve_context_process_id_t context_pid,
+		cve_context_id_t context_id,
+		cve_network_id_t ntw_id,
+		struct ice_resource_request *rreq);
 
 int cve_ds_handle_destroy_network(
 		cve_context_process_id_t context_pid,

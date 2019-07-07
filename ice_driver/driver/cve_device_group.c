@@ -20,14 +20,10 @@
 #include "dispatcher.h"
 #include "device_interface.h"
 
-#ifndef RING3_VALIDATION
 #include "ice_sw_counters.h"
-#endif
 
 static struct cve_device_groups_config config_param_single_dg_all_dev =
 		DG_CONFIG_SINGLE_GROUP_ALL_DEVICES;
-
-#define PLATFORM_LLC_SIZE (8*1024*1024)
 
 struct cve_device_group *g_cve_dev_group_list;
 
@@ -344,6 +340,28 @@ out:
 	return retval;
 }
 
+static void __init_clos_manager(struct clos_manager *mclos)
+{
+	u32 i;
+
+	mclos->size = CLOS_MAX_SIZE;
+	mclos->free = (CLOS_MAX_SIZE - CLOS_0_SIZE);
+
+	mclos->clos_size[ICE_CLOS_0] = CLOS_0_SIZE;
+	mclos->clos_free[ICE_CLOS_0] = 0;
+
+	for (i = ICE_CLOS_1; i < ICE_CLOS_MAX; i++) {
+		mclos->clos_size[i] = 0;
+		mclos->clos_free[i] = 0;
+	}
+
+	for (i = 0; i < CLOS_2_ARRAY_SIZE; i++)
+		mclos->clos2_reqs[i] = CLOS_INVALID_SIZE;
+
+	mclos->clos2_idx =  mclos->clos_size[ICE_CLOS_0];
+	mclos->clos1_idx = CLOS_MAX_SIZE;
+}
+
 int ice_kmd_create_dg(void)
 {
 	int retval = CVE_DEFAULT_ERROR_CODE;
@@ -404,9 +422,9 @@ int ice_kmd_create_dg(void)
 	device_group->expected_devices_nr =
 			config->groups[i].devices_nr;
 	device_group->dev_info.active_device_nr = 0;
-	device_group->llc_size = config->groups[i].llc_size;
-	device_group->available_llc = device_group->llc_size;
 	device_group->icedc_state = ICEDC_STATE_NO_ERROR;
+
+	__init_clos_manager(&device_group->dg_clos_manager);
 
 	cve_os_log(CVE_LOGLEVEL_DEBUG,
 			"Added device group %d\n",
@@ -501,11 +519,9 @@ int cve_dg_add_device(struct cve_device *cve_dev)
 
 			cve_dev->dg = p;
 
-#ifndef RING3_VALIDATION
 			ice_swc_counter_set(g_sph_swc_global,
 				ICEDRV_SWC_GLOBAL_ACTIVE_ICE_COUNT,
 				p->dev_info.active_device_nr);
-#endif
 
 			/* indicate success */
 			retval = 0;
@@ -603,7 +619,7 @@ void cve_dg_print(struct cve_device_group *group)
 			group->dev_info.active_device_nr);
 	cve_os_log(CVE_LOGLEVEL_DEBUG,
 			"Device Group: llc_size=%d\n",
-			group->llc_size);
+			group->dg_clos_manager.size);
 
 	/* print dispatch data lists */
 	print_wq_ds_data(group);

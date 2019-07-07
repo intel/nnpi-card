@@ -36,9 +36,9 @@
 			SW_RESET
 		};
 	#endif
-	#include "ice_sw_counters.h"
 #endif
 
+#include "ice_sw_counters.h"
 #include <mmio_hub_regs.h>
 #include <ice_mmu_inner_regs.h>
 #include <cve_delphi_cfg_regs.h>
@@ -348,7 +348,6 @@ int do_reset_device(struct cve_device *cve_dev, uint8_t idc_reset)
 	notify_ice_mask = value;
 
 	if (idc_reset) {
-
 		cve_os_dev_log(CVE_LOGLEVEL_DEBUG,
 			cve_dev->dev_index,
 			"Performing IDC Reset\n");
@@ -362,16 +361,9 @@ int do_reset_device(struct cve_device *cve_dev, uint8_t idc_reset)
 
 		/* Check if ICEs are Ready */
 		/* Driver is not yet sure how long to wait for ICERDY */
-		while (1) {
-			value = cve_os_read_idc_mmio(cve_dev,
-				IDC_REGS_IDC_MMIO_BAR0_MEM_ICERDY_MMOFFSET);
-			if ((value & mask) == mask)
-				break;
-			usleep_range(100, 500);
-		}
-
+		__wait_for_ice_rdy(cve_dev, value, mask);
 		if ((value & mask) != mask) {
-			cve_os_log(CVE_LOGLEVEL_ERROR,
+			cve_os_log_default(CVE_LOGLEVEL_ERROR,
 				"Initialization of ICE-%d failed\n",
 				cve_dev->dev_index);
 			return -1;
@@ -463,15 +455,6 @@ void store_ecc_err_count(struct cve_device *cve_dev)
 			ICEDRV_SWC_INFER_DEVICE_COUNTER_UNMAPPED_ERR_ID,
 			unmapped_err.field.TID_ERR);
 	}
-#else
-	cve_os_read_mmio_32_force_print(cve_dev,
-			CVE_MMIO_HUB_ECC_SERRCOUNT_MMOFFSET);
-	cve_os_read_mmio_32_force_print(cve_dev,
-			CVE_MMIO_HUB_ECC_DERRCOUNT_MMOFFSET);
-	cve_os_read_mmio_32_force_print(cve_dev,
-			CVE_MMIO_HUB_PARITY_ERRCOUNT_MMOFFSET);
-	cve_os_read_mmio_32_force_print(cve_dev,
-			CVE_MMIO_HUB_UNMAPPED_ERR_ID_MMOFFSET);
 #endif
 }
 

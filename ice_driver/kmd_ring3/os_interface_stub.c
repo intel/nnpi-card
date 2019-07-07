@@ -72,6 +72,7 @@ u32 disable_embcb;
 u32 core_mask;
 bool print_debug;
 static u32 icemask;
+u32 block_mmu;
 
 /* log file */
 static FILE* pLogStream = NULL;
@@ -139,6 +140,37 @@ struct timer_desc {
 	cve_timer_param_t param;
 };
 static struct timer_desc *m_timer_desc = NULL;
+
+void ice_os_update_clos(void *pmclos)
+{
+#ifdef _DEBUG
+	u32 lo;
+	u32 clos_shift;
+	struct clos_manager *mclos = (struct clos_manager *)pmclos;
+
+	/* CLOS 0 */
+	lo = (1 << mclos->clos_size[0]) - 1;
+	cve_os_log(CVE_LOGLEVEL_DEBUG, "CLOS0=0x%llx\n",
+		lo);
+
+	/* CLOS 1 */
+	clos_shift = (24 - mclos->clos_size[1]);
+	lo = ((1 << mclos->clos_size[1]) - 1) << clos_shift;
+	cve_os_log(CVE_LOGLEVEL_DEBUG, "CLOS1=0x%llx\n",
+		lo);
+
+	/* CLOS 2 */
+	clos_shift = mclos->clos_size[0];
+	lo = ((1 << mclos->clos_size[2]) - 1) << clos_shift;
+	cve_os_log(CVE_LOGLEVEL_DEBUG, "CLOS2=0x%llx\n",
+		lo);
+
+	/* IA32_PQR_ASSOC.COS */
+	lo = 0x0;
+	cve_os_log(CVE_LOGLEVEL_DEBUG, "IA32_PQR_ASSOC=0x%llx\n",
+		lo);
+#endif
+}
 
 int request_firmware(const struct firmware **fw,
 		const char *filename,
@@ -755,6 +787,7 @@ int cve_ioctl_misc(int fd, int request, struct cve_ioctl_param *param)
 		cve_os_log(CVE_LOGLEVEL_DEBUG,
 				"Simulation mode - CVE_IOCTL_CREATE_CONTEXT\n");
 		retval = cve_ds_open_context(context_pid,
+				param->create_context.obj_id,
 				(uint64_t *)&param->create_context.out_contextid);
 		break;
 	case CVE_IOCTL_DESTROY_CONTEXT:
@@ -804,6 +837,14 @@ int cve_ioctl_misc(int fd, int request, struct cve_ioctl_param *param)
 				param->destroy_infer.contextid,
 				param->destroy_infer.networkid,
 				param->destroy_infer.inferid);
+		break;
+	case CVE_IOCTL_MANAGE_RESOURCE:
+		cve_os_log(CVE_LOGLEVEL_DEBUG,
+				"Simulation mode - CVE_IOCTL_MANAGE_RESOURCE\n");
+		retval = cve_ds_handle_manage_resource(context_pid,
+				param->manage_resource.contextid,
+				param->manage_resource.networkid,
+				&param->manage_resource.resource);
 		break;
 	case CVE_IOCTL_LOAD_FIRMWARE:
 		cve_os_log(CVE_LOGLEVEL_DEBUG,

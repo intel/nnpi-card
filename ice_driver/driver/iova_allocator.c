@@ -104,7 +104,7 @@ int cve_iova_allocator_init(u32 bottom,
 
 	retval = init_allocator_list(allocator, bottom, top);
 	if (retval != 0) {
-		cve_os_log(CVE_LOGLEVEL_ERROR,
+		cve_os_log_default(CVE_LOGLEVEL_ERROR,
 				"init_allocator_list failed %d\n", retval);
 		goto out;
 	}
@@ -132,7 +132,7 @@ int cve_iova_alloc(cve_iova_allocator_handle_t _allocator,
 	int found = 0;
 
 	if (cve_pages_nr == 0) {
-		cve_os_log(CVE_LOGLEVEL_ERROR,
+		cve_os_log_default(CVE_LOGLEVEL_ERROR,
 				"illegal number of pages %u\n", cve_pages_nr);
 		retval = -EINVAL;
 		goto out;
@@ -146,7 +146,7 @@ int cve_iova_alloc(cve_iova_allocator_handle_t _allocator,
 					free_node->end - free_node->start;
 
 			if (free_node->end <= free_node->start) {
-				cve_os_log(CVE_LOGLEVEL_ERROR,
+				cve_os_log_default(CVE_LOGLEVEL_ERROR,
 						"start=%u end=%u\n",
 						free_node->start,
 						free_node->end);
@@ -288,7 +288,7 @@ int cve_iova_free(cve_iova_allocator_handle_t _allocator,
 	cve_iova_print_free_list(allocator);
 
 	if (cve_pages_nr == 0) {
-		cve_os_log(CVE_LOGLEVEL_ERROR,
+		cve_os_log_default(CVE_LOGLEVEL_ERROR,
 				"illegal number of pages %u\n", cve_pages_nr);
 		retval = -EINVAL;
 		goto out;
@@ -296,7 +296,7 @@ int cve_iova_free(cve_iova_allocator_handle_t _allocator,
 
 	if ((first_page_iova < allocator->bottom) ||
 			(first_page_iova + cve_pages_nr > allocator->top)) {
-		cve_os_log(CVE_LOGLEVEL_ERROR,
+		cve_os_log_default(CVE_LOGLEVEL_ERROR,
 				"range out of bound %u(%u)\n"
 				, first_page_iova, cve_pages_nr);
 		retval = -EINVAL;
@@ -312,7 +312,7 @@ int cve_iova_free(cve_iova_allocator_handle_t _allocator,
 				first_page_iova,
 				first_page_iova + cve_pages_nr);
 		if (retval != 0) {
-			cve_os_log(CVE_LOGLEVEL_ERROR,
+			cve_os_log_default(CVE_LOGLEVEL_ERROR,
 					"init_allocator_list failed %d\n"
 					, retval);
 			goto out;
@@ -446,7 +446,7 @@ int cve_iova_free(cve_iova_allocator_handle_t _allocator,
 				/* trying to reclaim a
 				 * region that is already free
 				 */
-				cve_os_log(CVE_LOGLEVEL_ERROR,
+				cve_os_log_default(CVE_LOGLEVEL_ERROR,
 						"reclaiming non-distinct region 1 %u(%u)\n",
 						first_page_iova,
 						cve_pages_nr);
@@ -458,7 +458,7 @@ int cve_iova_free(cve_iova_allocator_handle_t _allocator,
 				/* trying to reclaim a
 				 * region that is already free
 				 */
-				cve_os_log(CVE_LOGLEVEL_ERROR,
+				cve_os_log_default(CVE_LOGLEVEL_ERROR,
 						"reclaiming non-distinct region 2 %u(%u)\n",
 						first_page_iova,
 						cve_pages_nr);

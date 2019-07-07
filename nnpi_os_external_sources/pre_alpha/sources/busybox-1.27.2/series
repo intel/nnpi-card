@@ -1,7 +1,0 @@
-0001-networking-libiproute-use-linux-if_packet.h-instead-.patch
-0002-Makefile.flags-strip-non-l-arguments-returned-by-pkg.patch
-0003-Makefile-include-per-arch-Makefile-before-Makefile.f.patch
-0004-arch-sparc-sparc64-Makefile-define-ARCH_FPIC.patch
-0005-httpd-fix-handling-of-range-requests.patch
-0006-bunzip2-fix-runCnt-overflow-from-bug-10431.patch
-0007-unlzma-fix-SEGV-closes-10436.patch

@@ -2,7 +2,8 @@
 
 set -x
 
-KVER=4.15.9
+KVER=5.1
+KVER_REAL=5.1.0
 ROOTFS_PATH=$1
 BUILD_FLAVOUR=$4
 BUILD_FLAVOUR_LC=${BUILD_FLAVOUR,,}
@@ -16,9 +17,14 @@ KERNEL_HEADERS_DIR="$BUILD_DIR/linux-headers-$KVER"
 TOOLCHAIN_DIR="$HOST_DIR"
 echo "PWD="$PWD
 
-
 THIS_MANIFEST_BASE_PATH=${PWD}/../../../
 PLATFORM_KERNEL_AUTO=${PWD}/../../automation/
+
+if [ "${BUILD_CONFIGURATION}" == "sph_sa" ]
+then
+	EXTRA_DIR=${PLATFORM_KERNEL_AUTO}extra
+fi
+
 pushd ${PLATFORM_KERNEL_AUTO}
 . common_defs.sh  -f ${BUILD_FLAVOUR_LC}
 curr_maj_ver=`grep BR2_TARGET_GENERIC_ISSUE $DEFCONFIG_SIMICS_SRC_PATH | sed "s/\(BR2_TARGET_GENERIC_ISSUE=\"Welcome\ to\ SPH\ OS\ -\ V\)\([0-9]*\).\([0-9]*\).*/\2/"`
@@ -28,16 +34,22 @@ VANILLA_VER_TAG="V$curr_maj_ver.$curr_min_ver.$curr_ver"
 popd
 ARTIFACTS_BASE_PATH=${THIS_MANIFEST_BASE_PATH}/release_artifacts
 REL_ART_PLAT_SW_BASE_PATH=${ARTIFACTS_BASE_PATH}/platform_sw/build_artifact/${BUILD_CONFIGURATION}/${BUILD_FLAVOUR}
+REL_ART_INFERENCE_API_BASE_PATH=${ARTIFACTS_BASE_PATH}/inference_api/build_artifact/${BUILD_CONFIGURATION}/${BUILD_FLAVOUR^}
 
 #Platform SW
 CARD_DRIVER_ARTIFACT=*${BUILD_CONFIGURATION}-card_driver.tar.gz
 CARD_TEST_ARTIFACT=*${BUILD_CONFIGURATION}-card_tests.tar.gz
+CARD_SDK_ARTIFACT=*${BUILD_CONFIGURATION}-card_sdk.tar.gz
 HOST_DRIVER_ARTIFACT=*${BUILD_CONFIGURATION}-host_driver.tar.gz
 HOST_TEST_ARTIFACT=*${BUILD_CONFIGURATION}-host_tests.tar.gz
+HOST_SDK_ARTIFACT=*${BUILD_CONFIGURATION}-host_sdk.tar.gz
+
 #inferene API
 INFERENCE_API_ARTIFACT_PATH=${ARTIFACTS_BASE_PATH}/inference_api/build_artifact/${BUILD_CONFIGURATION}/${BUILD_FLAVOUR}
 INFERENCE_API_DRIVER=*-${BUILD_CONFIGURATION}-host_driver_inf_api.tar.gz
 INFERENCE_API_TESTS=*-${BUILD_CONFIGURATION}-host_tests_inf_api.tar.gz
+INFERENCE_API_LIGHT_TESTS=tests_inputs_light.tar.gz
+INFERENCE_API_HOST_INCLUDE=*-host_include_inf_api.tar.gz
 
 #Firmware
 FIRMWARE_ARTIFACT=${ARTIFACTS_BASE_PATH}/fw_pkgs/build_artifact/ice_driver_fw_pkg_rtl_${BUILD_FLAVOUR_LC}*.tar.gz
@@ -54,15 +66,24 @@ ICE_DRIVER_USER_LIBS_ARTIFACT=${ARTIFACTS_BASE_PATH}/driver_user/build_artifact/
 #runtime
 RUNTIME_ARTIFACT=${ARTIFACTS_BASE_PATH}/runtime/build_artifact/${BUILD_CONFIGURATION}/${BUILD_FLAVOUR}/sph_runtime_*_${BUILD_CONFIGURATION}_${BUILD_FLAVOUR}.tar.gz
 RUNTIME_TEST=${ARTIFACTS_BASE_PATH}/runtime/build_artifact/${BUILD_CONFIGURATION}/${BUILD_FLAVOUR}/runtime_test_*_${BUILD_CONFIGURATION}_${BUILD_FLAVOUR}.tar.gz
+VIRUS_RUNTIME_TEST=${ARTIFACTS_BASE_PATH}/runtime/build_artifact/${BUILD_CONFIGURATION}/${BUILD_FLAVOUR}/tests_inputs_virus.tar.gz
+
+# Tools
+PTU_TOOL_ARTIFACT=${ARTIFACTS_BASE_PATH}/ptu/PTU_*.tar.gz
 
 function add_line_to_file() {
 	line=$1
 	file=$2
-	n=`grep -x -F "${line}" "${file}" | wc -l`
-	if [ "${n}" -eq "0" ]; then
-		echo "Adding ${line} into ${file}"
-		echo "${line}">>"${file}"
-	fi	
+	if [ -f "${file}" ]; then
+		n=`grep -x -F "${line}" "${file}" | wc -l`
+		if [ "${n}" -eq "0" ]; then
+			echo "Adding ${line} into ${file}"
+			echo "${line}">>"${file}"
+		fi
+	else
+		echo "add_line_to_file ${line} ${file} failed (file not found)"	
+		read -p "Press Enter..."
+	fi
 }
 function check_success() {
 	retcode=$1
@@ -100,9 +121,9 @@ touch ${VERSION_PATH}
 
 # prepare ingredients on rootfs image
 
-if [ ! -d ${ROOTFS_PATH}/lib/modules/${KVER}/extra ]; then
+if [ ! -d ${ROOTFS_PATH}/lib/modules/${KVER_REAL}/extra ]; then
 	echo "Creating directory for our kernel modules"
-	mkdir -p ${ROOTFS_PATH}/lib/modules/${KVER}/extra
+	mkdir -p ${ROOTFS_PATH}/lib/modules/${KVER_REAL}/extra
 fi
 
 if [ ! -d "${ROOTFS_PATH}/usr/sbin/" ]; then
@@ -118,7 +139,8 @@ mkdir -p ${ROOTFS_PATH}/usr/local/lib
 mkdir -p ${ROOTFS_PATH}/opt/intel_nnpi/bin
 mkdir -p ${ROOTFS_PATH}/opt/intel_nnpi/lib
 mkdir -p ${ROOTFS_PATH}/opt/intel_nnpi/modules
-mkdir -p ${ROOTFS_PATH}/lib/modules/${KVER}/extra
+mkdir -p ${ROOTFS_PATH}/opt/intel_nnpi/bit
+# mkdir -p ${ROOTFS_PATH}/lib/modules/${KVER}/extra
 
 add_line_to_file "FULL_STACK SPH_OS ${BUILD_CONFIGURATION} ${FULL_STACK_VER_TAG}" ${VERSION_PATH}
 add_line_to_file "SPH_OS VANILLA ${VANILLA_VER_TAG}" ${VERSION_PATH}
@@ -126,9 +148,24 @@ add_line_to_file "SPH_OS VANILLA ${VANILLA_VER_TAG}" ${VERSION_PATH}
 add_line_to_file "PLATFORM_SW"  ${VERSION_PATH}
 #platform sw
 if [ "${BUILD_CONFIGURATION}" == "sph_sa" ]; then
-	PLAT_SW_TAR_PATH_ARR=(${CARD_DRIVER_ARTIFACT} ${CARD_TEST_ARTIFACT} ${HOST_DRIVER_ARTIFACT} ${HOST_TEST_ARTIFACT})
+	PLAT_SW_TAR_PATH_ARR=(${CARD_DRIVER_ARTIFACT} ${CARD_TEST_ARTIFACT} ${CARD_SDK_ARTIFACT} ${HOST_DRIVER_ARTIFACT} ${HOST_TEST_ARTIFACT} ${HOST_SDK_ARTIFACT})
+
+    echo "create sdk directory"
+    mkdir -p ${EXTRA_DIR}
+    echo "unpack to sdk dir"
+    echo ${REL_ART_PLAT_SW_BASE_PATH}/${HOST_SDK_ARTIFACT}
+    echo ${REL_ART_PLAT_SW_BASE_PATH}/${CARD_SDK_ARTIFACT}
+    echo ${REL_ART_INFERENCE_API_BASE_PATH}/${INFERENCE_API_HOST_INCLUDE}
+
+    tar -xvf ${REL_ART_PLAT_SW_BASE_PATH}/${HOST_SDK_ARTIFACT} -C ${EXTRA_DIR}
+    tar -xvf ${REL_ART_PLAT_SW_BASE_PATH}/${CARD_SDK_ARTIFACT} -C ${EXTRA_DIR}
+    tar -xvf ${REL_ART_INFERENCE_API_BASE_PATH}/${INFERENCE_API_HOST_INCLUDE} -C ${EXTRA_DIR}
 else
-	PLAT_SW_TAR_PATH_ARR=(${CARD_DRIVER_ARTIFACT} ${CARD_TEST_ARTIFACT})
+        if [ "${BUILD_FLAVOUR}" == "Debug" ]; then
+           PLAT_SW_TAR_PATH_ARR=(${CARD_DRIVER_ARTIFACT} ${CARD_TEST_ARTIFACT} ${CARD_SDK_ARTIFACT})
+        else
+           PLAT_SW_TAR_PATH_ARR=(${CARD_DRIVER_ARTIFACT} ${CARD_SDK_ARTIFACT})
+        fi
 fi
 #PLAT_SW_UNTAR_DEST_PATH=${ROOTFS_PATH}/sph_tmp/platform
 #platform SW is untarred to /opt/sph/{bin,modules}
@@ -152,23 +189,33 @@ find ${ROOTFS_PATH}/opt/intel_nnpi/bin -type f -exec chmod a+x {} \;
 PLAT_SW_KO_MODS_ARR=(sph_local sphcs nnpi_eth sphdrv)
 for ko_mod in "${PLAT_SW_KO_MODS_ARR[@]}"
 do
-	add_line_to_file "extra/${ko_mod}.ko:" "${ROOTFS_PATH}/lib/modules/${KVER}/modules.dep"
-done 
+	add_line_to_file "extra/${ko_mod}.ko:" "${ROOTFS_PATH}/lib/modules/${KVER_REAL}/modules.dep"
+done
+
+pushd ${INFERENCE_API_ARTIFACT_PATH}
+filename=$(ls $INFERENCE_API_DRIVER)
+ver_file=$(basename -- "$filename")
+add_line_to_file "INFERENCE_API"  ${VERSION_PATH}
+ver_file=$(echo "$ver_file" | sed 's/\.tar.gz//g')
+echo $ver_file
+add_line_to_file $ver_file  ${VERSION_PATH}
+tar -xvzf ${filename} -C ${ROOTFS_PATH}
+check_success "$?" "tar -xvzf" "${filename}" 
 
 #inference api
 if [ "${BUILD_CONFIGURATION}" == "sph_sa" ]; then
-	pushd ${INFERENCE_API_ARTIFACT_PATH}
-	filename=$(ls $INFERENCE_API_DRIVER)
+	filename=$(ls $INFERENCE_API_TESTS)
 	ver_file=$(basename -- "$filename")
-	add_line_to_file "INFERENCE_API"  ${VERSION_PATH}
+	add_line_to_file "INFERENCE_API_TESTS"  ${VERSION_PATH}
 	ver_file=$(echo "$ver_file" | sed 's/\.tar.gz//g')
 	echo $ver_file
 	add_line_to_file $ver_file  ${VERSION_PATH}
 	tar -xvzf ${filename} -C ${ROOTFS_PATH}
 	check_success "$?" "tar -xvzf" "${filename}" 
-	filename=$(ls $INFERENCE_API_TESTS)
+
+        filename=$(ls $INFERENCE_API_LIGHT_TESTS)
 	ver_file=$(basename -- "$filename")
-	add_line_to_file "INFERENCE_API_TESTS"  ${VERSION_PATH}
+	add_line_to_file "INFERENCE_API_LIGHT_TESTS"  ${VERSION_PATH}
 	ver_file=$(echo "$ver_file" | sed 's/\.tar.gz//g')
 	echo $ver_file
 	add_line_to_file $ver_file  ${VERSION_PATH}
@@ -179,8 +226,8 @@ if [ "${BUILD_CONFIGURATION}" == "sph_sa" ]; then
 	chmod 755 ${ROOTFS_PATH}/opt/intel_nnpi/bin/tests
 	chmod 755 ${ROOTFS_PATH}/opt/intel_nnpi/bin/genericTests
 	chmod 755 ${ROOTFS_PATH}/opt/intel_nnpi/artifacts
-	popd
 fi
+popd
 
 #firmware
 add_line_to_file "FIRMWARE"  ${VERSION_PATH}
@@ -220,7 +267,7 @@ add_line_to_file $ver_file  ${VERSION_PATH}
 tar -xvzf ${filename} -C ${ROOTFS_PATH}
 check_success "$?" "tar -xvzf" "${filename}" 
 
-add_line_to_file "extra/intel_nnpi.ko:" "${ROOTFS_PATH}/lib/modules/${KVER}/modules.dep"
+add_line_to_file "extra/intel_nnpi.ko:" "${ROOTFS_PATH}/lib/modules/${KVER_REAL}/modules.dep"
 ver_file=$(basename -- "$ICE_DRIVER_USER_ARTIFACT")
 
 add_line_to_file "ICE DRIVER USER"  ${VERSION_PATH}
@@ -238,9 +285,9 @@ filename=$(ls $ICE_DRIVER_USER_TESTS_ARTIFACT)
 ver_file=$(basename -- "$filename")
 ver_file=$(echo "$ver_file" | sed 's/\.tar.gz//g')
 add_line_to_file $ver_file  ${VERSION_PATH}
-
 tar -xvzf $filename -C ${ROOTFS_PATH}
 check_success "$?" "tar -xvzf" "${filename}" 
+
 #runtime 
 tar -xvf ${RUNTIME_ARTIFACT} -C ${ROOTFS_PATH}
 check_success "$?" "tar -xvf" "${RUNTIME_ARTIFACT}" 
@@ -250,15 +297,37 @@ add_line_to_file "RUNTIME"  ${VERSION_PATH}
 ver_file=$(echo "$ver_file" | sed 's/\.tar.gz//g')
 add_line_to_file $ver_file  ${VERSION_PATH}
 
-tar -xvf ${RUNTIME_TEST} -C ${ROOTFS_PATH}
-check_success "$?" "tar -xvf" "${RUNTIME_TEST}" 
+if [[ ( "${BUILD_CONFIGURATION}" == "sph_sa" ) ||  ( "${BUILD_CONFIGURATION}" == "sph_ep" && "${BUILD_FLAVOUR}" == "Debug" ) ]]; then
+   tar -xvf ${RUNTIME_TEST} -C ${ROOTFS_PATH}
+   check_success "$?" "tar -xvf" "${RUNTIME_TEST}" 
+   ver_file=$(basename -- "$RUNTIME_TEST")
+   add_line_to_file "RUNTIME_TEST"  ${VERSION_PATH}
+   ver_file=$(echo "$ver_file" | sed 's/\.tar.gz//g')
+   add_line_to_file $ver_file  ${VERSION_PATH}
+   chmod +x ${ROOTFS_PATH}/opt/intel_nnpi/bin/sph_runtime
+fi
 
-ver_file=$(basename -- "$RUNTIME_TEST")
-add_line_to_file "RUNTIME_TEST"  ${VERSION_PATH}
+tar -xvf ${VIRUS_RUNTIME_TEST} -C ${ROOTFS_PATH}
+check_success "$?" "tar -xvf" "${VIRUS_RUNTIME_TEST}" 
+ver_file=$(basename -- "$VIRUS_RUNTIME_TEST")
+add_line_to_file "VIRUS_RUNTIME_TEST"  ${VERSION_PATH}
 ver_file=$(echo "$ver_file" | sed 's/\.tar.gz//g')
 add_line_to_file $ver_file  ${VERSION_PATH}
 
-chmod +x ${ROOTFS_PATH}/opt/intel_nnpi/bin/sph_runtime
+tar -xvf ${PTU_TOOL_ARTIFACT} -C ${ROOTFS_PATH}/opt/intel_nnpi/bit/
+check_success "$?" "tar -xvf" "${PTU_TOOL_ARTIFACT}"
+ver_file=$(basename -- "$PTU_TOOL_ARTIFACT")
+add_line_to_file "PTU_TOOL"  ${VERSION_PATH}
+ver_file=$(echo "$ver_file" | sed 's/\.tar.gz//g')
+add_line_to_file $ver_file  ${VERSION_PATH}
+
+# Remove release notes
+RELEASE_NOTES=${ROOTFS_PATH}/opt/intel_nnpi/bit/release_notes.txt
+if [[ -f "${RELEASE_NOTES}" ]]; then
+    echo "Remove release notes"
+    rm ${RELEASE_NOTES}
+fi
+
 
 if [ "${BUILD_CONFIGURATION}" == "sph_sa" ]; then
 	sed -i 's/sph_memalloc_placeholder/memalloc_sph_sa/' ${ROOTFS_PATH}/usr/local/bin/sph_platform_start 
@@ -271,9 +340,6 @@ if [ "${BUILD_CONFIGURATION}" == "sph_sa" ]; then
 else
 	sed -i 's/sph_start_placeholder/start_sph_ep/' ${ROOTFS_PATH}/usr/local/bin/sph_platform_start 
 fi
-if [ "${BUILD_CONFIGURATION}" == "sph_sa" ]; then
-	sed -i 's/default="1"/default="0"/g' ${ROOTFS_PATH}/../../board/sph/grub-efi.cfg
-else
-	sed -i 's/default="0"/default="1"/g' ${ROOTFS_PATH}/../../board/sph/grub-efi.cfg
-fi
+
+
 

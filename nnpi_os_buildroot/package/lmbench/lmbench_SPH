@@ -394,14 +394,14 @@ fi
 if [ X$BENCHMARK_OS = XYES -o X$BENCHMARK_HARDWARE = XYES \
      -o X$BENCHMARK_BCOPY = XYES ]; then
 	echo "" 1>&2
-#	echo \"libc bcopy unaligned 1>&2
-#	for i in $HALF; do bw_mem -P $SYNC_MAX $i bcopy; done; echo "" 1>&2
+	#echo \"libc bcopy unaligned 1>&2
+	#for i in $HALF; do bw_mem -P $SYNC_MAX $i bcopy; done; echo "" 1>&2
 
-#	echo \"libc bcopy aligned 1>&2
-#	for i in $HALF; do bw_mem -P $SYNC_MAX $i bcopy conflict; done; echo "" 1>&2
+	#echo \"libc bcopy aligned 1>&2
+	#for i in $HALF; do bw_mem -P $SYNC_MAX $i bcopy conflict; done; echo "" 1>&2
 
-#	echo "Memory bzero bandwidth" 1>&2
-#	for i in $ALL; do bw_mem -P $SYNC_MAX $i bzero; done; echo "" 1>&2
+	#echo "Memory bzero bandwidth" 1>&2
+	#for i in $ALL; do bw_mem -P $SYNC_MAX $i bzero; done; echo "" 1>&2
 
 	echo \"unrolled bcopy unaligned 1>&2
 	for i in $HALF; do bw_mem -P $SYNC_MAX $i fcp; done; echo "" 1>&2
@@ -460,10 +460,10 @@ if [ X$BENCHMARK_HARDWARE = XYES -o X$BENCHMARK_MEM = XYES ]; then
 	    par_mem -L $LINE_SIZE -M ${MB}M
 	    echo "" 1>&2
 
-#	    date >> ${OUTPUT}
-#	    echo Calculating cache parameters >> ${OUTPUT}
-#	    msleep 250
-#	    cache -L $LINE_SIZE -M ${MB}M
+	    date >> ${OUTPUT}
+	    echo Calculating cache parameters >> ${OUTPUT}
+	    msleep 250
+	    cache -L $LINE_SIZE -M ${MB}M
 	fi
 
 	date >> ${OUTPUT}

@@ -28,6 +28,7 @@
 #include "inf_req.h"
 #include "sph_boot_defs.h"
 #include "sphcs_trace.h"
+#include "sphcs_ctx_uids.h"
 
 static struct cdev s_cdev;
 static dev_t       s_devnum;
@@ -164,9 +165,10 @@ static void fini_daemon(struct inf_data *inf_data)
 #endif
 
 	// Set card boot state as "Driver ready"
-	g_the_sphcs->hw_ops->set_card_doorbell_value(g_the_sphcs->hw_handle,
-				    (SPH_CARD_BOOT_STATE_DRV_READY <<
-				     SPH_CARD_BOOT_STATE_SHIFT));
+	if (inf_data->daemon == NULL)
+		g_the_sphcs->hw_ops->set_card_doorbell_value(g_the_sphcs->hw_handle,
+							     (SPH_CARD_BOOT_STATE_DRV_READY <<
+							      SPH_CARD_BOOT_STATE_SHIFT));
 
 	mutex_unlock(&inf_data->io_lock);
 }
@@ -278,7 +280,7 @@ static int find_and_destroy_context(struct inf_data *inf_data, uint16_t ctxID)
 	return 0;
 }
 
-enum event_val create_context(struct sphcs *sphcs, uint16_t protocolID, uint8_t flags)
+enum event_val create_context(struct sphcs *sphcs, uint16_t protocolID, uint8_t flags, uint32_t uid)
 {
 	struct inf_context *context;
 	struct inf_create_context cmd_args;
@@ -295,6 +297,7 @@ enum event_val create_context(struct sphcs *sphcs, uint16_t protocolID, uint8_t 
 	hash_add(sphcs->inf_data->context_hash,
 		 &context->hash_node,
 		 context->protocolID);
+	CTX_UIDS_SET_UID(context->protocolID, uid);
 	SPH_SPIN_UNLOCK_BH(&sphcs->inf_data->lock_bh);
 
 	/* place a create context command for the daemon */
@@ -893,7 +896,7 @@ static void context_op_work_handler(struct work_struct *work)
 
 			DO_TRACE(trace_infer_create(SPH_TRACE_INF_CREATE_CONTEXT, op->cmd.ctxID, op->cmd.ctxID, SPH_TRACE_OP_STATUS_START, -1, -1));
 
-			val = create_context(sphcs, op->cmd.ctxID, op->cmd.cflags);
+			val = create_context(sphcs, op->cmd.ctxID, op->cmd.cflags, op->cmd.uid);
 			if (unlikely(val != 0)) {
 				event = SPH_IPC_CREATE_CONTEXT_FAILED;
 				goto send_error;
@@ -975,6 +978,7 @@ static void resource_op_work_handler(struct work_struct *work)
 	struct inf_devres *devres;
 	uint8_t event;
 	enum event_val val = 0;
+	uint32_t usage_flags;
 	int ret;
 
 	if (op->cmd.destroy) {
@@ -994,11 +998,16 @@ static void resource_op_work_handler(struct work_struct *work)
 
 		DO_TRACE(trace_infer_create(SPH_TRACE_INF_CREATE_DEVRES, op->cmd.ctxID, op->cmd.resID, SPH_TRACE_OP_STATUS_START, -1, -1));
 
+		usage_flags = 0;
+		if (op->cmd.is_input) usage_flags |= IOCTL_INF_RES_INPUT;
+		if (op->cmd.is_output) usage_flags |= IOCTL_INF_RES_OUTPUT;
+		if (op->cmd.is_network) usage_flags |= IOCTL_INF_RES_NETWORK;
+		if (op->cmd.is_force_4G) usage_flags |= IOCTL_INF_RES_FORCE_4G_ALLOC;
+
 		ret = inf_context_create_devres(op->context,
 						op->cmd.resID,
 						op->cmd.size,
-						op->cmd.is_input,
-						op->cmd.is_output,
+						usage_flags,
 						&devres);
 		if (unlikely(ret < 0)) {
 			event = SPH_IPC_CREATE_DEVRES_FAILED;
@@ -1040,7 +1049,7 @@ void IPC_OPCODE_HANDLER(INF_RESOURCE)(struct sphcs                  *sphcs,
 		goto send_error;
 	}
 
-	work->cmd.value = cmd->value;
+	memcpy(work->cmd.value, cmd->value, sizeof(cmd->value));
 	work->context = context;
 	INIT_WORK(&work->work, resource_op_work_handler);
 	queue_work(context->wq, &work->work);
@@ -1061,7 +1070,9 @@ struct network_op_work {
 
 struct network_dma_data {
 	bool create;
+	bool chained;
 	uint32_t num_res;
+	uint32_t curr_num_res;
 	uint16_t config_data_size;
 
 	page_handle host_dma_page_hndl;
@@ -1084,17 +1095,14 @@ static int network_op_dma_complete(struct sphcs *sphcs,
 	uint8_t event;
 	enum event_val val;
 	int ret;
-	uint32_t *packet_ptr;
-	unsigned int i;
+	uint16_t *packet_ptr;
+	unsigned int i, j;
 	struct inf_devnet *devnet = data->devnet;
 	struct inf_devres *devres;
 	uint32_t cmd_size;
 	uint64_t *int64ptr;
+	uint32_t max_entries_per_page = data->chained ? (SPH_PAGE_SIZE - sizeof(u64)) / sizeof(uint16_t) : data->num_res;
 
-	if (data->create)
-		event = SPH_IPC_CREATE_DEVNET_FAILED;
-	else
-		event = SPH_IPC_DEVNET_ADD_RES_FAILED;
 
 	if (unlikely(status == SPHCS_DMA_STATUS_FAILED)) {
 		val = SPH_IPC_DMA_ERROR;
@@ -1106,9 +1114,10 @@ static int network_op_dma_complete(struct sphcs *sphcs,
 		goto done;
 	}
 
-	packet_ptr = (uint32_t *)data->vptr;
+	packet_ptr = (uint16_t *)data->vptr;
 	int64ptr = (uint64_t *)(&data->cmd + 1);
-	for (i = 0; i < data->num_res; i++) {
+	int64ptr = int64ptr + data->curr_num_res;
+	for (i = data->curr_num_res, j = 0; i < data->num_res && j < max_entries_per_page; i++, j++) {
 		devres = inf_context_find_devres(devnet->context,
 							  *(packet_ptr++));
 		if (unlikely(devres == NULL)) {
@@ -1123,8 +1132,45 @@ static int network_op_dma_complete(struct sphcs *sphcs,
 			goto delete_devnet;
 		}
 		*(int64ptr++) = devres->rt_handle;
+		data->curr_num_res++;
 	}
 
+	if (data->curr_num_res < data->num_res) {
+		u64 host_pfn;
+		uint8_t host_page_handle;
+		uint16_t dma_transfer_size;
+		uint64_t *page_data_ptr = (uint64_t *)packet_ptr;
+
+		if (data->num_res - data->curr_num_res < max_entries_per_page)
+			dma_transfer_size = (data->num_res - data->curr_num_res) * sizeof(uint16_t) + data->config_data_size;
+		else
+			dma_transfer_size = SPH_PAGE_SIZE;
+
+		host_pfn = *page_data_ptr & 0x00001FFFFFFFFFFF;
+		host_page_handle = (*page_data_ptr & 0xFF00000000000000) >> 56;
+
+		data->host_dma_page_hndl = host_page_handle;
+		data->host_dma_addr = SPH_IPC_DMA_PFN_TO_ADDR(host_pfn);
+		//Call dma transfer for next page
+		ret = sphcs_dma_sched_start_xfer_single(g_the_sphcs->dmaSched,
+						&g_dma_desc_h2c_normal,
+						SPH_IPC_DMA_PFN_TO_ADDR(host_pfn),
+						data->dma_addr,
+						dma_transfer_size,
+						network_op_dma_complete,
+						data,
+						NULL,
+						0);
+
+
+		if (unlikely(ret < 0)) {
+			sph_log_err(GENERAL_LOG, "dma xfer single failed with out of memory\n");
+			val = SPH_IPC_NO_MEMORY;
+			goto delete_devnet;
+		}
+
+		return ret;
+	}
 
 	cmd_size = sizeof(data->cmd) +
 		   data->num_res * sizeof(uint64_t) +
@@ -1134,6 +1180,7 @@ static int network_op_dma_complete(struct sphcs *sphcs,
 	data->cmd.devnet_rt_handle = (uint64_t)devnet->rt_handle;
 	data->cmd.num_devres_rt_handles = data->num_res;
 	data->cmd.config_data_size = data->config_data_size;
+	data->cmd.network_id = (uint32_t)devnet->protocolID;
 	if (data->config_data_size > 0)
 		memcpy(int64ptr, packet_ptr, data->config_data_size);
 
@@ -1163,6 +1210,11 @@ static int network_op_dma_complete(struct sphcs *sphcs,
 delete_devnet:
 	inf_devnet_on_create_failed(data->devnet);
 send_error:
+	if (data->create)
+		event = SPH_IPC_CREATE_DEVNET_FAILED;
+	else
+		event = SPH_IPC_DEVNET_ADD_RES_FAILED;
+
 	sphcs_send_event_report(g_the_sphcs,
 				event,
 				val,
@@ -1190,24 +1242,20 @@ static void network_op_work_handler(struct work_struct *work)
 	enum event_val val;
 	int ret;
 
-	if (op->cmd.destroy)
-		event = SPH_IPC_DESTROY_DEVNET_FAILED;
-	else if (op->cmd.create)
-		event = SPH_IPC_CREATE_DEVNET_FAILED;
-	else
-		event = SPH_IPC_DEVNET_ADD_RES_FAILED;
-
 	if (op->cmd.destroy) {
 		ret = inf_context_find_and_destroy_devnet(op->context, op->cmd.netID);
 		if (unlikely(ret < 0)) {
+			event = SPH_IPC_DESTROY_DEVNET_FAILED;
 			val = SPH_IPC_NO_SUCH_NET;
 			goto send_error;
 		}
-		return;
+		goto done;
 	}
 
 	devnet = inf_context_find_devnet(op->context, op->cmd.netID);
 	if (op->cmd.create) {
+		event = SPH_IPC_CREATE_DEVNET_FAILED;
+
 		if (unlikely(devnet != NULL)) {
 			val = SPH_IPC_ALREADY_EXIST;
 			goto send_error;
@@ -1224,9 +1272,13 @@ static void network_op_work_handler(struct work_struct *work)
 			val = SPH_IPC_NO_MEMORY;
 			goto send_error;
 		}
-	} else if (unlikely(devnet == NULL)) {
-		val = SPH_IPC_NO_SUCH_NET;
-		goto send_error;
+	} else {
+		event = SPH_IPC_DEVNET_ADD_RES_FAILED;
+
+		if (unlikely(devnet == NULL)) {
+			val = SPH_IPC_NO_SUCH_NET;
+			goto send_error;
+		}
 	}
 
 	SPH_SPIN_LOCK(&devnet->lock);
@@ -1244,7 +1296,7 @@ static void network_op_work_handler(struct work_struct *work)
 	}
 
 	config_data_size = op->cmd.size + 1
-			   - (op->cmd.num_res * sizeof(uint32_t));
+			   - (op->cmd.num_res * sizeof(uint16_t));
 
 	dma_data = kmalloc(sizeof(struct network_dma_data) +
 		   op->cmd.num_res * sizeof(uint64_t) + config_data_size,
@@ -1267,7 +1319,9 @@ static void network_op_work_handler(struct work_struct *work)
 
 	dma_data->create = op->cmd.create;
 	dma_data->num_res = op->cmd.num_res;
+	dma_data->curr_num_res = 0;
 	dma_data->config_data_size = config_data_size;
+	dma_data->chained = op->cmd.chained;
 
 	dma_data->host_dma_page_hndl = op->cmd.dma_page_hndl;
 	dma_data->host_dma_addr = SPH_IPC_DMA_PFN_TO_ADDR(op->cmd.host_pfn);
@@ -1276,7 +1330,7 @@ static void network_op_work_handler(struct work_struct *work)
 						&g_dma_desc_h2c_normal,
 						SPH_IPC_DMA_PFN_TO_ADDR(op->cmd.host_pfn),
 						dma_data->dma_addr,
-						op->cmd.size + 1,
+						op->cmd.chained ? SPH_PAGE_SIZE : op->cmd.size + 1,
 						network_op_dma_complete,
 						dma_data,
 						NULL,
@@ -1362,13 +1416,6 @@ static void copy_op_work_handler(struct work_struct *work)
 	enum event_val val;
 	int ret;
 
-	devres = inf_context_find_devres(op->context, op->cmd.protResID);
-	if (unlikely(devres == NULL && !op->cmd.destroy)) {
-		event = SPH_IPC_CREATE_COPY_FAILED;
-		val = SPH_IPC_NO_SUCH_DEVRES;
-		goto send_error;
-	}
-
 	if (op->cmd.destroy) {
 		ret = inf_context_find_and_destroy_copy(op->context, op->cmd.protCopyID);
 		if (unlikely(ret < 0)) {
@@ -1376,10 +1423,17 @@ static void copy_op_work_handler(struct work_struct *work)
 			val = SPH_IPC_NO_SUCH_COPY;
 			goto send_error;
 		}
-	} else {
+	} else { // Create copy
+		event = SPH_IPC_CREATE_COPY_FAILED;
+
+		devres = inf_context_find_devres(op->context, op->cmd.protResID);
+		if (unlikely(devres == NULL)) {
+			val = SPH_IPC_NO_SUCH_DEVRES;
+			goto send_error;
+		}
+
 		copy = inf_context_find_copy(op->context, op->cmd.protCopyID);
 		if (unlikely(copy != NULL)) {
-			event = SPH_IPC_CREATE_COPY_FAILED;
 			val = SPH_IPC_ALREADY_EXIST;
 			goto send_error;
 		}
@@ -1394,7 +1448,6 @@ static void copy_op_work_handler(struct work_struct *work)
 					      op->cmd.c2h,
 					      &copy);
 		if (unlikely(ret < 0)) {
-			event = SPH_IPC_CREATE_COPY_FAILED;
 			val = SPH_IPC_NO_MEMORY;
 			goto send_error;
 		}
@@ -1935,16 +1988,24 @@ int inference_init(struct sphcs *sphcs)
 	mutex_init(&inf_data->io_lock);
 	hash_init(inf_data->context_hash);
 
+	ret = sphcs_ctx_uids_init();
+	if (ret) {
+		sph_log_err(START_UP_LOG, "Failed to initialize ctx_uids sysfs counters");
+		goto free_mutex;
+	}
+
 	inf_data->inf_wq = create_singlethread_workqueue("sphcs_inf_wq");
 	if (!inf_data->inf_wq) {
 		sph_log_err(START_UP_LOG, "Failed to initialize ctx create/destroy workqueue");
-		goto free_mutex;
+		goto free_ctx_uids;
 	}
 
 	sphcs->inf_data = inf_data;
 
 	return 0;
 
+free_ctx_uids:
+	sphcs_ctx_uids_fini();
 free_mutex:
 	mutex_destroy(&sphcs->inf_data->io_lock);
 free_dev:
@@ -1962,6 +2023,7 @@ unreg:
 
 int inference_fini(struct sphcs *sphcs)
 {
+	sphcs_ctx_uids_fini();
 	destroy_workqueue(sphcs->inf_data->inf_wq);
 	device_destroy(s_class, s_devnum);
 	class_destroy(s_class);

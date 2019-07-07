@@ -49,7 +49,8 @@ static inline void is_shared_read_error(struct ice_network *ntw,
 		ntw->shared_read_err_status = err_reg.field.error_flag;
 		err_reg.field.error_flag = 0;
 		cve_os_write_idc_mmio(dev, offset, err_reg.val);
-		cve_os_dev_log(CVE_LOGLEVEL_ERROR, dev->dev_index,
+		cve_os_dev_log_default(CVE_LOGLEVEL_ERROR,
+			dev->dev_index,
 			"Error: NtwID:0x%llx, shared_read_status value:%x\n",
 			ntw->network_id, err_reg.val);
 	}

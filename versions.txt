@@ -1,2 +1,2 @@
-card driver: tags/rel_19WW22.3.1_84
-ice driver: tags/rel_19WW23.2.5_62
+card driver: tags/rel_19WW27.2.2_120
+ice driver: tags/rel_19WW26.2.4_94

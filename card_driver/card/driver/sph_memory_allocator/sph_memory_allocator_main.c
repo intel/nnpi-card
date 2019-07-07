@@ -17,10 +17,12 @@
 #include <linux/pci_ids.h>
 #include <asm/processor.h>
 #include <linux/bitops.h>
+#include <linux/workqueue.h>
 
 #include "sph_log.h"
 #include "sph_version.h"
 #include "sph_mem_alloc_defs.h"
+#include "sw_counters.h"
 
 /* The sph_mem module parameter defines physically contiguous
  * memory regions that will be managed by Memory Allocator
@@ -66,6 +68,31 @@ module_param(test, int, 0400);
 #define IBECC_PROTECTED_RANGE_MASK_OFF 16
 #define IBECC_PROTECTED_RANGE_MASK_MASK GENMASK(29, 16)
 
+/* SW counters */
+static const struct sph_sw_counters_group_info sw_counters_groups_info[] = {
+	{"device_memory", "group of device memory counters"}
+};
+
+/* Counter indices in the sw_counters_info array */
+#define SW_COUNTER_BYTES_TOTAL_INDEX 0
+#define SW_COUNTER_BYTES_BAD_INDEX 1
+
+static const struct sph_sw_counter_info sw_counters_info[] = {
+		{0, "bytes.total", "Total number of bytes managed by SPH memory allocator"},
+		{0, "bytes.bad", "Number of bad bytes (memory test failed)"},
+};
+
+static const struct sph_sw_counters_set sw_counters_set = {
+	"sw_counters",
+	false,
+	sw_counters_info,
+	ARRAY_SIZE(sw_counters_info),
+	sw_counters_groups_info,
+	ARRAY_SIZE(sw_counters_groups_info)};
+
+static void *sw_counters_handle;
+static struct sph_sw_counters *sw_counters;
+
 /* heap handles */
 void *ecc_unprotected_heap_handle;
 void *ecc_protected_heap_handle;
@@ -74,11 +101,50 @@ LIST_HEAD(protected_regions);
 LIST_HEAD(unprotected_regions);
 LIST_HEAD(managed_regions);
 
-/* Num of pages to test at once */
-#define NUM_OF_PAGES 32
+/* Number of pages to test at once -
+ * the total number of bytes should be greater than cache size ( L0 + L1 + LLC)
+ */
+#define NUM_OF_PAGES 32768
 struct page *pages[NUM_OF_PAGES];
-static u8 all_zeros_buffer[PAGE_SIZE] = {0};
-static u8 all_ones_buffer[PAGE_SIZE] = {[0 ... PAGE_SIZE - 1] = 1};
+
+#define NUM_OF_MEM_WORKS 4
+static struct workqueue_struct *wq;
+static void do_mem_set_work(struct work_struct *work);
+
+struct mem_work {
+	struct work_struct work;
+	uint64_t *buf;
+	uint64_t value;
+	uint64_t count;
+	bool res;
+};
+struct mem_work mem_works[NUM_OF_MEM_WORKS];
+
+static void do_mem_set_work(struct work_struct *work)
+{
+	struct mem_work *mem_set_work = container_of(work, struct mem_work, work);
+
+	memset64(mem_set_work->buf, mem_set_work->value, mem_set_work->count);
+	clflush_cache_range(mem_set_work->buf,  mem_set_work->count * sizeof(u64));
+}
+
+static bool memcmp64(u64 *buf, u64 value, u64 count)
+{
+	u64 i;
+
+	for (i = 0; i < count; i++)
+		if (buf[i] != value)
+			return false;
+	return true;
+}
+
+static void do_mem_cmp_work(struct work_struct *work)
+{
+	struct mem_work *mem_cmp_work = container_of(work, struct mem_work, work);
+
+	mem_cmp_work->res = memcmp64(mem_cmp_work->buf, mem_cmp_work->value, mem_cmp_work->count);
+
+}
 
 static void release_list(struct list_head *head)
 {
@@ -151,6 +217,45 @@ static int update_regions(struct mem_region *reg, struct mem_region **tmp, u64 b
 	}
 	return 0;
 }
+
+static void memset64_mt(u64 *buf, u64 value, u64 count)
+{
+	u64 i;
+	uint64_t count_per_thread = count / NUM_OF_MEM_WORKS;
+
+	for (i = 0; i < NUM_OF_MEM_WORKS; i++) {
+		mem_works[i].value = value;
+		mem_works[i].count = count_per_thread;
+		mem_works[i].buf = buf + i*count_per_thread;
+		INIT_WORK(&mem_works[i].work, do_mem_set_work);
+		queue_work_on(i, wq,  &mem_works[i].work);
+	}
+
+	flush_workqueue(wq);
+}
+
+static bool memcmp64_mt(u64 *buf, u64 value, u64 count)
+{
+	u64 i;
+	bool ret = true;
+	uint64_t count_per_thread = count / NUM_OF_MEM_WORKS;
+
+	for (i = 0; i < NUM_OF_MEM_WORKS; i++) {
+		mem_works[i].value = value;
+		mem_works[i].count = count_per_thread;
+		mem_works[i].buf = buf + i*count_per_thread;
+		mem_works[i].res = false;
+		INIT_WORK(&mem_works[i].work, do_mem_cmp_work);
+		queue_work_on(i, wq,  &mem_works[i].work);
+	}
+
+	flush_workqueue(wq);
+
+	for (i = 0; i < NUM_OF_MEM_WORKS; i++)
+		ret = ret && mem_works[i].res;
+	return ret;
+}
+
 static int test_memory(struct list_head *head)
 {
 	struct mem_region *reg, *tmp;
@@ -191,39 +296,51 @@ static int test_memory(struct list_head *head)
 			for (i = 0; i < pages_to_test; i++)
 				pages[i] = pfn_to_page(PHYS_PFN(reg->start + num_of_tested_pages*PAGE_SIZE + i*PAGE_SIZE));
 
-			reg_virt_addr = vm_map_ram(pages, pages_to_test, -1, pgprot_noncached(PAGE_KERNEL));
-//			reg_virt_addr = vm_map_ram(pages, pages_to_test, -1, PAGE_KERNEL);
+			reg_virt_addr = vm_map_ram(pages, pages_to_test, -1, PAGE_KERNEL);
 
-			memset(reg_virt_addr, 0, pages_to_test * PAGE_SIZE);
+			memset64_mt(reg_virt_addr, 0, pages_to_test * PAGE_SIZE / sizeof(u64));
 #ifdef INJECT_ERR
 			if (inject_current_reg) {
 				if (injected_bad_page_index >= num_of_tested_pages && injected_bad_page_index <= num_of_tested_pages + pages_to_test)
 					memset(reg_virt_addr + (injected_bad_page_index - num_of_tested_pages)*PAGE_SIZE, 1, PAGE_SIZE);
 			}
 #endif
-			for (i = 0; i < pages_to_test; i++) {
-				if (memcmp(reg_virt_addr + i*PAGE_SIZE, all_zeros_buffer, PAGE_SIZE)) {
-					sph_log_err(GENERAL_LOG, "Bad page detected - bad page index %llu\n", num_of_tested_pages + i);
-					rc = update_regions(reg, &tmp, num_of_tested_pages + i);
-					if (rc != 0)
-						goto err;
-					bad_page_detected = true;
-					goto out;
-				}
+			/* More likely that there is no faulty pages, so we try to compare all in once */
+			if (unlikely(!memcmp64_mt(reg_virt_addr, 0, pages_to_test * PAGE_SIZE / sizeof(u64)))) {
+				/* Find the faulty page */
+				for (i = 0; i < pages_to_test; i++) {
+					if (!memcmp64_mt(reg_virt_addr + i*PAGE_SIZE, 0x0, PAGE_SIZE / sizeof(u64))) {
+						sph_log_err(GENERAL_LOG, "Bad page detected - bad page index %llu\n", num_of_tested_pages + i);
+						SPH_SW_COUNTER_ADD(sw_counters, SW_COUNTER_BYTES_BAD_INDEX, PAGE_SIZE);
+						SPH_SW_COUNTER_DEC_VAL(sw_counters, SW_COUNTER_BYTES_TOTAL_INDEX, PAGE_SIZE);
+						rc = update_regions(reg, &tmp, num_of_tested_pages + i);
+						if (rc != 0)
+							goto err;
+						bad_page_detected = true;
+						goto out;
+					}
 
+				}
 			}
 
-			memset(reg_virt_addr, 0xFF, pages_to_test * PAGE_SIZE);
-			for (i = 0; i < pages_to_test; i++) {
-				if (memcmp(reg_virt_addr + i*PAGE_SIZE, all_ones_buffer, PAGE_SIZE)) {
-					sph_log_err(GENERAL_LOG, "Bad page detected - bad page index %llu\n", num_of_tested_pages + i);
-					rc = update_regions(reg, &tmp, num_of_tested_pages + i);
-					if (rc != 0)
-						goto err;
-					bad_page_detected = true;
-					goto out;
-				}
+			memset64_mt(reg_virt_addr, -1ULL, pages_to_test * PAGE_SIZE / sizeof(u64));
 
+			/* More likely that there is no faulty pages, so we try to compare all in once */
+			if (unlikely(!memcmp64_mt(reg_virt_addr, -1ULL, pages_to_test * PAGE_SIZE / sizeof(u64)))) {
+				/* Find the faulty page */
+				for (i = 0; i < pages_to_test; i++) {
+					if (!memcmp64(reg_virt_addr + i*PAGE_SIZE, -1ULL, PAGE_SIZE / sizeof(u64))) {
+						sph_log_err(GENERAL_LOG, "Bad page detected - bad page index %llu\n", num_of_tested_pages + i);
+						SPH_SW_COUNTER_ADD(sw_counters, SW_COUNTER_BYTES_BAD_INDEX, PAGE_SIZE);
+						SPH_SW_COUNTER_DEC_VAL(sw_counters, SW_COUNTER_BYTES_TOTAL_INDEX, PAGE_SIZE);
+						rc = update_regions(reg, &tmp, num_of_tested_pages + i);
+						if (rc != 0)
+							goto err;
+						bad_page_detected = true;
+						goto out;
+					}
+
+				}
 			}
 
 			num_of_tested_pages += pages_to_test;
@@ -473,6 +590,8 @@ static int parse_sph_mem(char *param)
 		reg->size = size;
 		list_add(&reg->list, &managed_regions);
 
+		SPH_SW_COUNTER_ADD(sw_counters, SW_COUNTER_BYTES_TOTAL_INDEX, size);
+
 		curr = strchr(curr, ',');
 		if (!curr)
 			break;
@@ -498,7 +617,26 @@ int sph_memory_allocator_init_module(void)
 
 	sph_log_debug(START_UP_LOG, "module (version %s) started\n", SPH_VERSION);
 
+	rc = sph_create_sw_counters_info_node(NULL,
+					       &sw_counters_set,
+					       NULL,
+					       &sw_counters_handle);
+	if (rc) {
+		sph_log_err(START_UP_LOG, "Failed to create sw counters info\n");
+		goto failed_to_create_sw_counters_info;
+	}
+
+	rc = sph_create_sw_counters_values_node(sw_counters_handle,
+						 0x0,
+						 NULL,
+						 &sw_counters);
+	if (rc) {
+		sph_log_err(START_UP_LOG, "Failed to create sw counters values\n");
+		goto failed_to_create_sw_counters_values;
+	}
+
 	/* Parse module param and create list of managed memory regions */
+	SPH_SW_COUNTER_SET(sw_counters, SW_COUNTER_BYTES_TOTAL_INDEX, 0);
 	rc = parse_sph_mem(sph_mem);
 	if (rc != 0) {
 		sph_log_err(START_UP_LOG, "Failed to parse module param\n");
@@ -527,7 +665,15 @@ int sph_memory_allocator_init_module(void)
 	print_list("unprotected", &unprotected_regions);
 
 	/* test memory regions if requested */
+	SPH_SW_COUNTER_SET(sw_counters, SW_COUNTER_BYTES_BAD_INDEX, 0);
 	if (test) {
+		wq = create_workqueue("mem_set_wq");
+		if (wq == NULL) {
+			rc = -ENOMEM;
+			sph_log_err(START_UP_LOG, "Failed to create wq\n");
+			goto failed_to_create_wq;
+		}
+
 		rc = test_memory(&unprotected_regions);
 		if (rc != 0) {
 			sph_log_err(START_UP_LOG, "Failed to test memory\n");
@@ -541,6 +687,8 @@ int sph_memory_allocator_init_module(void)
 			goto failed_to_test_protected;
 		}
 		print_list("protected (after test)", &protected_regions);
+
+		destroy_workqueue(wq);
 	}
 
 	if (list_empty(&unprotected_regions)) {
@@ -576,18 +724,26 @@ int sph_memory_allocator_init_module(void)
 err:
 failed_to_test_protected:
 failed_to_test_unprotected:
+	destroy_workqueue(wq);
+failed_to_create_wq:
 	release_list(&unprotected_regions);
 failed_to_create_unprotected:
 	release_list(&protected_regions);
 failed_to_create_protected:
 	release_list(&managed_regions);
 failed_to_parse:
+	sph_remove_sw_counters_values_node(sw_counters);
+failed_to_create_sw_counters_values:
+	sph_remove_sw_counters_info_node(sw_counters_handle);
+failed_to_create_sw_counters_info:
 	return rc;
 }
 
 void sph_memory_allocator_cleanup(void)
 {
 	sph_log_debug(GO_DOWN_LOG, "Cleaning Up the Module\n");
+	sph_remove_sw_counters_values_node(sw_counters);
+	sph_remove_sw_counters_info_node(sw_counters_handle);
 	if (ecc_unprotected_heap_handle)
 		ion_chunk_heap_remove(ecc_unprotected_heap_handle);
 	if (ecc_protected_heap_handle)

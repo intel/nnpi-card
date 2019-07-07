@@ -24,6 +24,7 @@
 #include "cve_fw_structs.h"
 #include "project_settings.h"
 
+#define INVALID_INDEX -1
 #define INVALID_ENTRY 255
 #define INVALID_ICE_ID 255
 #define INVALID_CTR_ID -1
@@ -73,6 +74,32 @@ struct cve_version_info {
 	const char *format;
 	u16 major;
 	u16 minor;
+};
+
+/** Structure to hold a unqiue sw id for different objects */
+struct ice_swc_node {
+	u64 parent_sw_id;
+	u64 sw_id;
+	void *parent;
+};
+
+/** Structure to hold reference to a actual network at card level
+ *  Each full network may have multiple sub network to be executed either on
+ *  IA or ICE. At ice driver level each network is refered to as a sub network
+ *  within the full network at card level.
+ *  This structure stores reference to all sub network within the full network.
+ */
+struct ice_user_full_ntw {
+	/** Linked list at context level to store reference to full network */
+	struct cve_dle_t list;
+	/** its sw counter id w.r.t user*/
+	u64 sw_id;
+	/** Pointer to the parent */
+	void *parent;
+	/** Pointer to its sw counter object*/
+	void *hswc;
+	/** Total ICE network within this network */
+	u64 total_ice_ntw;
 };
 
 struct cve_device_group;
@@ -129,6 +156,8 @@ struct ice_dso_regs_data {
 	struct cve_dso_reg_offset reg_offsets[MAX_DSO_CONFIG_REG];
 	/*  array of dso register values */
 	u32 reg_vals[MAX_DSO_CONFIG_REG];
+	/*  array of dso register readback values */
+	u32 reg_readback_vals[MAX_DSO_CONFIG_REG];
 	/* actual number of dso registers configured*/
 	u32 reg_num;
 	/* to specify if dso configuration status */
@@ -203,11 +232,15 @@ struct cve_device {
 	 */
 	struct ice_perf_counter_config perf_counter;
 
-#ifndef RING3_VALIDATION
 	/* SW Counter handle */
 	void *hswc;
 	/* SW Counter handle for infer_device_counter */
 	void *hswc_infer;
+	/* sw counter parent obj */
+	void *parent;
+	/* sw counter parent obj at network level*/
+	void *infer_parent;
+#ifndef RING3_VALIDATION
 	/* DTF sysfs related field */
 	struct kobject *ice_kobj;
 #endif
@@ -250,6 +283,34 @@ struct dg_dev_info {
 struct cve_workqueue;
 struct ds_dev_data;
 
+#define CLOS_0_SIZE 3
+#define CLOS_MAX_SIZE 24
+#define CLOS_INVALID_SIZE (CLOS_MAX_SIZE + 1)
+/* Max Networks that can reserve resource at a time */
+#define CLOS_2_ARRAY_SIZE KMD_NUM_ICE
+
+/*
+ * ------------------------------------
+ * | CLOS 0 | CLOS 2 |--> <--| CLOS 1 |
+ * ------------------------------------
+*/
+struct clos_manager {
+	/* Total LLC size (in MB) */
+	u32 size;
+	/* Amount of free LLC (in MB) */
+	u32 free;
+	/* Total size per CLOS */
+	u32 clos_size[ICE_CLOS_MAX];
+	/* Free size in use per CLOS */
+	u32 clos_free[ICE_CLOS_MAX];
+	/* CLOS2 req for each executing Ntw. Max = KMD_NUM_ICE */
+	u32 clos2_reqs[CLOS_2_ARRAY_SIZE];
+	/* Grows Up */
+	u32 clos2_idx;
+	/* Grows Down */
+	u32 clos1_idx;
+};
+
 /* TODO: In future DG can be rebranded as ResourcePool.
  * It contains ICEs, Counters, LLC and Pools info.
  */
@@ -260,10 +321,6 @@ struct cve_device_group {
 	u32 dg_id;
 	/* expected device group size */
 	u32 expected_devices_nr;
-	/* amount of llc allocated for the DG */
-	u32 llc_size;
-	/* amount of free llc in the DG */
-	u32 available_llc;
 	/* hardware counter list */
 	struct cve_hw_cntr_descriptor *hw_cntr_list;
 	/* holds start address of hardware counter array */
@@ -293,13 +350,15 @@ struct cve_device_group {
 	struct cve_device *poweroff_dev_list;
 	/* Lock for accessing poweroff_dev_list */
 	cve_os_lock_t poweroff_dev_list_lock;
+	/* CLOS book keeping */
+	struct clos_manager dg_clos_manager;
 };
 
 /* Holds all the relevant IDs required for maintaining a map between
  * graph counter ID and hardware counter ID
  */
 struct cve_hw_cntr_descriptor {
-	/* link to the other counter in the DG */
+	/* link to the other counter in the DG/Network */
 	struct cve_dle_t list;
 	/* Counter ID */
 	u16 hw_cntr_id;
@@ -355,12 +414,9 @@ struct job_descriptor {
 	u8 graph_ice_id;
 	/* Hw ICE Id. Actual ICE allocated by Driver */
 	u8 hw_ice_id;
-	/* total counters patch point
-	 * of all the jobs within this job
-	 */
-	u16 cntr_patch_points_nr;
 	/* contains mirror image of patch point for counters*/
-	struct cve_cntr_pp *counter_pp_desc_list;
+	/* TODO: Move it to Ntw level and do just like InferBuffer patching */
+	struct ice_pp_copy *job_cntr_pp_list;
 };
 
 /* hold information about a job group */
@@ -410,12 +466,23 @@ struct jobgroup_descriptor {
 	u32 cntr_bitmap;
 };
 
-/* hold information about a counter patch point */
-struct cve_cntr_pp {
-	/* Link to cve_cntr_pp list in the jobgroup*/
+/* hold copy of patch point descriptor */
+struct ice_pp_copy {
+
 	struct cve_dle_t list;
 	/* holds mirror image of patch point*/
-	struct cve_patch_point_descriptor cntr_pp_desc_list;
+	struct cve_patch_point_descriptor pp_desc;
+};
+
+/* Holds IAVA and it's corresponding Value */
+struct ice_pp_value {
+
+	/* While patching, set dirty cache for this buffer */
+	struct cve_ntw_buffer *ntw_buf;
+	/* Patch point IAVA */
+	u64 *pp_address;
+	/* This value will be stored at pp_address */
+	u64 pp_value;
 };
 
 struct dev_alloc {
@@ -474,7 +541,7 @@ struct ice_dump_desc {
 	/* if total_dump_buf is not zero then dump_buf points to
 	 * the last element in buf_list of ice_network struct
 	 */
-	struct cve_user_buffer *dump_buf;
+	struct cve_ntw_buffer *dump_buf;
 	/* max ice dump allowed per ntw */
 	u32 total_dump_buf;
 	/* number of devices configured to generate ice dump */
@@ -512,7 +579,7 @@ struct ice_network {
 	/* array of buffer list after successful page table mapping
 	 * this list has a reference in the context global buffer list
 	 */
-	struct cve_user_buffer *buf_list;
+	struct cve_ntw_buffer *buf_list;
 
 	/* ice dump buffer descriptor */
 	struct ice_dump_desc *ice_dump;
@@ -538,13 +605,18 @@ struct ice_network {
 	/*** For Ntw wide Resource allocation ***/
 	/** User inputs */
 	u8 num_ice;
-	u32 llc_size;
+	/* CLOS requirements */
+	u32 clos[ICE_CLOS_MAX];
 	u32 cntr_bitmap;
 	/****/
+
+	/****************************************/
 	u8 has_resource;
+	/* Indicates if this Network needs to reserve the resources */
+	bool res_resource;
 	struct cve_device *ice_list;
 	struct cve_hw_cntr_descriptor *cntr_list;
-	/******/
+	/****************************************/
 
 	/* For ICE book-keeping */
 	struct ntw_pjob_info pjob_info;
@@ -555,10 +627,13 @@ struct ice_network {
 	/* Network specific FIFO allocation */
 	struct fifo_descriptor fifo_desc[MAX_CVE_DEVICES_NR];
 
-#ifndef RING3_VALIDATION
+	/************************/
 	/* SW Counter handle */
 	void *hswc;
-#endif
+	/* SW counter object */
+	struct ice_swc_node swc_node;
+	struct ice_user_full_ntw *user_full_ntw;
+	/************************/
 
 	/* Flag, set to true if deletion is initiated */
 	uint8_t abort_ntw;
@@ -585,6 +660,7 @@ struct ice_network {
 
 	/* Indicates if the resouce needs to be reserved.
 	 * Provided during ExecuteInfer call.
+	 * DEPRICATED: Used only for Breakpoint
 	 */
 	u32 reserve_resource;
 	/* paired ICE from ICEBO requirement */
@@ -613,6 +689,13 @@ struct ice_network {
 	/* Array of indexes corresponding to inference buffer */
 	u64 *infer_idx_list;
 	u32 infer_buf_count;
+
+	/* Infer buffer patch points */
+	struct ice_pp_copy *ntw_surf_pp_list;
+	u32 ntw_surf_pp_count;
+
+	u64 ntw_icemask;
+	u64 ntw_cntrmask;
 };
 
 enum inf_exe_status {
@@ -635,23 +718,33 @@ struct ice_infer {
 	/* List of Infer requests in execution queue */
 	struct cve_dle_t exe_list;
 	/* List of Infer Buffers */
-	struct cve_infer_buffer *buf_list;
+	struct cve_inf_buffer *buf_list;
 	/* Buffer count */
 	u32 num_buf;
 	/* user data*/
 	u64 user_data;
 	/* execution status */
 	enum inf_exe_status exe_status;
-	/* Infer specific handle for PT info */
-	void *inf_hdom;
 	/* events wait queue - signaled when new event object added */
 	cve_os_wait_que_t events_wait_queue;
 	/* list of available event nodes */
 	struct cve_completion_event *infer_events;
+	/* Infer specific handle for PT per ICE */
+	void *inf_hdom[MAX_CVE_DEVICES_NR];
+	/* InferBuffer patch point array */
+	struct ice_pp_value *inf_pp_arr;
+
+	/************************/
+	/* SW Counter handle */
+	void *hswc;
+	/* SW counter object */
+	struct ice_swc_node swc_node;
+	/************************/
+	u64 process_pid;
 };
 
 /* hold information about user buffer allocation (surface or cb) */
-struct cve_user_buffer {
+struct cve_ntw_buffer {
 	/* links to the list of the buffers context */
 	struct cve_dle_t list;
 	/* buffer id */
@@ -659,18 +752,20 @@ struct cve_user_buffer {
 	/* Surface/CB/DSRAM load CB/ Reloadable CB */
 	enum ice_surface_type surface_type;
 	/* the allocation which is associated with this buffer */
-	cve_mm_allocation_t allocation;
+	cve_mm_allocation_t ntw_buf_alloc;
+	/* If positive, then this is InferBuffer. Index in Infer list. */
+	u64 index_in_inf;
 };
 
-struct cve_infer_buffer {
+struct cve_inf_buffer {
 	/* buffer index in corresponding network's buffer descriptor*/
-	u64 index;
+	u64 index_in_ntw;
 	/* the base address of the area in memory */
 	u64 base_address;
 	/* fd is the file descriptor for given shared buffer */
 	u64 fd;
 	/* the allocation which is associated with this buffer */
-	cve_mm_allocation_t allocation;
+	cve_mm_allocation_t inf_buf_alloc;
 };
 
 struct cve_context_process;
@@ -680,7 +775,7 @@ struct ds_context {
 	/* cyclic list element inside the process context */
 	struct cve_dle_t list;
 	/* list of buffers allocated by user */
-	struct cve_user_buffer *buf_list;
+	struct cve_ntw_buffer *buf_list;
 	/* list of per device per context data */
 	cve_dev_context_handle_t dev_hctx_list;
 	/* a queue for thread waitting for destroy all workqueues */
@@ -696,8 +791,17 @@ struct ds_context {
 	struct cve_context_process *process;
 	/* pool to which this context is mapped to */
 	int8_t pool_id;
+
+	/**************************************/
 	/* SW Counter handle */
 	void *hswc;
+	/* SW counter object */
+	struct ice_swc_node swc_node;
+	/* Monotonic counter for network*/
+	u64 ntw_id_src;
+	/* List of full networks within the context*/
+	struct ice_user_full_ntw *user_full_ntw;
+	/**************************************/
 };
 
 struct ds_dev_data {

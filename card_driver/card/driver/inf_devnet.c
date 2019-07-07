@@ -86,6 +86,7 @@ int inf_devnet_create(uint16_t protocolID,
 		      struct inf_devnet **out_devnet)
 {
 	struct inf_devnet *devnet;
+	int ret = 0;
 
 	devnet = kzalloc(sizeof(*devnet), GFP_KERNEL);
 	if (unlikely(devnet == NULL))
@@ -103,6 +104,13 @@ int inf_devnet_create(uint16_t protocolID,
 
 	INIT_LIST_HEAD(&devnet->devres_list);
 
+	ret = sph_create_sw_counters_values_node(g_hSwCountersInfo_network,
+						 (u32)protocolID,
+						 context->sw_counters,
+						 &devnet->sw_counters);
+	if (unlikely(ret < 0))
+		goto free_devnet;
+
 	inf_context_get(context);
 
 	SPH_SW_COUNTER_ATOMIC_INC(context->sw_counters, CTX_SPHCS_SW_COUNTERS_INFERENCE_NUM_NETWORKS);
@@ -110,6 +118,10 @@ int inf_devnet_create(uint16_t protocolID,
 	*out_devnet = devnet;
 
 	return 0;
+
+free_devnet:
+	kfree(devnet);
+	return ret;
 }
 
 int is_inf_devnet_ptr(void *ptr)
@@ -181,6 +193,8 @@ static void release_devnet(struct kref *kref)
 					devnet->protocolID);
 
 	inf_devnet_delete_devres(devnet, true);
+
+	sph_remove_sw_counters_values_node(devnet->sw_counters);
 
 	SPH_SW_COUNTER_ATOMIC_DEC(devnet->context->sw_counters, CTX_SPHCS_SW_COUNTERS_INFERENCE_NUM_NETWORKS);
 
@@ -346,6 +360,7 @@ static int inf_req_create_dma_complete_callback(struct sphcs *sphcs,
 	cmd_args->n_inputs = n_inputs;
 	cmd_args->n_outputs = n_outputs;
 	cmd_args->config_data_size = config_data_size;
+	cmd_args->infreq_id = (uint32_t)infreq->protocolID;
 	int64ptr = (uint64_t *)(cmd_args + 1);
 	for (i = 0; i < n_inputs; i++)
 		*(int64ptr++) = inputs[i]->rt_handle;

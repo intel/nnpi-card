@@ -1,4 +1,4 @@
-#! /bin/bash
+#! /bin/sh
 
 #############################
 # The output results go to /tmp/Test_all_ICEs.log
@@ -9,55 +9,90 @@
 FLAVOR=$1
 if [ "${FLAVOR}" = "Debug" ]
 then
-   INTEL_NNPI_COMMON_ARGS="ice_fw_select=1 sph_soc=1 "
+   INTEL_NNPI_COMMON_ARGS="ice_fw_select=1 sph_soc=1 ice_power_off_delay_ms=-1"
 else
-   INTEL_NNPI_COMMON_ARGS="sph_soc=1 "
+   INTEL_NNPI_COMMON_ARGS="sph_soc=1 ice_power_off_delay_ms=-1"
 fi
 
-echo "Start " > /tmp/Test_all_ICEs.log
-mask_after=0
-for i in {0..11};
-do
-        mask=$(printf "0x%X\n" $((0xFFF - (1<<i))));
-        echo $mask
-        rmmod intel_nnpi
-	INTEL_NNPI_ARGS="${INTEL_NNPI_COMMON_ARGS} icemask_user=$mask"  
-        modprobe intel_nnpi $INTEL_NNPI_ARGS 
-	echo "loaded intel_nnpi with args: $INTEL_NNPI_ARGS"
-        good_ICE=1
-        for j in {1..2};
+TEST_BOOT_ID="ls /dev/disk/by-id"
+TEST_VTECH="Vtech"
+
+#############################
+# Return 0 if the system is running in a simulator, otherwise return 1.
+#############################
+is_simics() {
+        # Poll boot-disk-id for vtech boot drive
+        RES=$(${TEST_BOOT_ID})
+        if [ "$RES" != "${RES%$TEST_VTECH*}" ]; then echo 0; else echo 1; fi
+}
+
+#############################
+# Enumerate ICEs to check for faulty cores
+#############################
+check_ices() {
+        echo "Start " > /tmp/Test_all_ICEs.log
+        i=0
+        while [ $i -le 11 ]
         do
-                echo "-------           *       *       *   Ice# = $i     Mask = $mask   Run = $j       *       *       *"
-# Can put multiple tests here:
-                /opt/intel_nnpi/tests/driver/driver_test --gtest_filter="*1_ctxt_1_createIR_1_exeIR/0" --scenarios_path /opt/intel_nnpi/tests/driver/scenarios/ --scenario ivp_complement_dl --num_ice 1
-                pass_test1=$?
-                echo "Ice# = $i Run# = $j test #1 = $pass_test1" >>/tmp/Test_all_ICEs.log
+                mask=$(printf "0x%X\n" $((0xFFF - (1<<i))));
+#               echo $mask
 
-                /opt/intel_nnpi/tests/driver/driver_test --gtest_filter="*1_ctxt_1_createIR_1_exeIR/0" --scenarios_path /opt/intel_nnpi/tests/driver/scenarios/ --scenario conv1 --num_ice 1
-                pass_test2=$?
-                echo "Ice# = $i Run# = $j test #2 = $pass_test2" >>/tmp/Test_all_ICEs.log
+                INTEL_NNPI_ARGS="${INTEL_NNPI_COMMON_ARGS} icemask_user=$mask"
+                modprobe intel_nnpi $INTEL_NNPI_ARGS
+#               echo "loaded intel_nnpi with args: $INTEL_NNPI_ARGS"
+                good_ICE=1
+                j=0
+                while [ $j -le 0 ]
+                do
+                        j=$(( j + 1 ))
+#                       echo "-------           *       *       *   Ice# = $i     Mask = $mask   Run = $j       *       *       *"
 
-#               /opt/intel_nnpi/bin/tests --gtest_filter=*BMP_bear* --artifacts_path=/opt/intel_nnpi/artifacts/
-#                pass_test3=$?
-                pass_test3=0
-                echo "Ice# = $i Run# = $j test #3 = $pass_test3" >>/tmp/Test_all_ICEs.log
+                        # Can put multiple tests here:
+                        /opt/intel_nnpi/tests/driver/driver_test --gtest_filter="*1_ctxt_1_createIR_1_exeIR/0" --scenarios_path /opt/intel_nnpi/tests/driver/scenarios/ --scenario ivp_complement_dl --num_ice 1 > /dev/null
+                        pass_test1=$?
+#                       echo "Ice# = $i Run# = $j test #1 = $pass_test1" >>/tmp/Test_all_ICEs.log
 
-                if [ $pass_test1 != 0 ] || [ $pass_test2 != 0 ] || [ $pass_test3 != 0 ]
+                        /opt/intel_nnpi/tests/driver/driver_test --gtest_filter="*1_ctxt_1_createIR_1_exeIR/0" --scenarios_path /opt/intel_nnpi/tests/driver/scenarios/ --scenario conv1 --num_ice 1 > /dev/null
+                        pass_test2=$?
+#                       echo "Ice# = $i Run# = $j test #2 = $pass_test2" >>/tmp/Test_all_ICEs.log
+
+                        /opt/intel_nnpi/tests/driver/driver_test --gtest_filter="*1_ctxt_1_createIR_multi_exeIR/0" --scenarios_path /opt/intel_nnpi/tests/driver/scenarios/ --scenario resnet50_5layers --num_ice 1 > /dev/null
+                        pass_test3=$?
+#                       echo "Ice# = $i Run# = $j test #3 = $pass_test3" >>/tmp/Test_all_ICEs.log
+
+                        /opt/intel_nnpi/tests/driver/driver_test --gtest_filter="*1_ctxt_1_createIR_multi_exeIR/0" --scenarios_path /opt/intel_nnpi/tests/driver/scenarios/ --scenario ivp_add_b0_dl --num_ice 1 > /dev/null
+                        pass_test4=$?
+#                       echo "Ice# = $i Run# = $j test #4 = $pass_test4" >>/tmp/Test_all_ICEs.log
+
+                        if [ $pass_test1 != 0 ] || [ $pass_test2 != 0 ] || [ $pass_test3 != 0 ] || [ $pass_test4 != 0 ]
+                        then
+                            good_ICE=0
+                        fi
+                done
+                if [ "$good_ICE" -eq 0 ]
                 then
-                    good_ICE=0
+                   echo "Ice #$i masked"
+                   mask_ICE_i=$(( 1<<i ))
+                   mask_after=$(( $mask_after + $mask_ICE_i ))
                 fi
-        done
-        if [ $good_ICE == 0 ]
-        then
-           echo "Ice #$i masked"
-           mask_ICE_i=$(( 2 ** i ))
-           mask_after=$(( $mask_after + $mask_ICE_i ))
-        fi
 
-done
+                rmmod intel_nnpi
+                i=$(( i + 1 ))
+        done
+}
+
+mask_after=0
+
+if [ "$(is_simics)" -eq 0 ]
+then
+        echo "Detected Vtech Boot Disk IDs:\n $(${TEST_BOOT_ID}) \nRunning on simulator - skip ICE detection"
+else
+        check_ices
+fi
+
 mask_new=$(printf "0x%X\n" $mask_after)
-rmmod intel_nnpi
-INTEL_NNPI_ARGS="${INTEL_NNPI_COMMON_ARGS} icemask_user=$mask_new"  
-modprobe intel_nnpi ${INTEL_NNPI_ARGS} 
+INTEL_NNPI_ARGS="${INTEL_NNPI_COMMON_ARGS} icemask_user=$mask_new"
+modprobe intel_nnpi ${INTEL_NNPI_ARGS}
 echo "loaded intel_nnpi with args: ${INTEL_NNPI_ARGS}" >> /tmp/Test_all_ICEs.log
 echo "loaded intel_nnpi with args: ${INTEL_NNPI_ARGS}"
+

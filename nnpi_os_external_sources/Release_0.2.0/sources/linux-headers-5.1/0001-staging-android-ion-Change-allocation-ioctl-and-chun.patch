@@ -1,0 +1,452 @@
+From 16a4cd84fd54ee10358750eb5738588613d50aea Mon Sep 17 00:00:00 2001
+From: Alexey Skidanov <alexey.skidanov@intel.com>
+Date: Tue, 23 Apr 2019 11:33:42 +0300
+Subject: [PATCH] staging: android: ion: Change allocation ioctl and chunk heap
+
+Buffer allocation ioctl allow to specify buffer alignment and
+user data assigned for each ion buffer. After allocation succeds
+buffers may be looked up by assigned user data.
+
+Chunk heap is extended to contain several physically contiguous
+memory chunks and be initaliazed with specific name.
+
+Signed-off-by: Alexey Skidanov <alexey.skidanov@intel.com>
+---
+ drivers/staging/android/ion/ion.c            |  87 ++++++++++++++++++++--
+ drivers/staging/android/ion/ion.h            |  14 +++-
+ drivers/staging/android/ion/ion_chunk_heap.c | 106 +++++++++++++++++++++------
+ drivers/staging/android/uapi/ion.h           |   3 +-
+ include/linux/ion_exp.h                      |  15 ++++
+ 5 files changed, 193 insertions(+), 32 deletions(-)
+ create mode 100644 include/linux/ion_exp.h
+
+diff --git a/drivers/staging/android/ion/ion.c b/drivers/staging/android/ion/ion.c
+index 92c2914..4ef9316 100644
+--- a/drivers/staging/android/ion/ion.c
++++ b/drivers/staging/android/ion/ion.c
+@@ -59,7 +59,9 @@ static void ion_buffer_add(struct ion_device *dev,
+ static struct ion_buffer *ion_buffer_create(struct ion_heap *heap,
+ 					    struct ion_device *dev,
+ 					    unsigned long len,
+-					    unsigned long flags)
++					    u64 user_data,
++					    unsigned long flags,
++					    u32 alignment)
+ {
+ 	struct ion_buffer *buffer;
+ 	int ret;
+@@ -72,15 +74,16 @@ static struct ion_buffer *ion_buffer_create(struct ion_heap *heap,
+ 	buffer->flags = flags;
+ 	buffer->dev = dev;
+ 	buffer->size = len;
++	buffer->user_data = user_data;
+ 
+-	ret = heap->ops->allocate(heap, buffer, len, flags);
++	ret = heap->ops->allocate(heap, buffer, len, flags, alignment);
+ 
+ 	if (ret) {
+ 		if (!(heap->flags & ION_HEAP_FLAG_DEFER_FREE))
+ 			goto err2;
+ 
+ 		ion_heap_freelist_drain(heap, 0);
+-		ret = heap->ops->allocate(heap, buffer, len, flags);
++		ret = heap->ops->allocate(heap, buffer, len, flags, alignment);
+ 		if (ret)
+ 			goto err2;
+ 	}
+@@ -374,6 +377,13 @@ static int ion_dma_buf_end_cpu_access(struct dma_buf *dmabuf,
+ 	return 0;
+ }
+ 
++static void *ion_dma_buf_vmap(struct dma_buf *dmabuf)
++{
++	struct ion_buffer *buffer = dmabuf->priv;
++
++	return buffer->vaddr;
++}
++
+ static const struct dma_buf_ops dma_buf_ops = {
+ 	.map_dma_buf = ion_map_dma_buf,
+ 	.unmap_dma_buf = ion_unmap_dma_buf,
+@@ -385,9 +395,15 @@ static const struct dma_buf_ops dma_buf_ops = {
+ 	.end_cpu_access = ion_dma_buf_end_cpu_access,
+ 	.map = ion_dma_buf_kmap,
+ 	.unmap = ion_dma_buf_kunmap,
++	.vmap = ion_dma_buf_vmap,
++
+ };
+ 
+-static int ion_alloc(size_t len, unsigned int heap_id_mask, unsigned int flags)
++int ion_alloc(size_t len,
++	      u64 user_data,
++	      unsigned int heap_id_mask,
++	      unsigned int flags,
++	      u32 alignment)
+ {
+ 	struct ion_device *dev = internal_dev;
+ 	struct ion_buffer *buffer = NULL;
+@@ -414,7 +430,12 @@ static int ion_alloc(size_t len, unsigned int heap_id_mask, unsigned int flags)
+ 		/* if the caller didn't specify this heap id */
+ 		if (!((1 << heap->id) & heap_id_mask))
+ 			continue;
+-		buffer = ion_buffer_create(heap, dev, len, flags);
++		buffer = ion_buffer_create(heap,
++					   dev,
++					   len,
++					   user_data,
++					   flags,
++					   alignment);
+ 		if (!IS_ERR(buffer))
+ 			break;
+ 	}
+@@ -467,8 +488,10 @@ static int ion_query_heaps(struct ion_heap_query *query)
+ 	max_cnt = query->cnt;
+ 
+ 	plist_for_each_entry(heap, &dev->heaps, node) {
+-		strncpy(hdata.name, heap->name, MAX_HEAP_NAME);
+-		hdata.name[sizeof(hdata.name) - 1] = '\0';
++		if (heap->name) {
++			strncpy(hdata.name, heap->name, MAX_HEAP_NAME);
++			hdata.name[sizeof(hdata.name) - 1] = '\0';
++		}
+ 		hdata.type = heap->type;
+ 		hdata.heap_id = heap->id;
+ 
+@@ -541,8 +564,10 @@ static long ion_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
+ 		int fd;
+ 
+ 		fd = ion_alloc(data.allocation.len,
++			       data.allocation.user_data,
+ 			       data.allocation.heap_id_mask,
+-			       data.allocation.flags);
++			       data.allocation.flags,
++			       data.allocation.alignment);
+ 		if (fd < 0)
+ 			return fd;
+ 
+@@ -673,6 +698,52 @@ void ion_device_add_heap(struct ion_heap *heap)
+ }
+ EXPORT_SYMBOL(ion_device_add_heap);
+ 
++void ion_device_remove_heap(struct ion_heap *heap)
++{
++	struct ion_device *dev = internal_dev;
++	struct dentry *debug_file;
++
++	down_write(&dev->lock);
++	plist_del(&heap->node, &dev->heaps);
++
++	if (heap->shrinker.count_objects && heap->shrinker.scan_objects) {
++		char debug_name[64];
++
++		snprintf(debug_name, 64, "%s_shrink", heap->name);
++		debug_file = debugfs_lookup(debug_name, dev->debug_root);
++
++		debugfs_remove(debug_file);
++	}
++
++	dev->heap_cnt--;
++	heap_id--;
++	up_write(&dev->lock);
++}
++EXPORT_SYMBOL(ion_device_remove_heap);
++
++int ion_get_buf_user_data(phys_addr_t addr, u64 *user_data)
++{
++	struct ion_buffer *buffer, *tmp;
++	struct scatterlist *sg;
++	int i;
++	int ret = -1;
++
++	mutex_lock(&internal_dev->buffer_lock);
++	rbtree_postorder_for_each_entry_safe(buffer, tmp, &internal_dev->buffers, node) {
++		for_each_sg(buffer->sg_table->sgl, sg, buffer->sg_table->nents, i) {
++			if ((sg_phys(sg) <= addr) && (sg_phys(sg) + sg->length >= addr)) {
++				*user_data = buffer->user_data;
++				ret = 0;
++				goto out;
++			}
++		}
++	}
++out:
++	mutex_unlock(&internal_dev->buffer_lock);
++	return ret;
++}
++EXPORT_SYMBOL(ion_get_buf_user_data);
++
+ static int ion_device_create(void)
+ {
+ 	struct ion_device *idev;
+diff --git a/drivers/staging/android/ion/ion.h b/drivers/staging/android/ion/ion.h
+index e291299..ec6d057 100644
+--- a/drivers/staging/android/ion/ion.h
++++ b/drivers/staging/android/ion/ion.h
+@@ -18,6 +18,7 @@
+ #include <linux/shrinker.h>
+ #include <linux/types.h>
+ #include <linux/miscdevice.h>
++#include <linux/ion_exp.h>
+ 
+ #include "../uapi/ion.h"
+ 
+@@ -54,6 +55,7 @@ struct ion_buffer {
+ 	void *vaddr;
+ 	struct sg_table *sg_table;
+ 	struct list_head attachments;
++	u64 user_data;
+ };
+ 
+ void ion_buffer_destroy(struct ion_buffer *buffer);
+@@ -93,7 +95,8 @@ struct ion_device {
+ struct ion_heap_ops {
+ 	int (*allocate)(struct ion_heap *heap,
+ 			struct ion_buffer *buffer, unsigned long len,
+-			unsigned long flags);
++			unsigned long flags,
++			u32 alignment);
+ 	void (*free)(struct ion_buffer *buffer);
+ 	void * (*map_kernel)(struct ion_heap *heap, struct ion_buffer *buffer);
+ 	void (*unmap_kernel)(struct ion_heap *heap, struct ion_buffer *buffer);
+@@ -175,7 +178,7 @@ struct ion_heap {
+  * @heap:		the heap to add
+  */
+ void ion_device_add_heap(struct ion_heap *heap);
+-
++void ion_device_remove_heap(struct ion_heap *heap);
+ /**
+  * some helpers for common operations on buffers using the sg_table
+  * and vaddr fields
+@@ -187,6 +190,13 @@ int ion_heap_map_user(struct ion_heap *heap, struct ion_buffer *buffer,
+ int ion_heap_buffer_zero(struct ion_buffer *buffer);
+ int ion_heap_pages_zero(struct page *page, size_t size, pgprot_t pgprot);
+ 
++
++int ion_alloc(size_t len,
++	      u64 user_data,
++	      unsigned int heap_id_mask,
++	      unsigned int flags,
++	      u32 alignment);
++
+ /**
+  * ion_heap_init_shrinker
+  * @heap:		the heap
+diff --git a/drivers/staging/android/ion/ion_chunk_heap.c b/drivers/staging/android/ion/ion_chunk_heap.c
+index 3cdde9c..441aefb 100644
+--- a/drivers/staging/android/ion/ion_chunk_heap.c
++++ b/drivers/staging/android/ion/ion_chunk_heap.c
+@@ -11,6 +11,8 @@
+ #include <linux/mm.h>
+ #include <linux/scatterlist.h>
+ #include <linux/slab.h>
++#include <linux/vmalloc.h>
++#include <linux/ion_exp.h>
+ 
+ #include "ion.h"
+ 
+@@ -25,7 +27,8 @@ struct ion_chunk_heap {
+ static int ion_chunk_heap_allocate(struct ion_heap *heap,
+ 				   struct ion_buffer *buffer,
+ 				   unsigned long size,
+-				   unsigned long flags)
++				   unsigned long flags,
++				   u32 alignment)
+ {
+ 	struct ion_chunk_heap *chunk_heap =
+ 		container_of(heap, struct ion_chunk_heap, heap);
+@@ -34,10 +37,22 @@ static int ion_chunk_heap_allocate(struct ion_heap *heap,
+ 	int ret, i;
+ 	unsigned long num_chunks;
+ 	unsigned long allocated_size;
+-
+-	allocated_size = ALIGN(size, chunk_heap->chunk_size);
+-	num_chunks = allocated_size / chunk_heap->chunk_size;
+-
++	unsigned long allocated_chunk;
++	struct genpool_data_align data;
++
++	 /* Set alignment */
++	if (!is_power_of_2(alignment))
++		return -EINVAL;
++
++	data.align = alignment;
++
++	/* Alignment is also minimal allocated chunk */
++	allocated_chunk = (chunk_heap->chunk_size >= alignment)
++			? chunk_heap->chunk_size
++					: alignment;
++	/* Calculate number of allocated chunks */
++	allocated_size = ALIGN(size, allocated_chunk);
++	num_chunks = allocated_size / allocated_chunk;
+ 	if (allocated_size > chunk_heap->size - chunk_heap->allocated)
+ 		return -ENOMEM;
+ 
+@@ -52,15 +67,22 @@ static int ion_chunk_heap_allocate(struct ion_heap *heap,
+ 
+ 	sg = table->sgl;
+ 	for (i = 0; i < num_chunks; i++) {
+-		unsigned long paddr = gen_pool_alloc(chunk_heap->pool,
+-						     chunk_heap->chunk_size);
++		unsigned long paddr = gen_pool_alloc_algo(chunk_heap->pool,
++							  allocated_chunk,
++							  gen_pool_first_fit_align,
++							  &data);
++
+ 		if (!paddr)
+ 			goto err;
+ 		sg_set_page(sg, pfn_to_page(PFN_DOWN(paddr)),
+-			    chunk_heap->chunk_size, 0);
++			    allocated_chunk, 0);
+ 		sg = sg_next(sg);
+ 	}
+ 
++	pr_debug("%s: Allocated memory buffer of %lu bytes (aligned on 0x%X)\n",
++		 __func__, size, alignment);
++
++	buffer->size = allocated_size;
+ 	buffer->sg_table = table;
+ 	chunk_heap->allocated += allocated_size;
+ 	return 0;
+@@ -97,6 +119,8 @@ static void ion_chunk_heap_free(struct ion_buffer *buffer)
+ 	chunk_heap->allocated -= allocated_size;
+ 	sg_free_table(table);
+ 	kfree(table);
++
++	pr_debug("%s: Released chunk of 0x%zX bytes\n", __func__, buffer->size);
+ }
+ 
+ static struct ion_heap_ops chunk_heap_ops = {
+@@ -107,40 +131,80 @@ static struct ion_heap_ops chunk_heap_ops = {
+ 	.unmap_kernel = ion_heap_unmap_kernel,
+ };
+ 
+-struct ion_heap *ion_chunk_heap_create(phys_addr_t base, size_t size, size_t chunk_size)
++struct ion_heap *ion_chunk_heap_create(const char *name,
++				       struct list_head *mem_regions_list)
+ {
+ 	struct ion_chunk_heap *chunk_heap;
+ 	int ret;
+ 	struct page *page;
+-
+-	page = pfn_to_page(PFN_DOWN(base));
+-	ret = ion_heap_pages_zero(page, size, pgprot_writecombine(PAGE_KERNEL));
+-	if (ret)
+-		return ERR_PTR(ret);
++	size_t size;
++	struct mem_region *mem_region;
+ 
+ 	chunk_heap = kzalloc(sizeof(*chunk_heap), GFP_KERNEL);
+ 	if (!chunk_heap)
+ 		return ERR_PTR(-ENOMEM);
+ 
+-	chunk_heap->chunk_size = chunk_size;
+-	chunk_heap->pool = gen_pool_create(get_order(chunk_heap->chunk_size) +
+-					   PAGE_SHIFT, -1);
++	chunk_heap->chunk_size = PAGE_SIZE;
++	chunk_heap->pool = gen_pool_create(PAGE_SHIFT, -1);
+ 	if (!chunk_heap->pool) {
+ 		ret = -ENOMEM;
+ 		goto error_gen_pool_create;
+ 	}
+-	chunk_heap->size = size;
++
++	chunk_heap->size = 0;
+ 	chunk_heap->allocated = 0;
+ 
+-	gen_pool_add(chunk_heap->pool, base, size, -1);
++	/* go over the regions */
++	if (!list_empty(mem_regions_list)) {
++		list_for_each_entry(mem_region, mem_regions_list, list) {
++			/* Zero out the chunk*/
++			page = pfn_to_page(PFN_DOWN(mem_region->start));
++			size = mem_region->size;
++			ret = ion_heap_pages_zero(page, size, pgprot_writecombine(PAGE_KERNEL));
++			if (ret)
++				goto error_gen_pool_add;
++
++			/* Add chunk to the pool */
++			gen_pool_add(chunk_heap->pool,
++				     mem_region->start,
++				     mem_region->size,
++				     -1);
++
++			pr_debug("%s: New memory chunk of 0x%zX bytes starting at %pa added to the pool\n",
++				 __func__, mem_region->size, &mem_region->start);
++
++			chunk_heap->size +=  mem_region->size;
++		}
++	}
++
+ 	chunk_heap->heap.ops = &chunk_heap_ops;
++	chunk_heap->heap.name = name;
+ 	chunk_heap->heap.type = ION_HEAP_TYPE_CHUNK;
+-	chunk_heap->heap.flags = ION_HEAP_FLAG_DEFER_FREE;
+-	pr_debug("%s: base %pa size %zu\n", __func__, &base, size);
+ 
+ 	return &chunk_heap->heap;
+ 
++error_gen_pool_add:
++	gen_pool_destroy(chunk_heap->pool);
+ error_gen_pool_create:
+ 	kfree(chunk_heap);
+ 	return ERR_PTR(ret);
+ }
++
++void *ion_chunk_heap_setup(struct list_head *mem_regions_list,
++			   const char *heap_name)
++{
++	struct ion_heap *heap;
++
++	heap = ion_chunk_heap_create(heap_name, mem_regions_list);
++	if (!IS_ERR(heap))
++		ion_device_add_heap(heap);
++
++	return heap;
++}
++EXPORT_SYMBOL(ion_chunk_heap_setup);
++
++void ion_chunk_heap_remove(void *ion_heap)
++{
++	ion_device_remove_heap(ion_heap);
++}
++EXPORT_SYMBOL(ion_chunk_heap_remove);
+diff --git a/drivers/staging/android/uapi/ion.h b/drivers/staging/android/uapi/ion.h
+index 46c93fc..57c27cc 100644
+--- a/drivers/staging/android/uapi/ion.h
++++ b/drivers/staging/android/uapi/ion.h
+@@ -68,10 +68,11 @@ enum ion_heap_type {
+  */
+ struct ion_allocation_data {
+ 	__u64 len;
++	__u64 user_data;
+ 	__u32 heap_id_mask;
+ 	__u32 flags;
+ 	__u32 fd;
+-	__u32 unused;
++	__u32 alignment;
+ };
+ 
+ #define MAX_HEAP_NAME			32
+diff --git a/include/linux/ion_exp.h b/include/linux/ion_exp.h
+new file mode 100644
+index 0000000..c5ba750
+--- /dev/null
++++ b/include/linux/ion_exp.h
+@@ -0,0 +1,15 @@
++#ifndef _ION_EXP_H
++#define _ION_EXP_H
++
++struct mem_region {
++	phys_addr_t start;
++	size_t size;
++	struct list_head list;
++};
++extern void *ion_chunk_heap_setup(struct list_head *mem_regions_list,
++				  const char *heap_name);
++extern void ion_chunk_heap_remove(void *ion_heap);
++
++extern int ion_get_buf_user_data(phys_addr_t addr, u64 *user_data);
++
++#endif /* _ION_EXP_H */
+-- 
+2.7.4
+

@@ -23,18 +23,27 @@
 #include "ipc_protocol.h"
 #include <linux/wait.h>
 
+#define HWTRACING_POOL_MEMORY_SIZE ((uint32_t)(1<<20))
+#define SPHCS_HWTRACING_MAX_POOL_LENGTH 10
+
 
 struct sphcs;
-struct sphcs_hwtrace_res_inf;
 struct device;
-struct sphcs_dma_res_info;
+
+struct sphcs_hwtrace_mem_pool {
+	struct page	*pages;
+	uint32_t	used;
+};
 
 struct sphcs_hwtrace_data {
 	struct list_head	dma_stream_list;
 	uint32_t		host_resource_count;
 	uint32_t		hwtrace_status;
+	uint32_t		nr_pool_pages;
 	struct device		*intel_th_device;
+	struct sphcs_hwtrace_mem_pool mem_pool[SPHCS_HWTRACING_MAX_POOL_LENGTH];
 	wait_queue_head_t waitq;
+	struct workqueue_struct *cmd_wq;
 	spinlock_t lock_irq;
 };
 

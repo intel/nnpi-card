@@ -31,6 +31,7 @@ struct inf_devres {
 
 	enum dma_data_direction dir;
 	uint32_t                size;
+	uint32_t                usage_flags;
 
 	int               buf_fd;
 	struct dma_buf   *dma_buf;
@@ -46,8 +47,7 @@ struct inf_devres {
 int inf_devres_create(uint16_t            protocolID,
 		      struct inf_context *context,
 		      uint32_t            size,
-		      int                 is_input,
-		      int                 is_output,
+		      uint32_t            usage_flags,
 		      struct inf_devres **out_devres);
 void destroy_devres_on_create_failed(struct inf_devres *devres);
 

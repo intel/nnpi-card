@@ -35,11 +35,6 @@ static inline int is_jobgroup_finished(struct jobgroup_descriptor *jobgroup)
 	return (jobgroup->ended_jobs_nr == jobgroup->submitted_jobs_nr);
 }
 
-static inline u32 available_llc_count(struct cve_device_group *dg)
-{
-	return dg->available_llc;
-}
-
 static inline u32 available_hw_counters(struct cve_device_group *dg)
 {
 	return dg->counters_nr;
@@ -120,6 +115,7 @@ static int ice_schedule_list(u8 list_idx)
 		/* Managing Ntw state */
 		if (ntw->exe_status == NTW_EXE_STATUS_QUEUED) {
 
+			/* TODO: Segregate into Get and Reserve resource */
 			retval = ice_ds_ntw_resource_reserve(ntw);
 			if (retval < 0)
 				goto skip_ntw;
@@ -149,7 +145,7 @@ static int ice_schedule_list(u8 list_idx)
 
 		retval = ice_ds_dispatch_jg(cur_jg);
 		if (retval < 0) {
-			cve_os_log(CVE_LOGLEVEL_ERROR,
+			cve_os_log_default(CVE_LOGLEVEL_ERROR,
 					"Unable to Schedule JG_ID=0x%lx. Error=%d\n",
 					(uintptr_t)cur_jg, retval);
 

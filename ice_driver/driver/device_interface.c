@@ -40,9 +40,9 @@
 #include "coral.h"
 #else
 #include "linux/delay.h"
-#include "ice_sw_counters.h"
 #endif
 
+#include "ice_sw_counters.h"
 #include "ice_debug_event.h"
 
 #ifdef IDC_ENABLE
@@ -258,7 +258,7 @@ void remove_di_job(cve_di_job_handle_t hjob)
  *				 (no need to block again)
  *	return "1" - If transactions were blocked in this function
  */
-static int mmu_transactions_wait_and_block(struct cve_device *cve_dev)
+int ice_di_mmu_block_entrance(struct cve_device *cve_dev)
 {
 	union ICE_MMU_INNER_MEM_MMU_CONFIG_t reg;
 	int new_block_performed = 0;
@@ -309,7 +309,7 @@ static int mmu_transactions_wait_and_block(struct cve_device *cve_dev)
 			if (time_after_in_msec(cve_os_get_msec_time_stamp(),
 				wait_timeout)) {
 
-				cve_os_dev_log(CVE_LOGLEVEL_ERROR,
+				cve_os_dev_log_default(CVE_LOGLEVEL_ERROR,
 				cve_dev->dev_index,
 				"Timeout due to continues MMU transaction\n");
 
@@ -324,12 +324,7 @@ static int mmu_transactions_wait_and_block(struct cve_device *cve_dev)
 	return new_block_performed;
 }
 
-int ice_di_mmu_block_entrance(struct cve_device *cve_dev)
-{
-	return mmu_transactions_wait_and_block(cve_dev);
-}
-
-static void mmu_transactions_unblock(struct cve_device *cve_dev)
+void ice_di_mmu_unblock_entrance(struct cve_device *cve_dev)
 {
 	union ICE_MMU_INNER_MEM_MMU_CONFIG_t reg;
 	u32 offset_bytes = ICE_MMU_BASE + ICE_MMU_MMU_CONFIG_MMOFFSET;
@@ -454,6 +449,7 @@ static void dispatch_next_subjobs(struct di_job *job,
 	u32 cbd_size = sizeof(union cve_shared_cb_descriptor);
 	cve_virtual_address_t iceva;
 	struct ice_network *ntw = (struct ice_network *) dev->dev_network_id;
+	struct ice_infer *inf = ntw->curr_exe;
 
 	if (job->cold_run)
 		__prepare_cbdt(job, dev);
@@ -498,8 +494,9 @@ static void dispatch_next_subjobs(struct di_job *job,
 		"CBDT Base Address = %x, CBDT Entries = %d, Doorbell = %d\n",
 		iceva, dev->fifo_desc->fifo.entries, db);
 
-	/* allow CVE to send NEW memory transactions to MMU */
-	mmu_transactions_unblock(dev);
+	/* If true => Unblock before each Doorbell */
+	if (block_mmu)
+		ice_di_mmu_unblock_entrance(dev);
 
 	/* call project hook right before ringing the doorbell */
 	project_hook_dispatch_new_job(dev, ntw);
@@ -507,11 +504,13 @@ static void dispatch_next_subjobs(struct di_job *job,
 	/* make sure the compiler doesn't reorder the instructions */
 	cve_os_memory_barrier();
 
-#ifndef RING3_VALIDATION
 	ice_swc_counter_add(dev->hswc,
 		ICEDRV_SWC_DEVICE_COUNTER_COMMANDS,
 		(db + 1));
-#endif
+
+	if (inf->hswc)
+		ice_swc_counter_inc(inf->hswc,
+			ICEDRV_SWC_INFER_COUNTER_REQUEST_SENT);
 
 	cve_os_dev_log(CVE_LOGLEVEL_INFO,
 		dev->dev_index,
@@ -537,7 +536,7 @@ static void dispatch_next_subjobs(struct di_job *job,
 }
 
 
-static void do_tlb_flush_full(struct cve_device *cve_dev)
+void ice_di_tlb_invalidate_full(struct cve_device *cve_dev)
 {
 	u32 i;
 	union CVG_MMU_1_SYSTEM_MAP_MEM_INVALIDATE_t reg;
@@ -577,7 +576,7 @@ static inline void write_to_page_table_base_address(
 	 */
 
 	/* flush the TLB */
-	do_tlb_flush_full(cve_dev);
+	ice_di_tlb_invalidate_full(cve_dev);
 
 #ifdef _DEBUG
 	cve_os_write_mmio_32(cve_dev,
@@ -655,7 +654,7 @@ int set_idc_registers(struct cve_device *dev, uint8_t lock)
 		ret = cve_os_lock(&dg->poweroff_dev_list_lock,
 				CVE_INTERRUPTIBLE);
 		if (ret != 0) {
-			cve_os_log(CVE_LOGLEVEL_ERROR,
+			cve_os_log_default(CVE_LOGLEVEL_ERROR,
 					"Error:%d PowerOff Lock not aquired\n",
 					ret);
 			return ret;
@@ -700,20 +699,7 @@ int set_idc_registers(struct cve_device *dev, uint8_t lock)
 
 	/* Check if ICEs are Ready */
 	/* Driver is not yet sure how long to wait for ICERDY */
-	{
-		int8_t count = 8;
-
-		while (count) {
-			value = cve_os_read_idc_mmio(dev,
-				IDC_REGS_IDC_MMIO_BAR0_MEM_ICERDY_MMOFFSET);
-
-			if ((value & mask) == mask)
-				break;
-			count--;
-			usleep_range(1000, 3000);
-		}
-	}
-
+	__wait_for_ice_rdy(dev, value, mask);
 	if ((value & mask) != mask) {
 		uint64_t val64 = (value & ~mask);
 
@@ -722,7 +708,7 @@ int set_idc_registers(struct cve_device *dev, uint8_t lock)
 				IDC_REGS_IDC_MMIO_BAR0_MEM_ICEPE_MMOFFSET,
 				val64);
 
-		cve_os_log(CVE_LOGLEVEL_ERROR,
+		cve_os_log_default(CVE_LOGLEVEL_ERROR,
 			"Initialization of ICE-%d failed\n",
 			dev->dev_index);
 		ret = -ICEDRV_KERROR_ICE_DOWN;
@@ -809,7 +795,7 @@ int unset_idc_registers_multi(u32 icemask, uint8_t lock)
 		ret = cve_os_lock(&dg->poweroff_dev_list_lock,
 				CVE_INTERRUPTIBLE);
 		if (ret != 0) {
-			cve_os_log(CVE_LOGLEVEL_ERROR,
+			cve_os_log_default(CVE_LOGLEVEL_ERROR,
 					"Error:%d PowerOff Lock not aquired\n",
 					ret);
 			return ret;
@@ -877,12 +863,6 @@ void cve_di_reset_device(struct cve_device *cve_dev)
 {
 	uint8_t idc_reset;
 
-	/* Wait till active memory transactions
-	 * finished and block CVE to send any
-	 * NEW memory transactions to MMU.
-	 */
-	mmu_transactions_wait_and_block(cve_dev);
-
 	/* Do not perform IDC reset for this ICE if
 	 * it was just powered on
 	 */
@@ -890,7 +870,7 @@ void cve_di_reset_device(struct cve_device *cve_dev)
 			0 : 1;
 
 	if (do_reset_device(cve_dev, idc_reset))
-		cve_os_dev_log(CVE_LOGLEVEL_ERROR,
+		cve_os_dev_log_default(CVE_LOGLEVEL_ERROR,
 				cve_dev->dev_index,
 				"Encountered an error to perform a device reset\n");
 
@@ -1005,7 +985,7 @@ void ice_di_reset_counter(uint32_t cntr_id)
 
 	ASSERT(dev != NULL);
 	if (cntr_id >= MAX_HW_COUNTER_NR) {
-		cve_os_log(CVE_LOGLEVEL_ERROR,
+		cve_os_log_default(CVE_LOGLEVEL_ERROR,
 		"Counter:%d out of range (valid range [0 - %d]\n",
 		cntr_id, MAX_HW_COUNTER_NR);
 		goto out;
@@ -1151,12 +1131,10 @@ static void cve_executed_cbs_time_log(struct cve_device *dev,
 
 		cb_descriptor = &dev->fifo_desc->fifo.cb_desc_vaddr[i];
 
-#ifndef RING3_VALIDATION
 		ice_swc_counter_add(dev->hswc,
 			ICEDRV_SWC_DEVICE_COUNTER_RUNTIME,
 			(cb_descriptor->completion_time -
 			cb_descriptor->start_time));
-#endif
 
 		cve_os_dev_log(CVE_LOGLEVEL_DEBUG, dev->dev_index,
 			"CBD_ID=0x%lx, StartTime=%u, EndTime=%u\n",
@@ -1187,7 +1165,7 @@ static struct ice_network *__get_ntw_of_overflowed_cntr(int cntr_id,
 	if (dg->base_addr_hw_cntr[cntr_id].network_id != INVALID_NETWORK_ID) {
 		evct_prot_reg.val = cve_os_read_idc_mmio(dev->cve_dev, reg);
 		if (evct_prot_reg.field.OVF) {
-			cve_os_log(CVE_LOGLEVEL_ERROR,
+			cve_os_log_default(CVE_LOGLEVEL_ERROR,
 			"Error: NtwID:0x%llx Counter:%x overflow\n",
 			dg->base_addr_hw_cntr[cntr_id].network_id, cntr_id);
 			ntw = (struct ice_network *)
@@ -1211,7 +1189,7 @@ int cve_di_interrupt_handler(struct idc_device *idc_dev)
 	struct dev_isr_status *isr_status_node;
 
 	if (!is_driver_active) {
-		cve_os_log(CVE_LOGLEVEL_ERROR,
+		cve_os_log_default(CVE_LOGLEVEL_ERROR,
 			"Received Illegal Interrupt\n");
 		return need_dpc;
 	}
@@ -1219,7 +1197,7 @@ int cve_di_interrupt_handler(struct idc_device *idc_dev)
 
 	if (((head + 1) % IDC_ISR_BH_QUEUE_SZ) == tail) {
 		/* Q FULL*/
-		cve_os_log(CVE_LOGLEVEL_ERROR, "BH ISR Q FULL\n");
+		cve_os_log_default(CVE_LOGLEVEL_ERROR, "BH ISR Q FULL\n");
 	}
 
 
@@ -1267,7 +1245,7 @@ int cve_di_interrupt_handler(struct idc_device *idc_dev)
 
 	/* Spurious Interrupt */
 	if (!isr_status_node->ice_status && !need_dpc) {
-		cve_os_log(CVE_LOGLEVEL_ERROR,
+		cve_os_log_default(CVE_LOGLEVEL_ERROR,
 				"Spurious ISR IsrQNode[%d] IDC Status:0x%llx ICE Status=0x%llx\n",
 				head,
 				isr_status_node->idc_status,
@@ -1377,13 +1355,13 @@ void cve_di_interrupt_handler_deferred_proc(struct idc_device *dev)
 
 	if (tail == head) {
 		/* Q Empty*/
-		cve_os_log(CVE_LOGLEVEL_ERROR, "ISR-BH Q IS EMPTY\n");
+		cve_os_log_default(CVE_LOGLEVEL_ERROR, "ISR-BH Q IS EMPTY\n");
 		goto end;
 	}
 
 	isr_status_node = &dev->isr_status[tail];
 	if (!isr_status_node->valid) {
-		cve_os_log(CVE_LOGLEVEL_ERROR,
+		cve_os_log_default(CVE_LOGLEVEL_ERROR,
 				"Spurious BH IsrQNode[%d] idc_status:0x%llx ice_status:0x%llx\n",
 				tail, isr_status_node->idc_status,
 				isr_status_node->ice_status);
@@ -1399,7 +1377,7 @@ void cve_di_interrupt_handler_deferred_proc(struct idc_device *dev)
 	if (idc_err_status.val) {
 		uint8_t cntr_overflow = idc_err_status.field.cntr_oflow_err;
 
-		cve_os_log(CVE_LOGLEVEL_ERROR,
+		cve_os_log_default(CVE_LOGLEVEL_ERROR,
 				"ICEDC Errro Interrupt Status = %llu, ILGACC:%x ICERERR:%x ICEWERR:%x ASF_ICE1_ERR:%x ASF_ICE0_ERR:%x ICECNERR:%x ICESEERR:%x ICEARERR:%x CTROVFERR:%x IACNTNOT:%x SEMFREE:%x\n",
 		idc_err_status.val,
 		idc_err_status.field.illegal_access,
@@ -1476,7 +1454,7 @@ void cve_di_interrupt_handler_deferred_proc(struct idc_device *dev)
 			continue;
 
 		if (cve_dev->state == CVE_DEVICE_IDLE) {
-			cve_os_dev_log(CVE_LOGLEVEL_ERROR,
+			cve_os_dev_log_default(CVE_LOGLEVEL_ERROR,
 				cve_dev->dev_index,
 				"device IDLE interrupt out of context status= 0x%08x",
 				 status);
@@ -1497,7 +1475,7 @@ void cve_di_interrupt_handler_deferred_proc(struct idc_device *dev)
 		cve_executed_cbs_time_log(cve_dev, job, &exec_time);
 
 		if (is_tlc_bp_interrupt(status)) {
-			cve_os_dev_log(CVE_LOGLEVEL_ERROR,
+			cve_os_dev_log_default(CVE_LOGLEVEL_ERROR,
 				cve_dev->dev_index,
 				"TLC BP interrupt received status= 0x%08x\n",
 				 status);
@@ -1508,7 +1486,7 @@ void cve_di_interrupt_handler_deferred_proc(struct idc_device *dev)
 		/* check ECB error only if one sub job was subbmitted */
 		if (sub_job->embedded_sub_job) {
 			if (is_embedded_cb_error(cve_dev)) {
-				cve_os_log(CVE_LOGLEVEL_ERROR,
+				cve_os_log_default(CVE_LOGLEVEL_ERROR,
 			"Interrupt Status = 0x%08x Embedded CB Error = %d\n",
 			status, is_embedded_cb_error(cve_dev));
 				job_status = CVE_JOBSTATUS_ABORTED;
@@ -1528,7 +1506,7 @@ void cve_di_interrupt_handler_deferred_proc(struct idc_device *dev)
 
 		if (is_ice_dump_completed(status) &&
 			cve_dev->debug_control_buf.is_dump_now) {
-			cve_os_log(CVE_LOGLEVEL_ERROR,
+			cve_os_log_default(CVE_LOGLEVEL_ERROR,
 				"ICE_DUMP_NOW completed ICE ID:%d, status:0x%08x\n",
 				cve_dev->dev_index, status);
 			status = unset_ice_dump_status(status);
@@ -1547,7 +1525,7 @@ void cve_di_interrupt_handler_deferred_proc(struct idc_device *dev)
 			cve_os_dev_log(CVE_LOGLEVEL_ERROR,
 					cve_dev->dev_index,
 					"It seems that some errors occurred or ICE_DUMP_COMPLETED because of some TLC error\n");
-			cve_os_log(CVE_LOGLEVEL_ERROR,
+			cve_os_log_default(CVE_LOGLEVEL_ERROR,
 					"Interrupt Status = 0x%08x, TLC ERROR = %d, MMU Error = %d\n CB Completed = %d, Queue Empty = %d, Page Fault Error = %d\n Bus Error = %d WD Error =%d , BTRS Error = %d, TLC Panic = %d, ICE_DUMP_COMPLETED = %d\n",
 					status,
 					is_tlc_error(status),
@@ -1574,7 +1552,7 @@ void cve_di_interrupt_handler_deferred_proc(struct idc_device *dev)
 			if (ice_ds_is_network_active(cve_dev->dev_network_id)
 					== 0) {
 				job_status = CVE_JOBSTATUS_ABORTED;
-				cve_os_log(CVE_LOGLEVEL_INFO,
+				cve_os_log_default(CVE_LOGLEVEL_INFO,
 						"NtwID:0x%llx is not active\n",
 						cve_dev->dev_network_id);
 			} else {
@@ -1589,12 +1567,12 @@ void cve_di_interrupt_handler_deferred_proc(struct idc_device *dev)
 
 handle_interrupt_check_completion:
 
-		cve_os_dev_log(CVE_LOGLEVEL_DEBUG,
-				cve_dev->dev_index,
-				"NtwID:0x%llx Block MMU transactions in Bottom Half\n",
-				cve_dev->dev_network_id);
 		project_hook_interrupt_dpc_handler_entry(cve_dev);
-		mmu_transactions_wait_and_block(cve_dev);
+
+		/* If true => Block after Job completion */
+		if (block_mmu)
+			ice_di_mmu_block_entrance(cve_dev);
+
 		project_hook_interrupt_dpc_handler_exit(cve_dev, status);
 
 		/* notify the dispatcher */
@@ -1682,7 +1660,7 @@ void cve_di_invalidate_page_table_base_address(struct cve_device *cve_dev)
 }
 
 int cve_di_handle_submit_job(
-	struct cve_user_buffer *buf_list,
+	struct cve_ntw_buffer *buf_list,
 	cve_ds_job_handle_t ds_hjob,
 	u32 command_buffers_nr,
 	struct cve_command_buffer_descriptor *kcb_descriptor,
@@ -1695,7 +1673,7 @@ int cve_di_handle_submit_job(
 	u64 address;
 	ice_va_t cve_vaddr;
 	u32 offset;
-	struct cve_user_buffer *buffer;
+	struct cve_ntw_buffer *buffer;
 
 	/* create a new job object */
 	retval = OS_ALLOC_ZERO(sizeof(*job), (void **)&job);
@@ -1729,20 +1707,20 @@ int cve_di_handle_submit_job(
 				buffer_id,
 				kcb_descriptor[cb_idx].bufferid);
 		if (!buffer) {
-			cve_os_log(CVE_LOGLEVEL_ERROR,
+			cve_os_log_default(CVE_LOGLEVEL_ERROR,
 				"Cannot find surface ID %llu!\n",
 				kcb_descriptor[cb_idx].bufferid);
 			retval = -ICEDRV_KERROR_CB_INVAL_BUFFER_ID;
 			goto err;
 		}
 
-		retval = cve_mm_get_buffer_addresses(buffer->allocation,
+		retval = cve_mm_get_buffer_addresses(buffer->ntw_buf_alloc,
 				&cve_vaddr, &offset, &address);
 
 		if (retval < 0) {
-			cve_os_log(CVE_LOGLEVEL_ERROR,
+			cve_os_log_default(CVE_LOGLEVEL_ERROR,
 					"Buf:%p alloc_info:%p failed(%d) to get va\n",
-					buffer, buffer->allocation, retval);
+					buffer, buffer->ntw_buf_alloc, retval);
 			goto err;
 		}
 
@@ -1771,7 +1749,8 @@ int cve_di_handle_submit_job(
 		 * save pointer to buffer's allocation struct inside
 		 * the cb struct for future use
 		 */
-		job->sub_jobs[sub_job_idx].cb.allocation = buffer->allocation;
+		job->sub_jobs[sub_job_idx].cb.allocation =
+			buffer->ntw_buf_alloc;
 
 		/* update the sub-job and the context */
 		job->sub_jobs[sub_job_idx].parent = job;
@@ -1912,5 +1891,12 @@ u8 ice_di_is_cold_run(cve_di_job_handle_t hjob)
 	struct di_job *job = (struct di_job *)hjob;
 
 	return job->cold_run;
+}
+
+void ice_di_set_cold_run(cve_di_job_handle_t hjob)
+{
+	struct di_job *job = (struct di_job *)hjob;
+
+	job->cold_run = 1;
 }
 

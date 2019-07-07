@@ -19,6 +19,7 @@
 #define SPH_TRACE_ICEDRV_CREATE_CONTEXT           icedrvCreateContext
 #define SPH_TRACE_ICEDRV_CREATE_NETWORK           icedrvCreateNetwork
 #define SPH_TRACE_ICEDRV_EXECUTE_NETWORK          icedrvExecuteNetwork
+#define SPH_TRACE_ICEDRV_EVENT_GENERATION         icedrvEventGeneration
 #define SPH_TRACE_ICEDRV_NETWORK_RESOURCE         icedrvNetworkResource
 #define SPH_TRACE_ICEDRV_DESTROY_NETWORK          icedrvDestroyNetwork
 #define SPH_TRACE_ICEDRV_DESTROY_CONTEXT          icedrvDestroyContext
@@ -37,6 +38,7 @@
 #define SPH_TRACE_STR_CREATE_CTXT               "create_context"
 #define SPH_TRACE_STR_CREATE_NTW                "create_network"
 #define SPH_TRACE_STR_EXECUTE_NTW               "execute_network"
+#define SPH_TRACE_STR_EVENT_GENERATION          "event_generation"
 #define SPH_TRACE_STR_NTW_RESOURCE              "network_resource"
 #define SPH_TRACE_STR_DESTROY_NTW               "destroy_network"
 #define SPH_TRACE_STR_DESTROY_CTXT              "destroy_context"

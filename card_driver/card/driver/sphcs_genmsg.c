@@ -593,16 +593,29 @@ static void release_service_list(void)
 static int add_service(const char *service_name, int service_name_len, struct service_data *service)
 {
 	int service_id;
+	unsigned int i;
 
 	service_id = ida_simple_get(&s_service_list->ida, 0, SPH_MAX_GENERIC_SERVICES, GFP_KERNEL);
+	if (unlikely(service_id < 0)) {
+		sph_log_err(SERVICE_LOG, "Failed to generate service id\n");
+		return service_id;
+	}
 
 	mutex_lock(&s_service_list->lock);
-	if (service_id >= 0) {
-		s_service_list->service_name[service_id] = service_name;
-		s_service_list->service_name_len[service_id] = service_name_len;
-		s_service_list->service_data[service_id] = service;
-		s_service_list->num_services++;
+	//if service with same name already exists, return error
+	for (i = 0; i < SPH_MAX_GENERIC_SERVICES; i++) {
+		if (s_service_list->service_name[i] != NULL &&
+		    !memcmp(s_service_list->service_name[i], service_name, service_name_len + 1)) {
+			SPH_ASSERT(s_service_list->service_data[i] != NULL);
+			mutex_unlock(&s_service_list->lock);
+			ida_simple_remove(&s_service_list->ida, service_id);
+			return -EEXIST;
+		}
 	}
+	s_service_list->service_name[service_id] = service_name;
+	s_service_list->service_name_len[service_id] = service_name_len;
+	s_service_list->service_data[service_id] = service;
+	s_service_list->num_services++;
 	mutex_unlock(&s_service_list->lock);
 
 	return service_id;
@@ -631,10 +644,11 @@ static struct service_data *find_service(const char *service_name, u32 name_len)
 	int i;
 
 	mutex_lock(&s_service_list->lock);
-	for (i = 0; i < s_service_list->num_services; i++) {
-		if (s_service_list->service_name[i] &&
-		    s_service_list->service_data[i] &&
+	for (i = 0; i < SPH_MAX_GENERIC_SERVICES; i++) {
+		if (s_service_list->service_name[i] != NULL &&
+		    s_service_list->service_name_len[i] == name_len &&
 		    !memcmp(s_service_list->service_name[i], service_name, name_len)) {
+			SPH_ASSERT(s_service_list->service_data[i] != NULL);
 			ret = s_service_list->service_data[i];
 			break;
 		}
@@ -825,48 +839,46 @@ static long process_register_service(struct file *f, void __user *arg)
 	int ret;
 	char *service_name;
 	struct service_data *service;
-	struct service_data *p_service_chk;
 
 	/* Fail of the command streamer object has not been created yet */
-	if (g_the_sphcs == NULL)
+	if (unlikely(g_the_sphcs == NULL))
 		return -ENODEV;
 
 	ret = copy_from_user(&req, arg, sizeof(req));
-	if (ret)
+	if (unlikely(ret != 0))
 		return -EFAULT;
 
-	if (req.name_len == 0)
+	if (unlikely(req.name_len == 0))
 		return -EINVAL;
 
-	service_name = kzalloc(req.name_len+1, GFP_KERNEL);
-	if (!service_name) {
+	service_name = kmalloc(req.name_len+1, GFP_KERNEL);
+	if (unlikely(service_name == NULL))
 		return -ENOMEM;
-	}
 
 	ret = copy_from_user(service_name, arg + sizeof(req), req.name_len);
-	if (ret) {
+	if (unlikely(ret != 0)) {
 		kfree(service_name);
 		return -EIO;
 	}
 
-	//if service with same name already exists, return error
-	p_service_chk = find_service(service_name, req.name_len);
-	if (unlikely(p_service_chk != NULL)) {
+	service_name[req.name_len] = '\0';
+
+	if (unlikely(strlen(service_name) != req.name_len)) {
 		kfree(service_name);
-		return -EEXIST;
+		return -EINVAL;
 	}
 
 	service = kzalloc(sizeof(*service), GFP_KERNEL);
-	if (!service) {
+	if (unlikely(service == NULL)) {
 		kfree(service_name);
 		return -ENOMEM;
 	}
 
 	ret = add_service(service_name, req.name_len, service);
-	if (ret < 0) {
+	if (unlikely(ret < 0)) {
 		kfree(service);
 		kfree(service_name);
-		return -EFAULT;
+		return ret;
 	}
 
 	service->id = ret;
@@ -1186,15 +1198,14 @@ int sphcs_genmsg_cmd_dma_complete_callback(struct sphcs *sphcs, void *ctx, const
 
 			service = find_service(name, *name_len);
 
-			if (service) {
+			if (service != NULL) {
 				struct pending_packet *pend;
 
 				pend = kzalloc(sizeof(*pend), GFP_NOWAIT);
-				if (!pend) {
+				if (unlikely(pend == NULL)) {
 					sph_log_err(SERVICE_LOG, "Failed to allocate pending connection struct!!\n");
 				} else {
 					/* insert into the connection pending list */
-					INIT_LIST_HEAD(&pend->node);
 					memcpy(&pend->dma_data, dma_data, sizeof(*dma_data));
 					SPH_SPIN_LOCK(&service->lock);
 					list_add_tail(&pend->node, &service->pending_connections);
@@ -1490,7 +1501,7 @@ int sphcs_init_genmsg_interface(void)
 	ida_init(&s_genmsg.channel_ida);
 	spin_lock_init(&s_genmsg.lock);
 
-	sph_log_err(START_UP_LOG, "chardev inited at MAJOR=%d\n", MAJOR(s_devnum));
+	sph_log_info(START_UP_LOG, "chardev inited at MAJOR=%d\n", MAJOR(s_devnum));
 	return 0;
 }
 

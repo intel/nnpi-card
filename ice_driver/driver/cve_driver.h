@@ -136,11 +136,6 @@ enum ice_network_type {
 
 enum ice_reserve_resource {
 	ICE_RESERVE_NONE = 0,
-	ICE_RESERVE_ICE = 1,
-	ICE_RESERVE_COUNTERS = 2,
-	ICE_RESERVE_POOL = 4,
-	ICE_RESERVE_LLC = 8,
-	ICE_KEEP_ICES_ON = 16,
 	ICE_SET_BREAK_POINT = 32
 };
 
@@ -178,7 +173,19 @@ enum icebo_req_type {
 	ICEBO_PREFERRED
 };
 
+enum ice_clos {
+	ICE_CLOS_0 = 0,
+	ICE_CLOS_1,
+	ICE_CLOS_2,
+	ICE_CLOS_3,
+	ICE_CLOS_MAX
+};
+
 struct cve_surface_descriptor {
+	/** a unique integer ID for each surface from user for debugging
+	 *  to be set to the crc32 of the surface name in the graph
+	 */
+	__u32 obj_id;
 	/* id of the buffer, to be filled by kmd after network submission */
 	cve_bufferid_t bufferid;
 	/* the base address of the area in memory */
@@ -210,6 +217,10 @@ struct cve_surface_descriptor {
 };
 
 struct cve_infer_surface_descriptor {
+	/** Object id from user for debug capability to identify each surface
+	 *  uniquely suing the crc32 of the surface name in the graph
+	 */
+	__u32 obj_id;
 	/* buffer index in corresponding network's buffer descriptor*/
 	__u64 index;
 	/* the base address of the area in memory */
@@ -280,10 +291,19 @@ struct cve_job_group {
 };
 
 struct ice_network_descriptor {
+	/** Object id from user for sw counters
+	 *  Can be negative if driver generated ID to be used
+	 */
+	__s64 obj_id;
+	/** parent object id, full network id w.r.t card
+	 *  should be unique per context, can be -1 if driver generated id to
+	 *  be used
+	 */
+	__s64 parent_obj_id;
 	/* Num ICE requirement for this Network */
 	__u8 num_ice;
 	/* LLC requirement for this Network */
-	__u32 llc_size;
+	__u32 llc_size[ICE_CLOS_MAX];
 	/* List of Buffers used by this Network */
 	struct cve_surface_descriptor *buf_desc_list;
 	/* Number of entries in above list */
@@ -305,6 +325,10 @@ struct ice_network_descriptor {
 };
 
 struct ice_infer_descriptor {
+	/** Object id from user for sw counters
+	 *  Can be negative if driver generated ID to be used
+	 */
+	__s64 obj_id;
 	/* List of Infer specific Buffer Descriptor */
 	struct cve_infer_surface_descriptor *buf_desc_list;
 	/* Number of infer Buffer Descriptors */
@@ -363,6 +387,27 @@ struct cve_destroy_infer {
 	__u64 inferid;
 };
 
+struct ice_resource_request {
+	__u8 is_reserve;
+	__s32 timeout;
+	__u32 num_ice;
+	__u32 num_cntr;
+	__u32 num_pool;
+	__u32 clos[ICE_CLOS_MAX];
+};
+
+/*
+ * parameter for IOCTL-manage_resource
+ */
+struct ice_manage_resource {
+	/*in, context id*/
+	__u64 contextid;
+	/*in, network id*/
+	__u64 networkid;
+	/*inout*/
+	struct ice_resource_request resource;
+};
+
 /*
  * parameter for IOCTL-destroy
  */
@@ -417,6 +462,10 @@ struct cve_load_firmware_params {
 * parameter for IOCTL-create-context
 */
 struct cve_create_context_params {
+	/** context id from user for sw counters, to be set negative value
+	 * if driver generated id to be used
+	 */
+	__s64 obj_id;
 	/*out, context ID of created context*/
 	__u64 out_contextid;
 };
@@ -668,6 +717,7 @@ struct cve_ioctl_param {
 		struct cve_create_infer create_infer;
 		struct cve_execute_infer execute_infer;
 		struct cve_destroy_infer destroy_infer;
+		struct ice_manage_resource manage_resource;
 		struct cve_destroy_network destroy_network;
 		struct cve_load_firmware_params load_firmware;
 		struct cve_get_event get_event;
@@ -716,4 +766,6 @@ struct cve_ioctl_param {
 	_IOWR(CVE_IOCTL_SEQ_NUM, 17, struct cve_ioctl_param)
 #define CVE_IOCTL_DESTROY_NETWORK \
 	_IOWR(CVE_IOCTL_SEQ_NUM, 18, struct cve_ioctl_param)
+#define CVE_IOCTL_MANAGE_RESOURCE \
+	_IOWR(CVE_IOCTL_SEQ_NUM, 19, struct cve_ioctl_param)
 #endif /* _CVE_DRIVER_H_ */

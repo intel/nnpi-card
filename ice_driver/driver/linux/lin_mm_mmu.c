@@ -493,6 +493,8 @@ static int l2_map_page(struct cve_lin_mm_domain *cve_domain,
 			   cve_domain->pgd_vaddr,
 			   &cve_domain->pgd_dma_handle.mem_handle.dma_address,
 			   l2_pt_vaddr, &l2_pt_dma_addr, l2_idx);
+		retval = -ICEDRV_KERROR_PT_DUPLICATE_ENTRY;
+		goto out;
 	}
 
 	/* there are 3 bits for protection */

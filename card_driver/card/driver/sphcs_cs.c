@@ -31,7 +31,7 @@
 #include <linux/version.h>
 
 /* Disable MCE support on COH and CentOS local builds */
-#if defined(HW_LAYER_COH) || defined(RHEL_RELEASE_CODE) || defined(HW_LAYER_LOCAL)
+#if defined(RHEL_RELEASE_CODE) || defined(HW_LAYER_LOCAL)
 #define NO_MCE
 #endif
 
@@ -43,6 +43,9 @@ struct sphcs *g_the_sphcs;   /* a  global pointer to the sphcs object - currentl
 
 void *g_hSwCountersInfo_global;
 void *g_hSwCountersInfo_context;
+void *g_hSwCountersInfo_network;
+void *g_hSwCountersInfo_infreq;
+void *g_hSwCountersInfo_copy;
 struct sph_sw_counters *g_sph_sw_counters;
 
 void sphcs_send_event_report(struct sphcs *sphcs,
@@ -550,6 +553,33 @@ static int sphcs_create_sphcs(void                           *hw_handle,
 		goto free_counters_info_context;
 	}
 
+	ret = sph_create_sw_counters_info_node(NULL,
+					       &g_sw_counters_set_network,
+					       g_hSwCountersInfo_context,
+					       &g_hSwCountersInfo_network);
+	if (ret) {
+		sph_log_err(START_UP_LOG, "Failed to initialize sw network counters info\n");
+		goto free_counters_values;
+	}
+
+	ret = sph_create_sw_counters_info_node(NULL,
+					       &g_sw_counters_set_copy,
+					       g_hSwCountersInfo_context,
+					       &g_hSwCountersInfo_copy);
+	if (ret) {
+		sph_log_err(START_UP_LOG, "Failed to initialize sw copy counters info\n");
+		goto free_counters_network;
+	}
+
+	ret = sph_create_sw_counters_info_node(NULL,
+					       &g_sw_counters_set_infreq,
+					       g_hSwCountersInfo_network,
+					       &g_hSwCountersInfo_infreq);
+	if (ret) {
+		sph_log_err(START_UP_LOG, "Failed to initialize sw infreq counters info\n");
+		goto free_counters_copy;
+	}
+
 	sphcs_maint_init_debugfs(sphcs->debugfs_dir);
 
 	sphcs->periodic_timer.timer_interval_ms = 50;
@@ -571,7 +601,7 @@ static int sphcs_create_sphcs(void                           *hw_handle,
 				    SPH_INBOUND_MEM_SIZE,
 				    (uintptr_t)sphcs->inbound_mem);
 			ret = -ENOMEM;
-			goto free_counters_values;
+			goto free_counters_infreq;
 		} else {
 			sphcs->inbound_mem->magic = SPH_INBOUND_MEM_MAGIC;
 			sphcs->inbound_mem->crash_dump_size = 0;
@@ -611,6 +641,12 @@ free_inbound_mem:
 				  SPH_INBOUND_MEM_SIZE,
 				  sphcs->inbound_mem,
 				  sphcs->inbound_mem_dma_addr);
+free_counters_infreq:
+	sph_remove_sw_counters_info_node(g_hSwCountersInfo_infreq);
+free_counters_copy:
+	sph_remove_sw_counters_info_node(g_hSwCountersInfo_copy);
+free_counters_network:
+	sph_remove_sw_counters_info_node(g_hSwCountersInfo_network);
 free_counters_values:
 	sph_remove_sw_counters_values_node(g_sph_sw_counters);
 free_counters_info_context:
@@ -701,6 +737,9 @@ static int sphcs_destroy_sphcs(struct sphcs *sphcs)
 	dma_page_pool_destroy(sphcs->net_dma_page_pool);
 	periodic_timer_delete(&sphcs->periodic_timer);
 	sph_remove_sw_counters_values_node(g_sph_sw_counters);
+	sph_remove_sw_counters_info_node(g_hSwCountersInfo_infreq);
+	sph_remove_sw_counters_info_node(g_hSwCountersInfo_copy);
+	sph_remove_sw_counters_info_node(g_hSwCountersInfo_network);
 	sph_remove_sw_counters_info_node(g_hSwCountersInfo_context);
 	sph_remove_sw_counters_info_node(g_hSwCountersInfo_global);
 	sphcs_response_pool_destroy_page_pool(0);

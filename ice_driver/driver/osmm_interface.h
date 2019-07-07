@@ -63,9 +63,10 @@ int cve_osmm_inf_dma_buf_map(u64 inf_id,
 		u32 dma_domain_array_size,
 		union allocation_address alloc_addr,
 		enum osmm_memory_type mem_type,
-		os_allocation_handle ntw_halloc);
-void cve_osmm_inf_dma_buf_unmap(u64 inf_id,
-		os_allocation_handle halloc);
+		os_allocation_handle ntw_halloc,
+		os_allocation_handle *inf_halloc);
+
+void cve_osmm_inf_dma_buf_unmap(os_allocation_handle halloc);
 
 /*
  * map a buffer in the device memory
@@ -154,7 +155,6 @@ u32 cve_osmm_get_domain_pd_base_addr(os_domain_handle hdom);
  *		sync_dir - cache operation direction (to dev/to host)
  */
 void cve_osmm_cache_allocation_op(os_allocation_handle halloc,
-	u64 inf_id,
 	struct cve_device *cve_dev,
 	enum cve_cache_sync_direction sync_dir);
 

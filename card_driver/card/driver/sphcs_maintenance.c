@@ -186,16 +186,18 @@ static long send_sys_info(void __user *arg)
 static u16 milli_celcius_to_fpga_units(uint32_t mc)
 {
 	u16 ret;
-	u16 sign = 0;
 
-	if (mc < 0) {
-		sign = 0x8000;
-		mc *= -1;
-	}
+	ret = (u16)(((mc / 1000) & 0x7f) << 8);
 
-	ret = sign |
-	      (((mc / 1000) & 0xff) << 7) |
-	      (((mc % 1000) / 8) && 0x7f);
+	return ret;
+}
+
+static u16 milli_watt_to_fpga_units(uint32_t mW)
+{
+	u16 ret;
+
+	ret = (u16)(((mW / 1000) & 0xFF) << 8) |
+	      (u16)(((mW % 1000) / 4) & 0xFF);
 
 	return ret;
 }
@@ -226,7 +228,7 @@ static long fpga_update(void __user *arg)
 	max_temp = milli_celcius_to_fpga_units(data.max_temperature_mc);
 	thermal_event = milli_celcius_to_fpga_units(data.thermal_event_mc);
 	mem_therm_status = data.DDR_thermal_status & 0x7;
-	avg_power = data.avg_power_mW / 10;
+	avg_power = milli_watt_to_fpga_units(data.avg_power_mW);
 
 	power_hw_get_ratl(&max_thermal, NULL, NULL, false);
 
@@ -406,11 +408,10 @@ static int sphcs_maint_attach_fpga(struct device *dev, void *dummy)
 	//
 	// Write TDP value
 	// sph_power_get_tdp returns TDP in units of micro-watts,
-	// convert to 10 mili-watts units by divifing by 10,000
 	//
 	i2c_smbus_write_word_data(s_fpga_client,
 				  FPGA_TDP_REG,
-				  sph_power_get_tdp() / 10000);
+				  milli_watt_to_fpga_units(sph_power_get_tdp() / 1000));
 
 	sph_log_info(MAINTENANCE_LOG, "Found FPGA SMBus device BoardID=0x%x FabID=0x%x FPGA Revision %u\n",
 		     s_board_id, s_fab_id, s_fpga_rev);

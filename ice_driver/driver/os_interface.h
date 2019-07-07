@@ -51,6 +51,7 @@ extern u32 disable_embcb;
 extern u32 core_mask;
 extern int enable_llc;
 extern u32 ice_fw_select;
+extern u32 block_mmu;
 
 #ifdef RING3_VALIDATION
 #define xstr(s) str(s)
@@ -168,6 +169,73 @@ enum cve_log_level {
 #else
 #define _cve_os_log(level, fmt, ...) {}
 #endif
+
+/* Logging facility mainly for release build */
+#if SPH_LOGGER == 1
+#define cve_os_log_default(level, fmt, ...) do {\
+		switch (level) {\
+		case CVE_LOGLEVEL_ERROR:\
+			sph_log_err(ICE_KMD_CATEGORY, fmt, ##__VA_ARGS__);\
+			break;\
+		case CVE_LOGLEVEL_WARNING:\
+			sph_log_warn(ICE_KMD_CATEGORY, fmt, ##__VA_ARGS__);\
+			break;\
+		case CVE_LOGLEVEL_INFO:\
+			sph_log_info(ICE_KMD_CATEGORY, fmt, ##__VA_ARGS__);\
+			break;\
+		} \
+	} while (0)
+#define _cve_os_log_default(level, fmt, ...) do {\
+		switch (level) {\
+		case CVE_LOGLEVEL_ERROR:\
+			sph_log_err(ICE_KMD_CATEGORY, fmt, ##__VA_ARGS__);\
+			break;\
+		case CVE_LOGLEVEL_WARNING:\
+			sph_log_warn(ICE_KMD_CATEGORY, fmt, ##__VA_ARGS__);\
+			break;\
+		case CVE_LOGLEVEL_INFO:\
+			sph_log_info(ICE_KMD_CATEGORY, fmt, ##__VA_ARGS__);\
+			break;\
+		} \
+	} while (0)
+#define cve_os_dev_log_default(level, cve_dev, fmt, ...) \
+		_cve_os_log_default(level, \
+			"[PID:%d] %s(%d) : ICE%d: "fmt, current->pid, \
+			__FILENAME__, __LINE__, cve_dev, ##__VA_ARGS__)
+#else
+#define cve_os_log_default(level, fmt, ...) do {\
+		switch (level) {\
+		case CVE_LOGLEVEL_ERROR:\
+			pr_err(fmt, ##__VA_ARGS__);\
+			break;\
+		case CVE_LOGLEVEL_WARNING:\
+			pr_warn(fmt, ##__VA_ARGS__);\
+			break;\
+		case CVE_LOGLEVEL_INFO:\
+			pr_info(fmt, ##__VA_ARGS__);\
+			break;\
+		} \
+	} while (0)
+#define _cve_os_log_default(level, fmt, ...) do {\
+		switch (level) {\
+		case CVE_LOGLEVEL_ERROR:\
+			pr_err(fmt, ##__VA_ARGS__);\
+			break;\
+		case CVE_LOGLEVEL_WARNING:\
+			pr_warn(fmt, ##__VA_ARGS__);\
+			break;\
+		case CVE_LOGLEVEL_INFO:\
+			pr_info(fmt, ##__VA_ARGS__);\
+			break;\
+		} \
+	} while (0)
+#define cve_os_dev_log_default(level, cve_dev, fmt, ...) \
+		_cve_os_log_default(level, \
+			"ICE : [PID:%d] %s(%d) :%s: ICE%d: "fmt, \
+			getpid(), __FILENAME__, \
+			__LINE__, __func__, cve_dev, ##__VA_ARGS__)
+#endif
+
 
 #if SPH_LOGGER == 1
 #define cve_os_log(level, fmt, ...) \
@@ -710,6 +778,7 @@ void cve_os_vunmap_dma_handle(void *vaddr);
 
 uint32_t get_process_pid(void);
 
+void ice_os_update_clos(void *pmclos);
 
 #endif /* _OS_INTERFACE_H_ */
 

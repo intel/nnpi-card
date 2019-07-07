@@ -406,6 +406,8 @@ int ice_trace_set_ice_observers(struct ice_observer_config *dso_config,
 	} else {
 		memcpy(ice_dev->dso.reg_vals, default_dso_reg_vals,
 						sizeof(default_dso_reg_vals));
+		memcpy(ice_dev->dso.reg_readback_vals, default_dso_reg_vals,
+						sizeof(default_dso_reg_vals));
 		ice_dev->dso.dso_config_status =
 				      TRACE_STATUS_DEFAULT_CONFIG_WRITE_PENDING;
 		ice_dev->dso.is_default_config = true;
@@ -601,19 +603,21 @@ int ice_trace_write_dso_regs(struct cve_device *ice_dev)
 		cve_os_dev_log(CVE_LOGLEVEL_ERROR,
 				ice_dev->dev_index,
 				"write_dso_regs_sanity() failed\n");
+		goto out;
 	}
 
 	for (i = 0; i < ice_dev->dso.reg_num; i++) {
 		port = ice_dev->dso.reg_offsets[i].port;
 		croffset = ice_dev->dso.reg_offsets[i].croffset;
 
-	ret = regbar_port_croffset_sanity(ice_dev, port, croffset);
+		ret = regbar_port_croffset_sanity(ice_dev, port, croffset);
 
-	if (ret) {
-		cve_os_dev_log(CVE_LOGLEVEL_ERROR,
+		if (ret) {
+			cve_os_dev_log(CVE_LOGLEVEL_ERROR,
 				ice_dev->dev_index,
 				"regbar_port_croffset_sanity() failed\n");
-	}
+			goto out;
+		}
 		dso_reg_addr = (port << 16 | croffset) & 0xffffff;
 
 		/* for DSO_CFG_DTF_SRC_CONFIG_REG shouldn't write to 30,31 bit*/
@@ -631,6 +635,7 @@ int ice_trace_write_dso_regs(struct cve_device *ice_dev)
 		cb->regbar_write(port, croffset, ice_dev->dso.reg_vals[i]);
 		value = cb->regbar_read(port, croffset);
 
+		ice_dev->dso.reg_readback_vals[i] = value;
 		/* for DSO_CFG_DTF_SRC_CONFIG_REG ignore
 		 *30,31 bits value while reading
 		 */
@@ -655,6 +660,7 @@ int ice_trace_write_dso_regs(struct cve_device *ice_dev)
 		coral_dso_write_offset(dso_reg_addr, ice_dev->dso.reg_vals[i],
 								BAR7, 0);
 		coral_dso_read_offset(dso_reg_addr, &value, BAR7, 0);
+		ice_dev->dso.reg_readback_vals[i] = value;
 
 		/* for DSO_CFG_DTF_SRC_CONFIG_REG ignore
 		 *30,31 bits value while reading
@@ -957,31 +963,9 @@ out:
 	return ret;
 }
 
-/* sysfs related functions.*/
-static ssize_t show_dso_filter(struct kobject *kobj,
-				struct kobj_attribute *attr,
-				char *buf)
+static u8 get_dso_filter(struct kobj_attribute *attr)
 {
-	int ret = 0;
-	u32 dev_index;
-	u8 reg_index = MAX_DSO_CONFIG_REG;
-	struct cve_device *ice_dev;
-	u32 value;
-	u16 croffset;
-
-	ret = sscanf(kobj->name, "ice%d", &dev_index);
-	if (ret < 1) {
-		cve_os_log(CVE_LOGLEVEL_ERROR, "failed getting ice id %s\n",
-						kobj->name);
-		return -EFAULT;
-	}
-	if (dev_index >= NUM_ICE_UNIT) {
-		cve_os_log(CVE_LOGLEVEL_ERROR, "wrong ice id %d\n", dev_index);
-		return -EFAULT;
-	}
-
-	cve_os_log(CVE_LOGLEVEL_DEBUG, "ICE number %d\n", dev_index);
-	cve_os_log(CVE_LOGLEVEL_DEBUG, "attr: %s\n", attr->attr.name);
+	u8 reg_index;
 
 	if (strcmp(attr->attr.name, "dtf_encoder_config") == 0) {
 		reg_index = DSO_DTF_ENCODER_CONFIG_REG_INDEX;
@@ -1015,6 +999,35 @@ static ssize_t show_dso_filter(struct kobject *kobj,
 		reg_index = MAX_DSO_CONFIG_REG;
 		cve_os_log(CVE_LOGLEVEL_ERROR, "bad filter param\n");
 	}
+	return reg_index;
+}
+/* sysfs related functions.*/
+static ssize_t show_dso_filter(struct kobject *kobj,
+				struct kobj_attribute *attr,
+				char *buf)
+{
+	int ret = 0;
+	u32 dev_index;
+	u8 reg_index = MAX_DSO_CONFIG_REG;
+	struct cve_device *ice_dev;
+	u32 value;
+	u16 croffset;
+
+	ret = sscanf(kobj->name, "ice%d", &dev_index);
+	if (ret < 1) {
+		cve_os_log(CVE_LOGLEVEL_ERROR, "failed getting ice id %s\n",
+						kobj->name);
+		return -EFAULT;
+	}
+	if (dev_index >= NUM_ICE_UNIT) {
+		cve_os_log(CVE_LOGLEVEL_ERROR, "wrong ice id %d\n", dev_index);
+		return -EFAULT;
+	}
+
+	cve_os_log(CVE_LOGLEVEL_DEBUG, "ICE number %d\n", dev_index);
+	cve_os_log(CVE_LOGLEVEL_DEBUG, "attr: %s\n", attr->attr.name);
+
+	reg_index = get_dso_filter(attr);
 
 	if (reg_index >= MAX_DSO_CONFIG_REG) {
 		cve_os_log(CVE_LOGLEVEL_ERROR, "bad dso reg index\n");
@@ -1033,15 +1046,7 @@ static ssize_t show_dso_filter(struct kobject *kobj,
 	}
 
 	croffset = ice_dev->dso.reg_offsets[reg_index].croffset;
-	value = ice_dev->dso.reg_vals[reg_index];
-
-	/* for DSO_CFG_DTF_SRC_CONFIG_REG ignore
-	 *30,31 bits value while reading
-	 */
-	if (croffset == dso_reg_offsets[1]
-		|| croffset == (dso_reg_offsets[1] | 0x4000)) {
-		value = value & 0x3fffffff;
-	}
+	value = ice_dev->dso.reg_readback_vals[reg_index];
 
 	cve_os_log(CVE_LOGLEVEL_DEBUG,
 			"DSO readback value 0x%x\n",
@@ -1082,38 +1087,7 @@ static ssize_t store_dso_filter(struct kobject *kobj,
 	cve_os_log(CVE_LOGLEVEL_DEBUG, "ICE number %d\n", dev_index);
 	cve_os_log(CVE_LOGLEVEL_DEBUG, "attr: %s\n", attr->attr.name);
 
-	if (strcmp(attr->attr.name, "dtf_encoder_config") == 0) {
-		reg_index = DSO_DTF_ENCODER_CONFIG_REG_INDEX;
-	} else if (strcmp(attr->attr.name, "cfg_dtf_src_config") == 0) {
-		reg_index = DSO_CFG_DTF_SRC_CONFIG_REG_INDEX;
-	} else if (strcmp(attr->attr.name, "cfg_ptype_filter_ch0") == 0) {
-		reg_index = DSO_CFG_PTYPE_FILTER_CH0_REG_INDEX;
-	} else if (strcmp(attr->attr.name, "filter_match_low_ch0") == 0) {
-		reg_index = DSO_FILTER_MATCH_LOW_CH0_REG_INDEX;
-	} else if (strcmp(attr->attr.name, "filter_match_high_ch0") == 0) {
-		reg_index = DSO_FILTER_MATCH_HIGH_CH0_REG_INDEX;
-	} else if (strcmp(attr->attr.name, "filter_mask_low_ch0") == 0) {
-		reg_index = DSO_FILTER_MASK_LOW_CH0_REG_INDEX;
-	} else if (strcmp(attr->attr.name, "filter_mask_high_ch0") == 0) {
-		reg_index = DSO_FILTER_MASK_HIGH_CH0_REG_INDEX;
-	} else if (strcmp(attr->attr.name, "filter_inv_ch0") == 0) {
-		reg_index = DSO_FILTER_INV_CH0_REG_INDEX;
-	} else if (strcmp(attr->attr.name, "cfg_ptype_filter_ch1") == 0) {
-		reg_index = DSO_CFG_PTYPE_FILTER_CH1_REG_INDEX;
-	} else if (strcmp(attr->attr.name, "filter_match_low_ch1") == 0) {
-		reg_index = DSO_FILTER_MATCH_LOW_CH1_REG_INDEX;
-	} else if (strcmp(attr->attr.name, "filter_match_high_ch1") == 0) {
-		reg_index = DSO_FILTER_MATCH_HIGH_CH1_REG_INDEX;
-	} else if (strcmp(attr->attr.name, "filter_mask_low_ch1") == 0) {
-		reg_index = DSO_FILTER_MASK_LOW_CH1_REG_INDEX;
-	} else if (strcmp(attr->attr.name, "filter_mask_high_ch1") == 0) {
-		reg_index = DSO_FILTER_MASK_HIGH_CH1_REG_INDEX;
-	} else if (strcmp(attr->attr.name, "filter_inv_ch1") == 0) {
-		reg_index = DSO_FILTER_INV_CH1_REG_INDEX;
-	} else {
-		reg_index = MAX_DSO_CONFIG_REG;
-		cve_os_log(CVE_LOGLEVEL_ERROR, "bad filter param\n");
-	}
+	reg_index = get_dso_filter(attr);
 
 	if (reg_index >= MAX_DSO_CONFIG_REG) {
 		cve_os_log(CVE_LOGLEVEL_ERROR, "bad dso reg index\n");
@@ -1495,10 +1469,13 @@ static int ice_trace_dso_sysfs_init(struct cve_device *ice_dev)
 	int ret;
 	/* Create the filter files associated with ice<n> kobject */
 	ret = sysfs_create_group(ice_dev->ice_kobj, &filter_attr_group);
-	if (ret)
+	if (ret) {
 		cve_os_dev_log(CVE_LOGLEVEL_ERROR, ice_dev->dev_index,
 				"dso filter sysfs group creation failed\n");
-
+	} else {
+		memcpy(ice_dev->dso.reg_readback_vals, default_dso_reg_vals,
+					sizeof(default_dso_reg_vals));
+	}
 	return ret;
 }
 
@@ -1647,6 +1624,7 @@ static int ice_trace_write_dso_reg_sysfs(struct cve_device *ice_dev,
 		cve_os_dev_log(CVE_LOGLEVEL_ERROR,
 				ice_dev->dev_index,
 				"write_dso_regs_sanity() failed\n");
+		goto out;
 	}
 
 	port = ice_dev->dso.reg_offsets[dso_reg_index].port;
@@ -1658,8 +1636,8 @@ static int ice_trace_write_dso_reg_sysfs(struct cve_device *ice_dev,
 		cve_os_dev_log(CVE_LOGLEVEL_ERROR,
 				ice_dev->dev_index,
 				"regbar_port_croffset_sanity() failed\n");
+		goto out;
 	}
-		dso_reg_addr = (port << 16 | croffset) & 0xffffff;
 	dso_reg_addr = (port << 16 | croffset) & 0xffffff;
 
 	/* for DSO_CFG_DTF_SRC_CONFIG_REG shouldn't write to 30,31 bits*/
@@ -1675,7 +1653,7 @@ static int ice_trace_write_dso_reg_sysfs(struct cve_device *ice_dev,
 #ifndef RING3_VALIDATION
 	cb->regbar_write(port, croffset, ice_dev->dso.reg_vals[dso_reg_index]);
 	value = cb->regbar_read(port, croffset);
-
+	ice_dev->dso.reg_readback_vals[dso_reg_index] = value;
 	/* for DSO_CFG_DTF_SRC_CONFIG_REG ignore
 	 *30,31 bits value while reading
 	 */
@@ -1774,7 +1752,7 @@ static int ice_trace_set_ice_observer_sysfs(u8 dso_reg_index, u32 dso_reg_val,
 	if (ret)
 		cve_os_dev_log(CVE_LOGLEVEL_ERROR,
 					ice_dev->dev_index,
-					"ice_trace_write_dso_regs() failed\n");
+					"ice_trace_write_dso_regs_sysfs() failed\n");
 
 out:
 	FUNC_LEAVE();
@@ -1821,6 +1799,8 @@ int ice_trace_init_dso(struct cve_device *ice_dev)
 						dso_reg_offsets[i];
 	}
 	memcpy(ice_dev->dso.reg_vals, default_dso_reg_vals,
+						sizeof(default_dso_reg_vals));
+	memcpy(ice_dev->dso.reg_readback_vals, default_dso_reg_vals,
 						sizeof(default_dso_reg_vals));
 out:
 	FUNC_LEAVE();

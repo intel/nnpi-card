@@ -48,6 +48,7 @@ static int sphcs_response_page_list_dma_completed(struct sphcs *sphcs, void *ctx
 	struct host_response_pages_entry *ent = (struct host_response_pages_entry *)ctx;
 	uint32_t *response_pool_index = (uint32_t *)(user_data);
 	struct sphcs_response_page_pool *pool;
+	unsigned long flags;
 
 	pool = g_sphcs_response_pools[*response_pool_index];
 
@@ -71,9 +72,9 @@ static int sphcs_response_page_list_dma_completed(struct sphcs *sphcs, void *ctx
 		ent->dma_vptr = NULL;
 
 		/* add the new entries to the host response pages list */
-		SPH_SPIN_LOCK(&pool->host_response_pages_list_lock);
+		SPH_SPIN_LOCK_IRQSAVE(&pool->host_response_pages_list_lock_irq, flags);
 		list_add_tail(&ent->node, &pool->host_response_pages_list);
-		SPH_SPIN_UNLOCK(&pool->host_response_pages_list_lock);
+		SPH_SPIN_UNLOCK_IRQRESTORE(&pool->host_response_pages_list_lock_irq, flags);
 
 		wake_up_all(&pool->hrp_waitq);
 	}
@@ -155,7 +156,7 @@ int sphcs_create_response_page_pool(struct msg_scheduler_queue *msg_queue, uint3
 	pool->msg_queue = msg_queue;
 
 	INIT_LIST_HEAD(&pool->host_response_pages_list);
-	spin_lock_init(&pool->host_response_pages_list_lock);
+	spin_lock_init(&pool->host_response_pages_list_lock_irq);
 	init_waitqueue_head(&pool->hrp_waitq);
 
 	if (g_sphcs_response_pools[index] != NULL) {
@@ -171,17 +172,18 @@ static void sphcs_clean_host_resp_page_list(uint32_t index)
 {
 	struct host_response_pages_entry *ent;
 	struct sphcs_response_page_pool *pool = g_sphcs_response_pools[index];
+	unsigned long flags;
 
 	SPH_ASSERT(index >= 0 && index < SPHCS_RESPONSE_POOLS_SIZE);
 	SPH_ASSERT(pool != NULL);
-	SPH_SPIN_LOCK(&pool->host_response_pages_list_lock);
+	SPH_SPIN_LOCK_IRQSAVE(&pool->host_response_pages_list_lock_irq, flags);
 	while (!list_empty(&pool->host_response_pages_list)) {
 		ent = list_first_entry(&pool->host_response_pages_list,
 				       struct host_response_pages_entry, node);
 		list_del(&ent->node);
 		kfree(ent);
 	}
-	SPH_SPIN_UNLOCK(&pool->host_response_pages_list_lock);
+	SPH_SPIN_UNLOCK_IRQRESTORE(&pool->host_response_pages_list_lock_irq, flags);
 }
 
 void sphcs_response_pool_clean_page_pool(uint32_t index)
@@ -207,12 +209,13 @@ int sphcs_response_pool_get_response_page(uint32_t index, dma_addr_t *out_host_d
 	int ret;
 	struct host_response_pages_entry *ent, *ent_to_free = NULL;
 	struct sphcs_response_page_pool *pool;
+	unsigned long flags;
 
 	SPH_ASSERT(index >= 0 && index < SPHCS_RESPONSE_POOLS_SIZE);
 	pool = g_sphcs_response_pools[index];
 	SPH_ASSERT(pool != NULL);
 
-	SPH_SPIN_LOCK(&pool->host_response_pages_list_lock);
+	SPH_SPIN_LOCK_IRQSAVE(&pool->host_response_pages_list_lock_irq, flags);
 	if (list_empty(&pool->host_response_pages_list)) {
 		ret = -ENOENT;
 	} else {
@@ -229,7 +232,7 @@ int sphcs_response_pool_get_response_page(uint32_t index, dma_addr_t *out_host_d
 		ret = 0;
 	}
 
-	SPH_SPIN_UNLOCK(&pool->host_response_pages_list_lock);
+	SPH_SPIN_UNLOCK_IRQRESTORE(&pool->host_response_pages_list_lock_irq, flags);
 
 	kfree(ent_to_free);
 
@@ -273,12 +276,13 @@ void sphcs_response_pool_put_back_response_page(uint32_t index,
 	bool added_back = false;
 	struct host_response_pages_entry *ent;
 	struct sphcs_response_page_pool *pool;
+	unsigned long flags;
 
 	SPH_ASSERT(index >= 0 && index < SPHCS_RESPONSE_POOLS_SIZE);
 	pool = g_sphcs_response_pools[index];
 	SPH_ASSERT(pool != NULL);
 
-	SPH_SPIN_LOCK(&pool->host_response_pages_list_lock);
+	SPH_SPIN_LOCK_IRQSAVE(&pool->host_response_pages_list_lock_irq, flags);
 	if (!list_empty(&pool->host_response_pages_list)) {
 		ent = list_first_entry(&pool->host_response_pages_list,
 				       struct host_response_pages_entry, node);
@@ -290,7 +294,7 @@ void sphcs_response_pool_put_back_response_page(uint32_t index,
 		}
 	}
 
-	SPH_SPIN_UNLOCK(&pool->host_response_pages_list_lock);
+	SPH_SPIN_UNLOCK_IRQRESTORE(&pool->host_response_pages_list_lock_irq, flags);
 
 	if (!added_back) {
 		/* add new entry with a single page */
@@ -330,8 +334,8 @@ void sphcs_response_pool_put_back_response_page(uint32_t index,
 		ent->pages[0].page_hdl = host_page_hndl;
 		ent->pages[0].dma_pfn = SPH_IPC_DMA_ADDR_TO_PFN(host_dma_addr);
 		INIT_LIST_HEAD(&ent->node);
-		SPH_SPIN_LOCK(&pool->host_response_pages_list_lock);
+		SPH_SPIN_LOCK_IRQSAVE(&pool->host_response_pages_list_lock_irq, flags);
 		list_add_tail(&ent->node, &pool->host_response_pages_list);
-		SPH_SPIN_UNLOCK(&pool->host_response_pages_list_lock);
+		SPH_SPIN_UNLOCK_IRQRESTORE(&pool->host_response_pages_list_lock_irq, flags);
 	}
 }

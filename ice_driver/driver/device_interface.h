@@ -187,7 +187,7 @@ void remove_di_job(cve_di_job_handle_t hjob);
  * returns: 0 on success, a negative error code on failure
  */
 int cve_di_handle_submit_job(
-		struct cve_user_buffer *buf_list,
+		struct cve_ntw_buffer *buf_list,
 		cve_ds_job_handle_t ds_hjob,
 		u32 command_buffers_nr,
 		struct cve_command_buffer_descriptor *kcb_descriptor,
@@ -317,10 +317,16 @@ void ice_di_set_shared_read_reg(struct cve_device *dev,
 
 int ice_di_mmu_block_entrance(struct cve_device *cve_dev);
 
+void ice_di_mmu_unblock_entrance(struct cve_device *cve_dev);
+
 struct cve_device *get_first_device(void);
 
 void ice_di_reset_counter(uint32_t cntr_id);
 
 u8 ice_di_is_cold_run(cve_di_job_handle_t hjob);
+
+void ice_di_set_cold_run(cve_di_job_handle_t hjob);
+
+void ice_di_tlb_invalidate_full(struct cve_device *cve_dev);
 
 #endif /* _DEVICE_INTERFACE_H_ */

@@ -56,12 +56,6 @@
 struct lin_mm_allocation {
 	/* Is zero for Network copy */
 	u64 infer_id;
-	/* List to support multiple Infer request. Each
-	 * InferRequest will have its own copy of this
-	 * structure and they all will be linked using
-	 * this list.
-	 */
-	struct cve_dle_t list;
 	/* size as per the surface requirement */
 	u64 size_bytes;
 	/* actual size allocated by the allocator */
@@ -784,13 +778,14 @@ static void dma_buf_sharing_disconnect_from_buffer(
 	FUNC_LEAVE();
 }
 
-static int ice_osmm_get_iceva(struct lin_mm_allocation *alloc)
+static int ice_osmm_get_iceva(struct lin_mm_allocation *ntw_alloc,
+		struct lin_mm_allocation *inf_alloc)
 {
-	u8 pid = alloc->buf_meta_data.partition_id;
+	u8 pid = ntw_alloc->buf_meta_data.partition_id;
 	u32 i, j, base_iova = 0;
-	u32 dma_domain_array_size = alloc->dma_domain_array_size;
+	u32 dma_domain_array_size = ntw_alloc->dma_domain_array_size;
 	int retval = 0;
-	os_domain_handle *hdomain = alloc->hdomain;
+	os_domain_handle *hdomain = ntw_alloc->hdomain;
 
 	/* allocate and update per cve per allocation data */
 	for (i = 0; i < dma_domain_array_size; i++) {
@@ -800,13 +795,15 @@ static int ice_osmm_get_iceva(struct lin_mm_allocation *alloc)
 		retval = get_iova(
 			domain->iova_allocator[pid],
 			&domain->mmu_config[pid],
-			alloc->cve_vaddr, alloc->ice_pages_nr, &base_iova);
+			inf_alloc->cve_vaddr, ntw_alloc->ice_pages_nr,
+			&base_iova);
 		if (retval != 0) {
 			cve_os_log(CVE_LOGLEVEL_ERROR,
 				"get_iova failed %d\n", retval);
 			goto revert_iova;
 		}
-		alloc->cve_vaddr = IOVA_TO_VADDR(base_iova, alloc->page_shift);
+		inf_alloc->cve_vaddr = IOVA_TO_VADDR(base_iova,
+						ntw_alloc->page_shift);
 	}
 
 	goto out;
@@ -818,8 +815,9 @@ revert_iova:
 
 		cve_iova_free(
 			domain->iova_allocator[pid],
-			VADDR_TO_IOVA(alloc->cve_vaddr, alloc->page_shift),
-			alloc->ice_pages_nr);
+			VADDR_TO_IOVA(inf_alloc->cve_vaddr,
+			ntw_alloc->page_shift),
+			ntw_alloc->ice_pages_nr);
 	}
 
 out:
@@ -1213,7 +1211,8 @@ int cve_osmm_inf_dma_buf_map(u64 inf_id,
 		u32 dma_domain_array_size,
 		union allocation_address alloc_addr,
 		enum osmm_memory_type mem_type,
-		os_allocation_handle ntw_halloc)
+		os_allocation_handle ntw_halloc,
+		os_allocation_handle *inf_halloc)
 {
 	struct lin_mm_allocation *inf_alloc = NULL;
 	struct lin_mm_allocation *ntw_alloc;
@@ -1246,6 +1245,13 @@ int cve_osmm_inf_dma_buf_map(u64 inf_id,
 		dma_domain_array_size * sizeof(os_domain_handle));
 	inf_alloc->dma_domain_array_size = ntw_alloc->dma_domain_array_size;
 
+	retval = ice_osmm_get_iceva(ntw_alloc, inf_alloc);
+	if (retval != 0) {
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+			"ice_osmm_get_iceva failed %d\n", retval);
+		goto out;
+	}
+
 	retval = ice_osmm_get_sgt(NULL, alloc_addr, mem_type, inf_alloc);
 	if (retval != 0) {
 		cve_os_log(CVE_LOGLEVEL_ERROR,
@@ -1253,14 +1259,14 @@ int cve_osmm_inf_dma_buf_map(u64 inf_id,
 		ASSERT(false);
 	}
 
-	cve_dle_add_to_list_before(ntw_alloc, list, inf_alloc);
-
 	retval = ice_osmm_set_pte(dma_domain_array_size, inf_alloc);
 	if (retval != 0) {
 		cve_os_log(CVE_LOGLEVEL_ERROR,
 			"ice_osmm_set_pte failed %d\n", retval);
 		ASSERT(false);
 	}
+
+	*inf_halloc = (os_allocation_handle)inf_alloc;
 
 out:
 	FUNC_LEAVE();
@@ -1271,18 +1277,17 @@ out:
  * Release sgl of InferBuffer.  No need to modify PTE because
  * other InferRequests will still use them.
  */
-void cve_osmm_inf_dma_buf_unmap(u64 inf_id,
-		os_allocation_handle halloc)
+void cve_osmm_inf_dma_buf_unmap(os_allocation_handle halloc)
 {
-	struct lin_mm_allocation *ntw_alloc =
+	struct lin_mm_allocation *inf_alloc =
 		(struct lin_mm_allocation *)halloc;
-	struct lin_mm_allocation *inf_alloc;
 
-	inf_alloc = cve_dle_lookup(ntw_alloc, list, infer_id, inf_id);
+	ice_osmm_unset_pte(inf_alloc);
 
 	ice_osmm_release_sgt(inf_alloc);
 
-	cve_dle_remove_from_list(ntw_alloc, list, inf_alloc);
+	ice_osmm_release_iceva(inf_alloc);
+
 	OS_FREE(inf_alloc, sizeof(*inf_alloc));
 }
 
@@ -1298,7 +1303,6 @@ int cve_osmm_dma_buf_map(os_domain_handle *hdomain,
 		os_allocation_handle *out_halloc)
 {
 	struct lin_mm_allocation *alloc = NULL;
-	struct lin_mm_allocation *alloc_list = NULL;
 	int retval = 0;
 
 	FUNC_ENTER();
@@ -1326,18 +1330,16 @@ int cve_osmm_dma_buf_map(os_domain_handle *hdomain,
 		dma_domain_array_size * sizeof(os_domain_handle));
 	alloc->dma_domain_array_size = dma_domain_array_size;
 
-	cve_dle_add_to_list_before(alloc_list, list, alloc);
-
-	retval = ice_osmm_get_iceva(alloc);
-	if (retval != 0) {
-		cve_os_log(CVE_LOGLEVEL_ERROR,
-			"ice_osmm_get_iceva failed %d\n", retval);
+	if (INFER_MEM_ONLY(mem_type)) {
+		*out_halloc = alloc;
 		goto out;
 	}
 
-	if (INFER_MEM_ONLY(mem_type)) {
-		*out_halloc = alloc_list;
-		goto out;
+	retval = ice_osmm_get_iceva(alloc, alloc);
+	if (retval != 0) {
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+			"ice_osmm_get_iceva failed %d\n", retval);
+		goto free_mem;
 	}
 
 	retval = ice_osmm_get_sgt(dma_handle, alloc_addr, mem_type, alloc);
@@ -1354,13 +1356,15 @@ int cve_osmm_dma_buf_map(os_domain_handle *hdomain,
 		goto release_sgt;
 	}
 
-	*out_halloc = alloc_list;
+	*out_halloc = alloc;
 	goto out;
 
 release_sgt:
 	ice_osmm_release_sgt(alloc);
 release_iceva:
 	ice_osmm_release_iceva(alloc);
+free_mem:
+	OS_FREE(alloc, sizeof(*alloc));
 out:
 	FUNC_LEAVE();
 	return retval;
@@ -1371,7 +1375,6 @@ void cve_osmm_dma_buf_unmap(os_allocation_handle halloc,
 {
 	struct lin_mm_allocation *ntw_alloc =
 			(struct lin_mm_allocation *)halloc;
-	struct lin_mm_allocation *alloc = ntw_alloc;
 
 	FUNC_ENTER();
 
@@ -1384,12 +1387,11 @@ void cve_osmm_dma_buf_unmap(os_allocation_handle halloc,
 		ice_osmm_unset_pte(ntw_alloc);
 
 		ice_osmm_release_sgt(ntw_alloc);
+
+		ice_osmm_release_iceva(ntw_alloc);
 	}
 
-	ice_osmm_release_iceva(ntw_alloc);
-
-	cve_dle_remove_from_list(ntw_alloc, list, alloc);
-	OS_FREE(alloc, sizeof(*alloc));
+	OS_FREE(ntw_alloc, sizeof(*ntw_alloc));
 
 	FUNC_LEAVE();
 }
@@ -1402,29 +1404,19 @@ ice_va_t cve_osmm_alloc_get_iova(os_allocation_handle halloc)
 }
 
 void cve_osmm_cache_allocation_op(os_allocation_handle halloc,
-	u64 inf_id,
 	struct cve_device *cve_dev,
 	enum cve_cache_sync_direction sync_dir)
 {
-	struct lin_mm_allocation *ntw_alloc =
-		(struct lin_mm_allocation *)halloc;
-	struct lin_mm_allocation *alloc;
+	struct lin_mm_allocation *alloc = (struct lin_mm_allocation *)halloc;
 	struct cve_os_allocation *cve_alloc_data = NULL;
 
-	if (inf_id) {
-		alloc = cve_dle_lookup(ntw_alloc, list, infer_id, inf_id);
-		cve_os_log(CVE_LOGLEVEL_DEBUG,
-			"Performing Cache operation for Infer Buffers\n");
-	} else {
-		alloc = ntw_alloc;
-		cve_os_log(CVE_LOGLEVEL_DEBUG,
-			"Performing Cache operation for Network Buffers\n");
+	cve_os_log(CVE_LOGLEVEL_DEBUG,
+		"Performing Cache operation for Network Buffers\n");
 
-		if (!alloc->per_cve) {
-			cve_os_log(CVE_LOGLEVEL_DEBUG,
-				"Aborting Cache operation for this Buffer.\n");
-			return;
-		}
+	if (!alloc->per_cve) {
+		cve_os_log(CVE_LOGLEVEL_DEBUG,
+			"Aborting Cache operation for this Buffer.\n");
+		return;
 	}
 
 	/* TODO: need to optimize this */

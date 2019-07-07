@@ -22,6 +22,10 @@
 #include "cve_device_group.h"
 #include "version.h"
 
+#define ICEDRV_ENABLE_HSLE_FLOW 0
+
+#define __no_op_stub do {} while (0)
+
 /* driver's global lock */
 extern cve_os_lock_t g_cve_driver_biglock;
 

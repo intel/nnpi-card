@@ -13,6 +13,7 @@
 #include <linux/dma-buf.h>
 #include <linux/list.h>
 #include "inf_devres.h"
+#include "sphcs_sw_counters.h"
 
 struct inf_copy {
 	void                 *magic;
@@ -29,9 +30,18 @@ struct inf_copy {
 
 	uint32_t    transfer_size;
 
+	struct sph_sw_counters *sw_counters;
+
 	struct hlist_node hash_node;
 	struct work_struct  work;
 	bool destroyed;
+	u64 min_block_time;
+	u64 max_block_time;
+	u64 min_exec_time;
+	u64 max_exec_time;
+	u64 min_hw_exec_time;
+	u64 max_hw_exec_time;
+
 #ifdef _DEBUG
 	// store the size (bytes) of host resource for
 	// size validations during copy execution
@@ -48,6 +58,7 @@ int inf_copy_put(struct inf_copy *copy);
 int inf_copy_sched(struct inf_copy *copy, size_t size);
 bool inf_copy_req_ready(struct inf_exec_req *copy_req);
 int inf_copy_req_execute(struct inf_exec_req *copy_req);
-void inf_copy_req_complete(struct inf_exec_req *copy_req, int err);
+void inf_copy_req_complete(struct inf_exec_req *copy_req, int err, u32 xferTimeUS);
+void inf_copy_req_release(struct inf_exec_req *copy_req);
 
 #endif

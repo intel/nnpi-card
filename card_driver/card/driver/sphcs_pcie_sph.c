@@ -15,6 +15,7 @@
 #include <linux/reboot.h>
 #include <linux/debugfs.h>
 #include <linux/seq_file.h>
+#include <linux/atomic.h>
 #define ELBI_BASE         0x200000  /* MMIO offset of ELBI registers */
 #include "sph_elbi.h"
 #include "sph_debug.h"
@@ -161,7 +162,6 @@ static DEFINE_INT_STAT(int_stats, 8);
 /* interrupt mask bits we enable and handle at interrupt level */
 static u32 s_host_status_int_mask =
 		   ELBI_IOSF_STATUS_RESPONSE_FIFO_READ_UPDATE_MASK |
-		   ELBI_IOSF_STATUS_DMA_INT_MASK |
 		   ELBI_IOSF_STATUS_BME_CHANGE_MASK |
 		   ELBI_IOSF_STATUS_LINE_FLR_MASK |
 		   ELBI_IOSF_STATUS_HOT_RESET_MASK |
@@ -170,6 +170,7 @@ static u32 s_host_status_int_mask =
 
 /* interrupt mask bits we enable and handle at threaded interrupt level */
 static u32 s_host_status_threaded_mask =
+		   ELBI_IOSF_STATUS_DMA_INT_MASK |
 		   ELBI_IOSF_STATUS_COMMAND_FIFO_NEW_COMMAND_MASK;
 
 #ifdef ULT
@@ -188,6 +189,8 @@ struct sph_pci_device {
 
 	spinlock_t      irq_lock;
 	u64             command_buf[ELBI_COMMAND_FIFO_DEPTH];
+	atomic_t        new_command;
+	atomic64_t      dma_status;
 
 	spinlock_t      respq_lock;
 	u32             respq_free_slots;
@@ -479,10 +482,16 @@ static irqreturn_t interrupt_handler(int irq, void *data)
 
 	SPH_SPIN_LOCK_IRQSAVE(&sph_pci->irq_lock, flags);
 
-	/* clear interrupts mask */
+	/*
+	 * mask all interrupts (except LINE_FLR)
+	 * We keep LINE_FLR un-masked since the p-code use that
+	 * bit as an indication that our driver handle ANY warm reset
+	 * request scenario. When this bit is set to 1, the p-code will handle
+	 * the event.
+	 */
 	sph_mmio_write(sph_pci,
 		       ELBI_IOSF_MSI_MASK,
-		       UINT_MAX);
+		       ~((uint32_t)(ELBI_IOSF_STATUS_LINE_FLR_MASK)));
 
 	sph_pci->host_status = sph_mmio_read(sph_pci, ELBI_IOSF_STATUS);
 
@@ -502,8 +511,15 @@ static irqreturn_t interrupt_handler(int irq, void *data)
 	}
 
 	if (sph_pci->host_status &
-	    ELBI_IOSF_STATUS_DMA_INT_MASK)
+	    ELBI_IOSF_STATUS_DMA_INT_MASK) {
 		read_and_clear_dma_status(sph_pci, &dma_read_status, &dma_write_status);
+		atomic64_or((dma_read_status | ((u64)dma_write_status << 32)), &sph_pci->dma_status);
+	}
+
+	if (sph_pci->host_status &
+	    ELBI_IOSF_STATUS_COMMAND_FIFO_NEW_COMMAND_MASK) {
+		atomic_set(&sph_pci->new_command, 1);
+	}
 
 	sph_mmio_write(sph_pci,
 		       ELBI_IOSF_STATUS,
@@ -514,10 +530,6 @@ static irqreturn_t interrupt_handler(int irq, void *data)
 		should_wake = true;
 		sph_pci->resp_fifo_read_update_count++;
 	}
-
-	if (sph_pci->host_status &
-	    ELBI_IOSF_STATUS_DMA_INT_MASK)
-		handle_dma_interrupt(sph_pci, dma_read_status, dma_write_status);
 
 	if (sph_pci->host_status &
 	    ELBI_IOSF_STATUS_BME_CHANGE_MASK)
@@ -585,8 +597,17 @@ static irqreturn_t interrupt_handler(int irq, void *data)
 static irqreturn_t threaded_interrupt_handler(int irq, void *data)
 {
 	struct sph_pci_device *sph_pci = (struct sph_pci_device *)data;
+	u64 dma_status;
 
-	sph_process_commands(sph_pci);
+	if (atomic_xchg(&sph_pci->new_command, 0))
+		sph_process_commands(sph_pci);
+
+	dma_status = atomic64_xchg(&sph_pci->dma_status, 0);
+	if (dma_status != 0) {
+		handle_dma_interrupt(sph_pci,
+				     (u32)(dma_status & 0xffffffff),
+				     (u32)((dma_status >> 32) & 0xffffffff));
+	}
 
 	return IRQ_HANDLED;
 }
@@ -1521,6 +1542,9 @@ static int sph_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 		       (s_host_status_int_mask | s_host_status_threaded_mask));
 
 
+	atomic64_set(&sph_pci->dma_status, 0);
+	atomic_set(&sph_pci->new_command, 0);
+
 	rc = sph_setup_interrupts(sph_pci, pdev);
 	if (rc) {
 		sph_log_err(START_UP_LOG, "sph_setup_interrupts failed %d\n", rc);
@@ -1606,6 +1630,16 @@ static void sph_remove(struct pci_dev *pdev)
 	rc = s_callbacks->destroy_sphcs(sph_pci->sphcs);
 	if (rc)
 		sph_log_err(GO_DOWN_LOG, "FAILED to destroy sphcs during device remove !!!!\n");
+
+	/*
+	 * mask all interrupts
+	 * Especcially it is important to set LINE_FLR bit in the mask
+	 * to flag the p-code that the driver unbound and any warm-reset
+	 * request should be handled directly by p-code.
+	 */
+	sph_mmio_write(sph_pci,
+		       ELBI_IOSF_MSI_MASK,
+		       UINT_MAX);
 
 	sph_free_interrupts(sph_pci, pdev);
 	iounmap(sph_pci->mmio.va);

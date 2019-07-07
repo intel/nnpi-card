@@ -165,7 +165,7 @@ static int cve_dev_init_per_cve_ctx(struct dev_context *dev_ctx,
 				nc->hdom,
 				&nc->bar1_alloc_handle);
 		if (retval != 0) {
-			cve_os_log(CVE_LOGLEVEL_ERROR,
+			cve_os_log_default(CVE_LOGLEVEL_ERROR,
 					"Failed to map bar1 %d\n",
 					retval);
 			goto failed_to_map_fw;
@@ -175,7 +175,7 @@ static int cve_dev_init_per_cve_ctx(struct dev_context *dev_ctx,
 	/* load the base package FWs. add fws to context */
 	retval = cve_dev_map_base_package_fws(nc);
 	if (retval != 0) {
-		cve_os_log(CVE_LOGLEVEL_ERROR,
+		cve_os_log_default(CVE_LOGLEVEL_ERROR,
 				"Failed to map base package %d\n",
 				retval);
 		goto failed_to_map_fw;
@@ -216,10 +216,18 @@ out:
 static void cve_dev_release_per_cve_ctx(struct dev_context *dev_ctx)
 {
 	struct dev_context *context = dev_ctx;
+	struct cve_device *dev = context->cve_dev;
 
 	if (context) {
+
+		/* Block MMU if ICE is in free pool and powered on */
+		if (((dev->power_state == ICE_POWER_ON) ||
+			(dev->power_state == ICE_POWER_OFF_INITIATED)) &&
+			dev->dev_network_id == INVALID_NETWORK_ID)
+			ice_di_mmu_block_entrance(dev);
+
 		cve_os_dev_log(CVE_LOGLEVEL_DEBUG,
-				context->cve_dev->dev_index,
+				dev->dev_index,
 				"Unload & Unmap FW\n");
 
 		cve_dev_fw_unload_and_unmap(context);
@@ -227,7 +235,7 @@ static void cve_dev_release_per_cve_ctx(struct dev_context *dev_ctx)
 		if (context->cve_dump_alloc.alloc_handle) {
 			/*remove allocations of ICE_DUMP buffer */
 			cve_os_dev_log(CVE_LOGLEVEL_DEBUG,
-					context->cve_dev->dev_index,
+					dev->dev_index,
 					"Reclaim ICE_DUMP buffer\n");
 			cve_mm_reclaim_allocation(
 				context->cve_dump_alloc.alloc_handle);
@@ -235,13 +243,13 @@ static void cve_dev_release_per_cve_ctx(struct dev_context *dev_ctx)
 
 		if (context->bar1_alloc_handle) {
 			cve_os_dev_log(CVE_LOGLEVEL_DEBUG,
-				context->cve_dev->dev_index,
+				dev->dev_index,
 				"Reclaim BAR1 allocation\n");
 			cve_mm_reclaim_allocation(
 				context->bar1_alloc_handle);
 		}
 		cve_os_dev_log(CVE_LOGLEVEL_DEBUG,
-				context->cve_dev->dev_index,
+				dev->dev_index,
 				"Remove domain\n");
 		cve_osmm_put_domain(context->hdom);
 	}
@@ -276,7 +284,7 @@ static int cve_dev_fw_load_and_map_per_cve(cve_dev_context_handle_t hcontext,
 			fw_binmap_size_bytes,
 			fw_sec);
 	if (retval != 0) {
-		cve_os_log(CVE_LOGLEVEL_ERROR,
+		cve_os_log_default(CVE_LOGLEVEL_ERROR,
 				"cve_fw_load_binary_context failure\n");
 		goto out;
 	}
@@ -326,7 +334,7 @@ static int cve_dev_fw_load_and_map_per_cve(cve_dev_context_handle_t hcontext,
 						fw_sec_base,
 						fw_mapped);
 		if (err != 0) {
-			cve_os_log(CVE_LOGLEVEL_ERROR,
+			cve_os_log_default(CVE_LOGLEVEL_ERROR,
 				"restoring of base fw failure\n");
 		}
 		goto out;
@@ -455,7 +463,7 @@ int cve_dev_open_all_contexts(cve_dev_context_handle_t *out_hctx_list)
 
 			retval = cve_dev_init_per_cve_ctx(nc, dev);
 			if (retval != 0) {
-				cve_os_log(CVE_LOGLEVEL_ERROR,
+				cve_os_log_default(CVE_LOGLEVEL_ERROR,
 						"cve_dev_init_per_cve_ctx failed %d\n",
 						retval);
 				OS_FREE(nc, sizeof(*nc));
@@ -472,7 +480,7 @@ int cve_dev_open_all_contexts(cve_dev_context_handle_t *out_hctx_list)
 	}
 	/* If all devices are masked then Context Creation must fail */
 	if (!dev_context_list) {
-		cve_os_log(CVE_LOGLEVEL_ERROR,
+		cve_os_log_default(CVE_LOGLEVEL_ERROR,
 				"No device available.\n");
 		retval = -1;
 		goto out;

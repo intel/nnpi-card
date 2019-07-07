@@ -32,6 +32,8 @@
 
 #define SPH_DMA_COMPLETION_TIME_OUT_MS 3000
 
+#define MAX_SKIPPED_SERIAL 5
+
 const struct sphcs_dma_desc g_dma_desc_h2c_low = {
 	.dma_direction  = SPHCS_DMA_DIRECTION_HOST_TO_CARD,
 	.dma_priority   = SPHCS_DMA_PRIORITY_LOW,
@@ -356,6 +358,8 @@ static void do_schedule(struct sphcs_dma_sched *dmaSched,
 			unsigned long queue_flags;
 			u32 hw_channel = 0;
 			struct sphcs_dma_req *req, *tmpReq;
+			u32 skipped_serial_channels[MAX_SKIPPED_SERIAL];
+			u32 s, num_skipped_serial = 0;
 
 			/* lock current queue */
 			SPH_SPIN_LOCK_IRQSAVE(&q->lock_irq, queue_flags);
@@ -363,8 +367,38 @@ static void do_schedule(struct sphcs_dma_sched *dmaSched,
 			list_for_each_entry_safe(req, tmpReq, &q->reqList, node) {
 
 
-				if (is_serial_channel_in_use(dmaSched, direction, req->serial_channel))
-					continue;
+				if (req->serial_channel != 0) {
+					/*
+					 * First check if this serial channel
+					 * has been skipped before during this
+					 * scheduling loop, if it does, need to
+					 * skip this one as well. After skipping
+					 * MAX_SKIPPED_SERIAL channels we skip
+					 * all.
+					 */
+					if (num_skipped_serial == MAX_SKIPPED_SERIAL) {
+						continue;
+					} else {
+						bool skipped = false;
+						for (s = 0; s < num_skipped_serial; s++)
+							if (skipped_serial_channels[s] == req->serial_channel) {
+								skipped = true;
+								break;
+							}
+
+						if (skipped)
+							continue;
+					}
+
+					/*
+					 * The channel has not skipped before -
+					 * skip only if currently running
+					 */
+					if (is_serial_channel_in_use(dmaSched, direction, req->serial_channel)) {
+						skipped_serial_channels[num_skipped_serial++] = req->serial_channel;
+						continue;
+					}
+				}
 
 
 				/* check for available hw channel for submitting a request */
@@ -376,9 +410,9 @@ static void do_schedule(struct sphcs_dma_sched *dmaSched,
 					/* if no available channels for request - break current queue request processing and proceed to next queue check */
 					break;
 				}
-				start_request(dmaSched, req, hw_channel);
-				/* after sending the request we remove it from the queue */
+				/* remove from the queue and send the request */
 				list_del(&req->node);
+				start_request(dmaSched, req, hw_channel);
 				q->reqList_size--;
 			}
 			SPH_SPIN_UNLOCK_IRQRESTORE(&q->lock_irq, queue_flags);
@@ -706,15 +740,13 @@ int sphcs_dma_sched_start_xfer_single(struct sphcs_dma_sched *dmaSched,
 						  desc->dma_priority).reqList);
 	inc_reqSize(&DMA_QUEUE_INFO(dmaSched, desc->dma_direction, desc->dma_priority));
 
+	DO_TRACE(trace_dma(SPH_TRACE_OP_STATUS_QUEUED, req->direction == SPHCS_DMA_DIRECTION_CARD_TO_HOST,
+			req->transfer_size, req->serial_channel, req->priority, (uint64_t)(uintptr_t)req));
 	SPH_SPIN_UNLOCK_IRQRESTORE(&DMA_QUEUE_INFO(dmaSched,
 						   desc->dma_direction,
 						   desc->dma_priority).lock_irq, lock_flags);
 
 	/* once a new request was submited we will try to schedual requests from the queue */
-
-	DO_TRACE(trace_dma(SPH_TRACE_OP_STATUS_QUEUED, req->direction == SPHCS_DMA_DIRECTION_CARD_TO_HOST,
-			req->transfer_size, req->serial_channel, req->priority, (uint64_t)(uintptr_t)req));
-
 	do_schedule(dmaSched, desc->dma_direction);
 
 	return 0;
@@ -769,12 +801,12 @@ int sphcs_dma_sched_start_xfer(struct sphcs_dma_sched      *dmaSched,
 	list_add_tail(&req->node, &DMA_QUEUE_INFO(dmaSched, desc->dma_direction,
 						  desc->dma_priority).reqList);
 	inc_reqSize(&DMA_QUEUE_INFO(dmaSched, desc->dma_direction, desc->dma_priority));
+	DO_TRACE(trace_dma(SPH_TRACE_OP_STATUS_QUEUED, req->direction == SPHCS_DMA_DIRECTION_CARD_TO_HOST,
+			req->transfer_size, req->serial_channel, req->priority, (uint64_t)(uintptr_t)req));
+
 	SPH_SPIN_UNLOCK_IRQRESTORE(&DMA_QUEUE_INFO(dmaSched, desc->dma_direction,
 						   desc->dma_priority).lock_irq,
 				   lock_flags);
-
-	DO_TRACE(trace_dma(SPH_TRACE_OP_STATUS_QUEUED, req->direction == SPHCS_DMA_DIRECTION_CARD_TO_HOST,
-			req->transfer_size, req->serial_channel, req->priority, (uint64_t)(uintptr_t)req));
 
 	do_schedule(dmaSched, desc->dma_direction);
 
@@ -821,8 +853,8 @@ static int sphcs_dma_sched_xfer_complete_int(struct sphcs_dma_sched *dmaSched,
 	if (req->retry_counter < SPHCS_NUM_OF_DMA_RETRIES &&
 			recovery_action == SPHCS_RA_RETRY_DMA) {
 		sph_log_err(EXECUTE_COMMAND_LOG, "DMA failed - retry issued\n");
-		start_request(dmaSched, req, channel);
 		req->retry_counter++;
+		start_request(dmaSched, req, channel);
 	} else {
 		req->status = status;
 		req->timeUS = xferTimeUS;

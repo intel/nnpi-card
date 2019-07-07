@@ -15,8 +15,10 @@
 #ifndef _ICE_TRACE_H_
 #define _ICE_TRACE_H_
 
-int init_icedrv_trace(struct cve_device *ice_dev);
-void term_icedrv_trace(struct cve_device *ice_dev);
+#include "cve_driver_internal.h"
+
+int __init_icedrv_trace(struct cve_device *ice_dev);
+void __term_icedrv_trace(struct cve_device *ice_dev);
 int ice_restore_trace_hw_regs(struct cve_device *ice_dev);
 int ice_trace_config(struct ice_hw_trace_config *cfg);
 
@@ -40,5 +42,14 @@ int ice_trace_restore_hw_dso_regs(struct cve_device *ice_dev);
 int ice_trace_sysfs_init(struct cve_device *ice_dev);
 void ice_trace_sysfs_term(struct cve_device *ice_dev);
 int ice_trace_init_dso(struct cve_device *ice_dev);
+
+#if ICEDRV_ENABLE_HSLE_FLOW
+#define init_icedrv_trace(x) __no_op_stub
+#define term_icedrv_trace(x) __no_op_stub
+#else
+#define init_icedrv_trace(x) __init_icedrv_trace(x)
+#define term_icedrv_trace(x) __term_icedrv_trace(x)
+#endif /*ICEDRV_ENABLE_HSLE_FLOW*/
+
 #endif /* _ICE_TRACE_H_ */
 

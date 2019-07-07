@@ -201,7 +201,7 @@ enum CTX_SPHCS_SW_COUNTERS_GROUPS {
 
 static const struct sph_sw_counters_group_info g_ctx_sphcs_sw_counters_groups_info[] = {
 	/*CTX_SPHCS_SW_COUNTERS_GROUP_INFERENCE*/
-	{"inference", "group for command streamer inference sw counters per context"}
+	{"-inference", "group for command streamer inference sw counters per context"}
 };
 
 enum  CTX_SPHCS_SW_COUNTERS {
@@ -231,15 +231,150 @@ static const struct sph_sw_counter_info g_ctx_sphcs_sw_counters_info[] = {
 };
 
 static const struct sph_sw_counters_set g_sw_counters_set_context = {
-	"context",
+	"inference.context",
 	true,
 	g_ctx_sphcs_sw_counters_info,
 	ARRAY_SIZE(g_ctx_sphcs_sw_counters_info),
 	g_ctx_sphcs_sw_counters_groups_info,
 	ARRAY_SIZE(g_ctx_sphcs_sw_counters_groups_info)};
 
+enum NET_SPHCS_SW_COUNTERS_GROUPS {
+	NET_SPHCS_SW_COUNTERS_GROUP
+};
+
+static const struct sph_sw_counters_group_info g_net_sphcs_sw_counters_groups_info[] = {
+	/*NET_SPHCS_SW_COUNTERS_GROUP*/
+	{"-net_global", "group for per-network counters"}
+};
+
+enum  NET_SPHCS_SW_COUNTERS {
+	NET_SPHCS_SW_COUNTERS_NUM_INFER_CMDS
+};
+
+static const struct sph_sw_counter_info g_net_sphcs_sw_counters_info[] = {
+	/* NET_SPHCS_SW_COUNTERS_NUM_INFER_CMDS */
+	{NET_SPHCS_SW_COUNTERS_GROUP, "num_infcmds", "Number of infer command objects"},
+};
+
+static const struct sph_sw_counters_set g_sw_counters_set_network = {
+	"network",
+	true,
+	g_net_sphcs_sw_counters_info,
+	ARRAY_SIZE(g_net_sphcs_sw_counters_info),
+	g_net_sphcs_sw_counters_groups_info,
+	ARRAY_SIZE(g_net_sphcs_sw_counters_groups_info)
+};
+
+enum INFREQ_SPHCS_SW_COUNTERS_GROUPS {
+	INFREQ_SPHCS_SW_COUNTERS_GROUP
+};
+
+static const struct sph_sw_counters_group_info g_infreq_sphcs_sw_counters_groups_info[] = {
+	/*INFREQ_SPHCS_SW_COUNTERS_GROUP*/
+	{"-infcmd_global", "group for per-infreq counters"}
+};
+
+enum  INFREQ_SPHCS_SW_COUNTERS {
+	INFREQ_SPHCS_SW_COUNTERS_BLOCK_COUNT,
+	INFREQ_SPHCS_SW_COUNTERS_EXEC_COUNT,
+	INFREQ_SPHCS_SW_COUNTERS_BLOCK_TOTAL_TIME,
+	INFREQ_SPHCS_SW_COUNTERS_BLOCK_MIN_TIME,
+	INFREQ_SPHCS_SW_COUNTERS_BLOCK_MAX_TIME,
+	INFREQ_SPHCS_SW_COUNTERS_EXEC_TOTAL_TIME,
+	INFREQ_SPHCS_SW_COUNTERS_EXEC_MIN_TIME,
+	INFREQ_SPHCS_SW_COUNTERS_EXEC_MAX_TIME,
+};
+
+static const struct sph_sw_counter_info g_infreq_sphcs_sw_counters_info[] = {
+	/* INFREQ_SPHCS_SW_COUNTERS_BLOCK_COUNT */
+	{INFREQ_SPHCS_SW_COUNTERS_GROUP, "block_count", "Number of times this infer command queued for execution"},
+	/* INFREQ_SPHCS_SW_COUNTERS_EXEC_COUNT */
+	{INFREQ_SPHCS_SW_COUNTERS_GROUP, "exec_count", "Number of times this infer command executed"},
+	/* INFREQ_SPHCS_SW_COUNTERS_BLOCK_TOTAL_TIME */
+	{INFREQ_SPHCS_SW_COUNTERS_GROUP, "block_total_time", "Total time the infer command blocked on resource dependency"},
+	/* INFREQ_SPHCS_SW_COUNTERS_BLOCK_MIN_TIME */
+	{INFREQ_SPHCS_SW_COUNTERS_GROUP, "block_min_time", "Minimun time the infer command blocked on resource dependency"},
+	/* INFREQ_SPHCS_SW_COUNTERS_BLOCK_MAX_TIME */
+	{INFREQ_SPHCS_SW_COUNTERS_GROUP, "block_max_time", "Maximum time the infer command blocked on resource dependency"},
+	/* INFREQ_SPHCS_SW_COUNTERS_EXEC_TOTAL_TIME */
+	{INFREQ_SPHCS_SW_COUNTERS_GROUP, "exec_total_time", "Total time the infer command was in runtime execution"},
+	/* INFREQ_SPHCS_SW_COUNTERS_EXEC_MIN_TIME */
+	{INFREQ_SPHCS_SW_COUNTERS_GROUP, "exec_min_time", "Minimun time the infer command was in runtime execution"},
+	/* INFREQ_SPHCS_SW_COUNTERS_EXEC_MAX_TIME */
+	{INFREQ_SPHCS_SW_COUNTERS_GROUP, "exec_max_time", "Maximum time the infer command was in runtime execution"},
+};
+
+static const struct sph_sw_counters_set g_sw_counters_set_infreq = {
+	"infcmd",
+	true,
+	g_infreq_sphcs_sw_counters_info,
+	ARRAY_SIZE(g_infreq_sphcs_sw_counters_info),
+	g_infreq_sphcs_sw_counters_groups_info,
+	ARRAY_SIZE(g_infreq_sphcs_sw_counters_groups_info)
+};
+
+enum COPY_SPHCS_SW_COUNTERS_GROUPS {
+	COPY_SPHCS_SW_COUNTERS_GROUP
+};
+
+static const struct sph_sw_counters_group_info g_copy_sphcs_sw_counters_groups_info[] = {
+	/*COPY_SPHCS_SW_COUNTERS_GROUP*/
+	{"-copy_global", "group for per-copy command counters"}
+};
+
+enum  COPY_SPHCS_SW_COUNTERS {
+	COPY_SPHCS_SW_COUNTERS_BLOCK_COUNT,
+	COPY_SPHCS_SW_COUNTERS_EXEC_COUNT,
+	COPY_SPHCS_SW_COUNTERS_BLOCK_TOTAL_TIME,
+	COPY_SPHCS_SW_COUNTERS_BLOCK_MIN_TIME,
+	COPY_SPHCS_SW_COUNTERS_BLOCK_MAX_TIME,
+	COPY_SPHCS_SW_COUNTERS_EXEC_TOTAL_TIME,
+	COPY_SPHCS_SW_COUNTERS_EXEC_MIN_TIME,
+	COPY_SPHCS_SW_COUNTERS_EXEC_MAX_TIME,
+	COPY_SPHCS_SW_COUNTERS_HWEXEC_TOTAL_TIME,
+	COPY_SPHCS_SW_COUNTERS_HWEXEC_MIN_TIME,
+	COPY_SPHCS_SW_COUNTERS_HWEXEC_MAX_TIME
+};
+
+static const struct sph_sw_counter_info g_copy_sphcs_sw_counters_info[] = {
+	/* COPY_SPHCS_SW_COUNTERS_BLOCK_COUNT */
+	{COPY_SPHCS_SW_COUNTERS_GROUP, "block_count", "Number of times this copy command queued for execution"},
+	/* COPY_SPHCS_SW_COUNTERS_EXEC_COUNT */
+	{COPY_SPHCS_SW_COUNTERS_GROUP, "exec_count", "Number of times this copy command executed"},
+	/* COPY_SPHCS_SW_COUNTERS_BLOCK_TOTAL_TIME */
+	{COPY_SPHCS_SW_COUNTERS_GROUP, "block_total_time", "Total time the copy command blocked on resource dependency"},
+	/* COPY_SPHCS_SW_COUNTERS_BLOCK_MIN_TIME */
+	{COPY_SPHCS_SW_COUNTERS_GROUP, "block_min_time", "Minimun time the copy command blocked on resource dependency"},
+	/* COPY_SPHCS_SW_COUNTERS_BLOCK_MAX_TIME */
+	{COPY_SPHCS_SW_COUNTERS_GROUP, "block_max_time", "Maximum time the copy command blocked on resource dependency"},
+	/* COPY_SPHCS_SW_COUNTERS_EXEC_TOTAL_TIME */
+	{COPY_SPHCS_SW_COUNTERS_GROUP, "exec_total_time", "Total time the copy command was in dma scheduler queue+execute"},
+	/* COPY_SPHCS_SW_COUNTERS_EXEC_MIN_TIME */
+	{COPY_SPHCS_SW_COUNTERS_GROUP, "exec_min_time", "Minimun time the copy command was in dma scheduler queue+execute"},
+	/* COPY_SPHCS_SW_COUNTERS_EXEC_MAX_TIME */
+	{COPY_SPHCS_SW_COUNTERS_GROUP, "exec_max_time", "Maximum time the copy command was in dma scheduler queue+execute"},
+	/* COPY_SPHCS_SW_COUNTERS_HWEXEC_TOTAL_TIME */
+	{COPY_SPHCS_SW_COUNTERS_GROUP, "hw_exec_total_time", "Total time the copy command executed in dma h/w"},
+	/* COPY_SPHCS_SW_COUNTERS_HWEXEC_MIN_TIME */
+	{COPY_SPHCS_SW_COUNTERS_GROUP, "hw_exec_min_time", "Minimun time the copy command was executed in dma h/w"},
+	/* COPY_SPHCS_SW_COUNTERS_HWEXEC_MAX_TIME */
+	{COPY_SPHCS_SW_COUNTERS_GROUP, "hw_exec_max_time", "Maximum time the copy command was executed in dma h/w"},
+};
+
+static const struct sph_sw_counters_set g_sw_counters_set_copy = {
+	"copycmd",
+	true,
+	g_copy_sphcs_sw_counters_info,
+	ARRAY_SIZE(g_copy_sphcs_sw_counters_info),
+	g_copy_sphcs_sw_counters_groups_info,
+	ARRAY_SIZE(g_copy_sphcs_sw_counters_groups_info)
+};
+
 extern void *g_hSwCountersInfo_global;
 extern void *g_hSwCountersInfo_context;
+extern void *g_hSwCountersInfo_network;
+extern void *g_hSwCountersInfo_infreq;
+extern void *g_hSwCountersInfo_copy;
 extern struct sph_sw_counters *g_sph_sw_counters;
 
 

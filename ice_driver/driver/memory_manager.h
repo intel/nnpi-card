@@ -49,6 +49,17 @@ int cve_mm_get_page_directory_base_addr(
 		u32 *out_dma_addr);
 
 /*
+ * invalidate the tlb if pages were added
+ * inputs :
+*      hdom - domain structure associated with the tlb
+*      cve_dev - cve device associated with the tlb
+ * outputs:
+ * returns:
+ */
+void cve_mm_invalidate_tlb(os_domain_handle hdom,
+		struct cve_device *cve_dev);
+
+/*
  * reset the internal page table flags state
  * inputs :
  *	context - the mm context
@@ -61,11 +72,12 @@ int cve_mm_create_infer_buffer(
 	u64 inf_id,
 	void *inf_hdom,
 	u32 domain_array_size,
-	struct cve_infer_buffer *inf_buf);
+	cve_mm_allocation_t buf_alloc,
+	struct cve_inf_buffer *inf_buf);
 
 void cve_mm_destroy_infer_buffer(
 		u64 inf_id,
-		struct cve_infer_buffer *inf_buf);
+		struct cve_inf_buffer *inf_buf);
 
 /*
  * create a buffer based on the given descriptor
@@ -166,7 +178,7 @@ void cve_mm_reclaim_allocation(
  * outputs:
  * returns:
  */
-void cve_mm_set_dirty_dram(struct cve_user_buffer *user_buf,
+void cve_mm_set_dirty_dram(struct cve_ntw_buffer *user_buf,
 	struct cve_device *cve_dev);
 
 /* set dirty cache flag for specific allocation
@@ -175,7 +187,7 @@ void cve_mm_set_dirty_dram(struct cve_user_buffer *user_buf,
  * outputs:
  * returns:
  */
-void cve_mm_set_dirty_cache(struct cve_user_buffer *user_buf);
+void cve_mm_set_dirty_cache(cve_mm_allocation_t *halloc);
 
 /*
  * Perform cache operation for specific allocation:
@@ -186,7 +198,6 @@ void cve_mm_set_dirty_cache(struct cve_user_buffer *user_buf);
  *		cve_dev - pointer to cve device
  */
 void cve_mm_sync_mem_to_dev(cve_mm_allocation_t halloc,
-	u64 inf_id,
 	struct cve_device *cve_dev);
 
 /*
@@ -196,8 +207,7 @@ void cve_mm_sync_mem_to_dev(cve_mm_allocation_t halloc,
  *		halloc - allocation
  *		inf_id - inference id. Set to 0 for Networks.
  */
-int cve_mm_sync_mem_to_host(cve_mm_allocation_t halloc,
-	u64 inf_id);
+int cve_mm_sync_mem_to_host(cve_mm_allocation_t halloc);
 
 /*
  * Print buffer as seen by specific CVE and associated with bufferId.
@@ -247,7 +257,7 @@ int cve_mm_unmap_kva(cve_mm_allocation_t allocation);
 * outputs:
 * returns: 0 on success, a negative error code on failure
 */
-int ice_mm_process_patch_point(struct cve_user_buffer *buf_list,
+int ice_mm_process_patch_point(struct cve_ntw_buffer *buf_list,
 		struct cve_patch_point_descriptor *patch_desc_list,
 		u32 patch_list_sz, struct job_descriptor *job);
 
@@ -260,7 +270,7 @@ int ice_mm_process_patch_point(struct cve_user_buffer *buf_list,
 * outputs:
 * returns: 0 on success, a negative error code on failure
 */
-int ice_mm_patch_cntrs(struct cve_user_buffer *buf_list,
+int ice_mm_patch_cntrs(struct cve_ntw_buffer *buf_list,
 		struct job_descriptor *job,
 		struct cve_device *dev);
 
@@ -280,7 +290,7 @@ void print_cur_page_table(os_domain_handle hdom);
 #define print_cur_page_table(hdom)
 #endif
 
-cve_virtual_address_t ice_mm_get_iova(struct cve_user_buffer *buffer);
+cve_virtual_address_t ice_mm_get_iova(struct cve_ntw_buffer *buffer);
 
 int ice_mm_domain_copy(os_domain_handle *hdom_src,
 	void **hdom_inf,
@@ -294,6 +304,9 @@ void ice_mm_get_domain_by_cve_idx(
 	u32 dma_domain_array_size,
 	struct cve_device *dev,
 	os_domain_handle *os_hdom);
+
+int ice_mm_process_inf_pp_arr(struct ice_infer *inf);
+int ice_mm_patch_inf_pp_arr(struct ice_infer *inf);
 
 #endif /* _MEMORY_MANAMGER_H_ */
 

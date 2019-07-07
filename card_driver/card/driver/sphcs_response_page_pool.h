@@ -22,7 +22,7 @@
 
 struct sphcs_response_page_pool {
 	struct list_head  host_response_pages_list;
-	spinlock_t        host_response_pages_list_lock;
+	spinlock_t        host_response_pages_list_lock_irq;
 	wait_queue_head_t hrp_waitq;
 	struct msg_scheduler_queue *msg_queue;
 };

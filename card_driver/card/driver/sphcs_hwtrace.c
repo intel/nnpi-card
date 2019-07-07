@@ -53,7 +53,7 @@ const struct sphcs_dma_desc g_dma_desc_c2h_dtf_nowait = {
 //npk resource information
 struct npk_res_info {
 	struct sg_table *sgt;
-	struct page	**pages;
+	struct page	*pages;
 	uint32_t	nr_pages;
 };
 
@@ -67,7 +67,7 @@ struct host_res_info {
 //dma resource information
 struct dma_res_info {
 	struct			sg_table *sgt;
-	struct page		**pages;
+	struct page		*pages;
 	uint32_t		nr_pages;
 	void			*lli_buf;
 	dma_addr_t		lli_addr;
@@ -93,6 +93,20 @@ struct sphcs_hwtrace_res_add_req {
 	void *vptr;
 };
 
+enum SPH_HWTRACE_WORK_CMD_TYPE {
+	SPH_HWTRACE_WORK_ADD_RESOURCE = 0,
+	SPH_HWTRACE_WORK_STATE = 1
+};
+
+
+
+struct sphcs_hwtrace_cmd_work {
+	struct work_struct		work;
+	enum SPH_HWTRACE_WORK_CMD_TYPE	type;
+	union h2c_HwTraceAddResource	add_resource_cmd;
+	union h2c_HwTraceState		state_cmd;
+};
+
 void sphcs_hwtrace_wakeup_clients(void)
 {
 	struct sphcs_hwtrace_data *hw_tracing = &g_the_sphcs->hw_tracing;
@@ -101,26 +115,81 @@ void sphcs_hwtrace_wakeup_clients(void)
 		wake_up(&hw_tracing->waitq);
 }
 
-void sphcs_hwtrace_cleanup_npk_resource(struct npk_res_info *npk)
+int assign_npk_pages_from_pool(struct page **o_pages, size_t size)
+{
+	struct sphcs_hwtrace_data *hw_tracing = &g_the_sphcs->hw_tracing;
+	int i;
+	uint32_t page_count = DIV_ROUND_UP(size, PAGE_SIZE);
+
+	if (page_count > hw_tracing->nr_pool_pages) {
+		sph_log_err(HWTRACE_LOG, "Error: requested page allocation(%u) is higher then pool(%u)\n", page_count, hw_tracing->nr_pool_pages);
+		return -ENOMEM;
+	}
+
+	for (i = 0; i < SPHCS_HWTRACING_MAX_POOL_LENGTH; i++) {
+		if (!hw_tracing->mem_pool[i].used) {
+			hw_tracing->mem_pool[i].used = true;
+			*o_pages = hw_tracing->mem_pool[i].pages;
+			return 0;
+		}
+	}
+
+	return -EINVAL;
+
+}
+
+void free_npk_pages_pool_item(struct page *page)
 {
 	struct sphcs_hwtrace_data *hw_tracing = &g_the_sphcs->hw_tracing;
 	int i;
 
-	dma_unmap_sg(hw_tracing->intel_th_device,
+	for (i = 0; i < SPHCS_HWTRACING_MAX_POOL_LENGTH; i++) {
+		if (page == hw_tracing->mem_pool[i].pages) {
+			hw_tracing->mem_pool[i].used = false;
+			return;
+		}
+	}
+
+}
+
+int sphcs_hwtrace_create_sg_table_from_pages(struct page *pages,
+					      uint32_t	nr_pages,
+					      struct sg_table *sgt)
+{
+	struct scatterlist *current_sgl;
+	int ret;
+
+	ret = sg_alloc_table(sgt, 3, GFP_NOWAIT);
+	if (ret) {
+		return ret;
+	}
+
+	// iterate over host's DMA address entries, and fill host sg_table
+	// make sure we are not reading last entry, in a non-full page
+	// make sure we are not reading more than one page
+	current_sgl = sgt->sgl;
+
+	sg_set_page(&(current_sgl[0]), &(pages[0]), (4) * PAGE_SIZE, 0);
+	sg_set_page(&(current_sgl[1]), &(pages[8]), (nr_pages-8) * PAGE_SIZE, 0);
+	sg_set_page(&(current_sgl[2]), &(pages[4]), (4) * PAGE_SIZE, 0);
+
+	return 0;
+}
+
+
+void sphcs_hwtrace_cleanup_npk_resource(struct npk_res_info *npk)
+{
+	struct sphcs_hwtrace_data *hw_tracing = &g_the_sphcs->hw_tracing;
+	struct device *ith_dma_device = hw_tracing->intel_th_device->parent->parent;
+
+	dma_unmap_sg(ith_dma_device,
 		     npk->sgt->sgl,
 		     npk->sgt->orig_nents,
 		     DMA_FROM_DEVICE);
 
 	sg_free_table(npk->sgt);
 
-	for (i = 0; i < npk->nr_pages; i++) {
-		if (npk->pages[i] != NULL)
-			__free_page(npk->pages[i]);
-		else
-			break;
-	}
-
-	kfree(npk->pages);
+	free_npk_pages_pool_item(npk->pages);
 
 	kfree(npk->sgt);
 
@@ -157,7 +226,8 @@ struct dma_res_info *sphcs_hwtrace_alloc_dma_info(struct sphcs_dma_res_info *r)
 {
 	struct dma_res_info *dma;
 	int ret = 0;
-
+	size_t size;
+	uint32_t max_segment;
 
 	dma = kzalloc(sizeof(*dma), GFP_NOWAIT);
 	if (unlikely(dma == NULL)) {
@@ -174,13 +244,13 @@ struct dma_res_info *sphcs_hwtrace_alloc_dma_info(struct sphcs_dma_res_info *r)
 		goto cleanup_dma_res_info;
 	}
 
+	size = dma->nr_pages * sizeof(PAGE_SIZE);
+	max_segment = size - PAGE_SIZE;
+
 	//allocate sg table from NPK RES pages.
-	ret = sg_alloc_table_from_pages(dma->sgt,
-					dma->pages,
-					dma->nr_pages,
-					0,
-					dma->nr_pages * sizeof(SPH_PAGE_SIZE),
-					GFP_NOWAIT);
+	ret = sphcs_hwtrace_create_sg_table_from_pages(dma->pages,
+						       dma->nr_pages,
+						       dma->sgt);
 	if (ret) {
 		sph_log_err(HWTRACE_LOG, "fail allocate sg_table from pages - %d", ret);
 		goto cleanup_sg_table;
@@ -193,7 +263,7 @@ struct dma_res_info *sphcs_hwtrace_alloc_dma_info(struct sphcs_dma_res_info *r)
 			 dma->sgt->orig_nents,
 			 DMA_FROM_DEVICE);
 	if (unlikely(ret < 0)) {
-		sph_log_err(HWTRACE_LOG, "fail map sgl - %d", ret);
+		sph_log_err(HWTRACE_LOG, "fail map sgl - %d\n", ret);
 		goto cleanup_sgt;
 	}
 
@@ -486,8 +556,9 @@ int intel_th_alloc_window(void *priv, struct sg_table **sgt, size_t size)
 	struct npk_res_info *npk;
 	int ret = 0;
 	unsigned long flags;
-	int i;
 	bool bFound = false;
+	uint32_t max_segment;
+	struct device *ith_dma_device = hw_tracing->intel_th_device->parent->parent;
 
 	if (size == 0)
 		return -EINVAL;
@@ -498,45 +569,28 @@ int intel_th_alloc_window(void *priv, struct sg_table **sgt, size_t size)
 		goto err;
 	}
 
-	npk->nr_pages = DIV_ROUND_UP(size, PAGE_SIZE);
-
-	npk->sgt = kzalloc(sizeof(*npk->sgt), GFP_KERNEL);
+	npk->sgt = kzalloc(sizeof(*npk->sgt), GFP_NOWAIT);
 	if (unlikely(npk->sgt == NULL)) {
 		ret = -ENOMEM;
 		goto cleanup_npk_res_info;
 	}
 
-	npk->pages = kmalloc_array(npk->nr_pages,
-			      sizeof(struct page *),
-			      GFP_KERNEL);
-	if (unlikely(npk->pages == NULL)) {
-		ret = -ENOMEM;
+	ret = assign_npk_pages_from_pool(&npk->pages, size);
+	if (ret)
 		goto cleanup_npk_sgt;
-	}
 
-	for (i = 0; i < npk->nr_pages; ++i) {
-		//TODO: Possible optimization: try to call alloc_pages, reducing order, until success
-		npk->pages[i] = alloc_page(GFP_DMA32);
-		if (unlikely(npk->pages[i] == NULL)) {
-			sph_log_err(HWTRACE_LOG, "fail allocate page number - %d", i);
-			ret = -ENOMEM;
-			goto cleanup_pages;
-		}
-	}
+	max_segment = size - PAGE_SIZE;
+	npk->nr_pages = DIV_ROUND_UP(size, PAGE_SIZE);
 
-
-	ret = sg_alloc_table_from_pages(npk->sgt,
-					npk->pages,
-					npk->nr_pages,
-					0,
-					size,
-					GFP_KERNEL);
+	ret = sphcs_hwtrace_create_sg_table_from_pages(npk->pages,
+						       npk->nr_pages,
+						       npk->sgt);
 	if (ret) {
 		sph_log_err(HWTRACE_LOG, "fail allocate table from pages - %d", ret);
 		goto cleanup_pages;
 	}
 
-	ret = dma_map_sg(hw_tracing->intel_th_device,
+	ret = dma_map_sg(ith_dma_device,
 			 npk->sgt->sgl,
 			 npk->sgt->orig_nents,
 			 DMA_FROM_DEVICE);
@@ -565,7 +619,6 @@ int intel_th_alloc_window(void *priv, struct sg_table **sgt, size_t size)
 
 	SPH_SPIN_UNLOCK_IRQRESTORE(&hw_tracing->lock_irq, flags);
 
-
 	if (!bFound) {
 		r = kzalloc(sizeof(*r), GFP_NOWAIT);
 		if (unlikely(r == NULL)) {
@@ -584,25 +637,19 @@ int intel_th_alloc_window(void *priv, struct sg_table **sgt, size_t size)
 		SPH_SPIN_UNLOCK_IRQRESTORE(&hw_tracing->lock_irq, flags);
 	}
 
-
 	sphcs_hwtrace_update_state();
 
 	return ret;
 
 cleanup_dma_map_sg:
-	dma_unmap_sg(hw_tracing->intel_th_device,
+	dma_unmap_sg(ith_dma_device,
 		     npk->sgt->sgl,
 		     npk->sgt->orig_nents,
 		     DMA_FROM_DEVICE);
 cleanup_sgt:
 	sg_free_table(npk->sgt);
 cleanup_pages:
-	for (i = 0; i < npk->nr_pages; i++) {
-		if (npk->pages[i] != NULL)
-			__free_page(npk->pages[i]);
-		else
-			break;
-	}
+	free_npk_pages_pool_item(npk->pages);
 	kfree(npk->pages);
 cleanup_npk_sgt:
 	kfree(npk->sgt);
@@ -647,6 +694,8 @@ void intel_th_activate(void *priv)
 		return;
 	}
 
+	sphcs_dma_sched_reserve_channel_for_dtf(g_the_sphcs->dmaSched, true);
+
 	g_the_sphcs->hw_tracing.hwtrace_status = SPHCS_HWTRACE_ACTIVATED;
 }
 
@@ -658,6 +707,8 @@ void intel_th_deactivate(void *priv)
 		sph_log_err(HWTRACE_LOG, "callback request, but trace was not initialized\n");
 		return;
 	}
+
+	sphcs_dma_sched_reserve_channel_for_dtf(g_the_sphcs->dmaSched, false);
 
 	g_the_sphcs->hw_tracing.hwtrace_status = SPHCS_HWTRACE_DEACTIVATED;
 }
@@ -671,9 +722,8 @@ int intel_th_window_ready(void *priv, struct sg_table *sgt, size_t bytes)
 	struct sphcs_dma_res_info *r;
 	bool bFound = false;
 
-	//print debug log everytime a new window is ready.
-	sph_log_debug(HWTRACE_LOG, "got window ready with size %lu\n", bytes);
 
+	//print debug log everytime a new window is ready.
 	if (g_the_sphcs->hw_tracing.hwtrace_status == SPHCS_HWTRACE_REGISTERED) {
 		sph_log_info(HWTRACE_LOG, "trace activated request, but trace was not initialized\n");
 		return 0;
@@ -735,7 +785,6 @@ void sphcs_hwtrace_cleanup_resources_request(struct sphcs *sphcs)
 int sphcs_hwtrace_init(struct sphcs *sphcs)
 {
 	struct sphcs_hwtrace_data *hw_tracing = &sphcs->hw_tracing;
-	int ret = 0;
 	int hwtrace_err = SPH_HWTRACE_NO_ERR;
 	union c2h_HwTraceState response_msg;
 	unsigned long flags;
@@ -747,14 +796,6 @@ int sphcs_hwtrace_init(struct sphcs *sphcs)
 		goto reply_message;
 
 	}
-
-	ret = sphcs_dma_sched_reserve_channel_for_dtf(sphcs->dmaSched, true);
-	if (ret) {
-		sph_log_err(HWTRACE_LOG, "unable to reserve dma channel for streaming trace resources\n");
-		hwtrace_err = SPH_HWTRACE_ERR_DTF_CHANNEL;
-		goto reply_message;
-	}
-
 
 	SPH_SPIN_LOCK_IRQSAVE(&hw_tracing->lock_irq, flags);
 
@@ -789,7 +830,6 @@ reply_message:
 int sphcs_hwtrace_deinit(struct sphcs *sphcs)
 {
 	struct sphcs_hwtrace_data *hw_tracing = &sphcs->hw_tracing;
-	int  ret = 0;
 	int hwtrace_err = SPH_HWTRACE_NO_ERR;
 	union c2h_HwTraceState response_msg;
 	struct sphcs_dma_res_info *r;
@@ -801,13 +841,6 @@ int sphcs_hwtrace_deinit(struct sphcs *sphcs)
 		goto reply_message;
 	}
 
-
-	ret = sphcs_dma_sched_reserve_channel_for_dtf(sphcs->dmaSched, false);
-	if (ret) {
-		sph_log_err(HWTRACE_LOG, "unable release reserved dma channel used for hw trace streamimg resources\n");
-		hwtrace_err = SPH_HWTRACE_ERR_INTEL_TH_REG;
-		goto reply_message;
-	}
 
 	SPH_SPIN_LOCK_IRQSAVE(&hw_tracing->lock_irq, flags);
 
@@ -862,7 +895,7 @@ static int sphcs_hwtrace_get_hostres_complete_cb(struct sphcs *sphcs,
 	chain_header = (struct dma_chain_header *)dma_req_data->vptr;
 	chain_entry = (struct dma_chain_entry *)(dma_req_data->vptr + sizeof(struct dma_chain_header));
 
-	ret = sg_alloc_table(sgt, chain_header->total_nents, GFP_KERNEL);
+	ret = sg_alloc_table(sgt, chain_header->total_nents, GFP_NOWAIT);
 	if (ret) {
 		hwtrace_err = SPH_HWTRACE_ERR_ADD_RESOURCE_FAIL;
 		goto err;
@@ -984,7 +1017,7 @@ void sphcs_hwtrace_unlock_host_res(struct sphcs *sphcs,
 		}
 	}
 
-	if (!bFound)
+	if (bFound)
 		do_stream_hwtrace(r);
 
 
@@ -1017,9 +1050,24 @@ void sphcs_hwtrace_query_state(struct sphcs *sphcs)
 	sphcs_msg_scheduler_queue_add_msg(sphcs->public_respq, &response_msg.value, 1);
 }
 
+void sphcs_hwtrace_query_mem_pool_info(struct sphcs *sphcs)
+{
+	struct sphcs_hwtrace_data *hw_tracing = &sphcs->hw_tracing;
+	union c2h_HwTraceState response_msg;
+
+	memset(&response_msg.value, 0x0, sizeof(response_msg));
+
+	response_msg.opcode	= SPH_IPC_C2H_OP_HWTRACE_STATE;
+	response_msg.subOpcode	= HWTRACE_GET_MEM_POOL_INFO;
+	response_msg.val1	= hw_tracing->nr_pool_pages;
+	response_msg.val2	= SPHCS_HWTRACING_MAX_POOL_LENGTH;
+
+	sphcs_msg_scheduler_queue_add_msg(sphcs->public_respq, &response_msg.value, 1);
+}
+
 // opcode for adding new host resource for streaming data
-void IPC_OPCODE_HANDLER(HWTRACE_ADD_RESOURCE)(struct sphcs *sphcs,
-					      union h2c_HwTraceAddResource *msg)
+void sphcs_hwtrace_add_resource(struct sphcs *sphcs,
+				union h2c_HwTraceAddResource *msg)
 {
 	struct sphcs_hwtrace_data *hw_tracing = &sphcs->hw_tracing;
 	struct sphcs_hwtrace_res_add_req *dma_req_data;
@@ -1029,6 +1077,7 @@ void IPC_OPCODE_HANDLER(HWTRACE_ADD_RESOURCE)(struct sphcs *sphcs,
 	int hwtrace_err = SPH_HWTRACE_NO_ERR;
 	uint32_t resources_count = hw_tracing->host_resource_count;
 	int ret;
+	unsigned long timeout = usecs_to_jiffies(5000000);
 
 	switch (hw_tracing->hwtrace_status) {
 	case SPHCS_HWTRACE_INITIALIZED:
@@ -1086,8 +1135,14 @@ void IPC_OPCODE_HANDLER(HWTRACE_ADD_RESOURCE)(struct sphcs *sphcs,
 		goto cleanup_dma_allocation;
 	}
 
-	wait_event_interruptible(hw_tracing->waitq,
-				 (resources_count < hw_tracing->host_resource_count));
+	ret = wait_event_interruptible_timeout(hw_tracing->waitq,
+					       (resources_count < hw_tracing->host_resource_count),
+					       timeout);
+	if (ret <= 0) {
+		sph_log_err(HWTRACE_LOG, "Wait failed/timeout ret=%d\n", ret);
+		hwtrace_err = SPH_HWTRACE_ERR_ADD_RESOURCE_FAIL;
+		goto cleanup_dma_allocation;
+	}
 
 	sphcs_hwtrace_update_state();
 
@@ -1112,8 +1167,8 @@ reply_message:
 }
 
 
-void IPC_OPCODE_HANDLER(HWTRACE_STATE)(struct sphcs *sphcs,
-				       union h2c_HwTraceState *msg)
+void sphcs_hwtrace_state(struct sphcs *sphcs,
+			 union h2c_HwTraceState *msg)
 {
 	union c2h_HwTraceState response_msg;
 	struct sphcs_hwtrace_data *hw_tracing = &sphcs->hw_tracing;
@@ -1137,6 +1192,9 @@ void IPC_OPCODE_HANDLER(HWTRACE_STATE)(struct sphcs *sphcs,
 	case HWTRACE_QUERY_STATE:
 		sphcs_hwtrace_query_state(sphcs);
 		break;
+	case HWTRACE_GET_MEM_POOL_INFO:
+		sphcs_hwtrace_query_mem_pool_info(sphcs);
+		break;
 	case HWTRACE_UNLOCK_RESOURCE:
 		sphcs_hwtrace_unlock_host_res(sphcs, msg->val);
 		break;
@@ -1152,6 +1210,95 @@ reply_message:
 	response_msg.opcode	= SPH_IPC_C2H_OP_HWTRACE_STATE;
 	response_msg.subOpcode	= msg->subOpcode;
 	response_msg.err	= hwtrace_err;
+
+	sphcs_msg_scheduler_queue_add_msg(sphcs->public_respq, &response_msg.value, 1);
+}
+
+static void hwtrace_op_work_handler(struct work_struct *work)
+{
+	struct sphcs *sphcs = g_the_sphcs;
+	struct sphcs_hwtrace_cmd_work *op = container_of(work,
+							 struct sphcs_hwtrace_cmd_work,
+							 work);
+
+	switch (op->type) {
+	case SPH_HWTRACE_WORK_ADD_RESOURCE:
+		sphcs_hwtrace_add_resource(sphcs, &op->add_resource_cmd);
+		break;
+	case SPH_HWTRACE_WORK_STATE:
+		sphcs_hwtrace_state(sphcs, &op->state_cmd);
+		break;
+	};
+
+}
+
+
+void IPC_OPCODE_HANDLER(HWTRACE_ADD_RESOURCE)(struct sphcs *sphcs,
+					      union h2c_HwTraceAddResource *msg)
+{
+	struct sphcs_hwtrace_cmd_work *work;
+	union c2h_HwTraceState response_msg;
+	struct sphcs_hwtrace_data *hw_tracing = &sphcs->hw_tracing;
+
+
+	work = kzalloc(sizeof(*work), GFP_NOWAIT);
+	if (unlikely(work == NULL)) {
+		sph_log_err(HWTRACE_LOG, "unable to allocate hwtrace_cmd_work object\n");
+		goto reply_err;
+	}
+
+	work->type = SPH_HWTRACE_WORK_ADD_RESOURCE;
+
+	memcpy(work->add_resource_cmd.value, msg->value, sizeof(msg->value));
+
+	INIT_WORK(&work->work, hwtrace_op_work_handler);
+	queue_work(hw_tracing->cmd_wq, &work->work);
+
+
+	return;
+
+
+reply_err:
+	memset(&response_msg.value, 0x0, sizeof(response_msg));
+
+	response_msg.opcode	= SPH_IPC_C2H_OP_HWTRACE_STATE;
+	response_msg.subOpcode	= HWTRACE_ADD_RESOURCE;
+	response_msg.err	= SPH_HWTRACE_ERR_NO_MEMORY;
+
+	sphcs_msg_scheduler_queue_add_msg(sphcs->public_respq, &response_msg.value, 1);
+}
+
+
+void IPC_OPCODE_HANDLER(HWTRACE_STATE)(struct sphcs *sphcs,
+				       union h2c_HwTraceState *msg)
+{
+	struct sphcs_hwtrace_cmd_work *work;
+	union c2h_HwTraceState response_msg;
+	struct sphcs_hwtrace_data *hw_tracing = &sphcs->hw_tracing;
+
+
+	work = kzalloc(sizeof(*work), GFP_NOWAIT);
+	if (unlikely(work == NULL)) {
+		sph_log_err(HWTRACE_LOG, "unable to allocate hwtrace_cmd_work object\n");
+		goto reply_err;
+	}
+
+	work->type = SPH_HWTRACE_WORK_STATE;
+
+	work->state_cmd.value = msg->value;
+	INIT_WORK(&work->work, hwtrace_op_work_handler);
+	queue_work(hw_tracing->cmd_wq, &work->work);
+
+
+	return;
+
+
+reply_err:
+	memset(&response_msg.value, 0x0, sizeof(response_msg));
+
+	response_msg.opcode	= SPH_IPC_C2H_OP_HWTRACE_STATE;
+	response_msg.subOpcode	= msg->subOpcode;
+	response_msg.err	= SPH_HWTRACE_ERR_NO_MEMORY;
 
 	sphcs_msg_scheduler_queue_add_msg(sphcs->public_respq, &response_msg.value, 1);
 }

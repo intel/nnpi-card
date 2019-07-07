@@ -29,7 +29,7 @@
 #include "coral.h"
 #endif
 
-int init_icedrv_trace(struct cve_device *ice_dev)
+int __init_icedrv_trace(struct cve_device *ice_dev)
 {
 	int ret = 0;
 
@@ -59,7 +59,7 @@ int init_icedrv_trace(struct cve_device *ice_dev)
 	return ret;
 }
 
-void term_icedrv_trace(struct cve_device *ice_dev)
+void __term_icedrv_trace(struct cve_device *ice_dev)
 {
 	FUNC_ENTER();
 

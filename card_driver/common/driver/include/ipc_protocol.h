@@ -44,7 +44,7 @@ SPH_STATIC_ASSERT(SPH_PAGE_SHIFT <= PAGE_SHIFT, "SPH_PAGE_SIZE is bigger than PA
 					     ((minor) & 0x1f) << 5 | \
 					     ((dot) & 0x1f))
 
-#define SPH_IPC_PROTOCOL_VERSION SPH_MAKE_VERSION(1, 5, 1)
+#define SPH_IPC_PROTOCOL_VERSION SPH_MAKE_VERSION(1, 9, 1)
 
 /* Maximumum of free pages, which device can hold at any time */
 #define MAX_HOST_RESPONSE_PAGES 32
@@ -55,8 +55,6 @@ SPH_STATIC_ASSERT(SPH_PAGE_SHIFT <= PAGE_SHIFT, "SPH_PAGE_SIZE is bigger than PA
 
 #define PAGE_HANDLE_BITS __CHAR_BIT__
 #define SPH_NET_SKB_HANDLE_BITS __CHAR_BIT__
-
-#define SPH_MAX_GENERIC_SERVICES  32 /* maximum number of generic services */
 
 #define SPH_IPC_DMA_PFN_BITS    45   /* number of bits for dma physical address in the protocol */
 #define SPH_DMA_ADDR_ALIGN_BITS SPH_PAGE_SHIFT  /* number of zero LSBs in dma physical address */
@@ -72,6 +70,8 @@ SPH_STATIC_ASSERT(SPH_PAGE_SHIFT <= PAGE_SHIFT, "SPH_PAGE_SIZE is bigger than PA
 #define SPH_IPC_INF_DEVNET_BITS 16  /* number of bits in protocol for device network */
 #define SPH_IPC_INF_COPY_BITS 16    /* number of bits in protocol for copy handler */
 #define SPH_IPC_INF_REQ_BITS 16     /* number of bits in protocol for inf req */
+
+#define SPH_MAX_GENERIC_SERVICES (32 + (1 << SPH_IPC_INF_CONTEXT_BITS)) /* maximum number of generic services */
 
 #pragma pack(push, 1)
 
@@ -339,7 +339,8 @@ union h2c_InferenceContextOp {
 		u64 destroy    : 1;
 		u64 recover    : 1;
 		u64 cflags     : 8;
-		u64 reserved   :41;
+		u64 reserved   : 9;
+		u64 uid        :32;
 	};
 
 	u64 value;
@@ -378,13 +379,18 @@ union h2c_InferenceResourceOp {
 		u64 resID      : SPH_IPC_INF_DEVRES_BITS;
 		u64 size       : 32;
 		u64 destroy    : 1;
+		u64 reserved   : 2;
+
 		u64 is_input   : 1;
 		u64 is_output  : 1;
+		u64 is_network : 1;
+		u64 is_force_4G : 1;
+		u64 reserved2  : 60;
 	};
 
-	u64 value;
+	u64 value[2];
 };
-CHECK_MESSAGE_SIZE(union h2c_InferenceResourceOp, 1);
+CHECK_MESSAGE_SIZE(union h2c_InferenceResourceOp, 2);
 
 union h2c_InferenceNetworkOp {
 	struct {
@@ -397,9 +403,9 @@ union h2c_InferenceNetworkOp {
 		u64 num_res       :24;
 		u64 dma_page_hndl : 8;
 
-		u64 size          : 12;
 		u64 host_pfn      : SPH_IPC_DMA_PFN_BITS;
-		u64 reserved2     : 7;
+		u64 size          : 18;
+		u64 chained       : 1;
 	};
 
 	u64 value[2];

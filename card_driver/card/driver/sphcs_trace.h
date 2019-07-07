@@ -33,18 +33,9 @@
 
 void sphcs_trace_init(void);
 
-#if defined(HW_LAYER_COH)
-#define SPH_TP_STRUCT__entry(x)   TP_STRUCT__entry(__field(u64, time) \
-						x)
-#define SPH_TP_fast_assign(x)     TP_fast_assign(__entry->time = sph_time_us(); \
-						x)
-#define SPH_TP_printk(event, ...) TP_printk("time=%lld " event, \
-					__entry->time, __VA_ARGS__)
-#else
 #define SPH_TP_STRUCT__entry TP_STRUCT__entry
 #define SPH_TP_fast_assign   TP_fast_assign
 #define SPH_TP_printk        TP_printk
-#endif
 
 TRACE_EVENT(SPH_TRACE_INFREQ,
 	TP_PROTO(u8 state, u32 ctxID, u32 netID, u32 reqID),

@@ -13,6 +13,7 @@
 #include <linux/dma-buf.h>
 #include "dma_page_pool.h"
 #include "inf_types.h"
+#include "sphcs_sw_counters.h"
 
 struct inf_context;
 struct inf_devres;
@@ -41,6 +42,8 @@ struct inf_devnet {
 	bool                created;
 	enum create_status  edit_status;
 	int                 destroyed;
+
+	struct sph_sw_counters *sw_counters;
 };
 
 int inf_devnet_create(uint16_t protocolID,

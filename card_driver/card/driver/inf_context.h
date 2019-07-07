@@ -87,7 +87,9 @@ struct inf_exec_req {
 	bool                      in_progress;
 	bool                      is_copy;
 	spinlock_t                lock_irq;
+	struct kref               in_use;
 	struct inf_req_sequence   seq;
+	u64                       time; // queued or start execute time
 
 	union {
 		struct inf_copy  *copy;
@@ -136,9 +138,9 @@ void inf_context_add_sync_point(struct inf_context *context,
 int inf_context_create_devres(struct inf_context *context,
 			      uint16_t            protocolID,
 			      uint32_t            byte_size,
-			      int                 is_input,
-			      int                 is_output,
+			      uint32_t            usage_flags,
 			      struct inf_devres **out_devres);
+
 int inf_context_find_and_destroy_devres(struct inf_context *context,
 					uint16_t            devresID);
 struct inf_devres *inf_context_find_devres(struct inf_context *context,
@@ -167,5 +169,8 @@ struct inf_subres_load_session *inf_context_create_subres_load_session(struct in
 struct inf_subres_load_session *inf_context_get_subres_load_session(struct inf_context *context, uint16_t sessionID);
 
 void inf_context_remove_subres_load_session(struct inf_context *context, uint16_t sessionID);
+
+int inf_exec_req_get(struct inf_exec_req *req);
+int inf_exec_req_put(struct inf_exec_req *req);
 
 #endif

@@ -22,6 +22,7 @@
 #endif
 
 #include "cve_linux_internal.h"
+#include "cve_driver_internal.h"
 
 struct hw_revision_t {
 	u16	major_rev;
@@ -77,7 +78,7 @@ int cve_sync_sgt_to_llc(struct sg_table *sgt);
 void ice_di_disable_clk_squashing_step_a(struct cve_device *dev);
 
 #ifdef ENABLE_SPH_STEP_B
-#define ice_di_disable_clk_squashing(dev) do {} while (0)
+#define ice_di_disable_clk_squashing(dev) __no_op_stub
 #else /* ENABLE_SPH_STEP_B */
 #define ice_di_disable_clk_squashing(dev)\
 	ice_di_disable_clk_squashing_step_a(dev)
@@ -85,4 +86,30 @@ void ice_di_disable_clk_squashing_step_a(struct cve_device *dev);
 #endif /* ENABLE_SPH_STEP_B */
 
 int ice_di_get_core_blob_sz(void);
+
+#if ICEDRV_ENABLE_HSLE_FLOW
+#define __rdy_max_usleep (30000)
+#define __rdy_min_usleep (10000)
+#define __rdy_bit_max_trial (800)
+#else
+#define __rdy_max_usleep (3000)
+#define __rdy_min_usleep (1000)
+#define __rdy_bit_max_trial (8)
+#endif /*ICEDRV_ENABLE_HSLE_FLOW*/
+
+#define __IDC_ICERDY_MASK IDC_REGS_IDC_MMIO_BAR0_MEM_ICERDY_MMOFFSET
+
+#define __wait_for_ice_rdy(dev, value, mask) \
+do {\
+	int32_t count = __rdy_bit_max_trial;\
+	while (count) {\
+		value = cve_os_read_idc_mmio(dev, __IDC_ICERDY_MASK); \
+		if ((value & mask) == mask)\
+			break;\
+		count--;\
+		usleep_range(__rdy_min_usleep, __rdy_max_usleep);\
+	} \
+} while (0)
+
+
 #endif /* _DEVICE_INTERFACE_INTERNAL_H_ */
