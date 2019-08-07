@@ -40,4 +40,7 @@ void IPC_OPCODE_HANDLER(INF_REQ_OP)(struct sphcs             *sphcs,
 
 void IPC_OPCODE_HANDLER(SCHEDULE_INF_REQ)(struct sphcs                   *sphcs,
 					  union h2c_InferenceReqSchedule *cmd);
+
+void IPC_OPCODE_HANDLER(INF_NETWORK_RESOURCE_RESERVATION)(struct sphcs                  *sphcs,
+				      union h2c_InferenceNetworkResourceReservation *cmd);
 #endif

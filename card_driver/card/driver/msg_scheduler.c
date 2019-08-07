@@ -207,6 +207,13 @@ int msg_scheduler_queue_destroy(struct msg_scheduler *scheduler, struct msg_sche
 	}
 	SPH_SPIN_UNLOCK_IRQRESTORE(&queue->list_lock_irq, flags);
 
+	/* decrement queue's left messages from the total messages number of the scheduler */
+	if (queue->msgs_num) {
+		SPH_SPIN_LOCK_IRQSAVE(&scheduler->queue_lock_irq, flags);
+		scheduler->total_msgs_num -= queue->msgs_num;
+		SPH_SPIN_UNLOCK_IRQRESTORE(&scheduler->queue_lock_irq, flags);
+	}
+
 	/* destroy the queue */
 	list_del(&queue->queues_list_node);
 	kfree(queue);

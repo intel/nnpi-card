@@ -17,7 +17,6 @@
 #define CVE_DEVICE_FIFO_H_
 
 #include "os_interface.h"
-#include <cve_hw_forSw.h>
 
 /* number of entries in the command buffer descriptors array */
 #define CVE_FIFO_ENTRIES_NR 64
@@ -28,7 +27,7 @@ struct di_fifo {
 	int is_empty;
 
 	/* command buffer descriptors. shared with the device */
-	union cve_shared_cb_descriptor *cb_desc_vaddr;
+	union CVE_SHARED_CB_DESCRIPTOR *cb_desc_vaddr;
 
 	/*size*/
 	u32 size_bytes;

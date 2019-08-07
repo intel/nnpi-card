@@ -14,7 +14,7 @@
 
 int inf_devres_create(uint16_t            protocolID,
 		      struct inf_context *context,
-		      uint32_t            size,
+		      uint64_t            size,
 		      uint32_t            usage_flags,
 		      struct inf_devres **out_devres)
 {
@@ -85,23 +85,9 @@ int inf_devres_attach_buf(struct inf_devres *devres,
 
 	devres->status = CREATED;
 
-#ifdef _DEBUG
-	{
-	unsigned int i;
-	struct scatterlist *sg;
-
 	sph_log_debug(CREATE_COMMAND_LOG, "mapped device resource protocolID=%u nents=%u\n",
 		      devres->protocolID,
 		      devres->dma_map->nents);
-	sg = devres->dma_map->sgl;
-	for (i = 0; i < devres->dma_map->nents; i++) {
-		sph_log_debug(CREATE_COMMAND_LOG, "\t0x%llx - len 0x%x\n",
-			      sg_dma_address(sg),
-			      sg_dma_len(sg));
-		sg = sg_next(sg);
-	}
-	}
-#endif
 
 	return 0;
 
@@ -183,8 +169,10 @@ static void release_devres(struct kref *kref)
 	struct inf_devres *devres = container_of(kref,
 						 struct inf_devres,
 						 ref);
+	int ret;
 
-	SPH_ASSERT(devres != NULL);
+	SPH_ASSERT(is_inf_devres_ptr(devres));
+	SPH_ASSERT(list_empty(&devres->exec_queue));
 
 	SPH_SPIN_LOCK(&devres->context->lock);
 	hash_del(&devres->hash_node);
@@ -195,16 +183,17 @@ static void release_devres(struct kref *kref)
 		send_runtime_destroy_devres(devres);
 	}
 
+	SPH_SW_COUNTER_DEC_VAL(devres->context->sw_counters, CTX_SPHCS_SW_COUNTERS_INFERENCE_DEVICE_RESOURCE_SIZE, devres->size);
+
+	ret = inf_context_put(devres->context);
+	SPH_ASSERT(ret == 0);
+
 	if (likely(devres->destroyed == 1))
 		sphcs_send_event_report(g_the_sphcs,
 					SPH_IPC_DEVRES_DESTROYED,
 					0,
 					devres->context->protocolID,
 					devres->protocolID);
-
-	SPH_SW_COUNTER_DEC_VAL(devres->context->sw_counters, CTX_SPHCS_SW_COUNTERS_INFERENCE_DEVICE_RESOURCE_SIZE, devres->size);
-
-	inf_context_put(devres->context);
 
 	kfree(devres);
 }

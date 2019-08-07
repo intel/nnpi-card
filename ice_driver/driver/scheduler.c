@@ -27,7 +27,7 @@
 #endif
 #include "ice_debug_event.h"
 
-static struct ice_network *scheduled_ntw_list[NTW_PRIORITY_MAX];
+static struct ice_network *scheduled_ntw_list;
 
 /* return 1 iff job is marked as finished */
 static inline int is_jobgroup_finished(struct jobgroup_descriptor *jobgroup)
@@ -35,32 +35,19 @@ static inline int is_jobgroup_finished(struct jobgroup_descriptor *jobgroup)
 	return (jobgroup->ended_jobs_nr == jobgroup->submitted_jobs_nr);
 }
 
-static inline u32 available_hw_counters(struct cve_device_group *dg)
-{
-	return dg->counters_nr;
-}
-
 void ice_schedule_network(struct ice_network *ntw)
 {
-	if (ntw->exe_status == NTW_EXE_STATUS_IDLE) {
+	if (!ntw->ntw_queued) {
 
 		cve_os_log(CVE_LOGLEVEL_DEBUG,
 			"Adding NtwID:0x%llx to Scheduler List\n",
 			ntw->network_id);
 
-		ntw->exe_status = NTW_EXE_STATUS_QUEUED;
-		cve_dle_add_to_list_before(scheduled_ntw_list[ntw->p_type],
+		ntw->ntw_queued = true;
+		cve_dle_add_to_list_before(scheduled_ntw_list,
 				exe_list, ntw);
 
-		if (ntw->p_type == NTW_PRIORITY_0) {
-			cve_os_log(CVE_LOGLEVEL_DEBUG,
-					"This is a Priority Network\n");
-		} else {
-			cve_os_log(CVE_LOGLEVEL_DEBUG,
-					"This is Not a Priority Network\n");
-		}
-
-	} else if (ntw->exe_status == NTW_EXE_STATUS_RUNNING) {
+	} else if (ntw->ntw_running) {
 		/* Since this Ntw is running, scheduler will be
 		 * automatically invoked once the Ntw is over.
 		 */
@@ -68,7 +55,7 @@ void ice_schedule_network(struct ice_network *ntw)
 		goto exit;
 	}
 
-	ice_scheduler_engine();
+	ice_scheduler_engine(ntw);
 
 #ifdef RING3_VALIDATION
 	cve_os_log(CVE_LOGLEVEL_DEBUG, "Execute ICEs\n");
@@ -79,11 +66,87 @@ exit:
 	return;
 }
 
-static int ice_schedule_list(u8 list_idx)
+static void __reset_scheduler_param(void)
+{
+	struct ice_network *head_ntw, *ntw;
+
+	head_ntw = scheduled_ntw_list;
+	ntw = head_ntw;
+
+	if (!ntw)
+		goto end;
+
+	do {
+		ntw->handled_by_sch = 0;
+
+		ntw = cve_dle_next(ntw, exe_list);
+	} while (head_ntw != ntw);
+
+end:
+	return;
+}
+
+struct ice_infer *ice_sch_get_next_ntw_infer(struct ice_network *ntw)
+{
+	struct ice_infer *inf = NULL;
+	enum ice_execute_infer_priority pr;
+
+	for (pr = EXE_INF_PRIORITY_0; pr < EXE_INF_PRIORITY_MAX; pr++) {
+
+		inf = ntw->inf_exe_list[pr];
+		if (inf)
+			break;
+	}
+
+	return inf;
+}
+
+struct ice_infer *ice_sch_get_next_sch_infer(void)
+{
+	u64 min_exe_order = EXE_ORDER_MAX;
+	struct ice_network *head_ntw, *ntw;
+	struct ice_infer *inf, *next_inf = NULL;
+	enum ice_execute_infer_priority min_pr = EXE_INF_PRIORITY_MAX;
+
+	head_ntw = scheduled_ntw_list;
+	ntw = head_ntw;
+
+	if (!ntw)
+		goto end;
+
+	do {
+		if (ntw->ntw_running || ntw->ntw_aborted || ntw->handled_by_sch)
+			goto skip_ntw;
+
+		inf = ice_sch_get_next_ntw_infer(ntw);
+		if (!inf)
+			goto skip_ntw;
+
+		if (inf->inf_pr < min_pr) {
+
+			min_pr = inf->inf_pr;
+			min_exe_order = inf->inf_exe_order;
+			next_inf = inf;
+		} else if ((inf->inf_pr == min_pr) &&
+			(inf->inf_exe_order < min_exe_order)) {
+
+			min_exe_order = inf->inf_exe_order;
+			next_inf = inf;
+		}
+
+skip_ntw:
+		ntw = cve_dle_next(ntw, exe_list);
+	} while (head_ntw != ntw);
+
+end:
+	return next_inf;
+}
+
+static void ice_schedule_list(struct ice_network *ntw)
 {
 	int retval = CVE_DEFAULT_ERROR_CODE;
-	struct ice_network *ntw;
-	struct ice_infer *inf;
+	bool multi_ntw = true;
+	struct ice_infer *inf = NULL;
 	struct jobgroup_descriptor *cur_jg;
 #ifdef _DEBUG
 	struct cve_device *head, *next;
@@ -91,49 +154,50 @@ static int ice_schedule_list(u8 list_idx)
 	struct ice_debug_event_info_power_on evt_info;
 #endif
 
-	ntw = scheduled_ntw_list[list_idx];
+	if (ntw) {
+		cve_os_log(CVE_LOGLEVEL_DEBUG,
+			"Running specific Ntw. NtwID=0x%lx\n",
+			(uintptr_t)ntw);
 
-	if (!ntw)
+		multi_ntw = false;
+		inf = ice_sch_get_next_ntw_infer(ntw);
+	} else {
+
+		cve_os_log(CVE_LOGLEVEL_DEBUG,
+			"Running generic Scheduler\n");
+
+		__reset_scheduler_param();
+
+		/* Return next valid inference that can be executed */
+		inf = ice_sch_get_next_sch_infer();
+	}
+
+	if (!inf) {
+
+		cve_os_log(CVE_LOGLEVEL_DEBUG,
+			"No Infer for execution\n");
 		goto exit;
+	}
 
 	do {
-		cve_os_log(CVE_LOGLEVEL_DEBUG,
-			"Checking if NtwID:0x%llx can be Scheduled\n",
-			ntw->network_id);
+		ntw = inf->ntw;
+		ntw->handled_by_sch = 1;
 
 		/* NWA is must have */
 		ASSERT(ntw->num_ice > 0);
 
-		/* Ntw remains in Scheduler Queue unless it is Destroyed.
-		 * There can be cases where Ntw is in queue but no Execute Inf
-		 * was requested.
-		 */
-		inf = ntw->inf_exe_list;
-		if (!inf)
+		/* TODO: Segregate into Get and Reserve resource */
+		retval = ice_ds_ntw_resource_reserve(ntw);
+		if (retval < 0)
 			goto skip_ntw;
-
-		/* Managing Ntw state */
-		if (ntw->exe_status == NTW_EXE_STATUS_QUEUED) {
-
-			/* TODO: Segregate into Get and Reserve resource */
-			retval = ice_ds_ntw_resource_reserve(ntw);
-			if (retval < 0)
-				goto skip_ntw;
-
-			ntw->exe_status = NTW_EXE_STATUS_RUNNING;
-		} else {
-
-			/* Do not schedule if Ntw is Aborted */
-			/* Do not schedule if Ntw is already Running */
-			goto skip_ntw;
-		}
 
 		ntw->curr_exe = inf;
-		inf->exe_status = INF_EXE_STATUS_RUNNING;
+		ntw->ntw_running = true;
+		inf->inf_running = true;
 
 		cve_os_log(CVE_LOGLEVEL_INFO,
-			"Scheduling Infer Request. NtwID:0x%llx, InfID:0x%lx\n",
-			ntw->network_id, (uintptr_t)inf);
+			"Scheduling Infer Request. NtwID=0x%llx, InfID=0x%lx, Order=%llu\n",
+			ntw->network_id, (uintptr_t)inf, inf->inf_exe_order);
 
 		/* Strictly 1 Ntw 1 JG */
 		ASSERT(ntw->num_jg == 1);
@@ -155,8 +219,9 @@ static int ice_schedule_list(u8 list_idx)
 		}
 
 		cve_os_log(CVE_LOGLEVEL_DEBUG,
-			"Scheduling Infer Request completed. NtwID:0x%llx, InfID:%lx\n",
+			"Scheduling Infer Request completed. NtwID:0x%llx, InfID:0x%lx\n",
 			ntw->network_id, (uintptr_t)inf);
+
 #ifdef _DEBUG
 		head = ntw->ice_list;
 		next = head;
@@ -177,38 +242,116 @@ static int ice_schedule_list(u8 list_idx)
 					&evt_info);
 #endif
 
-		cve_dle_remove_from_list(ntw->inf_exe_list,
+		cve_dle_remove_from_list(ntw->inf_exe_list[inf->inf_pr],
 			exe_list, inf);
+		inf->inf_queued = false;
 
 skip_ntw:
-		ntw = cve_dle_next(ntw, exe_list);
-	} while (ntw != scheduled_ntw_list[list_idx]);
+		inf = ice_sch_get_next_sch_infer();
 
-	retval = 0;
+	} while (inf && multi_ntw);
+
 exit:
-	return retval;
+	return;
 }
 
 void ice_deschedule_network(struct ice_network *ntw)
 {
-	cve_dle_remove_from_list(scheduled_ntw_list[ntw->p_type],
-		exe_list, ntw);
+	if (ntw->ntw_queued) {
+		cve_dle_remove_from_list(scheduled_ntw_list, exe_list, ntw);
+		ntw->ntw_queued = false;
+	}
 }
 
-void ice_scheduler_engine(void)
+void ice_scheduler_engine(struct ice_network *ntw)
 {
-	/* Priority networks are scheduled first */
-	if (scheduled_ntw_list[NTW_PRIORITY_0]) {
+	if (ntw) {
 		cve_os_log(CVE_LOGLEVEL_DEBUG,
-			"Scheduling Priority Networks\n");
-		ice_schedule_list(0);
+			"Scheduling NtwID=0x%lx\n", (uintptr_t)ntw);
+		ice_schedule_list(ntw);
+		return;
 	}
 
-	/* Now Normal networks will be scheduled */
-	if (scheduled_ntw_list[NTW_PRIORITY_1]) {
+	/* Priority networks are scheduled first */
+	if (scheduled_ntw_list) {
 		cve_os_log(CVE_LOGLEVEL_DEBUG,
-			"Scheduling Normal Networks\n");
-		ice_schedule_list(1);
+			"Scheduling Networks\n");
+		ice_schedule_list(NULL);
 	}
+}
+
+static void __reset_exe_order(u64 offset)
+{
+	struct ice_infer *head_inf, *inf;
+	struct ice_network *head_ntw, *ntw;
+	enum ice_execute_infer_priority pr;
+
+	head_ntw = scheduled_ntw_list;
+	ntw = head_ntw;
+
+	if (!ntw)
+		goto end;
+
+	do {
+		for (pr = EXE_INF_PRIORITY_0; pr < EXE_INF_PRIORITY_MAX; pr++) {
+
+			head_inf = ntw->inf_exe_list[pr];
+			inf = head_inf;
+
+			if (!inf)
+				continue;
+
+			do {
+				inf->inf_exe_order -= offset;
+
+				inf = cve_dle_next(inf, exe_list);
+			} while (head_inf != inf);
+		}
+
+		ntw = cve_dle_next(ntw, exe_list);
+	} while (head_ntw != ntw);
+
+end:
+	return;
+}
+
+static u64 __get_min_order(void)
+{
+	u64 min_exe_order = EXE_ORDER_MAX;
+	struct ice_network *head_ntw, *ntw;
+	struct ice_infer *inf;
+	enum ice_execute_infer_priority pr;
+
+	head_ntw = scheduled_ntw_list;
+	ntw = head_ntw;
+
+	if (!ntw)
+		goto end;
+
+	do {
+		for (pr = EXE_INF_PRIORITY_0; pr < EXE_INF_PRIORITY_MAX; pr++) {
+
+			inf = ntw->inf_exe_list[pr];
+			if (inf && (inf->inf_exe_order < min_exe_order))
+				min_exe_order = inf->inf_exe_order;
+		}
+
+		ntw = cve_dle_next(ntw, exe_list);
+	} while (head_ntw != ntw);
+
+end:
+	return min_exe_order;
+}
+
+void ice_sch_reset_exe_order(void)
+{
+	u64 min_exe_order = EXE_ORDER_MAX;
+	struct cve_device_group *dg = cve_dg_get();
+
+	min_exe_order = __get_min_order();
+
+	__reset_exe_order(min_exe_order);
+
+	dg->dg_exe_order -= min_exe_order;
 }
 

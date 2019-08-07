@@ -21,7 +21,6 @@
 #include <stdint_ext.h>
 #endif
 
-#include <mmio_hub_regs.h>
 #include "os_interface.h"
 #include "project_device_interface.h"
 
@@ -30,19 +29,21 @@
  * the pin is connected in same wire with CVE cores so in case of reset
  * GP #13 register should back to his default value
  */
-#define ICE_MMIO_GP_RESET_REG_ADDR \
-		(CVE_MMIO_HUB_GENERAL_PURPOSE_REGS_MMOFFSET + (4*13))
-#define ICE_MMIO_GP_RESET_REG_TEST_VAL     0xCAFED00D
+#define ICE_MMIO_GP_RESET_REG_ADDR_OFFSET (4 * 13)
 
+#define ICE_MMIO_GP_RESET_REG_TEST_VAL     0xCAFED00D
+#define ICE_INTR_STS_SINGLE_ECC_ERR \
+	MMIO_HUB_MEM_INTERRUPT_STATUS_DSRAM_SINGLE_ERR_INTERRUPT_MASK
 
 /* Update network's shared read error if exists */
 static inline void is_shared_read_error(struct ice_network *ntw,
 					struct cve_device *dev, int bo_id)
 {
-	axi_shared_read_status_t err_reg;
+	AXI_SHARED_READ_STATUS_T err_reg;
 	u32 offset;
 
-	offset = ICEDC_ICEBO_OFFSET(bo_id) + AXI_SHARED_READ_STATUS_OFFSET;
+	offset = ICEDC_ICEBO_OFFSET(bo_id) +
+			cfg_default.axi_shared_read_status_offset;
 	err_reg.val = cve_os_read_idc_mmio(dev, offset);
 
 	if (err_reg.field.error_flag) {
@@ -61,109 +62,109 @@ static inline void is_shared_read_error(struct ice_network *ntw,
 static inline int is_dsram_single_err(u32 status)
 {
 	return ((status &
-		MMIO_HUB_MEM_INTERRUPT_STATUS_DSRAM_SINGLE_ERR_INTERRUPT_MASK)
+		cfg_default.mmio_dsram_single_err_intr_mask)
 			!= 0);
 }
 
 static inline int is_dsram_double_err(u32 status)
 {
 	return ((status &
-		MMIO_HUB_MEM_INTERRUPT_STATUS_DSRAM_DOUBLE_ERR_INTERRUPT_MASK)
+		cfg_default.mmio_dsram_double_err_intr_mask)
 			!= 0);
 }
 
 static inline int is_sram_parity_err(u32 status)
 {
 	return ((status &
-		MMIO_HUB_MEM_INTERRUPT_MASK_SRAM_PARITY_ERR_INTERRUPT_MASK)
+		cfg_default.mmio_sram_parity_err_intr_mask)
 			!= 0);
 }
 
 static inline int is_dsram_unmapped_addr(u32 status)
 {
 	return ((status &
-		MMIO_HUB_MEM_INTERRUPT_MASK_DSRAM_UNMAPPED_ADDR_INTERRUPT_MASK)
+		cfg_default.mmio_dsram_unmapped_addr_intr_mask)
 			!= 0);
 }
 
 static inline int is_dsram_error(u32 status)
 {
 	return ((status &
-		(MMIO_HUB_MEM_INTERRUPT_STATUS_DSRAM_SINGLE_ERR_INTERRUPT_MASK |
-		MMIO_HUB_MEM_INTERRUPT_STATUS_DSRAM_DOUBLE_ERR_INTERRUPT_MASK |
-		MMIO_HUB_MEM_INTERRUPT_MASK_SRAM_PARITY_ERR_INTERRUPT_MASK |
-		MMIO_HUB_MEM_INTERRUPT_MASK_DSRAM_UNMAPPED_ADDR_INTERRUPT_MASK))
+		(cfg_default.mmio_dsram_single_err_intr_mask |
+		cfg_default.mmio_dsram_double_err_intr_mask |
+		cfg_default.mmio_sram_parity_err_intr_mask |
+		cfg_default.mmio_dsram_unmapped_addr_intr_mask))
 			!= 0);
 }
 
 static inline int is_tlc_bp_interrupt(u32 status)
 {
 	return ((status &
-			MMIO_HUB_MEM_INTERRUPT_STATUS_TLC_RESERVED_MASK) != 0);
+			cfg_default.mmio_intr_status_tlc_reserved_mask) != 0);
 }
 
 static inline int is_tlc_panic(u32 status)
 {
 	return ((status &
-			MMIO_HUB_MEM_INTERRUPT_STATUS_TLC_PANIC_MASK)
+			cfg_default.mmio_intr_status_tlc_panic_mask)
 			!= 0);
 }
 
 static inline int is_ice_dump_completed(u32 status)
 {
 	return ((status &
-			MMIO_HUB_MEM_INTERRUPT_STATUS_DUMP_COMPLETED_MASK)
+			cfg_default.mmio_intr_status_dump_completed_mask)
 			!= 0);
 }
 
 static inline u32 unset_ice_dump_status(u32 status)
 {
 	return (status &
-		(~MMIO_HUB_MEM_INTERRUPT_STATUS_DUMP_COMPLETED_MASK));
+		(~cfg_default.mmio_intr_status_dump_completed_mask));
 }
 
 static inline int is_cb_complete(u32 status)
 {
 	return ((status &
-			MMIO_HUB_MEM_INTERRUPT_STATUS_TLC_CB_COMPLETED_MASK)
+			cfg_default.mmio_intr_status_tlc_cb_completed_mask)
 			!= 0);
 }
 
 static inline int is_que_empty(u32 status)
 {
 	return ((status &
-			MMIO_HUB_MEM_INTERRUPT_STATUS_TLC_FIFO_EMPTY_MASK)
+			cfg_default.mmio_intr_status_tlc_fifo_empty_mask)
 			!= 0);
 }
 
 static inline int is_tlc_error(u32 status)
 {
 	return ((status &
-			MMIO_HUB_MEM_INTERRUPT_STATUS_TLC_ERROR_MASK)
+			cfg_default.mmio_intr_status_tlc_err_mask)
 			!= 0);
 }
 
 static inline int is_mmu_error(u32 status)
 {
 	return ((status &
-			MMIO_HUB_MEM_INTERRUPT_STATUS_MMU_ERROR_MASK)
+			cfg_default.mmio_intr_status_mmu_err_mask)
 			!= 0);
 }
 
 static inline int is_page_fault_error(u32 status)
 {
 	return ((status &
-	(MMIO_HUB_MEM_INTERRUPT_STATUS_MMU_PAGE_NO_WRITE_PERMISSION_MASK |
-	MMIO_HUB_MEM_INTERRUPT_STATUS_MMU_PAGE_NO_READ_PERMISSION_MASK |
-	MMIO_HUB_MEM_INTERRUPT_STATUS_MMU_PAGE_NO_EXECUTE_PERMISSION_MASK |
-	MMIO_HUB_MEM_INTERRUPT_STATUS_MMU_PAGE_NONE_PERMISSION_MASK))
+	(cfg_default.mmio_intr_status_mmu_page_no_write_perm_mask |
+	cfg_default.mmio_intr_status_mmu_page_no_read_perm_mask |
+	cfg_default.mmio_intr_status_mmu_page_no_exe_perm_mask |
+	cfg_default.mmio_intr_status_mmu_page_none_perm_mask))
 	!= 0);
 }
 
 static inline int is_bus_error(u32 status)
 {
 	return ((status &
-		MMIO_HUB_MEM_INTERRUPT_STATUS_MMU_SOC_BUS_ERROR_MASK)
+		cfg_default.mmio_intr_status_mmu_soc_bus_err_mask)
 		!= 0);
 }
 
@@ -172,7 +173,7 @@ static inline int is_butress_error(u32 status)
 	/* Is this mask enough? */
 	/* Old value = 0xfe000000, New value = 0x01000000 */
 	return ((status &
-		MMIO_HUB_MEM_INTERRUPT_STATUS_BTRS_CVE_WATCHDOG_INTERRUPT_MASK)
+		cfg_default.mmio_intr_status_btrs_wd_intr_mask)
 			!= 0);
 }
 
@@ -186,6 +187,16 @@ static inline int is_cve_error(u32 status)
 			is_ice_dump_completed(status) ||
 			is_tlc_panic(status)
 	);
+}
+
+static inline u32 is_single_ecc_err(u32 status)
+{
+	return (status & cfg_default.mmio_dsram_single_err_intr_mask);
+}
+
+static inline u32 unset_single_ecc_err(u32 status)
+{
+	return (status & ~cfg_default.mmio_dsram_single_err_intr_mask);
 }
 
 #endif /*_DEVICE_INTERFACE_INTERNAL_COMMON_H_*/

@@ -33,6 +33,7 @@
 #include <linux/slab.h>
 #include <linux/miscdevice.h>
 #include <linux/debugfs.h>
+#include <asm/processor.h>
 #include "os_interface.h"
 #include "os_interface_impl.h"
 #include "device_interface.h"
@@ -49,9 +50,10 @@
 #include "ice_sw_counters.h"
 #include "icedrv_sw_trace.h"
 #include "ice_debug.h"
+#include "project_device_interface.h"
+#include "cve_firmware.h"
 
 #ifdef IDC_ENABLE
-#include "idc_regs_regs.h"
 /* For ssleep() */
 #include <linux/delay.h>
 #endif
@@ -107,12 +109,15 @@ u32 disable_embcb;
 u32 core_mask;
 u32 ice_fw_select;
 u32 block_mmu;
+u32 enable_b_step;
+struct config cfg_default;
 
 static u32 icemask_user;
 static u32 enable_llc_config_via_axi_reg;
 static u32 sph_soc;
 
 static int ice_power_off_delay_ms = 1000;
+static int enable_ice_drv_memleak;
 
 module_param(enable_llc, int, 0);
 MODULE_PARM_DESC(enable_llc, "Enable LLC usage in driver");
@@ -140,6 +145,12 @@ MODULE_PARM_DESC(ice_power_off_delay_ms, "Delay in ms to power off ICEs after WL
 
 module_param(block_mmu, int, 0);
 MODULE_PARM_DESC(block_mmu, "Enables MMU Block/Unblock for each Doorbell");
+
+module_param(enable_ice_drv_memleak, int, 0);
+MODULE_PARM_DESC(enable_ice_drv_memleak, "If set to non-zero value memory leak detection in driver is enabled. Default is 0");
+
+module_param(enable_b_step, int, 0);
+MODULE_PARM_DESC(enable_b_step, "Enable B step flow in driver. Default 0 i.e disabled");
 
 /* UITILITY FUNCTIONS */
 
@@ -289,6 +300,78 @@ void ice_os_update_clos(void *pmclos)
 	cve_os_log(CVE_LOGLEVEL_DEBUG, "IA32_PQR_ASSOC=0x%llx\n",
 		val);
 
+}
+uint64_t get_llc_freq(void)
+{
+	return native_read_msr(LLC_FREQ_MSR);
+}
+
+int set_llc_freq(void *llc_freq_config)
+{
+	u32 lo, hi, msr, freq_min, freq_max, val_low, val_high;
+	u64 val;
+	int retval = 0;
+
+	struct ice_hw_config_llc_freq *freq_config =
+			(struct ice_hw_config_llc_freq *)llc_freq_config;
+
+	msr = LLC_FREQ_MSR;
+	val = native_read_msr(msr);
+	val_high = val >> 32; /* higher 32 bits of msr */
+	val_low = val & 0xFFFFFFFF; /* lower 32 bits of msr */
+
+	/* llc freq msr bit config
+	 * 0-6 -> max_ratio
+	 * 7 ->reserved
+	 * 8-14 -> min_ratio
+	 * 15-63 reserved
+	 */
+
+	hi = val_high;
+
+	if (freq_config->llc_freq_min > 0)
+		freq_min = (freq_config->llc_freq_min /
+				LLC_FREQ_DIVIDER_FACTOR);
+	else
+		freq_min = min_llc_ratio(val_low);
+
+	if (freq_config->llc_freq_max > 0)
+		freq_max = (freq_config->llc_freq_max /
+				LLC_FREQ_DIVIDER_FACTOR);
+	else
+		freq_max = max_llc_ratio(val_low);
+
+	val_low = val_low & LLC_MASK;
+
+	if (freq_min > freq_max) {
+		cve_os_log_default(CVE_LOGLEVEL_ERROR,
+			"Failed to write llc_freq Min:%u MHz Max:%u MHz, Min freq should be less than or equal to Max freq\n ",
+				(freq_min * LLC_FREQ_DIVIDER_FACTOR),
+				(freq_max * LLC_FREQ_DIVIDER_FACTOR));
+		retval = ICEDRV_KERROR_INVAL_LLC_FREQ;
+		return retval;
+	}
+
+	lo = ((freq_min << 8 | freq_max) | val_low);
+	native_write_msr(msr, lo, hi);
+
+	val = native_read_msr(msr);
+	val_low = val & 0xFFFFFFFF;
+
+	if ((val_low & ~LLC_MASK) == (freq_min << 8 | freq_max)) {
+		cve_os_log(CVE_LOGLEVEL_DEBUG,
+			"llc frequency set to Min:%u MHz Max:%u MHz ( msr: 0x%x)\n",
+				(freq_min * LLC_FREQ_DIVIDER_FACTOR),
+				(freq_max * LLC_FREQ_DIVIDER_FACTOR), msr);
+		retval = 0;
+	} else {
+		retval = ICEDRV_KERROR_SET_LLC_HW;
+		cve_os_log_default(CVE_LOGLEVEL_ERROR,
+			"Failed to write llc_freq Min:%u MHz Max:%u MHz, readback value of msr:0x%x is 0x%llx\n ",
+				(freq_min * LLC_FREQ_DIVIDER_FACTOR),
+				(freq_max * LLC_FREQ_DIVIDER_FACTOR), msr, val);
+	}
+	return retval;
 }
 
 /* INTERFACE FUNCTIONS */
@@ -517,14 +600,36 @@ int cve_os_write_user_memory_32(u32 *user_addr, u32 val)
 }
 
 /* memory allocation */
+#ifdef _DEBUG
+struct ice_drv_memleak *g_leak_list;
+u32 mem_leak_count;
+#endif
 
 int __cve_os_malloc_zero(u32 size_bytes, void **out_ptr)
 {
 	void *p = NULL;
+#ifdef _DEBUG
+	struct ice_drv_memleak *leak = kzalloc(sizeof(struct ice_drv_memleak),
+						GFP_KERNEL);
+#endif
 
 	FUNC_ENTER();
 	p = kzalloc(size_bytes, GFP_KERNEL);
 	*out_ptr = p;
+
+#ifdef _DEBUG
+	if (enable_ice_drv_memleak && p) {
+		if (leak) {
+			leak->caller_fn = __builtin_return_address(0);
+			leak->caller_fn2 = __builtin_return_address(1);
+			leak->va = p;
+			leak->size = size_bytes;
+			cve_dle_add_to_list_before(g_leak_list, list, leak);
+		}
+		mem_leak_count++;
+	}
+#endif
+
 	FUNC_LEAVE();
 	return (!p) ? -ENOMEM : 0;
 }
@@ -532,9 +637,29 @@ int __cve_os_malloc_zero(u32 size_bytes, void **out_ptr)
 int __cve_os_free(void *base_address,
 		u32 size_bytes)
 {
+#ifdef _DEBUG
+	struct ice_drv_memleak *leak;
+#endif
+
 	FUNC_ENTER();
+
+#ifdef _DEBUG
+	if (enable_ice_drv_memleak) {
+		leak = cve_dle_lookup(g_leak_list, list, va, base_address);
+		if (leak) {
+			cve_dle_remove_from_list(g_leak_list, list, leak);
+			kfree(leak);
+			mem_leak_count--;
+		} else {
+			cve_os_log(CVE_LOGLEVEL_ERROR,
+			   "##FATAL VA:0x%p not allocated\n", base_address);
+		}
+	}
+#endif
+
 	kfree(base_address);
 	FUNC_LEAVE();
+
 	return 0;
 }
 
@@ -926,7 +1051,7 @@ u32 cve_os_read_icemask_bar0(struct idc_device *idc_dev, bool force_print)
 	u32 *mmio_addr;
 	u32 val, offset_bytes;
 
-	offset_bytes = IDC_REGS_IDC_MMIO_BAR0_MEM_ICEMASKSTS_MMOFFSET;
+	offset_bytes = cfg_default.bar0_mem_icemasksts_offset;
 
 	os_dev = container_of(idc_dev, struct cve_os_device, idc_dev);
 	mmio_addr = os_dev->cached_mmio_base.iobase[0] + offset_bytes;
@@ -1223,6 +1348,21 @@ int cve_probe_common(struct cve_os_device *linux_device, int dev_ind)
 	cve_os_log(CVE_LOGLEVEL_ERROR,
 				"CVE KMD version: %s\n"
 				, KMD_VERSION);
+	if (ice_get_b_step_enable_flag()) {
+		memcpy(&cfg_default, &cfg_b, sizeof(cfg_b));
+		if (ice_fw_select == 1)
+			ice_fw_update_path(RTL_DEBUG_B_STEP_FW_PATH);
+		else
+			ice_fw_update_path(RTL_RELEASE_B_STEP_FW_PATH);
+		cve_os_log(CVE_LOGLEVEL_INFO, "B STEP ENABLED\n");
+	} else {
+		memcpy(&cfg_default, &cfg_a, sizeof(cfg_a));
+		if (ice_fw_select == 1)
+			ice_fw_update_path(RTL_DEBUG_A_STEP_FW_PATH);
+		else
+			ice_fw_update_path(RTL_RELEASE_A_STEP_FW_PATH);
+		cve_os_log(CVE_LOGLEVEL_INFO, "B STEP DISABLED\n");
+	}
 
 	icemask_reg = ice_di_get_icemask(&linux_device->idc_dev);
 	g_icemask = icemask_user | icemask_reg;
@@ -1639,7 +1779,7 @@ static long cve_ioctl_misc(
 					p->contextid,
 					p->networkid,
 					p->inferid,
-					p->reserve_resource);
+					&p->data);
 			break;
 		}
 	case CVE_IOCTL_DESTROY_INFER:
@@ -1648,7 +1788,7 @@ static long cve_ioctl_misc(
 
 			cve_os_log(CVE_LOGLEVEL_DEBUG,
 					"CVE_IOCTL_DESTROY_INFER\n");
-			cve_ds_handle_destroy_infer(context_pid,
+			retval = cve_ds_handle_destroy_infer(context_pid,
 					p->contextid,
 					p->networkid,
 					p->inferid);
@@ -1660,7 +1800,7 @@ static long cve_ioctl_misc(
 
 			cve_os_log(CVE_LOGLEVEL_DEBUG,
 					"CVE_IOCTL_MANAGE_RESOURCE\n");
-			cve_ds_handle_manage_resource(context_pid,
+			retval = cve_ds_handle_manage_resource(context_pid,
 					p->contextid,
 					p->networkid,
 					&p->resource);
@@ -1755,6 +1895,16 @@ static long cve_ioctl_misc(
 			retval = ice_ds_debug_control(p);
 		}
 		break;
+	case ICE_IOCTL_SET_HW_CONFIG:
+		{
+			struct ice_set_hw_config_params *p =
+							&kparam.set_hw_config;
+
+			cve_os_log(CVE_LOGLEVEL_DEBUG,
+					    "ICE_IOCTL_SET_HW_CONFIG\n");
+			retval = ice_set_hw_config(p);
+		}
+		break;
 	default:
 		retval = -ENOENT;
 		goto out;
@@ -1788,6 +1938,21 @@ static int __init cve_init(void)
 
 	FUNC_ENTER();
 
+	cve_os_log(CVE_LOGLEVEL_DEBUG,
+			"CPU Family- %d, Vendor- %d, Model- %d, Stepping- %d\n",
+			boot_cpu_data.x86,
+			boot_cpu_data.x86_vendor,
+			boot_cpu_data.x86_model,
+			boot_cpu_data.x86_stepping);
+
+	param.enable_sph_b_step = false;
+	if (ice_is_soc()) { /* if silicon */
+		if (boot_cpu_data.x86_stepping == 1)
+			param.enable_sph_b_step = true;
+	} else { /* simulation*/
+		if (enable_b_step)
+			param.enable_sph_b_step = true;
+	}
 	/* Configure the driver params*/
 	param.sph_soc = sph_soc;
 	param.enable_llc_config_via_axi_reg = enable_llc_config_via_axi_reg;
@@ -1856,6 +2021,43 @@ cleanup_misc:
 	goto out;
 }
 
+#ifdef _DEBUG
+static void __dump_leak(void)
+{
+	struct ice_drv_memleak *head = g_leak_list;
+	struct ice_drv_memleak *curr = NULL;
+	struct ice_drv_memleak *next = NULL;
+	int is_last = 0;
+
+	if (!enable_ice_drv_memleak)
+		return;
+
+	cve_os_log(CVE_LOGLEVEL_INFO,
+				"LEAKCOUNT:%u\n", mem_leak_count);
+	/* try to destroy all networks within this workqueue */
+	if (head == NULL)
+		return;
+
+	curr = head;
+	do {
+		next = cve_dle_next(curr, list);
+
+		if (next == curr)
+			is_last = 1;
+
+		cve_os_log(CVE_LOGLEVEL_INFO,
+			    "VA:0x%p size:%d Caller:%pS, Caller's caller:%pS\n",
+				curr->va, curr->size, curr->caller_fn,
+				curr->caller_fn2);
+		cve_dle_remove_from_list(g_leak_list, list, curr);
+
+
+		if (!is_last)
+			curr = cve_dle_next(curr, list);
+	} while (!is_last && curr);
+}
+#endif
+
 static void __exit cve_exit(void)
 {
 	FUNC_ENTER();
@@ -1878,7 +2080,9 @@ static void __exit cve_exit(void)
 	misc_deregister(&cve_misc_device);
 
 	ice_swc_fini();
-
+#ifdef _DEBUG
+	__dump_leak();
+#endif
 	FUNC_LEAVE();
 }
 

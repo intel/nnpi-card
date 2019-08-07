@@ -44,7 +44,7 @@ struct allocation_desc {
 	/* file descriptor in case of buffer sharing */
 	u64 fd;
 	/* size */
-	u32 size_bytes;
+	u64 size_bytes;
 	/* direction */
 	enum cve_surface_direction direction;
 	/* dirty flags */
@@ -99,7 +99,7 @@ static int create_new_allocation(
 		struct cve_dma_handle **dma_handle,
 		u32 dma_domain_array_size,
 		union allocation_address alloc_addr,
-		u32 size_bytes,
+		u64 size_bytes,
 		enum cve_surface_direction direction,
 		u32 prot,
 		ice_va_t cve_vaddr,
@@ -578,7 +578,7 @@ int cve_mm_create_buffer(
 			(k_surface->base_address) &
 			(PLAFTORM_CACHELINE_SZ - 1)) {
 		cve_os_log(CVE_LOGLEVEL_ERROR,
-				"Expected alignment to 0x%x, given base_address=%llx size=%x\n",
+				"Expected alignment to 0x%x, given base_address=%llx size=0x%llx\n",
 				PLAFTORM_CACHELINE_SZ,
 				k_surface->base_address,
 				k_surface->size_bytes);
@@ -600,7 +600,7 @@ int cve_mm_create_buffer(
 	if (!k_surface->fd && !k_surface->base_address) {
 		alloc_type = OSMM_INFER_MEMORY;
 		cve_os_log(CVE_LOGLEVEL_DEBUG,
-			"Buffer Infer. Size=%x, Direction=%d, Prot=%d\n",
+			"Buffer Infer. Size=0x%llx, Direction=%d, Prot=%d\n",
 			k_surface->size_bytes,
 			k_surface->direction,
 			prot);
@@ -608,7 +608,7 @@ int cve_mm_create_buffer(
 		alloc_type = OSMM_SHARED_MEMORY;
 		alloc_addr.fd = k_surface->fd;
 		cve_os_log(CVE_LOGLEVEL_DEBUG,
-			"Buffer FD=%llu. Size=%x, Direction=%d, Prot=%d\n",
+			"Buffer FD=%llu. Size=0x%llx, Direction=%d, Prot=%d\n",
 			alloc_addr.fd,
 			k_surface->size_bytes,
 			k_surface->direction,
@@ -619,7 +619,7 @@ int cve_mm_create_buffer(
 		alloc_type = OSMM_USER_MEMORY;
 		alloc_addr.vaddr = (void *)(uintptr_t)k_surface->base_address;
 		cve_os_log(CVE_LOGLEVEL_DEBUG,
-			"Buffer IAVA=0x%lx. Size=0x%x, Direction=%s, Prot=%d\n",
+			"Buffer IAVA=0x%lx. Size=0x%llx, Direction=%s, Prot=%d\n",
 			(uintptr_t)alloc_addr.vaddr,
 			k_surface->size_bytes,
 			get_cve_surface_direction_str(k_surface->direction),
@@ -685,7 +685,7 @@ int cve_mm_map_kva(cve_mm_allocation_t halloc)
 		alloc->is_mapped = true;
 		alloc->vaddr = (void *)base_address;
 		cve_os_log(CVE_LOGLEVEL_DEBUG,
-				"[MAP] Surface VA:%llu FD:%llu SZ:%d\n",
+				"[MAP] Surface VA:%llu FD:%llu SZ:0x%llx\n",
 				(u64)alloc->vaddr, alloc->fd,
 				alloc->size_bytes);
 	}
@@ -705,7 +705,7 @@ int cve_mm_unmap_kva(cve_mm_allocation_t halloc)
 		err = cve_osmm_unmap_kva(alloc->halloc, alloc->vaddr);
 		alloc->is_mapped = false;
 		cve_os_log(CVE_LOGLEVEL_DEBUG,
-				"Unamp Surface VA:%llu FD:%llu SZ:%d\n",
+				"Unamp Surface VA:%llu FD:%llu SZ:0x%llx\n",
 				(u64)alloc->vaddr, alloc->fd,
 				alloc->size_bytes);
 	}
@@ -915,11 +915,11 @@ static void __calc_cntr_va(struct jobgroup_descriptor *jobgroup,
 	if (pp_desc->patch_point_type ==
 				ICE_PP_TYPE_CNTR_SET) {
 		cve_start_address +=
-			IDC_REGS_IDC_MMIO_BAR1_MSG_EVCTICE0_MSGREGADDR;
+			cfg_default.bar1_msg_evctice0_msgregaddr;
 	} else if (pp_desc->patch_point_type ==
 				ICE_PP_TYPE_CNTR_INC) {
 		cve_start_address +=
-			IDC_REGS_IDC_MMIO_BAR1_MSG_EVCTINCICE0_MSGREGADDR;
+			cfg_default.bar1_msg_evctincice0_msgregaddr;
 	}
 
 	if (pp_desc->patch_point_type == ICE_PP_TYPE_CNTR_NOTIFY)

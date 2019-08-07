@@ -33,6 +33,7 @@
 #include "ioctl_genmsg.h"
 #include "sphcs_dma_sched.h"
 
+#define SPH_MAX_GENERIC_SERVICES (32UL + 256UL)
 
 static struct cdev s_cdev;
 static dev_t       s_devnum;
@@ -121,9 +122,9 @@ static struct sphcs_genmsg_service_list {
 	struct ida       ida;
 	struct mutex     lock;
 	const char      *service_name[SPH_MAX_GENERIC_SERVICES];
-	int              service_name_len[SPH_MAX_GENERIC_SERVICES];
+	size_t           service_name_len[SPH_MAX_GENERIC_SERVICES];
 	struct service_data *service_data[SPH_MAX_GENERIC_SERVICES];
-	int              num_services;
+	uint32_t             num_services;
 } *s_service_list = NULL;
 
 struct dma_req_user_data {
@@ -578,7 +579,7 @@ static int init_service_list(void)
 static void release_service_list(void)
 {
 	if (s_service_list) {
-		int i;
+		unsigned int i;
 
 		for (i = 0; i < SPH_MAX_GENERIC_SERVICES; i++) {
 			kfree(s_service_list->service_name[i]);
@@ -590,7 +591,7 @@ static void release_service_list(void)
 	}
 }
 
-static int add_service(const char *service_name, int service_name_len, struct service_data *service)
+static int add_service(const char *service_name, size_t service_name_len, struct service_data *service)
 {
 	int service_id;
 	unsigned int i;
@@ -638,10 +639,10 @@ static void delete_service(int service_id)
 	ida_simple_remove(&s_service_list->ida, service_id);
 }
 
-static struct service_data *find_service(const char *service_name, u32 name_len)
+static struct service_data *find_service(const char *service_name, size_t name_len)
 {
 	struct service_data *ret = NULL;
-	int i;
+	unsigned int i;
 
 	mutex_lock(&s_service_list->lock);
 	for (i = 0; i < SPH_MAX_GENERIC_SERVICES; i++) {
@@ -658,7 +659,7 @@ static struct service_data *find_service(const char *service_name, u32 name_len)
 	return ret;
 }
 
-static int build_service_list_packet(void *buf, int bufsize, u32 *out_service_count)
+static int build_service_list_packet(void *buf, unsigned int bufsize, u32 *out_service_count)
 {
 	int ret = 0;
 
@@ -666,8 +667,8 @@ static int build_service_list_packet(void *buf, int bufsize, u32 *out_service_co
 
 	{
 		char *name_ptr = (char *)buf;
-		int   i, n = 0;
-		int   needed_size = 0;
+		unsigned int   i, n = 0;
+		unsigned int   needed_size = 0;
 
 		/* First, calculate how much space we need in the buffer */
 		for (i = 0; i < SPH_MAX_GENERIC_SERVICES; i++) {

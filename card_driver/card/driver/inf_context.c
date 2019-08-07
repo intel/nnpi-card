@@ -484,7 +484,7 @@ void del_all_active_create_and_inf_requests(struct inf_context *context)
 			if (devnet->edit_status != CREATED) {
 				SPH_SPIN_UNLOCK(&context->lock);
 				found = true;
-				inf_devnet_on_create_failed(devnet);
+				destroy_devnet_on_create_failed(devnet);
 				SPH_SPIN_LOCK(&context->lock);
 				break;
 			}
@@ -560,7 +560,7 @@ void inf_context_add_sync_point(struct inf_context *context,
 
 int inf_context_create_devres(struct inf_context *context,
 			      uint16_t            protocolID,
-			      uint32_t            byte_size,
+			      uint64_t            byte_size,
 			      uint32_t            usage_flags,
 			      struct inf_devres **out_devres)
 {
@@ -601,8 +601,6 @@ int inf_context_create_devres(struct inf_context *context,
 
 	if (unlikely(ret < 0)) {
 		destroy_devres_on_create_failed(devres);
-		// put kref, taken for runtime
-		inf_devres_put(devres);
 		return ret;
 	}
 
@@ -863,7 +861,7 @@ struct inf_subres_load_session *inf_context_create_subres_load_session(struct in
 
 	session = inf_context_get_subres_load_session(context, cmd->sessionID);
 	if (session != NULL) {
-		sph_log_err(CREATE_COMMAND_LOG, "WARNING: session id %d allready exist\n", cmd->sessionID);
+		sph_log_err(CREATE_COMMAND_LOG, "WARNING: session id %hu allready exist\n", cmd->sessionID);
 		return session;
 	}
 	session = create_subres_load_session(context, cmd->sessionID, devres);
@@ -916,23 +914,15 @@ void inf_context_remove_subres_load_session(struct inf_context *context, uint16_
 	SPH_SPIN_UNLOCK(&context->lock);
 }
 
-static inline void release_exec_req(struct kref *kref)
+int inf_exec_req_get(struct inf_exec_req *req)
 {
-	struct inf_exec_req *req = container_of(kref,
-						struct inf_exec_req,
-						in_use);
-
-	if (req->is_copy)
-		inf_copy_req_release(req);
-	else
-		inf_req_release(req);
-}
-
-int inf_exec_req_get(struct inf_exec_req *req) {
 	return kref_get_unless_zero(&req->in_use);
 }
 
 int inf_exec_req_put(struct inf_exec_req *req)
 {
-	return kref_put(&req->in_use, release_exec_req);
+	if (req->is_copy)
+		return kref_put(&req->in_use, inf_copy_req_release);
+	else
+		return kref_put(&req->in_use, inf_req_release);
 }

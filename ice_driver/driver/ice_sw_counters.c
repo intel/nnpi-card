@@ -196,7 +196,22 @@ static const struct sph_sw_counter_info g_swc_device_info[] = {
 	 "Total number of CBs that are executed on this device"},
 	/* ICEDRV_SWC_DEVICE_COUNTER_RUNTIME */
 	{ICEDRV_SWC_DEVICE_GROUP_GEN, "runtimeTotal",
-	 "Total duration of ICE execution"},
+	"Total duration of ICE execution - TLC reported cycles"},
+	/* ICEDRV_SWC_DEVICE_COUNTER_BUSY_TIME */
+	{ICEDRV_SWC_DEVICE_GROUP_GEN, "iceBusyTime",
+	 "Total ICE busy duration in microseconds"},
+	/* ICEDRV_SWC_DEVICE_COUNTER_IDLE_TIME */
+	{ICEDRV_SWC_DEVICE_GROUP_GEN, "iceIdleTime",
+	 "Total ICE idle duration in microseconds"},
+	/* ICEDRV_SWC_DEVICE_COUNTER_BUSY_START_TIME */
+	{ICEDRV_SWC_DEVICE_GROUP_GEN, "iceBusyStartTime",
+	 "Last timestamp when doorbell was sent in microseconds"},
+	/* ICEDRV_SWC_DEVICE_COUNTER_IDLE_START_TIME */
+	{ICEDRV_SWC_DEVICE_GROUP_GEN, "iceIdleStartTime",
+	 "Last timestamp when ICE completed execution in microseconds"},
+	/* ICEDRV_SWC_DEVICE_COUNTER_POWER_STATE*/
+	{ICEDRV_SWC_DEVICE_GROUP_GEN, "icePowerState",
+	 "Power state of ICE"},
 };
 
 static const struct sph_sw_counters_set g_swc_device_set = {

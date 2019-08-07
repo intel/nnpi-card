@@ -55,7 +55,7 @@ struct cve_fw_section_descriptor {
 	/* the address where the working copy starts
 	 * in device virtual address space
 	 */
-	cve_virtual_address_t cve_addr;
+	u32 cve_addr;
 	/* size of section in bytes*/
 	u32 size_bytes;
 	/* permission attributes */

@@ -51,6 +51,7 @@ H2C_OPCODE(CLOCK_SYNC,			15, union ClockSyncMsg)
 H2C_OPCODE(ETH_CONFIG,			16, union h2c_EthernetConfig)
 H2C_OPCODE(HWTRACE_ADD_RESOURCE,	17, union h2c_HwTraceAddResource)
 H2C_OPCODE(HWTRACE_STATE,		18, union h2c_HwTraceState)
+H2C_OPCODE(INF_NETWORK_RESOURCE_RESERVATION, 19, union h2c_InferenceNetworkResourceReservation)
 
 #ifdef ULT
 H2C_OPCODE(ULT_OP,               30, union ult_message)

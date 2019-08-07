@@ -15,7 +15,7 @@ u32 dma_calc_and_gen_lli(struct sg_table *srcSgt,
 		void *lliPtr,
 		uint64_t dst_offset,
 		void *(*set_data_elem)(void *sgl, dma_addr_t src, dma_addr_t dst, uint32_t size),
-		uint32_t *transfer_size)
+		uint64_t *transfer_size)
 {
 	u32 num_of_elements = 0;
 	void *lliBuf = lliPtr;
@@ -68,8 +68,13 @@ u32 dma_calc_and_gen_lli(struct sg_table *srcSgt,
 
 			/* try to join adjucent regions */
 			while (next_srcSgl != NULL &&
+
 			       next_srcSgl->dma_address ==
-			       src_reg.dma_address + src_reg.length) {
+			       src_reg.dma_address + src_reg.length &&
+
+			       (u64)src_reg.length + (u64)next_srcSgl->length
+			       <= (u64)U32_MAX) {
+
 				src_reg.length += next_srcSgl->length;
 				next_srcSgl = sg_next(next_srcSgl);
 			}
@@ -86,8 +91,13 @@ u32 dma_calc_and_gen_lli(struct sg_table *srcSgt,
 
 			/* try to join adjucent regions */
 			while (next_dstSgl != NULL &&
+
 			       next_dstSgl->dma_address ==
-			       dst_reg.dma_address + dst_reg.length) {
+			       dst_reg.dma_address + dst_reg.length &&
+
+			       (u64)dst_reg.length + (u64)next_dstSgl->length
+			       <= (u64)U32_MAX) {
+
 				dst_reg.length += next_dstSgl->length;
 				next_dstSgl = sg_next(next_dstSgl);
 			}

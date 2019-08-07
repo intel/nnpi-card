@@ -24,11 +24,17 @@
 #include "cve_linux_internal.h"
 #include "cve_driver_internal.h"
 
+#define LLC_FREQ_MSR 0x620
+#define LLC_MASK 0xFFFF8080
+#define max_llc_ratio(a) ((a) & 0x7F)
+#define min_llc_ratio(a) (((a) >> 8) & 0x7F)
+
 struct hw_revision_t {
 	u16	major_rev;
 	u16	minor_rev;
 };
 
+extern struct kobject *icedrv_kobj;
 int is_wd_error(u32 status);
 void get_hw_revision(struct cve_device *cve_dev,
 				struct hw_revision_t *hw_rev);
@@ -38,6 +44,10 @@ void store_ecc_err_count(struct cve_device *cve_dev);
 int init_platform_data(struct cve_device *cve_dev);
 void cleanup_platform_data(struct cve_device *cve_dev);
 int project_hook_enable_msi_interrupt(struct cve_os_device *os_dev);
+int icedrv_sysfs_init(void);
+int hw_config_sysfs_init(struct cve_device *ice_dev);
+void hw_config_sysfs_term(struct cve_device *ice_dev);
+void icedrv_sysfs_term(void);
 
 /* Init cve_dump register in the device
  * inputs: os_dev - os device handle;
@@ -75,15 +85,25 @@ void cve_di_set_cve_dump_configuration_register(
 		struct di_cve_dump_buffer ice_dump_buf);
 int cve_sync_sgt_to_llc(struct sg_table *sgt);
 
-void ice_di_disable_clk_squashing_step_a(struct cve_device *dev);
+void ice_di_disable_clk_squashing(struct cve_device *dev);
 
-#ifdef ENABLE_SPH_STEP_B
-#define ice_di_disable_clk_squashing(dev) __no_op_stub
-#else /* ENABLE_SPH_STEP_B */
-#define ice_di_disable_clk_squashing(dev)\
-	ice_di_disable_clk_squashing_step_a(dev)
+int set_ice_freq(void *ice_freq_config);
 
-#endif /* ENABLE_SPH_STEP_B */
+int configure_ice_frequency(struct cve_device *dev);
+
+#define __no_op_return_success 0
+
+#ifdef RING3_VALIDATION
+#define init_icedrv_sysfs() __no_op_return_success
+#define term_icedrv_sysfs() __no_op_stub
+#define init_icedrv_hw_config(dev) __no_op_return_success
+#define term_icedrv_hw_config(dev) __no_op_stub
+#else
+#define init_icedrv_sysfs() icedrv_sysfs_init()
+#define term_icedrv_sysfs() icedrv_sysfs_term()
+#define init_icedrv_hw_config(dev) hw_config_sysfs_init(dev)
+#define term_icedrv_hw_config(dev) hw_config_sysfs_term(dev)
+#endif
 
 int ice_di_get_core_blob_sz(void);
 
@@ -97,13 +117,11 @@ int ice_di_get_core_blob_sz(void);
 #define __rdy_bit_max_trial (8)
 #endif /*ICEDRV_ENABLE_HSLE_FLOW*/
 
-#define __IDC_ICERDY_MASK IDC_REGS_IDC_MMIO_BAR0_MEM_ICERDY_MMOFFSET
-
-#define __wait_for_ice_rdy(dev, value, mask) \
+#define __wait_for_ice_rdy(dev, value, mask, offset) \
 do {\
 	int32_t count = __rdy_bit_max_trial;\
 	while (count) {\
-		value = cve_os_read_idc_mmio(dev, __IDC_ICERDY_MASK); \
+		value = cve_os_read_idc_mmio(dev, offset); \
 		if ((value & mask) == mask)\
 			break;\
 		count--;\

@@ -29,6 +29,7 @@
 #include "cve_fw_structs.h"
 #include "cve_driver_internal_types.h"
 #include "cve_debug.h"
+#include "sph_device_regs.h"
 
 #include <linux/string.h>
 
@@ -39,6 +40,8 @@
 #define MAX_IDC_POOL_NR 6
 #define VALID_ICE_MASK 0xFFF
 #define ICE_KMD_CATEGORY ICE_LOG
+#define ICE_FREQ_SHIFT 24
+#define ICE_FREQ_DEFAULT 800
 
 #ifndef RING3_VALIDATION
 #define SPH_LOGGER 1
@@ -52,6 +55,13 @@ extern u32 core_mask;
 extern int enable_llc;
 extern u32 ice_fw_select;
 extern u32 block_mmu;
+extern u32 enable_b_step;
+
+typedef u32 cve_virtual_address_t;
+typedef u32 pt_entry_t;
+extern struct config cfg_a;
+extern struct config cfg_b;
+extern struct config cfg_default;
 
 #ifdef RING3_VALIDATION
 #define xstr(s) str(s)
@@ -279,6 +289,17 @@ union allocation_address {
 	void *vaddr;
 	u64 fd;
 };
+#ifdef _DEBUG
+
+struct ice_drv_memleak {
+	void *caller_fn;
+	void *caller_fn2;
+	struct cve_dle_t list;
+	void *va;
+	u32 size;
+};
+
+#endif
 
 
 #ifdef ENABLE_MEM_DETECT
@@ -779,6 +800,9 @@ void cve_os_vunmap_dma_handle(void *vaddr);
 uint32_t get_process_pid(void);
 
 void ice_os_update_clos(void *pmclos);
+
+int set_llc_freq(void *llc_freq_config);
+uint64_t get_llc_freq(void);
 
 #endif /* _OS_INTERFACE_H_ */
 

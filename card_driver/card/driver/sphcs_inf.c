@@ -35,7 +35,6 @@ static dev_t       s_devnum;
 static struct class *s_class;
 static struct device *s_dev;
 
-
 struct inf_daemon {
 	struct inf_cmd_queue cmdq;
 	struct list_head alloc_req_list;
@@ -630,7 +629,7 @@ failed_devres:
 		// If create was canceled (devnet->destroyed is 1,
 		// it can be canceled only by the host at this stage),
 		// continue regularly.
-		// The infreq will be destroyed on kref put
+		// The devnet will be destroyed on kref put
 		// and will send destroy cmd to the runtime.
 		if (!devnet->created) {
 			devnet->rt_handle = reply.devnet_rt_handle;
@@ -657,7 +656,7 @@ failed_devres:
 		break;
 
 failed_devnet:
-		inf_devnet_on_create_failed(devnet);
+		destroy_devnet_on_create_failed(devnet);
 
 		break;
 	}
@@ -797,6 +796,55 @@ failed_infreq:
 			handle_daemon_error(&err_ioctl);
 		else if (likely(is_inf_context_ptr(f->private_data)))
 			handle_runtime_error(f->private_data, &err_ioctl);
+		break;
+	}
+	case IOCTL_INF_DEVNET_RESOURCES_RESERVATION_REPLY: {
+		struct inf_devnet_resource_reserve_reply reply;
+		struct inf_devnet *devnet;
+		uint8_t event;
+		enum event_val eventVal = 0;
+
+		ret = copy_from_user(&reply,
+				(void __user *)arg,
+				sizeof(reply));
+		if (unlikely(ret != 0))
+			return -EIO;
+
+		devnet = (struct inf_devnet *) (uintptr_t) reply.devnet_drv_handle;
+		if (unlikely(!is_inf_devnet_ptr(devnet)))
+			return -EINVAL;
+
+		if (unlikely(reply.i_sphcs_err != IOCTL_SPHCS_NO_ERROR)) {
+			switch (reply.i_sphcs_err) {
+			case IOCTL_SPHCS_INSUFFICIENT_RESOURCES: {
+				eventVal = SPH_IPC_DEVNET_RESERVE_INSUFFICIENT_RESOURCES;
+				break;
+			}
+			case IOCTL_SPHCS_TIMED_OUT: {
+				eventVal = SPH_IPC_TIMEOUT_EXCEEDED;
+				break;
+			}
+			default: {
+				eventVal = SPH_IPC_RUNTIME_FAILED;
+			}
+			}
+			if (reply.reserve_resource)
+				event = SPH_IPC_DEVNET_RESOURCES_RESERVATION_FAILED;
+			else
+				event = SPH_IPC_DEVNET_RESOURCES_RELEASE_FAILED;
+
+		} else {
+			if (reply.reserve_resource)
+				event = SPH_IPC_DEVNET_RESOURCES_RESERVATION_SUCCESS;
+			else
+				event = SPH_IPC_DEVNET_RESOURCES_RELEASE_SUCCESS;
+		}
+
+		sphcs_send_event_report(g_the_sphcs, event, eventVal,
+				devnet->context->protocolID, devnet->protocolID);
+
+		// put kref, taken for waiting for runtime response
+		inf_devnet_put(devnet);
 		break;
 	}
 	default:
@@ -1208,7 +1256,7 @@ static int network_op_dma_complete(struct sphcs *sphcs,
 	goto done;
 
 delete_devnet:
-	inf_devnet_on_create_failed(data->devnet);
+	destroy_devnet_on_create_failed(data->devnet);
 send_error:
 	if (data->create)
 		event = SPH_IPC_CREATE_DEVNET_FAILED;
@@ -1350,7 +1398,7 @@ free_page:
 free_dma_data:
 	kfree(dma_data);
 destroy_devnet:
-	inf_devnet_on_create_failed(devnet);
+	destroy_devnet_on_create_failed(devnet);
 	// put kref for DMA
 	inf_devnet_put(devnet);
 send_error:
@@ -1444,7 +1492,7 @@ static void copy_op_work_handler(struct work_struct *work)
 		ret = inf_copy_create(op->cmd.protCopyID,
 					      op->context,
 					      devres,
-					      op->cmd.hostPtr,
+					      SPH_IPC_DMA_PFN_TO_ADDR(op->cmd.hostPtr),
 					      op->cmd.c2h,
 					      &copy);
 		if (unlikely(ret < 0)) {
@@ -1530,7 +1578,7 @@ void IPC_OPCODE_HANDLER(SCHEDULE_COPY)(struct sphcs                 *sphcs,
 		 cmd->protCopyID, copy->card2Host,
 		 cmd->copySize ? cmd->copySize : copy->devres->size));
 
-	ret = inf_copy_sched(copy, cmd->copySize);
+	ret = inf_copy_sched(copy, cmd->copySize, cmd->priority);
 	if (unlikely(ret < 0)) {
 		val = SPH_IPC_NO_MEMORY;
 		goto send_error;
@@ -1739,7 +1787,6 @@ static void inf_req_op_work_handler(struct work_struct *work)
 
 	ret = inf_devnet_create_infreq(devnet,
 				       op->cmd.infreqID,
-				       op->cmd.max_exec_cfg_size,
 				       SPH_IPC_DMA_PFN_TO_ADDR(op->cmd.host_pfn),
 				       op->cmd.host_page_hndl,
 				       op->cmd.size);
@@ -1851,6 +1898,98 @@ send_error:
 				cmd->ctxID,
 				cmd->infreqID,
 				cmd->netID);
+}
+
+struct network_reservation_op_work {
+	struct work_struct work;
+	struct inf_context *context;
+	union h2c_InferenceNetworkResourceReservation cmd;
+};
+
+static void network_reservation_op_work_handler(struct work_struct *work)
+{
+	struct network_reservation_op_work	*op = container_of(work,
+			struct network_reservation_op_work,
+			work);
+	struct inf_devnet *devnet;
+	struct inf_devnet_resource_reserve cmd_args;
+	int ret;
+	enum event_val event;
+
+	if (op->cmd.reserve)
+		event = SPH_IPC_DEVNET_RESOURCES_RESERVATION_FAILED;
+	else
+		event = SPH_IPC_DEVNET_RESOURCES_RELEASE_FAILED;
+
+	devnet = inf_context_find_devnet(op->context, op->cmd.netID);
+	if (unlikely(devnet == NULL)) {
+		sphcs_send_event_report(g_the_sphcs,
+				event,
+				SPH_IPC_NO_SUCH_NET,
+				op->cmd.ctxID,
+				op->cmd.netID);
+	}
+
+	memset(&cmd_args, 0, sizeof(cmd_args));
+	cmd_args.devnet_drv_handle = (uint64_t)devnet;
+	cmd_args.devnet_rt_handle = (uint64_t)devnet->rt_handle;
+	cmd_args.reserve_resource = op->cmd.reserve;
+	if (cmd_args.reserve_resource)
+		cmd_args.timeout = op->cmd.timeout;
+
+	// get kref for RT
+	inf_devnet_get(devnet);
+
+	ret = inf_cmd_queue_add(&devnet->context->cmdq,
+			SPHCS_RUNTIME_CMD_DEVNET_RESOURCES_RESERVATION,
+			&cmd_args,
+			sizeof(cmd_args),
+			NULL, NULL);
+	if (unlikely(ret < 0)) {
+		sphcs_send_event_report(g_the_sphcs,
+				event,
+				SPH_IPC_NO_MEMORY,
+				op->cmd.ctxID,
+				op->cmd.netID);
+		inf_devnet_put(devnet);
+	}
+
+	kfree(op);
+}
+
+void IPC_OPCODE_HANDLER(INF_NETWORK_RESOURCE_RESERVATION)(struct sphcs *sphcs,
+		union h2c_InferenceNetworkResourceReservation *cmd) {
+	struct network_reservation_op_work *work;
+	struct inf_context *context;
+	uint8_t event;
+	enum event_val val;
+
+	if (cmd->reserve)
+		event = SPH_IPC_DEVNET_RESOURCES_RESERVATION_FAILED;
+	else
+		event = SPH_IPC_DEVNET_RESOURCES_RELEASE_FAILED;
+
+	context = find_context(sphcs->inf_data, cmd->ctxID);
+	if (unlikely(context == NULL)) {
+		val = SPH_IPC_NO_SUCH_CONTEXT;
+		goto send_error;
+	}
+
+	work = kzalloc(sizeof(*work), GFP_NOWAIT);
+	if (unlikely(work == NULL)) {
+		val = SPH_IPC_NO_MEMORY;
+		goto send_error;
+	}
+
+	memcpy(work->cmd.value, cmd->value, sizeof(work->cmd.value));
+	work->context = context;
+	INIT_WORK(&work->work, network_reservation_op_work_handler);
+	queue_work(context->wq, &work->work);
+
+	return;
+
+send_error:
+	sphcs_send_event_report(sphcs, event, val, cmd->ctxID, cmd->netID);
 }
 
 static const struct file_operations sphcs_inf_fops = {

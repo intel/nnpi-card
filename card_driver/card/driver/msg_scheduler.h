@@ -14,7 +14,7 @@
 #include <linux/mutex.h>
 #include <linux/debugfs.h>
 
-#define MSG_SCHED_MAX_MSG_SIZE 2
+#define MSG_SCHED_MAX_MSG_SIZE 3
 
 /* [Description]: HW handler called by the scheduler to send a message.
  * [in]: msg: message.

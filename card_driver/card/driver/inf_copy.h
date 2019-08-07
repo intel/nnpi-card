@@ -28,8 +28,6 @@ struct inf_copy {
 	int         lli_size;
 	void       *lli_buf;
 
-	uint32_t    transfer_size;
-
 	struct sph_sw_counters *sw_counters;
 
 	struct hlist_node hash_node;
@@ -45,7 +43,7 @@ struct inf_copy {
 #ifdef _DEBUG
 	// store the size (bytes) of host resource for
 	// size validations during copy execution
-	uint32_t    hostres_size;
+	uint64_t    hostres_size;
 #endif
 };
 
@@ -55,10 +53,12 @@ int inf_copy_create(uint16_t protocolCopyID, struct inf_context *context, struct
 void inf_copy_get(struct inf_copy *copy);
 int inf_copy_put(struct inf_copy *copy);
 
-int inf_copy_sched(struct inf_copy *copy, size_t size);
+int inf_copy_sched(struct inf_copy *copy, size_t size, uint8_t priority);
 bool inf_copy_req_ready(struct inf_exec_req *copy_req);
 int inf_copy_req_execute(struct inf_exec_req *copy_req);
 void inf_copy_req_complete(struct inf_exec_req *copy_req, int err, u32 xferTimeUS);
-void inf_copy_req_release(struct inf_exec_req *copy_req);
+
+/* This function should not be called directly, use inf_exec_req_put instead */
+void inf_copy_req_release(struct kref *kref);
 
 #endif

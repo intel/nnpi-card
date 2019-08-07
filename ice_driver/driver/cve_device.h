@@ -32,6 +32,7 @@
 #define INVALID_CONTEXT_ID 0
 #define INVALID_NETWORK_ID 0
 #define ICE_MAX_PMON_CONFIG 32
+#define EXE_ORDER_MAX 0xFFFFFFFFFFFFFFFF
 
 enum CVE_DEVICE_STATE {
 	CVE_DEVICE_IDLE = 0,
@@ -214,9 +215,11 @@ struct cve_device {
 	/* power state of device */
 	enum ICE_POWER_STATE power_state;
 	/* last network id that ran on this device */
-	cve_network_id_t dev_network_id;
+	cve_network_id_t dev_ntw_id;
 	/* are hw counters enabled */
 	u32 is_hw_counters_enabled;
+	/* ice freq value */
+	u32 frequency;
 	/* copy of DTF registers to maintain during device reset */
 	u32 dtf_regs_data[DTF_REGS_DATA_ARRAY_SIZE];
 	bool dtf_sem_bit_acquired;
@@ -243,7 +246,13 @@ struct cve_device {
 #ifndef RING3_VALIDATION
 	/* DTF sysfs related field */
 	struct kobject *ice_kobj;
+	/* Freq sysfs related field */
+	struct kobject *ice_config_kobj;
 #endif
+	struct timespec idle_start_time;
+	struct timespec busy_start_time;
+	/* Is ICE in free pool */
+	bool in_free_pool;
 };
 
 struct icebo_desc {
@@ -352,6 +361,8 @@ struct cve_device_group {
 	cve_os_lock_t poweroff_dev_list_lock;
 	/* CLOS book keeping */
 	struct clos_manager dg_clos_manager;
+	/* Book keeping for Order of ExecuteInfer call */
+	u64 dg_exe_order;
 };
 
 /* Holds all the relevant IDs required for maintaining a map between
@@ -365,7 +376,9 @@ struct cve_hw_cntr_descriptor {
 	/* Counter ID assigned by graph */
 	u16 graph_cntr_id;
 	/* network ID to which this Counter is attached */
-	u64 network_id;
+	u64 cntr_ntw_id;
+	/* Is Counter in free pool */
+	bool in_free_pool;
 };
 
 enum cve_workqueue_state {
@@ -530,12 +543,6 @@ struct ntw_cntr_info {
 	int8_t cntr_id_map[MAX_HW_COUNTER_NR];
 };
 
-enum ice_network_priority {
-	NTW_PRIORITY_0,
-	NTW_PRIORITY_1,
-	NTW_PRIORITY_MAX
-};
-
 /* hold information about ice dump buffer */
 struct ice_dump_desc {
 	/* if total_dump_buf is not zero then dump_buf points to
@@ -550,20 +557,10 @@ struct ice_dump_desc {
 	struct di_cve_dump_buffer *ice_dump_buf;
 };
 
-enum ntw_exe_status {
-	NTW_EXE_STATUS_IDLE,
-	NTW_EXE_STATUS_QUEUED,
-	NTW_EXE_STATUS_RUNNING,
-	NTW_EXE_STATUS_ABORTED
-};
-
 /* hold information about a network */
 struct ice_network {
 	/* stores a reference to self, should always be first member */
 	u64 network_id;
-
-	/* Type of Network (Normal/Priority/DeepSRAM) */
-	enum ice_network_priority p_type;
 
 	/* links to a network within its wq */
 	struct cve_dle_t list;
@@ -658,11 +655,9 @@ struct ice_network {
 	/* Execution time per ICE */
 	u64 ntw_exec_time[MAX_CVE_DEVICES_NR];
 
-	/* Indicates if the resouce needs to be reserved.
-	 * Provided during ExecuteInfer call.
-	 * DEPRICATED: Used only for Breakpoint
-	 */
-	u32 reserve_resource;
+	/** Set breakpoint */
+	bool ntw_enable_bp;
+
 	/* paired ICE from ICEBO requirement */
 	u8 num_picebo_req;
 	/* single ICE from ICEBO requirement, but the other ICE
@@ -683,8 +678,14 @@ struct ice_network {
 	/* New Variables */
 	struct ice_infer *curr_exe;
 	struct ice_infer *inf_list;
-	struct ice_infer *inf_exe_list;
-	enum ntw_exe_status exe_status;
+	struct ice_infer *inf_exe_list[EXE_INF_PRIORITY_MAX];
+
+	/* In scheduler queue */
+	bool ntw_queued;
+	/* Is running */
+	bool ntw_running;
+	/* Is aborted by user */
+	bool ntw_aborted;
 
 	/* Array of indexes corresponding to inference buffer */
 	u64 *infer_idx_list;
@@ -696,16 +697,12 @@ struct ice_network {
 
 	u64 ntw_icemask;
 	u64 ntw_cntrmask;
-};
 
-enum inf_exe_status {
-	INF_EXE_STATUS_IDLE,
-	/* In Scheduler Queue */
-	INF_EXE_STATUS_QUEUED,
-	/* When ICE is processing */
-	INF_EXE_STATUS_RUNNING,
-	/* Ctrl+C or DestroyInfer*/
-	INF_EXE_STATUS_ABORTED
+	/* Exclusively for scheduler */
+	bool handled_by_sch;
+
+	/* Is Counter patching required? */
+	bool patch_cntr;
 };
 
 struct ice_infer {
@@ -723,8 +720,19 @@ struct ice_infer {
 	u32 num_buf;
 	/* user data*/
 	u64 user_data;
-	/* execution status */
-	enum inf_exe_status exe_status;
+	/* In execution queue */
+	bool inf_queued;
+	/* Is running */
+	bool inf_running;
+	/* Is aborted */
+	bool inf_aborted;
+
+	/******************************************************/
+	/* Valid only when inf_queued=true || inf_running=true*/
+	u64 inf_exe_order;
+	enum ice_execute_infer_priority inf_pr;
+	/******************************************************/
+
 	/* events wait queue - signaled when new event object added */
 	cve_os_wait_que_t events_wait_queue;
 	/* list of available event nodes */

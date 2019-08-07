@@ -220,7 +220,7 @@ enum cve_memory_protection {
 #define round_down_cve_pagesize(v, page_sz) ((v) & ~((u64)page_sz - 1))
 
 #define round_up_cve_pagesize(v, page_sz) \
-	(((v)+page_sz - 1) & ~(page_sz - 1))
+	(((((u64)v)+page_sz - 1)) & ~((u64)(page_sz - 1)))
 
 #define CHECK_ALIGNMENT(x, a)	(((x) & ((u64)(a) - 1)) == 0)
 
@@ -230,7 +230,7 @@ enum cve_memory_protection {
 #define IS_ADDR_ALIGNED(addr) \
 	CHECK_ALIGNMENT((u64)(addr), ICE_DEFAULT_PAGE_SZ)
 
-static inline u32 bytes_to_cve_pages(u32 size_byte, u8 page_shift)
+static inline u32 bytes_to_cve_pages(u64 size_byte, u8 page_shift)
 {
 	return (round_up_cve_pagesize(size_byte, ICE_PAGE_SZ(page_shift))
 			>> page_shift);
@@ -251,7 +251,7 @@ static inline uintptr_t round_up_os_pagesize(uintptr_t v)
 	return ((v + OS_PAGE_SIZE - 1) & ~(OS_PAGE_SIZE - 1));
 }
 
-static inline u32 bytes_to_os_pages(u32 size_byte)
+static inline u32 bytes_to_os_pages(u64 size_byte)
 {
 	return (round_up_os_pagesize(size_byte) >> OS_PAGE_SHIFT);
 }

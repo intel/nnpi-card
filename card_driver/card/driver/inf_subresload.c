@@ -42,6 +42,11 @@ int complete_subresload(struct sphcs *sphcs, void *ctx, const void *user_data, i
 	struct subresload_dma_command_data *dma_req_data =  (struct subresload_dma_command_data *)user_data;
 	union c2h_SubResourceLoadReply msg;
 
+	u32 ctxId = dma_req_data->ctxID;
+	u32 sessionId = dma_req_data->session->sessionID;
+	u8 host_pool_idx = dma_req_data->host_pool_index;
+	u64 dma_addr = dma_req_data->session->lli_addr + dma_req_data->lli_offset;
+
 	if (unlikely(status == SPHCS_DMA_STATUS_FAILED))
 		sph_log_err(EXECUTE_COMMAND_LOG, "subresload dma operation FAILED\n");
 
@@ -55,8 +60,8 @@ int complete_subresload(struct sphcs *sphcs, void *ctx, const void *user_data, i
 
 	sphcs_msg_scheduler_queue_add_msg(g_the_sphcs->public_respq, &msg.value, 1);
 
-	DO_TRACE(trace_inf_net_subres(dma_req_data->ctxID, dma_req_data->session->sessionID, -1, dma_req_data->host_pool_index,
-			0, dma_req_data->session->lli_addr + dma_req_data->lli_offset, SPH_TRACE_OP_STATUS_COMPLETE));
+	DO_TRACE(trace_inf_net_subres(ctxId, sessionId, -1, host_pool_idx,
+			0, dma_addr, SPH_TRACE_OP_STATUS_COMPLETE));
 
 	return 0;
 }
@@ -67,9 +72,9 @@ enum event_val inf_subresload_execute(struct inf_context *context, union h2c_Sub
 	struct sg_table src_sgt;
 	struct sg_table *res_dst_sgt;
 	int res;
-	uint32_t data_size;
+	uint64_t data_size;
 	uint32_t lli_size;
-	uint32_t transfer_size;
+	uint64_t transfer_size;
 	struct subres_lli_space_node *lli_space;
 	struct inf_subres_load_session *session = inf_context_get_subres_load_session(context, cmd->sessionID);
 

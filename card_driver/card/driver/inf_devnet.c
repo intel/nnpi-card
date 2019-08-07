@@ -53,6 +53,7 @@ void inf_devnet_delete_devres(struct inf_devnet *devnet,
 {
 	struct devres_node *n;
 	bool found;
+	int ret;
 
 	SPH_SPIN_LOCK(&devnet->lock);
 	do {
@@ -64,7 +65,8 @@ void inf_devnet_delete_devres(struct inf_devnet *devnet,
 					devnet->first_devres = NULL;
 				SPH_SPIN_UNLOCK(&devnet->lock);
 				found = true;
-				inf_devres_put(n->devres);
+				ret = inf_devres_put(n->devres);
+				SPH_ASSERT(ret == 0);
 				kfree(n);
 				SPH_SPIN_LOCK(&devnet->lock);
 				break;
@@ -134,7 +136,7 @@ int is_inf_devnet_ptr(void *ptr)
 /* This function is called only when creation is failed,
  * to destroy already created part
  */
-void inf_devnet_on_create_failed(struct inf_devnet *devnet)
+void destroy_devnet_on_create_failed(struct inf_devnet *devnet)
 {
 	bool dma_completed, should_destroy;
 
@@ -185,20 +187,21 @@ static void release_devnet(struct kref *kref)
 			sph_log_err(CREATE_COMMAND_LOG, "Failed to send destroy network command to runtime\n");
 	}
 
-	if (likely(devnet->destroyed == 1))
-		sphcs_send_event_report(g_the_sphcs,
-					SPH_IPC_DEVNET_DESTROYED,
-					0,
-					devnet->context->protocolID,
-					devnet->protocolID);
-
 	inf_devnet_delete_devres(devnet, true);
 
 	sph_remove_sw_counters_values_node(devnet->sw_counters);
 
 	SPH_SW_COUNTER_ATOMIC_DEC(devnet->context->sw_counters, CTX_SPHCS_SW_COUNTERS_INFERENCE_NUM_NETWORKS);
 
-	inf_context_put(devnet->context);
+	ret = inf_context_put(devnet->context);
+	SPH_ASSERT(ret == 0);
+
+	if (likely(devnet->destroyed == 1))
+		sphcs_send_event_report(g_the_sphcs,
+					SPH_IPC_DEVNET_DESTROYED,
+					0,
+					devnet->context->protocolID,
+					devnet->protocolID);
 
 	kfree(devnet);
 }
@@ -415,7 +418,6 @@ done:
 
 int inf_devnet_create_infreq(struct inf_devnet *devnet,
 			     uint16_t           protocolID,
-			     uint16_t           max_exec_config_size,
 			     dma_addr_t         host_dma_addr,
 			     page_handle        host_page_hndl,
 			     uint16_t           dma_size)
@@ -426,7 +428,6 @@ int inf_devnet_create_infreq(struct inf_devnet *devnet,
 
 	ret = inf_req_create(protocolID,
 			     devnet,
-			     max_exec_config_size,
 			     &infreq);
 	if (unlikely(ret < 0))
 		return -ENOMEM;

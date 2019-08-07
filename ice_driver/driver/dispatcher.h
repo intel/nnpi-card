@@ -93,7 +93,7 @@ int cve_ds_handle_execute_infer(
 		cve_context_id_t context_id,
 		cve_network_id_t ntw_id,
 		cve_infer_id_t inf_id,
-		__u32 reserve_resource);
+		struct ice_execute_infer_data *data);
 
 int cve_ds_handle_destroy_infer(
 		cve_context_process_id_t context_pid,
@@ -213,5 +213,7 @@ int ice_ds_debug_control(struct ice_debug_control_params *dc);
 int ice_di_get_core_blob_sz(void);
 
 int ice_ds_dispatch_jg(struct jobgroup_descriptor *jobgroup);
+
+int ice_set_hw_config(struct ice_set_hw_config_params *set_hw_config);
 
 #endif /* _DISPATCHER_H_ */

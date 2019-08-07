@@ -85,12 +85,12 @@ TRACE_EVENT(SPH_TRACE_COPY,
 );
 
 TRACE_EVENT(SPH_TRACE_DMA,
-	TP_PROTO(u8 state, u8 isC2H, u32 size, int hw_channel, u32 priority, u64 req),
+	TP_PROTO(u8 state, u8 isC2H, u64 size, int hw_channel, u32 priority, u64 req),
 	TP_ARGS(state, isC2H, size, hw_channel, priority, req),
 	SPH_TP_STRUCT__entry(
 			__field(u8, state)
 			__field(u8, isC2H)
-			__field(u32, size)
+			__field(u64, size)
 			__field(int, hw_channel)
 			__field(u32, priority)
 			__field(u64, req)
@@ -103,7 +103,7 @@ TRACE_EVENT(SPH_TRACE_DMA,
 			__entry->priority = priority;
 			__entry->req = req;
 	),
-	SPH_TP_printk("state=%s isC2H=%d size=%u channel=%d prio=%d req=0x%llx",
+	SPH_TP_printk("state=%s isC2H=%d size=%llu channel=%d prio=%d req=0x%llx",
 		  sph_trace_op_to_str[__entry->state],
 		  __entry->isC2H,
 		  __entry->size,

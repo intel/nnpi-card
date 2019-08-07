@@ -20,8 +20,8 @@ struct sphcs_dma_hw_ops {
 	void (*reset_wr_dma_engine)(void *hw_handle);
 	/* called once on start up*/
 	int (*init_dma_engine)(void *hw_handle);
-	int (*calc_lli_size)(void *hw_handle, struct sg_table *src, struct sg_table *dst, uint64_t dst_offset);
-	int (*gen_lli)(void *hw_handle, struct sg_table *src, struct sg_table *dst, void *outLli, uint64_t dst_offset);
+	u32 (*calc_lli_size)(void *hw_handle, struct sg_table *src, struct sg_table *dst, uint64_t dst_offset);
+	u64 (*gen_lli)(void *hw_handle, struct sg_table *src, struct sg_table *dst, void *outLli, uint64_t dst_offset);
 	int (*edit_lli)(void *hw_handle, void *outLli, uint32_t size);
 	int (*start_xfer_h2c)(void *hw_handle, int channel, u32 priority, dma_addr_t lli_addr);
 	int (*start_xfer_c2h)(void *hw_handle, int channel, u32 priority, dma_addr_t lli_addr);

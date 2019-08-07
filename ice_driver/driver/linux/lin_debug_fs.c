@@ -22,6 +22,8 @@
 #include <linux/stat.h>
 #include "os_interface.h"
 #include "cve_debug.h"
+#include "cve_device_group.h"
+
 /* GLOBAL VARIABLES */
 static struct dentry *dirret;
 static int tens_en;
@@ -60,6 +62,13 @@ void cve_debug_init(void)
 	 * write-able FW sections at module init
 	 */
 	cve_debug[DEBUG_TENS_EN].val = tens_en;
+
+	/* Fixme: Temp WA, disabled WD for B step */
+	if (ice_get_b_step_enable_flag()) {
+		cve_os_log(CVE_LOGLEVEL_WARNING,
+				"WD disabled in B step\n");
+		cve_debug[DEBUG_WD_EN].val = 0;
+	}
 
 	/*debugfs section*/
 

@@ -18,8 +18,10 @@ OUTPUTDIR?=$(ROOTDIR)/release
 VERSION_DIR=$(ROOTDIR)/automation/version
 HW_REPO_DIR?=$(HW)
 -HW_SHORT_NAME?=cve2
-FW_PACK_DIR=$(FW_PKGS_ARTIFACTS)/base_package/rtl/release
-FW_PACK_DIR_BASE=/release_artifacts/fw_pkgs/build_artifact/base_package
+FW_PACK_DIR=$(FW_PKGS_ARTIFACTS)/a_step/base_package/rtl/release
+FW_PACK_DIR_BASE=/release_artifacts/fw_pkgs/build_artifact
+FW_PACK_BASE_PACKAGE_DIR=/a_step/base_package
+
 ifeq ($(platform_target_dir),null_device_ring3)
 	DEVICE_DLL = libnullicedevice.so
 else
@@ -34,6 +36,7 @@ INCLUDES+= \
 	-I $(DRIVER_DIR) \
 	-I $(DRIVER_DIR)/linux \
 	-I $(DRIVER_DIR)/../external/hw_interface/$(HW_SHORT_NAME) \
+	-I $(DRIVER_DIR)/../external/hw_interface/$(HW_SHORT_NAME)/a_step \
 	-I $(VERSION_DIR)
 
 ifdef DEBUG
@@ -83,6 +86,8 @@ ifeq ($(NOCORALCOMPILE),1)
 endif
 
 SRCS+=$(VERSION_DIR)/version.c\
+	$(DRIVER_DIR)/a_step_regs.c\
+	$(DRIVER_DIR)/b_step_regs.c\
 	$(DRIVER_DIR)/dispatcher.c\
 	$(DRIVER_DIR)/iova_allocator.c \
 	$(DRIVER_DIR)/device_interface.c\
@@ -124,14 +129,12 @@ endif
 
 CFLAGS+=-DFW_PACK_DIR="\"$(FW_PACK_DIR)\""
 CFLAGS+=-DFW_PACK_DIR_BASE="\"$(FW_PACK_DIR_BASE)\""
+CFLAGS+=-DFW_PACK_BASE_PACKAGE_DIR="\"$(FW_PACK_BASE_PACKAGE_DIR)\""
 
 # Enable memory detection in KMD
 # Should be removed for performence optimization
 CFLAGS+=-DENABLE_MEM_DETECT
 
-ifeq ($(B_STEP), 1)
-	CFLAGS+=-DENABLE_SPH_STEP_B
-endif
 TARGET=$(OUTPUTDIR)/libcvedriver.so
 
 all: $(TARGET)

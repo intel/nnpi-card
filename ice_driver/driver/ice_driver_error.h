@@ -81,7 +81,7 @@ enum ice_kerror_type {
 	ICEDRV_KERROR_NTW_CNTR_NXIO, /* [1122] */
 	/** Requested ICE is more than available ICE */
 	ICEDRV_KERROR_NTW_ICE_MAX, /* [1123] */
-	/** ICE Power UP sequence failed */
+	/** Expected ICE Power UP but ICE is not yet UP */
 	ICEDRV_KERROR_ICE_DOWN, /* [1124] */
 	/** no free pool available */
 	ICEDRV_KERROR_RR_POOL_BUSY, /* [1125] */
@@ -108,7 +108,11 @@ enum ice_kerror_type {
 	/** Running out of CLOS space */
 	ICEDRV_KERROR_RR_CLOS_BUSY, /* [1136] */
 	/** Cannot allocate resource because other network is in queue */
-	ICEDRV_KERROR_RR_NETWORK_IN_QUEUE /* [1137] */
+	ICEDRV_KERROR_RR_NETWORK_IN_QUEUE, /* [1137] */
+	/** LLC Frequency request has invalid values */
+	ICEDRV_KERROR_INVAL_LLC_FREQ, /* [1138] */
+	/** LLC Frequency set request failure  */
+	ICEDRV_KERROR_SET_LLC_HW /* [1139] */
 };
 
 #endif /* _ICE_DRIVER_ERROR_H_ */

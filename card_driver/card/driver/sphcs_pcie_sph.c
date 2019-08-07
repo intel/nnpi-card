@@ -24,7 +24,6 @@
 #include "sphcs_hw_utils.h"
 #include "sphcs_sw_counters.h"
 #include "sphcs_trace.h"
-#include "hw_wa.h"
 #include "int_stats.h"
 
 /*
@@ -173,6 +172,12 @@ static u32 s_host_status_threaded_mask =
 		   ELBI_IOSF_STATUS_DMA_INT_MASK |
 		   ELBI_IOSF_STATUS_COMMAND_FIFO_NEW_COMMAND_MASK;
 
+static enum {
+	SPH_FLR_MODE_WARM = 0,
+	SPH_FLR_MODE_COLD,
+	SPH_FLR_MODE_IGNORE
+} s_flr_mode;
+
 #ifdef ULT
 struct sph_dma_channel {
 	u64   usTime;
@@ -227,6 +232,36 @@ struct sph_lli_header {
 	uint32_t size;
 };
 
+static ssize_t sph_show_flr_mode(struct device *dev,
+				 struct device_attribute *attr, char *buf)
+{
+	switch (s_flr_mode) {
+	case SPH_FLR_MODE_COLD:
+		return sprintf(buf, "cold\n");
+	case SPH_FLR_MODE_IGNORE:
+		return sprintf(buf, "ignore\n");
+	case SPH_FLR_MODE_WARM:
+	default:
+		return sprintf(buf, "warm\n");
+	}
+}
+
+static ssize_t sph_store_flr_mode(struct device *dev,
+				  struct device_attribute *attr,
+				  const char *buf, size_t count)
+{
+	if (count >= 4 && !strncmp(buf, "warm", 4))
+		s_flr_mode = SPH_FLR_MODE_WARM;
+	else if (count >= 4 && !strncmp(buf, "cold", 4))
+		s_flr_mode = SPH_FLR_MODE_COLD;
+	else if (count >= 6 && !strncmp(buf, "ignore", 6))
+		s_flr_mode = SPH_FLR_MODE_IGNORE;
+
+	return count;
+}
+
+static DEVICE_ATTR(flr_mode, 0644, sph_show_flr_mode, sph_store_flr_mode);
+
 static int sphcs_sph_init_dma_engine(void *hw_handle);
 
 static inline void sph_mmio_write(struct sph_pci_device *sph_pci,
@@ -273,17 +308,12 @@ static void sph_process_commands(struct sph_pci_device *sph_pci)
 		return;
 
 	for (i = 0; i < avail_slots; i++) {
-#ifdef FIFO_RTL_WA
 		read_pointer = (read_pointer + 1) % ELBI_COMMAND_FIFO_DEPTH;
-#endif
 		low = sph_mmio_read(sph_pci,
 				    ELBI_COMMAND_FIFO_LOW(read_pointer));
 		high = sph_mmio_read(sph_pci,
 				     ELBI_COMMAND_FIFO_HIGH(read_pointer));
 		sph_pci->command_buf[i] = (high << 32) | low;
-#ifndef FIFO_RTL_WA
-		read_pointer = (read_pointer + 1) % ELBI_COMMAND_FIFO_DEPTH;
-#endif
 	}
 
 	//
@@ -338,12 +368,29 @@ static void set_bus_master_state(struct sph_pci_device *sph_pci)
 
 static void sph_warm_reset(void)
 {
-	/*
-	 * Here we assume that the following argument was givven
-	 * in the linux command line: "reboot=p,w"
-	 * That ensures that a warm reset will be initiated.
-	 */
-	emergency_restart();
+	if (s_flr_mode == SPH_FLR_MODE_COLD) {
+		/*
+		 * Cold reset - since reboot is configured for warm reset
+		 * we directly issue cold reset to port CF9
+		 */
+		u8 boot_mode;
+		u8 cf9;
+
+		boot_mode = 0xe;  /* 0x6 = WARM, 0xe = COLD */
+		cf9 = inb(0xcf9) & ~boot_mode;
+		outb(cf9|2, 0xcf9); /* Request hard reset */
+		udelay(50);
+		outb(cf9|boot_mode, 0xcf9); /* Actually Do reset */
+		udelay(50);
+	} else if (s_flr_mode != SPH_FLR_MODE_IGNORE) {
+		/*
+		 * Warm reset
+		 * Here we assume that the following argument was givven
+		 * in the linux command line: "reboot=p,w"
+		 * That ensures that a warm reset will be initiated.
+		 */
+		emergency_restart();
+	}
 }
 
 static void handle_dma_interrupt(struct sph_pci_device *sph_pci, u32 dma_read_status, u32 dma_write_status)
@@ -513,7 +560,7 @@ static irqreturn_t interrupt_handler(int irq, void *data)
 	if (sph_pci->host_status &
 	    ELBI_IOSF_STATUS_DMA_INT_MASK) {
 		read_and_clear_dma_status(sph_pci, &dma_read_status, &dma_write_status);
-		atomic64_or((dma_read_status | ((u64)dma_write_status << 32)), &sph_pci->dma_status);
+		atomic64_or((dma_read_status | (((u64)dma_write_status) << 32)), &sph_pci->dma_status);
 	}
 
 	if (sph_pci->host_status &
@@ -854,7 +901,7 @@ static void *dma_set_lli_data_element(void *lliPtr,
 	return (lliPtr + sizeof(struct sph_dma_data_element));
 }
 
-int sphcs_sph_dma_calc_lli_size(void            *hw_handle,
+u32 sphcs_sph_dma_calc_lli_size(void            *hw_handle,
 				struct sg_table *src,
 				struct sg_table *dst,
 				uint64_t         dst_offset)
@@ -862,7 +909,7 @@ int sphcs_sph_dma_calc_lli_size(void            *hw_handle,
 	return (dma_calc_and_gen_lli(src, dst, NULL, dst_offset, NULL, NULL) + 1) * sizeof(struct sph_dma_data_element) + sizeof(struct sph_lli_header);
 }
 
-int sphcs_sph_dma_gen_lli(void            *hw_handle,
+u64 sphcs_sph_dma_gen_lli(void            *hw_handle,
 			  struct sg_table *src,
 			  struct sg_table *dst,
 			  void            *outLli,
@@ -871,7 +918,7 @@ int sphcs_sph_dma_gen_lli(void            *hw_handle,
 	u32 num_of_elements;
 	struct sph_lli_header *lli_header = (struct sph_lli_header *)outLli;
 	struct sph_dma_data_element *data_element = (struct sph_dma_data_element *)(outLli + sizeof(*lli_header));
-	uint32_t transfer_size = 0;
+	uint64_t transfer_size = 0;
 
 	if (hw_handle == NULL || src == NULL || dst == NULL || outLli == NULL)
 		return -1;
@@ -1567,6 +1614,13 @@ static int sph_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 		goto free_interrupts;
 	}
 
+	/* create sysfs attributes */
+	rc = device_create_file(sph_pci->dev, &dev_attr_flr_mode);
+	if (rc) {
+		sph_log_err(START_UP_LOG, "Failed to create attr rc=%d", rc);
+		goto free_interrupts;
+	}
+
 	/* update bus master state - enable DMA if bus master is set */
 	set_bus_master_state(sph_pci);
 
@@ -1616,6 +1670,8 @@ static void sph_remove(struct pci_dev *pdev)
 	sph_pci = pci_get_drvdata(pdev);
 	if (!sph_pci)
 		return;
+
+	device_remove_file(sph_pci->dev, &dev_attr_flr_mode);
 
 #ifdef ULT
 	debugfs_remove_recursive(s_debugfs_dir);

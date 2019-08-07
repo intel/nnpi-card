@@ -99,11 +99,8 @@ struct inf_exec_req {
 	size_t            size;
 
 	/* following fields are used only by infer exec req */
-	void             *config;
-	uint32_t          short_config_data;
-	dma_addr_t        host_dma_addr;
-	u8                host_page_hndl;
-	u8                dma_state;
+	struct inf_sched_params   sched_params;
+	bool              sched_params_is_null;
 };
 
 int inf_context_create(uint16_t             protocolID,
@@ -137,7 +134,7 @@ void inf_context_add_sync_point(struct inf_context *context,
 
 int inf_context_create_devres(struct inf_context *context,
 			      uint16_t            protocolID,
-			      uint32_t            byte_size,
+			      uint64_t            byte_size,
 			      uint32_t            usage_flags,
 			      struct inf_devres **out_devres);
 

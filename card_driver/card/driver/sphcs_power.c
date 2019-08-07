@@ -51,7 +51,7 @@ static uint64_t compute_readable_time_window(uint64_t value)
 
 	x = (value & 0x60) >> 5;
 	y = value & 0x1f;
-	value = (1 << y) * (4 + x) * s_time_units / 4;
+	value = (1ULL << y) * (4 + x) * s_time_units / 4;
 
 	sph_log_info(MAINTENANCE_LOG, "%s: %llu:\n", __func__, value);
 

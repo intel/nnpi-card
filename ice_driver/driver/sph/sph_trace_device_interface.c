@@ -26,17 +26,91 @@
 #include "cve_driver_internal.h"
 #include "ice_trace.h"
 
-#include "mmio_semaphore_regs.h"
 #include "idc_device.h"
 #include "cve_device_group.h"
 
-#include "ice_mmu_inner_regs.h"
 #include "sph_trace_hw_regs.h"
+#include "project_device_interface.h"
 
 #ifdef RING3_VALIDATION
 #include "coral.h"
 #endif
 
+#define RESET 0
+/*TODO: reg offset should come from hw header files? */
+#define MAX_PMON_DAEMON 19
+
+#ifndef RING3_VALIDATION
+static u32 __get_pmon_config_regoffset(u32 index)
+{
+	u32 pmon_config_regoffset_array[MAX_PMON_DAEMON] = {
+	RESET,
+	(cfg_default.mmu_base + cfg_default.mmu_atu_misses_offset),
+	(cfg_default.mmu_base + cfg_default.mmu_atu_misses_offset + 4),
+	(cfg_default.mmu_base + cfg_default.mmu_atu_misses_offset + 8),
+	(cfg_default.mmu_base + cfg_default.mmu_atu_misses_offset + 12),
+	(cfg_default.mmu_base + cfg_default.mmu_atu_transactions_offset),
+	(cfg_default.mmu_base + cfg_default.mmu_atu_transactions_offset + 4),
+	(cfg_default.mmu_base + cfg_default.mmu_atu_transactions_offset + 8),
+	(cfg_default.mmu_base + cfg_default.mmu_atu_transactions_offset + 12),
+	(cfg_default.mmu_base + cfg_default.mmu_read_issued_offset),
+	(cfg_default.mmu_base + cfg_default.mmu_write_issued_offset),
+	(cfg_default.cbbid_gecoe_offset +
+			cfg_default.ice_gecoe_dec_partial_access_count_offset),
+	(cfg_default.cbbid_gecoe_offset +
+			cfg_default.ice_gecoe_enc_partial_access_count_offset),
+	(cfg_default.cbbid_gecoe_offset +
+			cfg_default.ice_gecoe_dec_meta_miss_count_offset),
+	(cfg_default.cbbid_gecoe_offset +
+			cfg_default.ice_gecoe_enc_uncom_mode_count_offset),
+	(cfg_default.cbbid_gecoe_offset +
+			cfg_default.ice_gecoe_enc_null_mode_count_offset),
+	(cfg_default.cbbid_gecoe_offset +
+			cfg_default.ice_gecoe_enc_sm_mode_count_offset),
+	(cfg_default.ice_delphi_base +
+			cfg_default.ice_delphi_dbg_perf_cnt_1_reg_offset),
+	(cfg_default.ice_delphi_base +
+			cfg_default.ice_delphi_dbg_perf_cnt_2_reg_offset)
+	};
+
+	return pmon_config_regoffset_array[index];
+}
+#endif
+
+static u16 __get_dso_regoffset(u16 index)
+{
+	u16 dso_reg_offsets[MAX_DSO_CONFIG_REG] = {
+	cfg_default.ice_dso_dtf_encoder_config_reg_offset/*0x0004*/,
+	/* DSO_DTF_ENCODER_CONFIG_REG */
+	cfg_default.ice_dso_cfg_dtf_src_cfg_reg_offset/*0x0014*/,
+	/* DSO_CFG_DTF_SRC_CONFIG_REG */
+	cfg_default.ice_dso_cfg_ptype_filter_ch0_reg_offset/*0x0018*/,
+	/* DSO_CFG_PTYPE_FILTER_CH0_REG */
+	cfg_default.ice_dso_filter_match_low_ch0_reg_offset/*0x001c*/,
+	/* DSO_FILTER_MATCH_LOW_CH0_REG */
+	cfg_default.ice_dso_filter_match_high_ch0_reg_offset/*0x0020*/,
+	/* DSO_FILTER_MATCH_HIGH_CH0_REG */
+	cfg_default.ice_dso_filter_mask_low_ch0_reg_offset/*0x0024*/,
+	/* DSO_FILTER_MASK_LOW_CH0_REG */
+	cfg_default.ice_dso_filter_mask_high_ch0_reg_offset/*0x0028*/,
+	/* DSO_FILTER_MASK_HIGH_CH0_REG */
+	cfg_default.ice_dso_filter_inv_ch0_reg_offset/*0x002c*/,
+	/* DSO_FILTER_INV_CH0_REG */
+	cfg_default.ice_dso_cfg_ptype_filter_ch1_reg_offset/*0x0030*/,
+	/* DSO_CFG_PTYPE_FILTER_CH1_REG */
+	cfg_default.ice_dso_filter_match_low_ch1_reg_offset/*0x0034*/,
+	/* DSO_FILTER_MATCH_LOW_CH1_REG */
+	cfg_default.ice_dso_filter_match_high_ch1_reg_offset/*0x0038*/,
+	/* DSO_FILTER_MATCH_HIGH_CH1_REG */
+	cfg_default.ice_dso_filter_mask_low_ch1_reg_offset/*0x003c*/,
+	/* DSO_FILTER_MASK_LOW_CH1_REG */
+	cfg_default.ice_dso_filter_mask_high_ch1_reg_offset/*0x0040*/,
+	/* DSO_FILTER_MASK_HIGH_CH1_REG */
+	cfg_default.ice_dso_filter_inv_ch1_reg_offset/*0x0044*/,
+	/* DSO_FILTER_INV_CH1_REG */
+			};
+	return dso_reg_offsets[index];
+}
 
 #ifndef RING3_VALIDATION
 struct regbar_int_descriptor {
@@ -135,53 +209,6 @@ struct pmoninfo_details {
 	.name = __stringify(_pmon_name), \
 	.desc = _desc, \
 }
-static struct pmoninfo_details pmon_arr[] = {
-	__PMONINFO(0, MMU_ATU0_MISSES,
-		ICE_PMON_MMU_ATU0_MISSES, MMU, "ATU0 Misses"),
-	__PMONINFO(1, MMU_ATU1_MISSES,
-		ICE_PMON_MMU_ATU1_MISSES, MMU, "ATU1 Misses"),
-	__PMONINFO(2, MMU_ATU2_MISSES,
-		ICE_PMON_MMU_ATU2_MISSES, MMU, "ATU2 Misses"),
-	__PMONINFO(3, MMU_ATU3_MISSES,
-		ICE_PMON_MMU_ATU3_MISSES, MMU, "ATU3 Misses"),
-	__PMONINFO(4, ATU0_TRANSACTIONS,
-		ICE_PMON_MMU_ATU0_TRANSACTIONS, MMU, "ATU0 transactions"),
-	__PMONINFO(5, ATU1_TRANSACTIONS,
-		ICE_PMON_MMU_ATU1_TRANSACTIONS, MMU, "ATU1 transactions"),
-	__PMONINFO(6, ATU2_TRANSACTIONS,
-		ICE_PMON_MMU_ATU2_TRANSACTIONS, MMU, "ATU2 transactions"),
-	__PMONINFO(7, ATU3_TRANSACTIONS,
-		ICE_PMON_MMU_ATU3_TRANSACTIONS, MMU, "ATU3 transactions"),
-	__PMONINFO(8, READ_ISSUED,
-		ICE_PMON_MMU_READ_ISSUED, MMU, "Read issued"),
-	__PMONINFO(9, WRITE_ISSUED,
-		ICE_PMON_WRITE_READ_ISSUED, MMU, "Write issued"),
-	__PMONINFO(10, GECOE_DEC_PARTIAL_ACCESS_COUNT,
-		ICE_PMON_DEC_PARTIAL_ACCESS_COUNT, GECOE,
-						"Decoder Partial access"),
-	__PMONINFO(11, GECOE_ENC_PARTIAL_ACCESS_COUNT,
-		ICE_PMON_ENC_PARTIAL_ACCESS_COUNT, GECOE,
-						"Encoder Partial access"),
-	__PMONINFO(12, GECOE_DEC_META_MISS_COUNT,
-		ICE_PMON_DEC_META_MISS_COUNT, GECOE,
-						"Decoder Meta Miss"),
-	__PMONINFO(13, GECOE_ENC_UNCOM_MODE_COUNT,
-			ICE_PMON_ENC_UNCOM_MODE_COUNT, GECOE,
-						"Encoder Uncompressed Mode"),
-	__PMONINFO(14, GECOE_ENC_NULL_MODE_COUNT,
-			ICE_PMON_ENC_NULL_MODE_COUNT, GECOE,
-							"Encoder Null Mode"),
-	__PMONINFO(15, GECOE_ENC_SM_MODE_COUNT,
-			ICE_PMON_ENC_SM_MODE_COUNT, GECOE,
-						"Encoder Significance Map"),
-	__PMONINFO(16, DELPHI_PERF_CNT_1_REG,
-			ICE_PMON_DELPHI_DBG_PERF_CNT_1_REG, DELPHI,
-						"Per Layer Cycle Counter"),
-	__PMONINFO(17, DELPHI_PERF_CNT_2_REG,
-			ICE_PMON_DELPHI_DBG_PERF_CNT_2_REG, DELPHI,
-						"Total Cycle Counter")
-};
-
 
 static ssize_t show_pmoninfo(struct kobject *kobj,
 				struct kobj_attribute *attr,
@@ -211,7 +238,7 @@ static struct attribute_group pmon_attr_group = {
 		.attrs = pmon_attrs,
 };
 
-static struct kobject *icedrv_kobj;
+struct kobject *icedrv_kobj;
 static struct kobject *hwtrace_kobj;
 static int ice_trace_set_ice_observer_sysfs(u8 dso_reg_index, u32 dso_reg_val,
 							u32 dev_index);
@@ -333,9 +360,9 @@ static int regbar_port_croffset_sanity(struct cve_device *ice_dev,
 
 	/*verifying if the CR offset is within range of dso_offset*/
 	tmpCroffset = (uint16_t)(crOffset & (uint16_t)(0xFFFF));
-	for (i = 0; i < sizeof(dso_reg_offsets); i++) {
-		if (tmpCroffset == dso_reg_offsets[i]
-			|| (tmpCroffset == (uint64_t)(dso_reg_offsets[i] |
+	for (i = 0; i < MAX_DSO_CONFIG_REG; i++) {
+		if (tmpCroffset == __get_dso_regoffset(i)
+			|| (tmpCroffset == (uint64_t)(__get_dso_regoffset(i) |
 							(uint64_t) 0x4000))) {
 			found = true;
 			break;
@@ -417,7 +444,7 @@ int ice_trace_set_ice_observers(struct ice_observer_config *dso_config,
 	}
 	pe_mask = (1 << ice_dev->dev_index) << 4;
 	value = cve_os_read_idc_mmio(ice_dev,
-				IDC_REGS_IDC_MMIO_BAR0_MEM_ICEPE_MMOFFSET);
+				cfg_default.bar0_mem_icepe_offset);
 
 	/* If Device is ON */
 	if ((value & pe_mask) != pe_mask) {
@@ -491,7 +518,7 @@ ICE_MAX_PMON_CONFIG) {
 
 		pe_mask = (1 << ice_dev->dev_index) << 4;
 		value = cve_os_read_idc_mmio(ice_dev,
-				IDC_REGS_IDC_MMIO_BAR0_MEM_ICEPE_MMOFFSET);
+				cfg_default.bar0_mem_icepe_offset);
 
 		/* If Device is ON */
 		if ((value & pe_mask) != pe_mask) {
@@ -562,7 +589,7 @@ int ice_trace_set_reg_reader_daemon(struct ice_register_reader_daemon *daemon,
 set_daemon:
 	pe_mask = (1 << ice_dev->dev_index) << 4;
 	value = cve_os_read_idc_mmio(ice_dev,
-				IDC_REGS_IDC_MMIO_BAR0_MEM_ICEPE_MMOFFSET);
+				cfg_default.bar0_mem_icepe_offset);
 
 	/* If Device is ON */
 	if ((value & pe_mask) != pe_mask) {
@@ -621,8 +648,8 @@ int ice_trace_write_dso_regs(struct cve_device *ice_dev)
 		dso_reg_addr = (port << 16 | croffset) & 0xffffff;
 
 		/* for DSO_CFG_DTF_SRC_CONFIG_REG shouldn't write to 30,31 bit*/
-		if (croffset == dso_reg_offsets[1]
-			|| croffset == (uint16_t)(dso_reg_offsets[1] |
+		if (croffset == __get_dso_regoffset(1)
+			|| croffset == (uint16_t)(__get_dso_regoffset(1) |
 							(uint16_t) 0x4000)) {
 			ice_dev->dso.reg_vals[i] =
 				(ice_dev->dso.reg_vals[i] & 0x3fffffff);
@@ -639,8 +666,8 @@ int ice_trace_write_dso_regs(struct cve_device *ice_dev)
 		/* for DSO_CFG_DTF_SRC_CONFIG_REG ignore
 		 *30,31 bits value while reading
 		 */
-		if (croffset == dso_reg_offsets[1]
-			|| croffset == (uint16_t)(dso_reg_offsets[1] |
+		if (croffset == __get_dso_regoffset(1)
+			|| croffset == (uint16_t)(__get_dso_regoffset(1) |
 							(uint16_t) 0x4000)) {
 			value = value & 0x3fffffff;
 		}
@@ -665,8 +692,8 @@ int ice_trace_write_dso_regs(struct cve_device *ice_dev)
 		/* for DSO_CFG_DTF_SRC_CONFIG_REG ignore
 		 *30,31 bits value while reading
 		 */
-		if (croffset == dso_reg_offsets[1]
-			|| croffset == (uint16_t) (dso_reg_offsets[1] |
+		if (croffset == __get_dso_regoffset(1)
+			|| croffset == (uint16_t) (__get_dso_regoffset(1) |
 							(uint16_t) 0x4000)) {
 			value = value & 0x3fffffff;
 		}
@@ -705,14 +732,14 @@ int  ice_trace_configure_registers_reader_demon(struct cve_device *ice_dev)
 	cve_os_dev_log(CVE_LOGLEVEL_DEBUG, ice_dev->dev_index,
 				"daemon control = 0x%x\n",
 				ice_dev->daemon.conf.daemon_control);
-	reg_offset = CVE_SEMAPHORE_BASE +
-			CVE_SEMAPHORE_MMIO_CVE_REGISTER_DEMON_CONTROL_MMOFFSET;
+	reg_offset = cfg_default.ice_sem_base +
+			cfg_default.ice_sem_mmio_demon_control_offset;
 	cve_os_write_mmio_32(ice_dev,
 				reg_offset,
 				ice_dev->daemon.conf.daemon_control);
 
-	reg_offset_table = CVE_SEMAPHORE_BASE +
-			CVE_SEMAPHORE_MMIO_CVE_REGISTER_DEMON_TABLE_MMOFFSET;
+	reg_offset_table = cfg_default.ice_sem_base +
+			cfg_default.ice_sem_mmio_demon_table_offset;
 	for (i = 0; i < ice_dev->daemon.conf.daemon_table_len; i++) {
 		cve_os_dev_log(CVE_LOGLEVEL_DEBUG, ice_dev->dev_index,
 					"daemon table[%d] = 0x%x\n", i,
@@ -726,8 +753,8 @@ int  ice_trace_configure_registers_reader_demon(struct cve_device *ice_dev)
 					"daemon enable = 0x%x\n",
 					ice_dev->daemon.conf.daemon_enable);
 
-	reg_offset = CVE_SEMAPHORE_BASE +
-			CVE_SEMAPHORE_MMIO_CVE_REGISTER_DEMON_ENABLE_MMOFFSET;
+	reg_offset = cfg_default.ice_sem_base +
+			cfg_default.ice_sem_mmio_demon_enable_offset;
 	cve_os_write_mmio_32(ice_dev,
 				reg_offset,
 				ice_dev->daemon.conf.daemon_enable);
@@ -827,7 +854,7 @@ bool  ice_trace_hw_debug_check(struct cve_device *ice_dev)
 
 	FUNC_ENTER();
 	value = cve_os_read_idc_mmio(ice_dev,
-			IDC_REGS_IDC_MMIO_BAR0_MEM_IDCSPARE_MMOFFSET);
+			cfg_default.bar0_mem_idcspare_offset);
 	if (value & 0x1) {
 		cve_os_dev_log(CVE_LOGLEVEL_INFO, ice_dev->dev_index,
 		      "ICE DBG Indication is ON\n");
@@ -925,10 +952,10 @@ int ice_trace_init_bios_sr_page(struct cve_device *ice_dev)
 		/*reg_offset[15:14] = b'01 for ICE1*/
 		if (ice_dev->dev_index % 2)
 			ice_dev->dso.reg_offsets[i].croffset =
-					0x4000 | dso_reg_offsets[i];
+					0x4000 | __get_dso_regoffset(i);
 		else
 			ice_dev->dso.reg_offsets[i].croffset =
-						dso_reg_offsets[i];
+						__get_dso_regoffset(i);
 	}
 out:
 	FUNC_LEAVE();
@@ -1116,6 +1143,73 @@ static ssize_t show_pmoninfo(struct kobject *kobj,
 	int ret = 0;
 	u32 i;
 	u32 size;
+	struct pmoninfo_details pmon_arr[] = {
+	__PMONINFO(0, (cfg_default.mmu_base +
+		cfg_default.mmu_atu_misses_offset),
+		ICE_PMON_MMU_ATU0_MISSES, MMU, "ATU0 Misses"),
+	__PMONINFO(1, (cfg_default.mmu_base +
+		cfg_default.mmu_atu_misses_offset + 4),
+		ICE_PMON_MMU_ATU1_MISSES, MMU, "ATU1 Misses"),
+	__PMONINFO(2, (cfg_default.mmu_base +
+		cfg_default.mmu_atu_misses_offset + 8),
+		ICE_PMON_MMU_ATU2_MISSES, MMU, "ATU2 Misses"),
+	__PMONINFO(3, (cfg_default.mmu_base +
+		cfg_default.mmu_atu_misses_offset + 12),
+		ICE_PMON_MMU_ATU3_MISSES, MMU, "ATU3 Misses"),
+	__PMONINFO(4, (cfg_default.mmu_base +
+		cfg_default.mmu_atu_transactions_offset),
+		ICE_PMON_MMU_ATU0_TRANSACTIONS, MMU, "ATU0 transactions"),
+	__PMONINFO(5, (cfg_default.mmu_base +
+		cfg_default.mmu_atu_transactions_offset + 4),
+		ICE_PMON_MMU_ATU1_TRANSACTIONS, MMU, "ATU1 transactions"),
+	__PMONINFO(6, (cfg_default.mmu_base +
+		cfg_default.mmu_atu_transactions_offset + 8),
+		ICE_PMON_MMU_ATU2_TRANSACTIONS, MMU, "ATU2 transactions"),
+	__PMONINFO(7, (cfg_default.mmu_base +
+		cfg_default.mmu_atu_transactions_offset + 12),
+		ICE_PMON_MMU_ATU3_TRANSACTIONS, MMU, "ATU3 transactions"),
+	__PMONINFO(8, (cfg_default.mmu_base +
+		cfg_default.mmu_read_issued_offset),
+		ICE_PMON_MMU_READ_ISSUED, MMU, "Read issued"),
+	__PMONINFO(9, (cfg_default.mmu_base +
+		cfg_default.mmu_write_issued_offset),
+		ICE_PMON_WRITE_READ_ISSUED, MMU, "Write issued"),
+	__PMONINFO(10, (cfg_default.cbbid_gecoe_offset +
+			cfg_default.ice_gecoe_dec_partial_access_count_offset),
+		ICE_PMON_DEC_PARTIAL_ACCESS_COUNT, GECOE,
+						"Decoder Partial access"),
+	__PMONINFO(11, (cfg_default.cbbid_gecoe_offset +
+			cfg_default.ice_gecoe_enc_partial_access_count_offset),
+		ICE_PMON_ENC_PARTIAL_ACCESS_COUNT, GECOE,
+						"Encoder Partial access"),
+	__PMONINFO(12, (cfg_default.cbbid_gecoe_offset +
+			cfg_default.ice_gecoe_dec_meta_miss_count_offset),
+		ICE_PMON_DEC_META_MISS_COUNT, GECOE,
+						"Decoder Meta Miss"),
+	__PMONINFO(13, (cfg_default.cbbid_gecoe_offset +
+			cfg_default.ice_gecoe_enc_uncom_mode_count_offset),
+			ICE_PMON_ENC_UNCOM_MODE_COUNT, GECOE,
+						"Encoder Uncompressed Mode"),
+	__PMONINFO(14, (cfg_default.cbbid_gecoe_offset +
+			cfg_default.ice_gecoe_enc_null_mode_count_offset),
+			ICE_PMON_ENC_NULL_MODE_COUNT, GECOE,
+							"Encoder Null Mode"),
+	__PMONINFO(15, (cfg_default.cbbid_gecoe_offset +
+			cfg_default.ice_gecoe_enc_sm_mode_count_offset),
+			ICE_PMON_ENC_SM_MODE_COUNT, GECOE,
+						"Encoder Significance Map"),
+	__PMONINFO(16, (cfg_default.ice_delphi_base +
+			cfg_default.ice_delphi_dbg_perf_cnt_1_reg_offset),
+			ICE_PMON_DELPHI_DBG_PERF_CNT_1_REG, DELPHI,
+						"Per Layer Cycle Counter"),
+	__PMONINFO(17, (cfg_default.ice_delphi_base +
+			cfg_default.ice_delphi_dbg_perf_cnt_2_reg_offset),
+			ICE_PMON_DELPHI_DBG_PERF_CNT_2_REG, DELPHI,
+						"Total Cycle Counter")
+};
+
+
+
 
 	size = sizeof(pmon_arr) / sizeof(struct pmoninfo_details);
 
@@ -1237,7 +1331,7 @@ static int  ice_trace_configure_pmonregs_sysfs(u32 dev_index)
 	}
 	pe_mask = (1 << ice_dev->dev_index) << 4;
 	value = cve_os_read_idc_mmio(ice_dev,
-				IDC_REGS_IDC_MMIO_BAR0_MEM_ICEPE_MMOFFSET);
+				cfg_default.bar0_mem_icepe_offset);
 
 	/* If Device is ON */
 	if ((value & pe_mask) != pe_mask) {
@@ -1256,14 +1350,14 @@ static int  ice_trace_configure_pmonregs_sysfs(u32 dev_index)
 	cve_os_dev_log(CVE_LOGLEVEL_DEBUG, ice_dev->dev_index,
 				"daemon control = 0x%x\n",
 				ice_dev->daemon.conf.daemon_control);
-	reg_offset = CVE_SEMAPHORE_BASE +
-			CVE_SEMAPHORE_MMIO_CVE_REGISTER_DEMON_CONTROL_MMOFFSET;
+	reg_offset = cfg_default.ice_sem_base +
+			cfg_default.ice_sem_mmio_demon_control_offset;
 	cve_os_write_mmio_32(ice_dev,
 				reg_offset,
 				ice_dev->daemon.conf.daemon_control);
 
-	reg_offset_table = CVE_SEMAPHORE_BASE +
-			CVE_SEMAPHORE_MMIO_CVE_REGISTER_DEMON_TABLE_MMOFFSET;
+	reg_offset_table = cfg_default.ice_sem_base +
+			cfg_default.ice_sem_mmio_demon_table_offset;
 	for (i = 0; i < ice_dev->daemon.conf.daemon_table_len; i++) {
 		cve_os_dev_log(CVE_LOGLEVEL_DEBUG, ice_dev->dev_index,
 					"daemon table[%d] = 0x%x\n", i,
@@ -1277,8 +1371,8 @@ static int  ice_trace_configure_pmonregs_sysfs(u32 dev_index)
 					"daemon enable = 0x%x\n",
 					ice_dev->daemon.conf.daemon_enable);
 
-	reg_offset = CVE_SEMAPHORE_BASE +
-			CVE_SEMAPHORE_MMIO_CVE_REGISTER_DEMON_ENABLE_MMOFFSET;
+	reg_offset = cfg_default.ice_sem_base +
+			cfg_default.ice_sem_mmio_demon_enable_offset;
 	cve_os_write_mmio_32(ice_dev,
 				reg_offset,
 				ice_dev->daemon.conf.daemon_enable);
@@ -1303,9 +1397,9 @@ static int ice_trace_pmon_config_sysfs(u32 daemonfreq, u32 pmonindex,
 	u8 freqexp = 0;
 	u32 daemon_reg_offset;
 	struct ice_perf_counter_setup *pmon_config_conf;
-	u32 pmon_config_reg_offset;
+	u32 pmon_config_reg_offset = 0;
 	u32 pmon_config_value;
-	u32 pmon_config_mask;
+	u32 pmon_config_mask = 0;
 	bool configure_pmon = true;
 	bool perform_reset = false;
 
@@ -1326,10 +1420,10 @@ static int ice_trace_pmon_config_sysfs(u32 daemonfreq, u32 pmonindex,
 	case 1 ... 10:
 		consecutive = 0;
 		{
-			union ICE_MMU_INNER_MEM_MMU_CONFIG_t reg;
+			union ice_mmu_inner_mem_mmu_config_t reg;
 
-			pmon_config_reg_offset = ICE_MMU_BASE +
-						ICE_MMU_MMU_CONFIG_MMOFFSET;
+			pmon_config_reg_offset = cfg_default.mmu_base +
+						cfg_default.mmu_cfg_offset;
 
 
 			reg.val = 0;
@@ -1360,7 +1454,7 @@ static int ice_trace_pmon_config_sysfs(u32 daemonfreq, u32 pmonindex,
 		goto out;
 	}
 
-	daemon_reg_offset = pmon_config_regoffset_array[pmonindex] &
+	daemon_reg_offset = __get_pmon_config_regoffset(pmonindex) &
 							0x3FFFF; /* b'17:0 */
 	switch (daemonfreq) {
 	case 0:
@@ -1513,17 +1607,13 @@ int ice_trace_sysfs_init(struct cve_device *ice_dev)
 	FUNC_ENTER();
 	os_dev = to_cve_os_device(ice_dev);
 	/* create base subdir once */
-	if (icedrv_kobj)
-		goto hwtrace_sysfs;
-
-	icedrv_kobj = kobject_create_and_add("icedrv", kernel_kobj);
 	if (!icedrv_kobj) {
 		cve_os_dev_log(CVE_LOGLEVEL_ERROR, ice_dev->dev_index,
-					"icedrv kobj creation failed\n");
+					"icedrv kobj doesn't exist\n");
 		ret = -ENOMEM;
 		goto out;
 	}
-hwtrace_sysfs:
+
 	if (hwtrace_kobj)
 		goto ice_sysfs;
 
@@ -1532,7 +1622,7 @@ hwtrace_sysfs:
 		cve_os_dev_log(CVE_LOGLEVEL_ERROR, ice_dev->dev_index,
 					"hwtrace kobj creation failed\n");
 		ret = -ENOMEM;
-		goto icedrv_kobj_free;
+		goto out;
 	}
 ice_sysfs:
 	ice_dev->ice_kobj = NULL;
@@ -1571,9 +1661,6 @@ ice_kobj_free:
 hwtrace_kobj_free:
 	kobject_put(hwtrace_kobj);
 	hwtrace_kobj = NULL;
-icedrv_kobj_free:
-	kobject_put(icedrv_kobj);
-	icedrv_kobj = NULL;
 out:
 	FUNC_LEAVE();
 	return ret;
@@ -1595,12 +1682,6 @@ void ice_trace_sysfs_term(struct cve_device *ice_dev)
 		hwtrace_kobj = NULL;
 		cve_os_dev_log(CVE_LOGLEVEL_DEBUG, ice_dev->dev_index,
 					"hw_trace kobj deleted\n");
-	}
-	if (icedrv_kobj) {
-		kobject_put(icedrv_kobj);
-		icedrv_kobj = NULL;
-		cve_os_dev_log(CVE_LOGLEVEL_DEBUG, ice_dev->dev_index,
-					"icedrv sysfs  deleted\n");
 	}
 
 	FUNC_LEAVE();
@@ -1641,8 +1722,8 @@ static int ice_trace_write_dso_reg_sysfs(struct cve_device *ice_dev,
 	dso_reg_addr = (port << 16 | croffset) & 0xffffff;
 
 	/* for DSO_CFG_DTF_SRC_CONFIG_REG shouldn't write to 30,31 bits*/
-	if (croffset == dso_reg_offsets[1]
-		|| croffset == (dso_reg_offsets[1] | 0x4000)) {
+	if (croffset == __get_dso_regoffset(1)
+		|| croffset == (__get_dso_regoffset(1) | 0x4000)) {
 		ice_dev->dso.reg_vals[dso_reg_index] =
 			ice_dev->dso.reg_vals[dso_reg_index] & 0x3fffffff;
 		}
@@ -1657,8 +1738,8 @@ static int ice_trace_write_dso_reg_sysfs(struct cve_device *ice_dev,
 	/* for DSO_CFG_DTF_SRC_CONFIG_REG ignore
 	 *30,31 bits value while reading
 	 */
-	if (croffset == dso_reg_offsets[1]
-		|| croffset == (dso_reg_offsets[1] | 0x4000)) {
+	if (croffset == __get_dso_regoffset(1)
+		|| croffset == (__get_dso_regoffset(1) | 0x4000)) {
 		value = value & 0x3fffffff;
 	}
 
@@ -1729,17 +1810,17 @@ static int ice_trace_set_ice_observer_sysfs(u8 dso_reg_index, u32 dso_reg_val,
 	/*reg_offset[15:14] = b'01 for ICE1*/
 	if (ice_dev->dev_index % 2)
 		ice_dev->dso.reg_offsets[dso_reg_index].croffset =
-				0x4000 | dso_reg_offsets[dso_reg_index];
+				0x4000 | __get_dso_regoffset(dso_reg_index);
 	else
 		ice_dev->dso.reg_offsets[dso_reg_index].croffset =
-					dso_reg_offsets[dso_reg_index];
+					__get_dso_regoffset(dso_reg_index);
 
 	ice_dev->dso.reg_vals[dso_reg_index] = dso_reg_val;
 	ice_dev->dso.dso_config_status =
 				TRACE_STATUS_SYSFS_USER_CONFIG_WRITE_PENDING;
 	pe_mask = (1 << ice_dev->dev_index) << 4;
 	value = cve_os_read_idc_mmio(ice_dev,
-				IDC_REGS_IDC_MMIO_BAR0_MEM_ICEPE_MMOFFSET);
+				cfg_default.bar0_mem_icepe_offset);
 
 	/* If Device is ON */
 	if ((value & pe_mask) != pe_mask) {
@@ -1793,10 +1874,10 @@ int ice_trace_init_dso(struct cve_device *ice_dev)
 		/*reg_offset[15:14] = b'01 for ICE1*/
 		if (ice_dev->dev_index % 2)
 			ice_dev->dso.reg_offsets[i].croffset =
-					0x4000 | dso_reg_offsets[i];
+					0x4000 | __get_dso_regoffset(i);
 		else
 			ice_dev->dso.reg_offsets[i].croffset =
-						dso_reg_offsets[i];
+						__get_dso_regoffset(i);
 	}
 	memcpy(ice_dev->dso.reg_vals, default_dso_reg_vals,
 						sizeof(default_dso_reg_vals));

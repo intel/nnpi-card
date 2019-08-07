@@ -22,7 +22,6 @@
 #include "device_interface.h"
 #include "cve_firmware.h"
 #include "ice_debug.h"
-#include <mmio_hub_regs.h>
 
 /* hold per device per context data */
 struct dev_context {
@@ -220,10 +219,9 @@ static void cve_dev_release_per_cve_ctx(struct dev_context *dev_ctx)
 
 	if (context) {
 
-		/* Block MMU if ICE is in free pool and powered on */
-		if (((dev->power_state == ICE_POWER_ON) ||
-			(dev->power_state == ICE_POWER_OFF_INITIATED)) &&
-			dev->dev_network_id == INVALID_NETWORK_ID)
+		/* Block MMU if ICE is powered on */
+		if ((dev->power_state == ICE_POWER_ON) ||
+			(dev->power_state == ICE_POWER_OFF_INITIATED))
 			ice_di_mmu_block_entrance(dev);
 
 		cve_os_dev_log(CVE_LOGLEVEL_DEBUG,
@@ -611,7 +609,7 @@ int cve_dev_alloc_and_map_cbdt(cve_dev_context_handle_t dev_ctx,
 	dev = nc->cve_dev;
 
 	retval = OS_ALLOC_DMA_CONTIG(dev,
-			sizeof(union cve_shared_cb_descriptor),
+			sizeof(union CVE_SHARED_CB_DESCRIPTOR),
 			max_cbdt_entries,
 			&vaddr,
 			&fifo_desc->fifo.cb_desc_dma_handle, 1);
@@ -622,7 +620,7 @@ int cve_dev_alloc_and_map_cbdt(cve_dev_context_handle_t dev_ctx,
 		goto out;
 	}
 
-	size_bytes = max_cbdt_entries * sizeof(union cve_shared_cb_descriptor);
+	size_bytes = max_cbdt_entries * sizeof(union CVE_SHARED_CB_DESCRIPTOR);
 	memset(vaddr, 0, size_bytes);
 	fifo_desc->fifo.cb_desc_vaddr = vaddr;
 	fifo_desc->fifo.size_bytes = size_bytes;

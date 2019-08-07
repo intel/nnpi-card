@@ -54,5 +54,6 @@
 #define SPHER_GRACEFUL_DESTROY                  (SPH_ERRNO_BASE + 26)   /* Graceful destroy requested by administrator */
 #define SPHER_CARD_RESET                        (SPH_ERRNO_BASE + 27)   /* Card has been reset */
 #define SPHER_INCOMPLETE_NETWORK                (SPH_ERRNO_BASE + 28)   /* Network handle is incomplete */
+#define	SPHER_INSUFFICIENT_RESOURCES		(SPH_ERRNO_BASE + 29)	/* insufficient resources for DevNet */
 
 #endif

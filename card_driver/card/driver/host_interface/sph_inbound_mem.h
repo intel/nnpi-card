@@ -9,7 +9,7 @@
 //#define SPH_INBOUND_MEM_SIZE   (64 * 1024 * 1024)
 #define SPH_INBOUND_MEM_SIZE   (64 * 1024)
 #define SPH_INBOUND_MEM_MAGIC  0x4d687073  /* value of 'sphM' */
-#define SPH_CRASH_DUMP_SIZE    (1 << (SPH_PAGE_SHIFT + SPH_CRASH_DUMP_SIZE_PAGE_ORDER))
+#define SPH_CRASH_DUMP_SIZE    (1lu << (SPH_PAGE_SHIFT + SPH_CRASH_DUMP_SIZE_PAGE_ORDER))
 
 #pragma pack(push, 1)
 

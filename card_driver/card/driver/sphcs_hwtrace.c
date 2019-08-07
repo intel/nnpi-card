@@ -30,22 +30,27 @@
 
 #define BIT_SET(a)	(((uint32_t)(1))<<(a))
 
+
 #define HWTRACE_STATE_HOST_RESOURCE_CLEANUP	BIT_SET(0)
 #define HWTRACE_STATE_HOST_RESOURCE_BUSY	BIT_SET(1)
 #define HWTRACE_STATE_NPK_RESOURCE_CLEANUP	BIT_SET(2)
 #define HWTRACE_STATE_NPK_RESOURCE_BUSY		BIT_SET(3)
+
 #define HWTRACE_STATE_NPK_RESOURCE_READY	BIT_SET(4)
 #define HWTRACE_STATE_DMA_INFO_READY		BIT_SET(5)
 #define HWTRACE_STATE_DMA_INFO_DIRTY		BIT_SET(6)
 #define HWTRACE_STATE_RESOURCE_CLEANUP		BIT_SET(7)
 #define HWTRACE_STATE_NO_CLEANUP_RESOURCE	BIT_SET(8)
 
+
+#define HWTRACE_STATE_RESOURCES_BUSY(flag)	(flag & (HWTRACE_STATE_NPK_RESOURCE_BUSY | HWTRACE_STATE_HOST_RESOURCE_BUSY | HWTRACE_STATE_DMA_INFO_DIRTY))
+
 //dtf channel config for dma engine
 const struct sphcs_dma_desc g_dma_desc_c2h_dtf_nowait = {
 	.dma_direction  = SPHCS_DMA_DIRECTION_CARD_TO_HOST,
 	.dma_priority   = SPHCS_DMA_PRIORITY_DTF,
 	.serial_channel = 0,
-	.flags          = SPHCS_DMA_START_XFER_COMPLETION_NO_WAIT
+	.flags          = 0
 };
 
 
@@ -428,7 +433,6 @@ void sphcs_hwtrace_update_state(void)
 	}
 }
 
-
 //callback from dma engine when NPK resource to host copy via pep ended
 static int sphcs_hwtrace_dma_stream_complete_cb(struct sphcs *sphcs, void *ctx, const void *user_data, int status, u32 timeUS)
 {
@@ -441,9 +445,19 @@ static int sphcs_hwtrace_dma_stream_complete_cb(struct sphcs *sphcs, void *ctx, 
 	int index = -1;
 	uint32_t bytes = 0;
 
+	SPH_ASSERT(r != NULL);
 
-	//lock for updating window work has done.
+
+	//release npk resource
+	if (hw_tracing->intel_th_device && r->npk_res) {
+		sphcs_intel_th_window_unlock(hw_tracing->intel_th_device,
+					     r->npk_res->sgt);
+	}
+
+	//update resource state.
 	SPH_SPIN_LOCK_IRQSAVE(&hw_tracing->lock_irq, flags);
+
+	r->state &= ~HWTRACE_STATE_NPK_RESOURCE_BUSY;
 
 	if (r->host_res) {
 		index = r->host_res->resource_index;
@@ -454,37 +468,29 @@ static int sphcs_hwtrace_dma_stream_complete_cb(struct sphcs *sphcs, void *ctx, 
 
 	SPH_SPIN_UNLOCK_IRQRESTORE(&hw_tracing->lock_irq, flags);
 
-	//release npk resource
-	if (hw_tracing->intel_th_device &&
-	    r && r->npk_res)
-		sphcs_intel_th_window_unlock(hw_tracing->intel_th_device,
-					     r->npk_res->sgt);
-
 	//if status != 0 report error to host
-	if (status)
-		hwtrace_err = SPH_HWTRACE_ERR_DMA_FAILED;
+	if (status != SPHCS_DMA_STATUS_DONE) {
+		sph_log_err(HWTRACE_LOG, "hwtrace dma failed for resource number %d\n",
+			     r->host_res->resource_index);
+		return -EINVAL;
+	}
 
 	//send notification to host that resource is ready for read.
 	memset(&response_msg.value, 0x0, sizeof(response_msg));
 
 	response_msg.opcode	= SPH_IPC_C2H_OP_HWTRACE_STATE;
 
-	response_msg.subOpcode = (bIsLast) ?
-		HWTRACE_LAST_RESOURCE_READY :
-		HWTRACE_RESOURCE_READY;
+	//in case of last resource, set appropriate sub_opcode
+	if (bIsLast)
+		response_msg.subOpcode = HWTRACE_LAST_RESOURCE_READY;
+	else
+		response_msg.subOpcode = HWTRACE_RESOURCE_READY;
 
 	response_msg.val1	= bytes;
 	response_msg.val2	= index;
 	response_msg.err	= hwtrace_err;
 
 	sphcs_msg_scheduler_queue_add_msg(sphcs->public_respq, &response_msg.value, 1);
-
-	//lock for updating window work has done.
-	SPH_SPIN_LOCK_IRQSAVE(&hw_tracing->lock_irq, flags);
-
-	r->state &= ~HWTRACE_STATE_NPK_RESOURCE_BUSY;
-
-	SPH_SPIN_UNLOCK_IRQRESTORE(&hw_tracing->lock_irq, flags);
 
 	return 0;
 }
@@ -493,31 +499,35 @@ static int sphcs_hwtrace_dma_stream_complete_cb(struct sphcs *sphcs, void *ctx, 
 void do_stream_hwtrace(struct sphcs_dma_res_info *r)
 {
 	int ret;
-	size_t dma_size;
 
-	if (!r ||
-	    !r->host_res ||
-	    !r->npk_res ||
-	    !r->dma_res)
+	SPH_ASSERT(r != NULL);
+
+
+	if (!r->host_res || !r->npk_res || !r->dma_res)
 		return;
 
-	if (r->state &
-	    (HWTRACE_STATE_NPK_RESOURCE_BUSY | HWTRACE_STATE_HOST_RESOURCE_BUSY |
-	     HWTRACE_STATE_DMA_INFO_DIRTY))
+	if (HWTRACE_STATE_RESOURCES_BUSY(r->state))
 		return;
 
+	//if there is no NPK RESOURCE ready - no need to send dma to host
+	if (!(r->state & HWTRACE_STATE_NPK_RESOURCE_READY))
+		return;
+
+	//remove NPK RESOURCE READY, and change to NPK RESOURCE BUSY
+	r->state &= ~HWTRACE_STATE_NPK_RESOURCE_READY;
+
+	//set NPK RESOURCE BUSY and HOST RESOURCE BUSY during dma
+	//once dma is completed npk resource busy is unset
+	//host resource busy is unset after unlock from host
 	r->state |= (HWTRACE_STATE_NPK_RESOURCE_BUSY |
 		     HWTRACE_STATE_HOST_RESOURCE_BUSY);
 
-	r->state &= ~HWTRACE_STATE_NPK_RESOURCE_READY;
-
-	dma_size = r->host_res->resource_size;
 
 	//now we start dma transaction from card to host.
 	ret = sphcs_dma_sched_start_xfer(g_the_sphcs->dmaSched,
 					 &g_dma_desc_c2h_dtf_nowait,
 					 r->dma_res->lli_addr,
-					 dma_size,
+					 r->host_res->resource_size,
 					 sphcs_hwtrace_dma_stream_complete_cb,
 					 r,
 					 NULL,
@@ -764,9 +774,8 @@ void sphcs_hwtrace_cleanup_resources_request(struct sphcs *sphcs)
 	SPH_SPIN_LOCK_IRQSAVE(&hw_tracing->lock_irq, flags);
 
 	list_for_each_entry(r, &hw_tracing->dma_stream_list, node) {
-		if (r)
-			r->state |= (HWTRACE_STATE_DMA_INFO_DIRTY |
-				     HWTRACE_STATE_HOST_RESOURCE_CLEANUP);
+		r->state |= (HWTRACE_STATE_DMA_INFO_DIRTY |
+			     HWTRACE_STATE_HOST_RESOURCE_CLEANUP);
 	}
 
 	SPH_SPIN_UNLOCK_IRQRESTORE(&hw_tracing->lock_irq, flags);
@@ -894,6 +903,11 @@ static int sphcs_hwtrace_get_hostres_complete_cb(struct sphcs *sphcs,
 
 	chain_header = (struct dma_chain_header *)dma_req_data->vptr;
 	chain_entry = (struct dma_chain_entry *)(dma_req_data->vptr + sizeof(struct dma_chain_header));
+
+	if (status != SPHCS_DMA_STATUS_DONE) {
+		sph_log_err(HWTRACE_LOG, "%s, dma_failed\n", __func__);
+		goto err;
+	}
 
 	ret = sg_alloc_table(sgt, chain_header->total_nents, GFP_NOWAIT);
 	if (ret) {
@@ -1230,6 +1244,7 @@ static void hwtrace_op_work_handler(struct work_struct *work)
 		break;
 	};
 
+	kfree(op);
 }
 
 

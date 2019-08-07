@@ -49,7 +49,7 @@ struct inf_devnet {
 int inf_devnet_create(uint16_t protocolID,
 		      struct inf_context *context,
 		      struct inf_devnet **out_devnet);
-void inf_devnet_on_create_failed(struct inf_devnet *devnet);
+void destroy_devnet_on_create_failed(struct inf_devnet *devnet);
 
 int inf_devnet_add_devres(struct inf_devnet *devnet,
 			  struct inf_devres *devres);
@@ -64,7 +64,6 @@ int inf_devnet_put(struct inf_devnet *devnet);
 
 int inf_devnet_create_infreq(struct inf_devnet *devnet,
 			     uint16_t           protocolID,
-			     uint16_t           max_exec_config_size,
 			     dma_addr_t         host_dma_addr,
 			     page_handle        host_page_hndl,
 			     uint16_t           dma_size);

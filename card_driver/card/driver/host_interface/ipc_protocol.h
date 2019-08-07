@@ -44,7 +44,7 @@ SPH_STATIC_ASSERT(SPH_PAGE_SHIFT <= PAGE_SHIFT, "SPH_PAGE_SIZE is bigger than PA
 					     ((minor) & 0x1f) << 5 | \
 					     ((dot) & 0x1f))
 
-#define SPH_IPC_PROTOCOL_VERSION SPH_MAKE_VERSION(1, 9, 1)
+#define SPH_IPC_PROTOCOL_VERSION SPH_MAKE_VERSION(1, 14, 1)
 
 /* Maximumum of free pages, which device can hold at any time */
 #define MAX_HOST_RESPONSE_PAGES 32
@@ -71,8 +71,6 @@ SPH_STATIC_ASSERT(SPH_PAGE_SHIFT <= PAGE_SHIFT, "SPH_PAGE_SIZE is bigger than PA
 #define SPH_IPC_INF_COPY_BITS 16    /* number of bits in protocol for copy handler */
 #define SPH_IPC_INF_REQ_BITS 16     /* number of bits in protocol for inf req */
 
-#define SPH_MAX_GENERIC_SERVICES (32 + (1 << SPH_IPC_INF_CONTEXT_BITS)) /* maximum number of generic services */
-
 #pragma pack(push, 1)
 
 /***************************************************************************
@@ -88,24 +86,14 @@ struct response_list_entry {
 struct dma_chain_header {
 	u64 dma_next;
 	u32 total_nents;
-	u32 size;
+	u64 size;
 };
 
+#define DMA_CHAIN_ENTRY_NPAGES_BITS (sizeof(u64) * __CHAR_BIT__ - SPH_IPC_DMA_PFN_BITS)
+#define SPH_MAX_CHUNK_SIZE (((1lu << DMA_CHAIN_ENTRY_NPAGES_BITS) - 1) << SPH_PAGE_SHIFT)
 struct dma_chain_entry {
 	u64 dma_chunk_pfn  : SPH_IPC_DMA_PFN_BITS;
-	u64 n_pages        : (sizeof(u64) * __CHAR_BIT__ - SPH_IPC_DMA_PFN_BITS);
-};
-
-#define SPH_BIOS_VERSION_LEN    72
-#define SPH_BOARD_NAME_LEN      72
-#define SPH_IMAGE_VERSION_LEN   72
-
-struct sph_sys_info {
-	uint32_t ice_mask;
-	char bios_version[SPH_BIOS_VERSION_LEN];
-	char board_name[SPH_BOARD_NAME_LEN];
-	char image_version[SPH_IMAGE_VERSION_LEN];
-	u16  fpga_rev;
+	u64 n_pages        : DMA_CHAIN_ENTRY_NPAGES_BITS;
 };
 
 #define NENTS_PER_PAGE ((SPH_PAGE_SIZE - sizeof(struct dma_chain_header)) / sizeof(struct dma_chain_entry))
@@ -377,15 +365,15 @@ union h2c_InferenceResourceOp {
 		u64 opcode     : 5;  /* SPH_IPC_H2C_OP_INF_RESOURCE */
 		u64 ctxID      : SPH_IPC_INF_CONTEXT_BITS;
 		u64 resID      : SPH_IPC_INF_DEVRES_BITS;
-		u64 size       : 32;
 		u64 destroy    : 1;
-		u64 reserved   : 2;
-
 		u64 is_input   : 1;
 		u64 is_output  : 1;
+
 		u64 is_network : 1;
 		u64 is_force_4G : 1;
-		u64 reserved2  : 60;
+		u64 reserved  : 30;
+
+		u64 size       : 64;
 	};
 
 	u64 value[2];
@@ -412,6 +400,19 @@ union h2c_InferenceNetworkOp {
 };
 CHECK_MESSAGE_SIZE(union h2c_InferenceNetworkOp, 2);
 
+union h2c_InferenceNetworkResourceReservation {
+	struct {
+		u64 opcode        : 5; /* SPH_IPC_H2C_OP_INF_NETWORK_RESOURCE_RESERVATION */
+		u64 ctxID         : SPH_IPC_INF_CONTEXT_BITS;
+		u64 netID         : SPH_IPC_INF_DEVNET_BITS;
+		u64 reserve       : 3; //reserve or release
+		u64 timeout       : 32;
+	};
+
+	u64 value[1];
+};
+CHECK_MESSAGE_SIZE(union h2c_InferenceNetworkResourceReservation, 1);
+
 union h2c_setup_crash_dump_msg {
 	struct {
 		u64 opcode    :  5;   /* SPH_IPC_H2C_OP_SETUP_CRASH_DUMP */
@@ -427,14 +428,16 @@ CHECK_MESSAGE_SIZE(union h2c_setup_crash_dump_msg, 2);
 
 union h2c_InferenceCopyOp {
 	struct {
-		u64 opcode     : 5;  /* SPH_IPC_H2C_OP_COPY_OP */
+		u64 opcode     :  5;  /* SPH_IPC_H2C_OP_COPY_OP */
 		u64 ctxID      : SPH_IPC_INF_CONTEXT_BITS;
 		u64 protResID  : 16;
 		u64 protCopyID : 16;
+		u64 c2h        :  1;
+		u64 destroy    :  1;
+		u64 reserved1  : 17;
+
 		u64 hostPtr    : SPH_IPC_DMA_PFN_BITS;
-		u64 c2h        : 1;
-		u64 destroy    : 1;
-		u64 reserved   : 36;
+		u64 reserved2  : 19;
 	};
 
 	u64 value[2];
@@ -447,7 +450,7 @@ union h2c_InferenceSchedCopy {
 		u64 ctxID      : SPH_IPC_INF_CONTEXT_BITS;
 		u64 protCopyID : 16;
 		u64 copySize   : 32;
-		u64 reserved   : 3;
+		u64 priority   : 3;
 	};
 
 	u64 value;
@@ -473,14 +476,15 @@ union h2c_SubResourceLoadOp {
 		u64 sessionID    : 16;
 		u32 host_pool_index : 2;
 		u64 host_pool_dma_address  : SPH_IPC_DMA_PFN_BITS;
-		u64 res_offset  : 32;
 		u32 n_pages : 8;
 		u32 byte_size : 12;
+		u64 reserved : 32;
+		u64 res_offset : 64;
 	};
 
-	u64 value[2];
+	u64 value[3];
 };
-CHECK_MESSAGE_SIZE(union h2c_SubResourceLoadOp, 2);
+CHECK_MESSAGE_SIZE(union h2c_SubResourceLoadOp, 3);
 
 union h2c_SubResourceLoadCreateRemoveSession {
 	struct {
@@ -508,7 +512,7 @@ union h2c_InferenceReqOp {
 		u64 netID             : SPH_IPC_INF_DEVNET_BITS;
 		u64 infreqID          : SPH_IPC_INF_REQ_BITS;
 		u64 size              : 12;
-		u64 max_exec_cfg_size : 12;
+		u64 reserved2         : 12;
 	};
 
 	u64 value[2];
@@ -517,15 +521,19 @@ CHECK_MESSAGE_SIZE(union h2c_InferenceReqOp, 2);
 
 union h2c_InferenceReqSchedule {
 	struct {
-		u64 opcode     :  5; /* SPH_IPC_H2C_OP_SCHEDULE_INF_REQ */
-		u64 netID      : SPH_IPC_INF_DEVNET_BITS;
-		u64 infreqID   : SPH_IPC_INF_REQ_BITS;
-		u64 size       : 27;
+		u64 opcode            :  5; /* SPH_IPC_H2C_OP_SCHEDULE_INF_REQ */
+		u64 netID             : SPH_IPC_INF_DEVNET_BITS;
+		u64 infreqID          : SPH_IPC_INF_REQ_BITS;
+		u64 size              : 27;
 
-		u64 ctxID           : SPH_IPC_INF_CONTEXT_BITS;
-		u64 shortConfig     :  3;
-		u64 host_page_hndl  : PAGE_HANDLE_BITS;
-		u64 host_pfn        : SPH_IPC_DMA_PFN_BITS;
+		u64 ctxID             : SPH_IPC_INF_CONTEXT_BITS;
+		//schedParams
+		u64 batchSize         : 16;
+		u64 priority          :  8; /* 0 == normal, 1 == high */
+		u64 debugOn           :  1;
+		u64 collectInfo       :  1;
+		u64 schedParamsIsNull :  1;
+		u64 reserve           : 29;
 	};
 
 	u64 value[2];
@@ -743,6 +751,18 @@ struct sph_c2h_system_info {
 	//PcodeRevision; // Pcode revision information
 	struct sph_c2h_bios_fw_ver_ack_data CsmeVersion;
 	struct sph_c2h_fw_version PmcVersion;
+};
+
+#define SPH_BIOS_VERSION_LEN    (sizeof(struct sph_c2h_bios_version) / sizeof(u16))
+#define SPH_BOARD_NAME_LEN      72
+#define SPH_IMAGE_VERSION_LEN   72
+
+struct sph_sys_info {
+	uint32_t ice_mask;
+	char bios_version[SPH_BIOS_VERSION_LEN];
+	char board_name[SPH_BOARD_NAME_LEN];
+	char image_version[SPH_IMAGE_VERSION_LEN];
+	u16  fpga_rev;
 };
 
 /*

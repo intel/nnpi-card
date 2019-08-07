@@ -31,7 +31,8 @@ struct cve_device_group *g_cve_dev_group_list;
 static struct ice_drv_config drv_config_param = {
 	.enable_llc_config_via_axi_reg = 0,
 	.sph_soc = 0,
-	.ice_power_off_delay_ms = 1000
+	.ice_power_off_delay_ms = 1000,
+	.enable_sph_b_step = false
 };
 
 
@@ -56,8 +57,12 @@ static int cve_dg_add_hw_counter(struct cve_device_group *p)
 	}
 	for (i = 0; i < NUM_COUNTER_REG; i++) {
 		hw_cntr_list[i].hw_cntr_id = i;
+		hw_cntr_list[i].in_free_pool = true;
+		hw_cntr_list[i].cntr_ntw_id = INVALID_NETWORK_ID;
+
 		cve_dle_add_to_list_before(p->hw_cntr_list, list,
 			&hw_cntr_list[i]);
+
 		cve_os_log(CVE_LOGLEVEL_DEBUG,
 		"CntrHwID=%d added to the DeviceGroup=0x%lx. CounterIAVA=0x%lx\n",
 		hw_cntr_list[i].hw_cntr_id,
@@ -198,11 +203,44 @@ static void update_dg_config(void)
 	g_driver_settings.config = &config_param_single_dg_all_dev;
 }
 
+/* Return time diff in usec */
+u32 ice_get_usec_timediff(struct timespec *time1, struct timespec *time2)
+{
+	struct timespec time_out;
+	/* time_out = time1 - time2 */
+	u32 ret = 0;
+
+	if ((time1->tv_sec < time2->tv_sec) ||
+	((time1->tv_sec == time2->tv_sec) &&
+	(time1->tv_nsec <= time2->tv_nsec))) {
+		time_out.tv_sec = time_out.tv_nsec = 0;
+		ret = 0;
+		ASSERT(false);
+	} else {
+		time_out.tv_sec = time1->tv_sec - time2->tv_sec;
+		if (time1->tv_nsec < time2->tv_nsec) {
+			time_out.tv_nsec = time1->tv_nsec +
+				 NSEC_PER_SEC - time2->tv_nsec;
+			time_out.tv_sec--;
+		} else {
+			time_out.tv_nsec = time1->tv_nsec - time2->tv_nsec;
+		}
+		ret = (time_out.tv_sec * USEC_PER_SEC) +
+				(time_out.tv_nsec / NSEC_PER_USEC);
+	}
+
+	cve_os_log(CVE_LOGLEVEL_DEBUG,
+		"Elapsed time = %u usec\n",
+		ret);
+	return ret;
+}
+
+
 /* Return time diff in msec */
 static u32 __timespec_diff(struct timespec *time1, struct timespec *time2,
 		struct timespec *time_out)
 {
-	/* time_out = time2 - time1 */
+	/* time_out = time1 - time2 */
 	u32 ret = 0;
 
 	if ((time1->tv_sec < time2->tv_sec) ||
@@ -293,6 +331,9 @@ static int ice_pm_monitor_task(void *data)
 			if (head->power_state == ICE_POWER_OFF_INITIATED) {
 				icemask |= (1 << head->dev_index);
 				head->power_state = ICE_POWER_OFF;
+				ice_swc_counter_set(head->hswc,
+					ICEDRV_SWC_DEVICE_COUNTER_POWER_STATE,
+					head->power_state);
 			} else {
 				cve_os_log(CVE_LOGLEVEL_DEBUG,
 					"ICE-%d allocated to Ntw. Power Off aborted.\n",
@@ -419,6 +460,7 @@ int ice_kmd_create_dg(void)
 	}
 
 	device_group->dg_id = i;
+	device_group->dg_exe_order = 0;
 	device_group->expected_devices_nr =
 			config->groups[i].devices_nr;
 	device_group->dev_info.active_device_nr = 0;
@@ -518,6 +560,7 @@ int cve_dg_add_device(struct cve_device *cve_dev)
 				ASSERT(false);
 
 			cve_dev->dg = p;
+			cve_dev->in_free_pool = true;
 
 			ice_swc_counter_set(g_sph_swc_global,
 				ICEDRV_SWC_GLOBAL_ACTIVE_ICE_COUNT,
@@ -691,12 +734,14 @@ void ice_set_driver_config_param(struct ice_drv_config *param)
 			param->enable_llc_config_via_axi_reg;
 	drv_config_param.sph_soc = param->sph_soc;
 	drv_config_param.ice_power_off_delay_ms = param->ice_power_off_delay_ms;
+	drv_config_param.enable_sph_b_step = param->enable_sph_b_step;
 
 	cve_os_log(CVE_LOGLEVEL_INFO,
-			"DriverConfig: enable_llc_config_via_axi_reg:%d sph_soc:%d ice_power_off_delay_ms:%d\n",
+			"DriverConfig: enable_llc_config_via_axi_reg:%d sph_soc:%d ice_power_off_delay_ms:%d, is_b_step_enabled: %d\n",
 			drv_config_param.enable_llc_config_via_axi_reg,
 			drv_config_param.sph_soc,
-			drv_config_param.ice_power_off_delay_ms);
+			drv_config_param.ice_power_off_delay_ms,
+			drv_config_param.enable_sph_b_step);
 }
 
 struct ice_drv_config *ice_get_driver_config_param(void)
@@ -712,6 +757,11 @@ u8 ice_enable_llc_config_via_axi_reg(void)
 int ice_get_power_off_delay_param(void)
 {
 	return drv_config_param.ice_power_off_delay_ms;
+}
+
+int ice_get_b_step_enable_flag(void)
+{
+	return drv_config_param.enable_sph_b_step;
 }
 
 struct cve_device *ice_get_first_dev(void)

@@ -16,7 +16,6 @@
 #ifndef DRIVER_CVE_FW_MAP_INTERFACE_H_
 #define DRIVER_CVE_FW_MAP_INTERFACE_H_
 
-#include "cve_hw_forSw.h"
 
 /*
  * WARNING: BE CAREFUL WHEN CHANGING THIS STRUCT LAYOUT
@@ -40,7 +39,7 @@ struct ICVE_FIRMWARE_SECTION_DESCRIPTOR {
 	/* the address where the working copy starts
 	 * in device virtual address space
 	 */
-	cve_virtual_address_t cve_addr;
+	u32 cve_addr;
 	/* size of section in bytes*/
 	u32 size_bytes;
 	/* permission attributes */

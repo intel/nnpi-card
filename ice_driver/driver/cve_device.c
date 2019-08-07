@@ -58,10 +58,15 @@ int cve_device_init(struct cve_device *dev, int index)
 	dev->version_info.format = "Revision = %x.%x\n";
 
 	/* Initializes Invalid Persistent Nw*/
-	dev->dev_network_id = INVALID_NETWORK_ID;
+	dev->dev_ntw_id = INVALID_NETWORK_ID;
 
 	/* Power state of device is not known at this point */
 	dev->power_state = ICE_POWER_UNKNOWN;
+	ice_swc_counter_set(dev->hswc, ICEDRV_SWC_DEVICE_COUNTER_POWER_STATE,
+			dev->power_state);
+
+	/*set default value for ice freq due to issue in P-Code (ICE-14643)*/
+	dev->frequency = ICE_FREQ_DEFAULT;
 
 #if 0
 	get_hw_revision(dev, &hw_rev);
@@ -85,6 +90,13 @@ int cve_device_init(struct cve_device *dev, int index)
 		goto init_platform_data_failed;
 	}
 
+	/*initialize icedrv specific fops*/
+	retval = init_icedrv_sysfs();
+	if (retval != 0) {
+		cve_os_log(CVE_LOGLEVEL_WARNING,
+				"failed in init_icedrv_sysfs() %d\n", retval);
+	}
+
 	/* initialize trace specific fops*/
 	retval = init_icedrv_trace(dev);
 	if (retval != 0) {
@@ -99,11 +111,26 @@ int cve_device_init(struct cve_device *dev, int index)
 				"init_icedrv_debug_event failed %d\n", retval);
 	}
 
+	/* initialize hw_config specific fops*/
+	retval = init_icedrv_hw_config(dev);
+	if (retval != 0) {
+		cve_os_log(CVE_LOGLEVEL_WARNING,
+				"init_icedrv_hw_config failed %d\n", retval);
+	}
+
 	/*Add to list of devices in the device group */
 	cve_dg_add_device(dev);
 
 	ice_swc_create_dev_node(dev);
 
+	getnstimeofday(&dev->idle_start_time);
+	ice_swc_counter_set(dev->hswc,
+		ICEDRV_SWC_DEVICE_COUNTER_IDLE_START_TIME,
+		(dev->idle_start_time.tv_sec * USEC_PER_SEC) +
+		(dev->idle_start_time.tv_nsec / NSEC_PER_USEC));
+	cve_os_log(CVE_LOGLEVEL_DEBUG,
+		"idle_start_time.tv_sec=%ld idle_start_time.tv_nsec=%ld\n",
+		dev->idle_start_time.tv_sec, dev->idle_start_time.tv_nsec);
 	/* success */
 	return 0;
 
@@ -120,11 +147,17 @@ void cve_device_clean(struct cve_device *dev)
 
 	ice_swc_destroy_dev_node(dev);
 
+	/*remove hw_config specific fops*/
+	term_icedrv_hw_config(dev);
+
 	/* Remove ice debug event flow*/
 	term_icedrv_debug_event();
 
 	/* remove trace specific fops*/
 	term_icedrv_trace(dev);
+
+	/*remove icedrv specific fops*/
+	term_icedrv_sysfs();
 
 	/* mask the interrupts */
 	cve_di_mask_interrupts(dev);

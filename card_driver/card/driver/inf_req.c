@@ -24,7 +24,6 @@ module_param(serial_infreq_exec, bool, 0660);
 
 int inf_req_create(uint16_t            protocolID,
 		   struct inf_devnet  *devnet,
-		   uint16_t            max_exec_config_size,
 		   struct inf_req    **out_infreq)
 {
 	struct inf_req *infreq;
@@ -33,18 +32,6 @@ int inf_req_create(uint16_t            protocolID,
 	infreq = kzalloc(sizeof(*infreq), GFP_KERNEL);
 	if (unlikely(infreq == NULL))
 		return -ENOMEM;
-
-	if (max_exec_config_size > 0) {
-		/* TODO: share dma pages for multiple infer requests */
-		infreq->exec_config_data_vptr = dma_alloc_coherent(g_the_sphcs->hw_device,
-								max_exec_config_size,
-								&infreq->exec_config_data_dma_addr,
-								GFP_KERNEL);
-		if (unlikely(infreq->exec_config_data_vptr == NULL)) {
-			kfree(infreq);
-			return -ENOMEM;
-		}
-	}
 
 	kref_init(&infreq->ref);
 	infreq->magic = inf_req_create;
@@ -55,8 +42,6 @@ int inf_req_create(uint16_t            protocolID,
 	infreq->outputs = NULL;
 	infreq->config_data_size = 0;
 	infreq->config_data = NULL;
-	infreq->max_exec_config_size = max_exec_config_size;
-	infreq->exec_config_data_empty = true;
 	spin_lock_init(&infreq->lock_irq);
 	infreq->status = CREATE_STARTED;
 	infreq->destroyed = 0;
@@ -83,7 +68,7 @@ int inf_req_create(uint16_t            protocolID,
 						* created the infer req object
 						*/
 	infreq->exec_cmd.ready_flags = 0;
-	infreq->exec_cmd.config_data_size = 0;
+	infreq->exec_cmd.sched_params_is_null = 1;
 
 	*out_infreq = infreq;
 	return 0;
@@ -167,11 +152,15 @@ static void release_infreq(struct kref *kref)
 	hash_del(&infreq->hash_node);
 	SPH_SPIN_UNLOCK(&infreq->devnet->lock);
 
-	for (i = 0; i < infreq->n_inputs; i++)
-		inf_devres_put(infreq->inputs[i]);
+	for (i = 0; i < infreq->n_inputs; i++) {
+		ret = inf_devres_put(infreq->inputs[i]);
+		SPH_ASSERT(ret == 0);
+	}
 
-	for (i = 0; i < infreq->n_outputs; i++)
-		inf_devres_put(infreq->outputs[i]);
+	for (i = 0; i < infreq->n_outputs; i++) {
+		ret = inf_devres_put(infreq->outputs[i]);
+		SPH_ASSERT(ret == 0);
+	}
 
 	if (likely(infreq->status == CREATED)) {
 		/* send command to runtime to destroy the inference request */
@@ -187,6 +176,14 @@ static void release_infreq(struct kref *kref)
 			sph_log_err(CREATE_COMMAND_LOG, "Failed to send destroy network command to runtime\n");
 	}
 
+	sph_remove_sw_counters_values_node(infreq->sw_counters);
+
+	SPH_SW_COUNTER_DEC(infreq->devnet->sw_counters,
+			   NET_SPHCS_SW_COUNTERS_NUM_INFER_CMDS);
+
+	ret = inf_devnet_put(infreq->devnet);
+	SPH_ASSERT(ret == 0);
+
 	if (likely(infreq->destroyed == 1))
 		sphcs_send_event_report_ext(g_the_sphcs,
 					SPH_IPC_INFREQ_DESTROYED,
@@ -194,19 +191,6 @@ static void release_infreq(struct kref *kref)
 					infreq->devnet->context->protocolID,
 					infreq->protocolID,
 					infreq->devnet->protocolID);
-
-	sph_remove_sw_counters_values_node(infreq->sw_counters);
-
-	SPH_SW_COUNTER_DEC(infreq->devnet->sw_counters,
-			   NET_SPHCS_SW_COUNTERS_NUM_INFER_CMDS);
-
-	inf_devnet_put(infreq->devnet);
-
-	if (infreq->max_exec_config_size > 0)
-		dma_free_coherent(g_the_sphcs->hw_device,
-				  infreq->max_exec_config_size,
-				  infreq->exec_config_data_vptr,
-				  infreq->exec_config_data_dma_addr);
 
 	if (likely(infreq->inputs != NULL))
 		kfree(infreq->inputs);
@@ -253,6 +237,11 @@ int inf_req_schedule(struct inf_req *infreq,
 	req->in_progress = false;
 	req->is_copy = false;
 	req->infreq = infreq;
+	req->sched_params.batchSize = cmd->batchSize;
+	req->sched_params.priority = cmd->priority;
+	req->sched_params.debugOn = cmd->debugOn;
+	req->sched_params.collectInfo = cmd->collectInfo;
+	req->sched_params_is_null = cmd->schedParamsIsNull;
 	req->time = 0;
 
 	if (SPH_SW_GROUP_IS_ENABLE(infreq->sw_counters,
@@ -260,27 +249,6 @@ int inf_req_schedule(struct inf_req *infreq,
 		req->time = sph_time_us();
 	} else
 		req->time = 0;
-
-	if (cmd->size != 0 && cmd->shortConfig == 0) {
-		SPH_ASSERT(cmd->size <= infreq->max_exec_config_size);
-		//need DMA transfer to read exec config data
-		if (!infreq->exec_config_data_empty) {
-			err = -SPHER_NOT_SUPPORTED;
-			goto fail_busy;
-		}
-		infreq->exec_config_data_empty = false;
-		req->size = cmd->size;
-		req->host_dma_addr = SPH_IPC_DMA_PFN_TO_ADDR(cmd->host_pfn);
-		req->host_page_hndl = cmd->host_page_hndl;
-		req->config = infreq->exec_config_data_vptr;
-		req->dma_state = 0;
-	} else {
-		SPH_ASSERT(cmd->shortConfig <= infreq->max_exec_config_size);
-		req->size = cmd->shortConfig;
-		req->short_config_data = cmd->size;
-		req->config = (void *)&req->short_config_data;
-		req->dma_state = 2;
-	}
 
 	inf_context_seq_id_init(context, &req->seq);
 	inf_exec_req_get(req);
@@ -329,51 +297,18 @@ fail:
 	inf_devres_del_req_from_queue(infreq->devnet->first_devres, req);
 fail_first:
 	inf_context_seq_id_fini(context, &req->seq);
-fail_busy:
 	inf_req_put(infreq);
 	kmem_cache_free(context->exec_req_slab_cache, req);
 
 	return err;
 }
 
-static int inf_req_config_dma_complete_callback(struct sphcs *sphcs,
-						void *ctx,
-						const void *user_data,
-						int status,
-						u32 xferTimeUS)
+/* This function should not be called directly, use inf_exec_req_put instead */
+void inf_req_release(struct kref *kref)
 {
-	struct inf_exec_req *req = (struct inf_exec_req *)ctx;
-	union c2h_DmaPageHandleFree msg;
-	unsigned long flags;
-
-	/* send command to host to free dma buffer */
-	msg.value = 0;
-	msg.opcode = SPH_IPC_C2H_OP_DMA_PAGE_HANDLE_FREE;
-	msg.host_page_hndl = req->host_page_hndl;
-
-	sphcs_msg_scheduler_queue_add_msg(g_the_sphcs->public_respq,
-				    &msg.value,
-				    sizeof(msg) / sizeof(u64));
-
-	if (unlikely(status == SPHCS_DMA_STATUS_FAILED)) {
-		sph_log_err(EXECUTE_COMMAND_LOG, "DMA failed status=0x%x\n", status);
-		inf_req_complete(req, -SPHER_DMA_ERROR);
-	} else {
-		SPH_SPIN_LOCK_IRQSAVE(&req->infreq->lock_irq, flags);
-		req->dma_state = 2;
-		if (inf_exec_req_get(req) == 0) {
-			SPH_ASSERT(0); /* How did that happen!!???? */
-		}
-		SPH_SPIN_UNLOCK_IRQRESTORE(&req->infreq->lock_irq, flags);
-		inf_req_try_execute(req);
-		inf_exec_req_put(req);
-	}
-
-	return 0;
-}
-
-void inf_req_release(struct inf_exec_req *req)
-{
+	struct inf_exec_req *req = container_of(kref,
+						struct inf_exec_req,
+						in_use);
 	struct inf_req *infreq = req->infreq;
 	int i;
 
@@ -386,41 +321,16 @@ void inf_req_release(struct inf_exec_req *req)
 		inf_devres_del_req_from_queue(infreq->outputs[i], req);
 	inf_context_seq_id_fini(infreq->devnet->context, &req->seq);
 
-	inf_req_put(infreq);
 	kmem_cache_free(infreq->devnet->context->exec_req_slab_cache, req);
+	inf_req_put(infreq);
 }
 
 bool inf_req_ready(struct inf_exec_req *req)
 {
 	struct inf_req *infreq = req->infreq;
 	int i;
-	unsigned long flags;
-	int ret;
 
 	SPH_ASSERT(!req->is_copy);
-
-	SPH_SPIN_LOCK_IRQSAVE(&infreq->lock_irq, flags);
-
-	if (req->dma_state != 2) {
-		if (req->dma_state == 0) {
-			ret = sphcs_dma_sched_start_xfer_single(g_the_sphcs->dmaSched,
-								&g_dma_desc_h2c_high_nowait,
-								req->host_dma_addr,
-								infreq->exec_config_data_dma_addr,
-								req->size,
-								inf_req_config_dma_complete_callback,
-								req,
-								NULL, 0);
-			if (likely(ret == 0))
-				req->dma_state = 1;
-		}
-
-		SPH_SPIN_UNLOCK_IRQRESTORE(&infreq->lock_irq, flags);
-
-		/* config data is needed but not yet available */
-		return false;
-	}
-	SPH_SPIN_UNLOCK_IRQRESTORE(&infreq->lock_irq, flags);
 
 	/* cannot start execute if another infreq of the same network is running*/
 	if (!inf_devres_req_ready(infreq->devnet->first_devres,
@@ -451,7 +361,6 @@ unsigned long inf_req_read_exec_command(char __user *buf,
 					uint32_t     n_to_read)
 {
 	struct inf_exec_req *req = (struct inf_exec_req *)ctx;
-	unsigned long flags;
 	uint32_t n = 0;
 	unsigned long ret = 0;
 
@@ -464,22 +373,6 @@ unsigned long inf_req_read_exec_command(char __user *buf,
 				   ((char *)&req->infreq->exec_cmd) + offset,
 				   n);
 		offset = 0;
-	} else
-		offset -= sizeof(req->infreq->exec_cmd);
-
-	if (n < n_to_read) {
-		SPH_ASSERT(offset + n_to_read - n <= req->size);
-
-		ret += copy_to_user(buf + n,
-				    (char *)req->config + offset,
-				    n_to_read - n);
-		offset += (n_to_read - n);
-	}
-
-	if (offset >= req->size) {
-		SPH_SPIN_LOCK_IRQSAVE(&req->infreq->lock_irq, flags);
-		req->infreq->exec_config_data_empty = true;
-		SPH_SPIN_UNLOCK_IRQRESTORE(&req->infreq->lock_irq, flags);
 	}
 
 	return ret;
@@ -537,7 +430,8 @@ int inf_req_execute(struct inf_exec_req *req)
 
 	SPH_SPIN_LOCK_IRQSAVE(&infreq->lock_irq, flags);
 	infreq->exec_cmd.ready_flags = 1;
-	infreq->exec_cmd.config_data_size = req->size;
+	infreq->exec_cmd.sched_params = req->sched_params;
+	infreq->exec_cmd.sched_params_is_null = req->sched_params_is_null;
 
 	SPH_SPIN_LOCK_IRQSAVE(&context->sw_counters_lock_irq, flags2);
 	if (context->infreq_counter == 0 &&
@@ -561,7 +455,7 @@ int inf_req_execute(struct inf_exec_req *req)
 		ret = inf_cmd_queue_add(&infreq->devnet->context->cmdq,
 					SPHCS_RUNTIME_CMD_EXECUTE_INFREQ,
 					NULL,
-					sizeof(infreq->exec_cmd) + req->size,
+					sizeof(infreq->exec_cmd),
 					inf_req_read_exec_command,
 					req);
 	}

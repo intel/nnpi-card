@@ -23,7 +23,7 @@
 #include "ipc_protocol.h"
 #include <linux/wait.h>
 
-#define HWTRACING_POOL_MEMORY_SIZE ((uint32_t)(1<<20))
+#define HWTRACING_POOL_MEMORY_SIZE ((uint32_t)(1U<<20))
 #define SPHCS_HWTRACING_MAX_POOL_LENGTH 10
 
 

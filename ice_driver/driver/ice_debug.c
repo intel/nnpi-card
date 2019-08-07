@@ -18,13 +18,6 @@
 #include "cve_driver.h"
 #include "osmm_interface.h"
 #include "device_interface.h"
-#include "ice_mmu_inner_regs.h"
-#include "sph_device_regs.h"
-#include "idc_regs_regs.h"
-#include "mmio_hub_regs.h"
-#include "CVG_MMU_1_system_map_regs.h"
-#include "mmio_semaphore_regs.h"
-#include "ice_mmu_inner_regs.h"
 #include "project_device_interface.h"
 
 const char *get_cve_jobs_group_status_str(uint32_t status)
@@ -120,248 +113,254 @@ const char *get_fw_binary_type_str(uint32_t type)
 
 const char *get_idc_regs_str(uint32_t offset)
 {
-	switch (offset) {
-	case IDC_REGS_IDC_MMIO_BAR0_MEM_IDCSPARE_MMOFFSET:
+	if (offset == cfg_default.bar0_mem_idcspare_offset)
 		return "IDC_ICE_DBG_INDICATION_REG";
-	case IDC_REGS_IDC_MMIO_BAR0_MEM_IDCINTST_MMOFFSET:
+	if (offset == cfg_default.bar0_mem_idcintst_offset)
 		return "IDC_INTR_STATUS_LOW_REG";
-	case IDC_REGS_IDC_MMIO_BAR0_MEM_IDCINTST_MMOFFSET + 4:
+	if (offset == cfg_default.bar0_mem_idcintst_offset + 4)
 		return "IDC_INTR_STATUS_HIGH_REG";
-	case IDC_REGS_IDC_MMIO_BAR0_MEM_ICEINTST_MMOFFSET:
+	if (offset == cfg_default.bar0_mem_iceintst_offset)
 		return "ICE_INTR_STATUS_LOW_REG";
-	case IDC_REGS_IDC_MMIO_BAR0_MEM_ICEINTST_MMOFFSET + 4:
+	if (offset == cfg_default.bar0_mem_iceintst_offset + 4)
 		return "ICE_INTR_STATUS_HIGH_REG";
-	case IDC_REGS_IDC_MMIO_BAR0_MEM_ICEPOOL0_MMOFFSET:
+	if (offset == cfg_default.bar0_mem_icepool0_offset)
 		return "ICEPOOL0_REG";
-	case IDC_REGS_IDC_MMIO_BAR0_MEM_ICEPOOL1_MMOFFSET:
+	if (offset == cfg_default.bar0_mem_icepool1_offset)
 		return "ICEPOOL1_REG";
-	case IDC_REGS_IDC_MMIO_BAR0_MEM_ICEPOOL2_MMOFFSET:
+	if (offset == cfg_default.bar0_mem_icepool2_offset)
 		return "ICEPOOL2_REG";
-	case IDC_REGS_IDC_MMIO_BAR0_MEM_ICEPOOL3_MMOFFSET:
+	if (offset == cfg_default.bar0_mem_icepool3_offset)
 		return "ICEPOOL3_REG";
-	case IDC_REGS_IDC_MMIO_BAR0_MEM_ICEPOOL4_MMOFFSET:
+	if (offset == cfg_default.bar0_mem_icepool4_offset)
 		return "ICEPOOL4_REG";
-	case IDC_REGS_IDC_MMIO_BAR0_MEM_ICEPOOL5_MMOFFSET:
+	if (offset == cfg_default.bar0_mem_icepool5_offset)
 		return "ICEPOOL5_REG";
-	case IDC_REGS_IDC_MMIO_BAR0_MEM_ICENOTA0_MMOFFSET:
+	if (offset == cfg_default.bar0_mem_icenota0_offset)
 		return "NOTFICATION_ADDR0_REG";
-	case IDC_REGS_IDC_MMIO_BAR0_MEM_ICENOTA1_MMOFFSET:
+	if (offset == cfg_default.bar0_mem_icenota1_offset)
 		return "NOTFICATION_ADDR1_REG";
-	case IDC_REGS_IDC_MMIO_BAR0_MEM_ICENOTA2_MMOFFSET:
+	if (offset == cfg_default.bar0_mem_icenota2_offset)
 		return "NOTFICATION_ADDR2_REG";
-	case IDC_REGS_IDC_MMIO_BAR0_MEM_ICENOTA3_MMOFFSET:
+	if (offset == cfg_default.bar0_mem_icenota3_offset)
 		return "NOTFICATION_ADDR3_REG";
-	case IDC_REGS_IDC_MMIO_BAR0_MEM_EVCTPROT0_MMOFFSET:
+	if (offset == cfg_default.bar0_mem_evctprot0_offset)
 		return "CNTR_0_ACCESS_CONTROL_REG";
-	case IDC_REGS_IDC_MMIO_BAR0_MEM_EVCTPROT1_MMOFFSET:
+	if (offset == cfg_default.bar0_mem_evctprot1_offset)
 		return "CNTR_1_ACCESS_CONTROL_REG";
-	case IDC_REGS_IDC_MMIO_BAR0_MEM_EVCTPROT2_MMOFFSET:
+	if (offset == cfg_default.bar0_mem_evctprot2_offset)
 		return "CNTR_2_ACCESS_CONTROL_REG";
-	case IDC_REGS_IDC_MMIO_BAR0_MEM_EVCTPROT3_MMOFFSET:
+	if (offset == cfg_default.bar0_mem_evctprot3_offset)
 		return "CNTR_3_ACCESS_CONTROL_REG";
-	case IDC_REGS_IDC_MMIO_BAR0_MEM_EVCTPROT4_MMOFFSET:
+	if (offset == cfg_default.bar0_mem_evctprot4_offset)
 		return "CNTR_4_ACCESS_CONTROL_REG";
-	case IDC_REGS_IDC_MMIO_BAR0_MEM_EVCTPROT5_MMOFFSET:
+	if (offset == cfg_default.bar0_mem_evctprot5_offset)
 		return "CNTR_5_ACCESS_CONTROL_REG";
-	case IDC_REGS_IDC_MMIO_BAR0_MEM_EVCTPROT6_MMOFFSET:
+	if (offset == cfg_default.bar0_mem_evctprot6_offset)
 		return "CNTR_6_ACCESS_CONTROL_REG";
-	case IDC_REGS_IDC_MMIO_BAR0_MEM_EVCTPROT7_MMOFFSET:
+	if (offset == cfg_default.bar0_mem_evctprot7_offset)
 		return "CNTR_7_ACCESS_CONTROL_REG";
-	case IDC_REGS_IDC_MMIO_BAR0_MEM_EVCTPROT8_MMOFFSET:
+	if (offset == cfg_default.bar0_mem_evctprot8_offset)
 		return "CNTR_8_ACCESS_CONTROL_REG";
-	case IDC_REGS_IDC_MMIO_BAR0_MEM_EVCTPROT9_MMOFFSET:
+	if (offset == cfg_default.bar0_mem_evctprot9_offset)
 		return "CNTR_9_ACCESS_CONTROL_REG";
-	case IDC_REGS_IDC_MMIO_BAR0_MEM_EVCTPROT10_MMOFFSET:
+	if (offset == cfg_default.bar0_mem_evctprot10_offset)
 		return "CNTR_10_ACCESS_CONTROL_REG";
-	case IDC_REGS_IDC_MMIO_BAR0_MEM_EVCTPROT11_MMOFFSET:
+	if (offset == cfg_default.bar0_mem_evctprot11_offset)
 		return "CNTR_11_ACCESS_CONTROL_REG";
-	case IDC_REGS_IDC_MMIO_BAR0_MEM_EVCTPROT12_MMOFFSET:
+	if (offset == cfg_default.bar0_mem_evctprot12_offset)
 		return "CNTR_12_ACCESS_CONTROL_REG";
-	case IDC_REGS_IDC_MMIO_BAR0_MEM_EVCTPROT13_MMOFFSET:
+	if (offset == cfg_default.bar0_mem_evctprot13_offset)
 		return "CNTR_13_ACCESS_CONTROL_REG";
-	case IDC_REGS_IDC_MMIO_BAR0_MEM_EVCTPROT14_MMOFFSET:
+	if (offset == cfg_default.bar0_mem_evctprot14_offset)
 		return "CNTR_14_ACCESS_CONTROL_REG";
-	case IDC_REGS_IDC_MMIO_BAR0_MEM_EVCTPROT15_MMOFFSET:
+	if (offset == cfg_default.bar0_mem_evctprot15_offset)
 		return "CNTR_15_ACCESS_CONTROL_REG";
-	case IDC_REGS_IDC_MMIO_BAR0_MEM_EVCTPROT16_MMOFFSET:
+	if (offset == cfg_default.bar0_mem_evctprot16_offset)
 		return "CNTR_16_ACCESS_CONTROL_REG";
-	case IDC_REGS_IDC_MMIO_BAR0_MEM_EVCTPROT17_MMOFFSET:
+	if (offset == cfg_default.bar0_mem_evctprot17_offset)
 		return "CNTR_17_ACCESS_CONTROL_REG";
-	case IDC_REGS_IDC_MMIO_BAR0_MEM_EVCTPROT18_MMOFFSET:
+	if (offset == cfg_default.bar0_mem_evctprot18_offset)
 		return "CNTR_18_ACCESS_CONTROL_REG";
-	case IDC_REGS_IDC_MMIO_BAR0_MEM_EVCTPROT19_MMOFFSET:
+	if (offset == cfg_default.bar0_mem_evctprot19_offset)
 		return "CNTR_19_ACCESS_CONTROL_REG";
-	case IDC_REGS_IDC_MMIO_BAR0_MEM_EVCTPROT20_MMOFFSET:
+	if (offset == cfg_default.bar0_mem_evctprot20_offset)
 		return "CNTR_20_ACCESS_CONTROL_REG";
-	case IDC_REGS_IDC_MMIO_BAR0_MEM_EVCTPROT21_MMOFFSET:
+	if (offset == cfg_default.bar0_mem_evctprot21_offset)
 		return "CNTR_21_ACCESS_CONTROL_REG";
-	case IDC_REGS_IDC_MMIO_BAR0_MEM_EVCTPROT22_MMOFFSET:
+	if (offset == cfg_default.bar0_mem_evctprot22_offset)
 		return "CNTR_22_ACCESS_CONTROL_REG";
-	case IDC_REGS_IDC_MMIO_BAR0_MEM_EVCTPROT23_MMOFFSET:
+	if (offset == cfg_default.bar0_mem_evctprot23_offset)
 		return "CNTR_23_ACCESS_CONTROL_REG";
-	case IDC_REGS_IDC_MMIO_BAR0_MEM_EVCTPROT24_MMOFFSET:
+	if (offset == cfg_default.bar0_mem_evctprot24_offset)
 		return "CNTR_24_ACCESS_CONTROL_REG";
-	case IDC_REGS_IDC_MMIO_BAR0_MEM_EVCTPROT25_MMOFFSET:
+	if (offset == cfg_default.bar0_mem_evctprot25_offset)
 		return "CNTR_25_ACCESS_CONTROL_REG";
-	case IDC_REGS_IDC_MMIO_BAR0_MEM_EVCTPROT26_MMOFFSET:
+	if (offset == cfg_default.bar0_mem_evctprot26_offset)
 		return "CNTR_26_ACCESS_CONTROL_REG";
-	case IDC_REGS_IDC_MMIO_BAR0_MEM_EVCTPROT27_MMOFFSET:
+	if (offset == cfg_default.bar0_mem_evctprot27_offset)
 		return "CNTR_27_ACCESS_CONTROL_REG";
-	case IDC_REGS_IDC_MMIO_BAR0_MEM_EVCTPROT28_MMOFFSET:
+	if (offset == cfg_default.bar0_mem_evctprot28_offset)
 		return "CNTR_28_ACCESS_CONTROL_REG";
-	case IDC_REGS_IDC_MMIO_BAR0_MEM_EVCTPROT29_MMOFFSET:
+	if (offset == cfg_default.bar0_mem_evctprot29_offset)
 		return "CNTR_29_ACCESS_CONTROL_REG";
-	case IDC_REGS_IDC_MMIO_BAR0_MEM_EVCTPROT30_MMOFFSET:
+	if (offset == cfg_default.bar0_mem_evctprot30_offset)
 		return "CNTR_30_ACCESS_CONTROL_REG";
-	case IDC_REGS_IDC_MMIO_BAR0_MEM_EVCTPROT31_MMOFFSET:
+	if (offset == cfg_default.bar0_mem_evctprot31_offset)
 		return "CNTR_31_ACCESS_CONTROL_REG";
-	case IDC_REGS_IDC_MMIO_BAR0_MEM_ICERST_MMOFFSET:
+	if (offset == cfg_default.bar0_mem_icerst_offset)
 		return "ICE_RESET_REG";
-	case IDC_REGS_IDC_MMIO_BAR0_MEM_ICERDY_MMOFFSET:
+	if (offset == cfg_default.bar0_mem_icerdy_offset)
 		return "ICE_READY_REG";
-	case IDC_REGS_IDC_MMIO_BAR0_MEM_ICENOTE_MMOFFSET:
+	if (offset == cfg_default.bar0_mem_icenote_offset)
 		return "ICE_NOTIFY_REG";
-	case IDC_REGS_IDC_MMIO_BAR0_MEM_ICEINTEN_MMOFFSET:
+	if (offset == cfg_default.bar0_mem_iceinten_offset)
 		return "ICE_INTR_ENABLE_REG";
-	case IDC_REGS_IDC_MMIO_BAR0_MEM_ICEINTEN_MMOFFSET + 4:
+	if (offset == cfg_default.bar0_mem_iceinten_offset + 4)
 		return "ICE_ERR_INTR_ENABLE_REG";
-	case IDC_REGS_IDC_MMIO_BAR0_MEM_IDCINTEN_MMOFFSET:
+	if (offset == cfg_default.bar0_mem_idcinten_offset)
 		return "IDC_INTR_ENABLE_LOW_REG";
-	case IDC_REGS_IDC_MMIO_BAR0_MEM_IDCINTEN_MMOFFSET + 4:
+	if (offset == cfg_default.bar0_mem_idcinten_offset + 4)
 		return "IDC_INTR_ENABLE_HIGH_REG";
-	case IDC_REGS_IDC_MMIO_BAR0_MEM_ICEPE_MMOFFSET:
+	if (offset == cfg_default.bar0_mem_icepe_offset)
 		return "ICE_POWER_ENABLE_REG";
-	case IDC_REGS_IDC_MMIO_BAR0_MEM_ICEMASKSTS_MMOFFSET:
+	if (offset == cfg_default.bar0_mem_icemasksts_offset)
 		return "ICE_MASK_REG";
-	default:
+	else
 		return "Unknown";
-	}
 }
-#ifdef ENABLE_SPH_STEP_B
 const char *get_other_regs_str(uint32_t offset)
 {
-	switch (offset) {
-	default:
-		return "Unknown";
-	}
-}
-#else
-const char *get_other_regs_str(uint32_t offset)
-{
-	switch (offset) {
-	case CVE_MMIO_HUB_HW_REVISION_MMOFFSET:
+	if (offset == INVALID_OFFSET)
+		return "Register offset does not exist";
+	if (offset == cfg_default.mmio_hw_revision_offset)
 		return "HW_REVISION_REG";
-	default:
+	else
 		return "Unknown";
-	}
 }
-#endif
 const char *get_regs_str(uint32_t offset)
 {
-	switch (offset) {
-	case ICE_MMU_BASE + ICE_MMU_AXI_TABLE_PT_INDEX_BITS_MMOFFSET:
+
+	if (offset == cfg_default.mmu_base +
+				cfg_default.mmu_axi_tbl_pt_idx_bits_offset)
 		return "AXI_TABLE_PT_INDEX_REG";
-	case ICE_MMU_BASE + ICE_MMU_TLC_AXI_ATTRIBUTES_MMOFFSET:
+	if (offset == cfg_default.mmu_base +
+				cfg_default.mmu_tlc_axi_attri_offset)
 		return "TLC_AXI_ATTRIBUTES_REG";
-	case ICE_MMU_BASE + ICE_MMU_ASIP_AXI_ATTRIBUTES_MMOFFSET:
+	if (offset == cfg_default.mmu_base +
+				cfg_default.mmu_asip_axi_attri_offset)
 		return "ASIP_AXI_ATTRIBUTES_REG";
-	case ICE_MMU_BASE + ICE_MMU_DSP_AXI_ATTRIBUTES_MMOFFSET:
+	if (offset == cfg_default.mmu_base +
+				cfg_default.mmu_dsp_axi_attri_offset)
 		return "DSP_AXI_ATTRIBUTES_REG";
-	case ICE_MMU_BASE + ICE_MMU_PAGE_WALK_AXI_ATTRIBUTES_MMOFFSET:
+	if (offset == cfg_default.mmu_base +
+				cfg_default.mmu_page_walk_axi_attri_offset)
 		return "PAGE_WALK_AXI_ATTRIBUTES_REG";
-	case CVE_MMIO_HUB_DTF_CONTROL_MMOFFSET:
+	if (offset == cfg_default.mmio_dtf_ctrl_offset)
 		return "DTF_CONTROL_REG";
-	case CVE_MMIO_HUB_PRE_IDLE_DELAY_COUNT_MMOFFSET:
+	if (offset == cfg_default.mmio_pre_idle_delay_cnt_offset)
 		return "PRE_IDLE_DELAY_COUNT_REG";
-	case CVE_MMIO_HUB_CVE_CONFIG_MMOFFSET:
+	if (offset == cfg_default.mmio_cve_config_offset)
 		return "ICE_CONFIG_REG";
-	case CVE_MMIO_HUB_PROG_CORES_CONTROL_MMOFFSET:
+	if (offset == cfg_default.ice_prog_cores_ctrl_offset)
 		return "PROG_CORES_CONTROL_REG";
 #ifdef _DEBUG
-	case ICE_DEBUG_CFG_REG:
+	if (offset == cfg_default.ice_dbg_cbbid_base +
+			cfg_default.ice_dbg_cbbid_cfg_offset + (1 * 4))
 		return "ICE_DEBUG_CFG_REG";
 #endif
-	case CVE_MMIO_HUB_NEW_COMMAND_BUFFER_DOOR_BELL_MMOFFSET:
+	if (offset == cfg_default.mmio_cb_doorbell_offset)
 		return "CB_DOORBELL_REG";
-	case CVE_MMIO_HUB_INTERRUPT_MASK_MMOFFSET:
+	if (offset == cfg_default.mmio_intr_mask_offset)
 		return "INTERRUPT_MASK_REG";
-	case CVE_MMIO_HUB_TLC_WR_PULSE_MMOFFSET:
+	if (offset == cfg_default.mmio_tlc_pulse_offset)
 		return "TLC_WR_PULSE_REG";
-	case CVE_MMIO_HUB_INTERRUPT_STATUS_MMOFFSET:
+	if (offset == cfg_default.mmio_intr_status_offset)
 		return "INTERRUPT_STATUS_REG";
-	case ICE_MMU_ATU0_BASE + CVG_MMU_1_SYSTEM_MAP_MEM_INVALIDATE_OFFSET:
+	if (offset == cfg_default.mmu_atu0_base +
+			cfg_default.ice_mmu_1_system_map_mem_invalidate_offset)
 		return "MMU_ATU0_MEM_INVALIDATE_REG";
-	case ICE_MMU_ATU1_BASE + CVG_MMU_1_SYSTEM_MAP_MEM_INVALIDATE_OFFSET:
+	if (offset == cfg_default.mmu_atu1_base +
+			cfg_default.ice_mmu_1_system_map_mem_invalidate_offset)
 		return "MMU_ATU1_MEM_INVALIDATE_REG";
-	case ICE_MMU_ATU2_BASE + CVG_MMU_1_SYSTEM_MAP_MEM_INVALIDATE_OFFSET:
+	if (offset == cfg_default.mmu_atu2_base +
+			cfg_default.ice_mmu_1_system_map_mem_invalidate_offset)
 		return "MMU_ATU2_MEM_INVALIDATE_REG";
-	case ICE_MMU_ATU3_BASE + CVG_MMU_1_SYSTEM_MAP_MEM_INVALIDATE_OFFSET:
+	if (offset == cfg_default.mmu_atu3_base +
+			cfg_default.ice_mmu_1_system_map_mem_invalidate_offset)
 		return "MMU_ATU3_MEM_INVALIDATE_REG";
-	case ICE_MMU_ATU0_BASE +
-CVG_MMU_1_SYSTEM_MAP_MEM_PAGE_TABLE_BASE_ADDRESS_OFFSET:
+	if (offset == cfg_default.mmu_atu0_base +
+		       cfg_default.ice_mmu_1_system_map_mem_pt_base_addr_offset)
 		return "MMU_ATU0_PT_BASE_ADDR_REG";
-	case ICE_MMU_ATU1_BASE +
-CVG_MMU_1_SYSTEM_MAP_MEM_PAGE_TABLE_BASE_ADDRESS_OFFSET:
+	if (offset == cfg_default.mmu_atu1_base +
+		       cfg_default.ice_mmu_1_system_map_mem_pt_base_addr_offset)
 		return "MMU_ATU1_PT_BASE_ADDR_REG";
-	case ICE_MMU_ATU2_BASE +
-CVG_MMU_1_SYSTEM_MAP_MEM_PAGE_TABLE_BASE_ADDRESS_OFFSET:
+	if (offset == cfg_default.mmu_atu2_base +
+		       cfg_default.ice_mmu_1_system_map_mem_pt_base_addr_offset)
 		return "MMU_ATU2_PT_BASE_ADDR_REG";
-	case ICE_MMU_ATU3_BASE +
-CVG_MMU_1_SYSTEM_MAP_MEM_PAGE_TABLE_BASE_ADDRESS_OFFSET:
+	if (offset == cfg_default.mmu_atu3_base +
+		       cfg_default.ice_mmu_1_system_map_mem_pt_base_addr_offset)
 		return "MMU_ATU3_PT_BASE_ADDR_REG";
-	case CVE_TLC_HI_BASE + CVE_TLC_HI_TLC_DUMP_BUFFER_CONFIG_REG_MMOFFSET:
+	if (offset == cfg_default.ice_tlc_hi_base +
+				cfg_default.ice_tlc_hi_dump_buf_offset)
 		return "TLC_DUMP_CONFIG_REG";
-	case CVE_TLC_HI_BASE + CVE_TLC_HI_TLC_DUMP_CONTROL_REG_MMOFFSET:
+	if (offset == cfg_default.ice_tlc_hi_base +
+				cfg_default.ice_tlc_hi_dump_control_offset)
 		return "TLC_DUMP_CONTROL_REG";
-	case CVE_MMIO_HUB_COMMAND_BUFFER_DESCRIPTORS_BASE_ADDRESS_MMOFFSET:
+	if (offset == cfg_default.mmio_cbd_base_addr_offset)
 		return "CB_DESC_BASE_ADDR_REG";
-	case CVE_MMIO_HUB_COMMAND_BUFFER_DESCRIPTORS_ENTRIES_NR_MMOFFSET:
+	if (offset == cfg_default.mmio_cbd_entries_nr_offset)
 		return "CB_DESC_ENTRIES_NR_REG";
-	case ICE_MMU_BASE + ICE_MMU_MMU_CONFIG_MMOFFSET:
+	if (offset == cfg_default.mmu_base + cfg_default.mmu_cfg_offset)
 		return "MMU_CONFIG_REG";
-	case CVE_MMIO_HUB_CVE_WATCHDOG_INIT_MMOFFSET:
+	if (offset == cfg_default.mmio_wd_init_offset)
 		return "ICE_WATCHDOG_INIT_REG";
-	case ICE_MMU_BASE + ICE_MMU_MMU_FAULT_DETAILS_MMOFFSET:
+	if (offset == cfg_default.mmu_base +
+				cfg_default.mmu_fault_details_offset)
 		return "MMU_FAULT_DETAILS_REG";
-	case ICE_MMU_BASE + ICE_MMU_FAULT_LINEAR_ADDRESS_MMOFFSET:
+	if (offset == cfg_default.mmu_base +
+				cfg_default.mmu_fault_linear_addr_offset)
 		return "MMU_FAULT_LINEAR_ADDR_REG";
-	case ICE_MMU_BASE + ICE_MMU_FAULT_PHYSICAL_ADDRESS_MMOFFSET:
+	if (offset == cfg_default.mmu_base +
+				cfg_default.mmu_fault_physical_addr_offset)
 		return "MMU_FAULT_PHYSICAL_ADDR_REG";
-	case ICE_MMU_BASE + ICE_MMU_MMU_CHICKEN_BITS_MMOFFSET:
+	if (offset == cfg_default.mmu_base +
+				cfg_default.mmu_chicken_bits_offset)
 		return "MMU_CHICKEN_BITS_REG";
-	case CVE_MMIO_HUB_CBB_ERROR_CODE_MMOFFSET:
+	if (offset == cfg_default.mmio_cbb_err_code_offset)
 		return "CBB_ERROR_CODE_REG";
-	case CVE_MMIO_HUB_CBB_ERROR_INFO_MMOFFSET:
+	if (offset == cfg_default.mmio_cbb_error_info_offset)
 		return "CBB_ERROR_INFO_REG";
-	case CVE_MMIO_HUB_TLC_INFO_MMOFFSET:
+	if (offset == cfg_default.mmio_tlc_info_offset)
 		return "TLC_INFO_REG";
-	case CVE_MMIO_HUB_GENERAL_PURPOSE_REGS_MMOFFSET ...
-		(CVE_MMIO_HUB_GENERAL_PURPOSE_REGS_MMOFFSET + (4 * 15)):
+	if (offset >= cfg_default.mmio_gp_regs_offset &&
+			offset <= (cfg_default.mmio_gp_regs_offset + (4 * 15)))
 		return "GENERAL_PURPOSE_REG";
-	case ICE_MMU_BASE + ICE_MMU_PAGE_SIZES_MMOFFSET ...
-		(ICE_MMU_BASE + ICE_MMU_PAGE_SIZES_MMOFFSET + (4 * 127)):
+	if (offset >= (cfg_default.mmu_base + cfg_default.mmu_page_sizes_offset)
+		&& offset <= (cfg_default.mmu_base +
+			cfg_default.mmu_page_sizes_offset + 4 * 127))
 		return "PAGE_SIZE_CONFIG_REG";
-	case CVE_SEMAPHORE_BASE +
-CVE_SEMAPHORE_MMIO_CVE_REGISTER_DEMON_ENABLE_MMOFFSET:
+	if (offset == cfg_default.ice_sem_base +
+			cfg_default.ice_sem_mmio_demon_enable_offset)
 		return "SEMAPHORE_DEMON_ENABLE_REG";
-	case CVE_SEMAPHORE_BASE +
-CVE_SEMAPHORE_MMIO_CVE_REGISTER_DEMON_CONTROL_MMOFFSET:
+	if (offset == cfg_default.ice_sem_base +
+			cfg_default.ice_sem_mmio_demon_control_offset)
 		return "SEMAPHORE_DEMON_CONTROL_REG";
-	case CVE_SEMAPHORE_BASE +
-		CVE_SEMAPHORE_MMIO_CVE_REGISTER_DEMON_TABLE_MMOFFSET ...
-		   (CVE_SEMAPHORE_BASE +
-		      CVE_SEMAPHORE_MMIO_CVE_REGISTER_DEMON_TABLE_MMOFFSET +
-			(4 * 31)):
+	if (offset >= (cfg_default.ice_sem_base +
+		cfg_default.ice_sem_mmio_demon_table_offset) &&
+		offset <= (cfg_default.ice_sem_base +
+			 cfg_default.ice_sem_mmio_demon_table_offset + 4 * 31))
 		return "SEMAPHORE_DEMON_TABLE_REG";
-	case CVE_MMIO_HUB_ECC_SERRCOUNT_MMOFFSET:
+	if (offset == cfg_default.mmio_ecc_serrcount_offset)
 		return "ECC_SERRCOUNT_REG";
-	case CVE_MMIO_HUB_ECC_DERRCOUNT_MMOFFSET:
+	if (offset == cfg_default.mmio_ecc_derrcount_offset)
 		return "ECC_DERRCOUNT_REG";
-	case CVE_MMIO_HUB_PARITY_ERRCOUNT_MMOFFSET:
+	if (offset == cfg_default.mmio_parity_errcount_offset)
 		return "PARITY_ERRCOUNT_REG";
-	case CVE_MMIO_HUB_UNMAPPED_ERR_ID_MMOFFSET:
+	if (offset == cfg_default.mmio_unmapped_err_id_offset)
 		return "UNMAPPED_ERR_ID_REG";
-	default:
-		return get_other_regs_str(offset);
-	}
+	if (offset >= PCU_CR_THREAD_P_REQ_BASE &&
+			offset <= (PCU_CR_THREAD_P_REQ_BASE + 8 * 15))
+		return "PCU_CR_THREAD_P_REQ_REG";
+
+	return get_other_regs_str(offset);
 }

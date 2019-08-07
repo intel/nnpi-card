@@ -44,6 +44,7 @@
 #define IOCTL_INF_INFREQ_CREATE_REPLY     _IOW('I', 5, struct inf_create_infreq_reply)
 #define IOCTL_INF_INFREQ_EXEC_DONE        _IOW('I', 6, struct inf_infreq_exec_done)
 #define IOCTL_INF_ALLOC_RESOURCE_REPLY    _IOW('I', 7, struct inf_alloc_resource_reply)
+#define IOCTL_INF_DEVNET_RESOURCES_RESERVATION_REPLY _IOW('I', 8, struct inf_devnet_resource_reserve_reply)
 
 #ifdef SPH_RELEASE_INTERNAL
 #define IOCTL_INF_SWITCH_DAEMON            _IO('I', 9)
@@ -52,6 +53,19 @@
 struct inf_error_ioctl {
 	uint32_t errorCode;
 	uint32_t errorVal;
+};
+
+/**
+ * fix size struct for inference request config data
+ * sizeof(inferRequestSchedParams) = sizeof(uint32_t),
+ * equivalent to inferRequestSchedParams from runtime api
+ */
+struct inf_sched_params {
+	uint16_t batchSize;
+	uint8_t  priority; /* 0 == normal, 1 == high */
+	uint8_t  debugOn : 1;
+	uint8_t  collectInfo : 1;
+	uint8_t  reserved : 6;
 };
 
 /* Max size of daemon command - including the header */
@@ -69,6 +83,7 @@ struct inf_error_ioctl {
 #define SPHCS_RUNTIME_CMD_CREATE_INFREQ     8
 #define SPHCS_RUNTIME_CMD_EXECUTE_INFREQ    9
 #define SPHCS_RUNTIME_CMD_DESTROY_INFREQ    10
+#define SPHCS_RUNTIME_CMD_DEVNET_RESOURCES_RESERVATION  11
 
 /* IoctlSphcsError should be EQUAL to SphcsError!! */
 typedef enum {
@@ -86,7 +101,8 @@ typedef enum {
 	IOCTL_SPHCS_INFER_MISSING_RESOURCE            = 11,
 	IOCTL_SPHCS_INFER_EXEC_ERROR                  = 12,
 	IOCTL_SPHCS_INFER_SCHEDULE_ERROR              = 13,
-	IOCTL_SPHCS_NO_MEMORY                         = 14
+	IOCTL_SPHCS_NO_MEMORY                         = 14,
+	IOCTL_SPHCS_INSUFFICIENT_RESOURCES            = 15,
 } IoctlSphcsError;
 
 /* Resource usage_flags bits */
@@ -107,7 +123,7 @@ struct inf_create_context {
 
 struct inf_create_resource {
 	uint64_t drv_handle;
-	uint32_t size;
+	uint64_t size;
 	uint32_t usage_flags;
 };
 
@@ -165,7 +181,8 @@ struct inf_exec_infreq {
 	uint64_t infreq_drv_handle;
 	uint64_t infreq_rt_handle;
 	uint32_t ready_flags;
-	uint32_t config_data_size;
+	struct inf_sched_params   sched_params;
+	uint8_t  sched_params_is_null;
 };
 
 struct inf_infreq_exec_done {
@@ -188,5 +205,18 @@ struct inf_alloc_resource_reply {
 
 struct inf_free_resource {
 	int      buf_fd;
+};
+
+struct inf_devnet_resource_reserve {
+	uint64_t devnet_drv_handle;
+	uint64_t devnet_rt_handle;
+	uint8_t reserve_resource; //1 = reserve, 0 = release
+	uint32_t timeout;
+};
+
+struct inf_devnet_resource_reserve_reply {
+	uint64_t devnet_drv_handle;
+	uint8_t reserve_resource; //1 = reserve, 0 = release
+	IoctlSphcsError i_sphcs_err;
 };
 #endif

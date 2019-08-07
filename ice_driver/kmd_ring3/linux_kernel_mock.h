@@ -148,10 +148,10 @@ extern struct task * current;
 struct scatterlist {
 	unsigned long sg_magic;
 	unsigned int offset;
-	unsigned int length; /* size in bytes */
+	unsigned long long length; /* size in bytes */
 	struct page ** page_link;
 	cve_dma_addr_t dma_address;
-	unsigned int dma_length;
+	unsigned long long dma_length;
 };
 
 #define sg_dma_address(sg)	((sg)->dma_address)
@@ -208,7 +208,7 @@ static inline int get_user_pages(void * _c, void * _mm, unsigned long _start,
 
 static inline int sg_alloc_table_from_pages(struct sg_table *sgt,
 		struct page **pages, unsigned int n_pages, unsigned long offset,
-		unsigned long size_bytes, unsigned gfp_mask) {
+		unsigned long long size_bytes, unsigned gfp_mask) {
 	sgt->nents = 1; /* there's only one range in ring3 validation */
 	sgt->orig_nents = 1;
 	sgt->sgl = kzalloc(sizeof(struct scatterlist), gfp_mask);

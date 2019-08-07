@@ -711,6 +711,9 @@ void sphcs_host_doorbell_value_changed(struct sphcs *sphcs,
 		 * as we probably allowed for bus master operations
 		 */
 		sphcs->hw_ops->dma.init_dma_engine(sphcs->hw_handle);
+
+		/* send host sys_info packet, if available */
+		sphcs_maint_send_sys_info();
 	}
 }
 

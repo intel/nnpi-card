@@ -175,7 +175,7 @@ void ice_debug_create_event_node(struct cve_device *dev,
 	jobgroup = job->jobgroup;
 	ntw = jobgroup->network;
 
-	if (ntw->reserve_resource & ICE_SET_BREAK_POINT) {
+	if (ntw->ntw_enable_bp) {
 		OS_ALLOC_ZERO(sizeof(struct ice_debug_event_bp),
 			(void **)&evt_info);
 

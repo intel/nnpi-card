@@ -25,7 +25,6 @@
 #include "cve_driver_internal.h"
 #include "cve_driver_internal_types.h"
 #include "osmm_interface.h"
-#include "idc_regs_regs.h"
 
 /*
  * remove all buffers in given buffer linked list

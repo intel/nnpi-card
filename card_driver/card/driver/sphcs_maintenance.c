@@ -10,6 +10,7 @@
 #include <linux/i2c.h>
 #include <linux/debugfs.h>
 #include <linux/seq_file.h>
+#include <linux/workqueue.h>
 #include "ioctl_maintenance.h"
 #include "sphcs_maintenance.h"
 #include "sphcs_power.h"
@@ -45,6 +46,11 @@ static bool s_force_update_fpga;
 static u16 s_board_id;
 static u16 s_fab_id;
 static u16 s_fpga_rev;
+
+static struct sph_sys_info s_sys_info_packet;
+static bool                s_sys_info_packet_valid;
+static struct work_struct  s_sys_info_work;
+
 
 /*****************************************************************************
  * service file ops operations
@@ -126,26 +132,23 @@ static int send_sys_info_dma_completed(struct sphcs *sphcs,
 	return 0;
 }
 
-static long send_sys_info(void __user *arg)
+static void send_sys_info_handler(struct work_struct *work)
 {
-	int ret = 0;
-	struct maint_ioctl_sys_info sys_info;
+	int ret;
 	struct sys_info_dma_data dma_data;
 	void *vptr;
 
-	ret = copy_from_user(&sys_info, arg, sizeof(sys_info));
-	if (unlikely(ret != 0))
-		return -EIO;
+	if (!s_sys_info_packet_valid)
+		return;
 
 	if (!g_the_sphcs)
-		return -ENODEV;
-
+		return;
 
 	ret = sphcs_response_pool_get_response_page_wait(SPH_MAIN_RESPONSE_POOL_INDEX,
 						&dma_data.host_dma_addr,
 						&dma_data.host_handle);
 	if (ret)
-		return ret;
+		return;
 
 	ret = dma_page_pool_get_free_page(g_the_sphcs->dma_page_pool,
 					  &dma_data.handle,
@@ -155,17 +158,16 @@ static long send_sys_info(void __user *arg)
 		sphcs_response_pool_put_back_response_page(0,
 						  dma_data.host_dma_addr,
 						  dma_data.host_handle);
-		return ret;
+		return;
 	}
-	memset(vptr, 0, SPH_PAGE_SIZE);
-	memcpy(vptr, &sys_info, sizeof(sys_info));
-	memcpy(vptr + sizeof(sys_info), &s_fpga_rev, sizeof(s_fpga_rev));
+
+	memcpy(vptr, &s_sys_info_packet, sizeof(s_sys_info_packet));
 
 	ret = sphcs_dma_sched_start_xfer_single(g_the_sphcs->dmaSched,
 						&g_dma_desc_c2h_low,
 						dma_data.dma_addr,
 						dma_data.host_dma_addr,
-						sizeof(sys_info) + sizeof(s_fpga_rev),
+						sizeof(s_sys_info_packet),
 						send_sys_info_dma_completed,
 						NULL,
 						&dma_data,
@@ -177,8 +179,39 @@ static long send_sys_info(void __user *arg)
 		sphcs_response_pool_put_back_response_page(0,
 						  dma_data.host_dma_addr,
 						  dma_data.host_handle);
-		return ret;
+		return;
 	}
+}
+
+int sphcs_maint_send_sys_info(void)
+{
+	schedule_work(&s_sys_info_work);
+	return 0;
+}
+
+static long set_sys_info(void __user *arg)
+{
+	int ret = 0;
+	struct maint_ioctl_sys_info sys_info;
+
+	ret = copy_from_user(&sys_info, arg, sizeof(sys_info));
+	if (unlikely(ret != 0))
+		return -EIO;
+
+	s_sys_info_packet.ice_mask = sys_info.ice_mask;
+	memcpy(s_sys_info_packet.bios_version,
+	       sys_info.bios_version,
+	       SPH_BIOS_VERSION_LEN);
+	memcpy(s_sys_info_packet.board_name,
+	       sys_info.board_name,
+	       SPH_BOARD_NAME_LEN);
+	memcpy(s_sys_info_packet.image_version,
+	       sys_info.image_version,
+	       SPH_IMAGE_VERSION_LEN);
+	s_sys_info_packet.fpga_rev = s_fpga_rev;
+	s_sys_info_packet_valid = true;
+
+	sphcs_maint_send_sys_info();
 
 	return 0;
 }
@@ -327,7 +360,7 @@ static long sphcs_maint_ioctl(struct file *f, unsigned int cmd, unsigned long ar
 		ret = thermal_trip((void __user *)arg);
 		break;
 	case IOCTL_MAINT_SYS_INFO:
-		ret = send_sys_info((void __user *)arg);
+		ret = set_sys_info((void __user *)arg);
 		break;
 	case IOCTL_MAINT_FPGA_UPDATE:
 		ret = fpga_update((void __user *)arg);
@@ -457,6 +490,7 @@ int sphcs_init_maint_interface(void)
 		return ret;
 	}
 
+	INIT_WORK(&s_sys_info_work, send_sys_info_handler);
 	sph_power_init();
 
 	// Try to attach to FPGA SMBus device if adapter already present

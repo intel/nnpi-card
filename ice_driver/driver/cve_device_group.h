@@ -17,12 +17,18 @@
 
 #include "cve_device.h"
 
+/* Parameters used to convert the timespec values: */
+#define NSEC_PER_USEC	1000L
+#define USEC_PER_SEC	1000000L
+#define NSEC_PER_SEC	1000000000L
+
 extern struct cve_device_group *g_cve_dev_group_list;
 
 struct ice_drv_config {
 	u8 enable_llc_config_via_axi_reg;
 	u8 sph_soc;
 	int ice_power_off_delay_ms;
+	bool enable_sph_b_step;
 };
 
 /*
@@ -130,4 +136,8 @@ u8 ice_is_soc(void);
 /* retrieve status of driver's ice power off delay config parameter */
 int ice_get_power_off_delay_param(void);
 
+u32 ice_get_usec_timediff(struct timespec *time1, struct timespec *time2);
+
+/* retrieve  b step enable flag */
+int ice_get_b_step_enable_flag(void);
 #endif /* CVE_DEVICE_GROUP_H_ */

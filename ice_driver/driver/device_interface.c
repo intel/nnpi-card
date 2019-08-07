@@ -14,13 +14,13 @@
  */
 
 #ifdef RING3_VALIDATION
-#include "coral.h"
+#include <stdint.h>
 #include <string.h>
+#include "coral.h"
 #include <linux_kernel_mock.h>
 #endif
 
 #include "device_interface.h"
-#include <CVG_MMU_1_system_map_regs.h>
 #include "os_interface.h"
 #include "doubly_linked_list.h"
 #include "cve_driver_internal.h"
@@ -28,29 +28,19 @@
 #include "project_settings.h"
 #include "cve_driver_utils.h"
 #include "cve_firmware.h"
-#include "ice_mmu_inner_regs.h"
 #include "cve_driver_internal.h"
-#include "sph_device_regs.h"
 #include "ice_debug.h"
-#include "tlc_regs.h"
-#include "TLC_command_formats_values_no_ifdef.h"
+#include "sph_device_regs.h"
 
 
-#ifdef RING3_VALIDATION
-#include "coral.h"
-#else
+#ifndef RING3_VALIDATION
 #include "linux/delay.h"
 #endif
 
 #include "ice_sw_counters.h"
 #include "ice_debug_event.h"
 
-#ifdef IDC_ENABLE
-#include "idc_regs_regs.h"
 
-#define ICE_TLC_DOORBELL_MAILBOX (ICE_CBBID_TLC_OFFSET + \
-			ICE_TLC_HI_TLC_MAILBOX_DOORBELL_MMOFFSET)
-#endif
 
 #define PART_SUBMISSION_STEP (CVE_FIFO_ENTRIES_NR/2)
 
@@ -123,36 +113,7 @@ struct di_job {
 
 /* MODULE LEVEL VARIABLES */
 /* hold offsets to ATU's MMIO registers */
-static u32 m_atu_mmio_offset_bytes[4] = {
-	ICE_MMU_ATU0_BASE,
-	ICE_MMU_ATU1_BASE,
-	ICE_MMU_ATU2_BASE,
-	ICE_MMU_ATU3_BASE,
-};
-
-/* rgisters to be exposed through debugfs*/
-static struct debugfs_reg32 registers[] = {
-	{"atu0_tlb_misses", ICE_MMU_BASE + ICE_MMU_ATU_MISSES_MMOFFSET},
-	{"atu1_tlb_misses", ICE_MMU_BASE + ICE_MMU_ATU_MISSES_MMOFFSET + 4},
-	{"atu2_tlb_misses", ICE_MMU_BASE + ICE_MMU_ATU_MISSES_MMOFFSET + 8},
-	{"atu3_tlb_misses", ICE_MMU_BASE + ICE_MMU_ATU_MISSES_MMOFFSET + 12},
-	{"atu0_tlb_hits", ICE_MMU_BASE + ICE_MMU_ATU_TRANSACTIONS_MMOFFSET},
-	{"atu1_tlb_hits", ICE_MMU_BASE + ICE_MMU_ATU_TRANSACTIONS_MMOFFSET + 4},
-	{"atu2_tlb_hits", ICE_MMU_BASE + ICE_MMU_ATU_TRANSACTIONS_MMOFFSET + 8},
-	{"atu3_tlb_hits", ICE_MMU_BASE + ICE_MMU_ATU_TRANSACTIONS_MMOFFSET +
-			12},
-	{"mmu_reads", ICE_MMU_BASE + ICE_MMU_READ_ISSUED_MMOFFSET},
-	{"mmu_writes", ICE_MMU_BASE + ICE_MMU_WRITE_ISSUED_MMOFFSET},
-	{"atu0_pt", ICE_MMU_ATU0_BASE +
-			ICE_MMU_ATU_PAGE_TABLE_BASE_ADDRESS_MMOFFSET},
-	{"atu1_pt", ICE_MMU_ATU1_BASE +
-			ICE_MMU_ATU_PAGE_TABLE_BASE_ADDRESS_MMOFFSET},
-	{"atu2_pt", ICE_MMU_ATU2_BASE +
-			ICE_MMU_ATU_PAGE_TABLE_BASE_ADDRESS_MMOFFSET},
-	{"atu3_pt", ICE_MMU_ATU3_BASE +
-			ICE_MMU_ATU_PAGE_TABLE_BASE_ADDRESS_MMOFFSET},
-
-	};
+#define MAX_ATU_COUNT 4
 
 /* INTERNAL FUNCTIONS */
 /*
@@ -173,9 +134,27 @@ static void add_embedded_cb_to_job(struct di_job *di_job,
 	di_job->sub_jobs[0].parent = di_job;
 }
 
+static uint64_t __icedc_err_intr_enable_all(void)
+{
+	uint64_t icedc_error_intr_enable_all =
+	((1UL << cfg_default.icedc_intr_bit_ilgacc) |
+	(1UL << cfg_default.icedc_intr_bit_icererr) |
+	(1UL << cfg_default.icedc_intr_bit_icewerr) |
+	(1UL << cfg_default.icedc_intr_bit_asf_ice1_err) |
+	(1UL << cfg_default.icedc_intr_bit_asf_ice0_err) |
+	(1UL << cfg_default.icedc_intr_bit_icecnerr) |
+	(1UL << cfg_default.icedc_intr_bit_iceseerr) |
+	(1UL << cfg_default.icedc_intr_bit_icearerr) |
+	(1UL << cfg_default.icedc_intr_bit_ctrovferr) |
+	(15UL << cfg_default.icedc_intr_bit_iacntnot) |
+	(15UL << cfg_default.icedc_intr_bit_semfree));
+
+	return icedc_error_intr_enable_all;
+}
+
 /* return the pointer to the subjob of the given descriptor */
 static inline struct sub_job *get_desc_subjob(
-		union cve_shared_cb_descriptor *desc)
+		union CVE_SHARED_CB_DESCRIPTOR *desc)
 {
 	struct sub_job *subjob = NULL;
 	union {
@@ -190,7 +169,7 @@ static inline struct sub_job *get_desc_subjob(
 
 /* set the subjob address in the given descriptor */
 static inline void set_desc_subjob(
-		union cve_shared_cb_descriptor *desc, struct sub_job *subjob)
+		union CVE_SHARED_CB_DESCRIPTOR *desc, struct sub_job *subjob)
 {
 	union {
 		u32 *u32;
@@ -260,9 +239,9 @@ void remove_di_job(cve_di_job_handle_t hjob)
  */
 int ice_di_mmu_block_entrance(struct cve_device *cve_dev)
 {
-	union ICE_MMU_INNER_MEM_MMU_CONFIG_t reg;
+	union ice_mmu_inner_mem_mmu_config_t reg;
 	int new_block_performed = 0;
-	u32 offset_bytes = ICE_MMU_BASE + ICE_MMU_MMU_CONFIG_MMOFFSET;
+	u32 offset_bytes = cfg_default.mmu_base + cfg_default.mmu_cfg_offset;
 	u32 wait_timeout = 0;
 	/* validate that we are 32bit aligned */
 	ASSERT(((offset_bytes >> 2) << 2) == offset_bytes);
@@ -326,8 +305,8 @@ int ice_di_mmu_block_entrance(struct cve_device *cve_dev)
 
 void ice_di_mmu_unblock_entrance(struct cve_device *cve_dev)
 {
-	union ICE_MMU_INNER_MEM_MMU_CONFIG_t reg;
-	u32 offset_bytes = ICE_MMU_BASE + ICE_MMU_MMU_CONFIG_MMOFFSET;
+	union ice_mmu_inner_mem_mmu_config_t reg;
+	u32 offset_bytes = cfg_default.mmu_base + cfg_default.mmu_cfg_offset;
 	/* validate that we are 32bit aligned */
 	ASSERT(((offset_bytes >> 2) << 2) == offset_bytes);
 
@@ -364,13 +343,13 @@ static void print_kernel_buffer(
 
 static void ice_di_enable_tlc_bp(struct cve_device *ice_dev)
 {
-	union TLC_MEM_TLC_BARRIER_WATCH_CONFIG_REG_t reg;
-	u32 offset_bytes = CVE_TLC_BASE +
-		CVE_TLC_TLC_BARRIER_WATCH_CONFIG_REG_MMOFFSET;
+	union tlc_mem_tlc_barrier_watch_config_reg_t reg;
+	u32 offset_bytes = cfg_default.ice_tlc_base +
+		cfg_default.ice_tlc_barrier_watch_cfg_offset;
 
 	reg.field.enableWatch = 1;
-	reg.field.watchMode = STOP_ALL_BARRIERS;
-	reg.field.tlcMode = BLOCK_INCOMING_CNC_MESSAGES;
+	reg.field.watchMode = cfg_default.stop_all_barriers;
+	reg.field.tlcMode = cfg_default.block_incoming_cnc_messages;
 	/*reg.field.sectionID = bp->section_id;*/
 
 	cve_os_write_mmio_32(ice_dev, offset_bytes, reg.val);
@@ -389,8 +368,8 @@ static void __prepare_cbdt(struct di_job *job,
 
 	for (i = 0; i < job->remaining_subjobs_nr; i++) {
 		u64 cb = 0;
-		union cve_shared_cb_descriptor *descp = NULL;
-		union cve_shared_cb_descriptor desc;
+		union CVE_SHARED_CB_DESCRIPTOR *descp = NULL;
+		union CVE_SHARED_CB_DESCRIPTOR desc;
 		struct sub_job *subjob = &job->sub_jobs[job->next_subjob];
 
 		cb = subjob->cb.command_buffer;
@@ -403,7 +382,7 @@ static void __prepare_cbdt(struct di_job *job,
 		desc.host_haddress_reserved = (u32)((cb >> 32) & 0xffffffff);
 		desc.commands_nr = subjob->cb.commands_nr;
 		set_desc_subjob(&desc, subjob);
-		desc.status = CVE_STATUS_DISPATCHED;
+		desc.status = cfg_default.cve_status_dispatched;
 		/* Always setting this flag because same CBD is being executed
 		 * by all InferRequests. No CBD reset is performed by Driver.
 		 */
@@ -446,9 +425,9 @@ static void dispatch_next_subjobs(struct di_job *job,
 		struct cve_device *dev)
 {
 	u32 db = 0;
-	u32 cbd_size = sizeof(union cve_shared_cb_descriptor);
+	u32 cbd_size = sizeof(union CVE_SHARED_CB_DESCRIPTOR);
 	cve_virtual_address_t iceva;
-	struct ice_network *ntw = (struct ice_network *) dev->dev_network_id;
+	struct ice_network *ntw = (struct ice_network *) dev->dev_ntw_id;
 	struct ice_infer *inf = ntw->curr_exe;
 
 	if (job->cold_run)
@@ -518,34 +497,46 @@ static void dispatch_next_subjobs(struct di_job *job,
 		ntw->network_id);
 
 	/* To check if break point needs to be set */
-	if (ntw->reserve_resource & ICE_SET_BREAK_POINT)
+	if (ntw->ntw_enable_bp)
 		ice_di_enable_tlc_bp(dev);
 
 	/* reset the TLC FIFO indexes */
 	cve_os_write_mmio_32(dev,
-	 CVE_MMIO_HUB_COMMAND_BUFFER_DESCRIPTORS_BASE_ADDRESS_MMOFFSET,
+	 cfg_default.mmio_cbd_base_addr_offset,
 	 iceva);
 	cve_os_write_mmio_32(dev,
-	 CVE_MMIO_HUB_COMMAND_BUFFER_DESCRIPTORS_ENTRIES_NR_MMOFFSET,
+	 cfg_default.mmio_cbd_entries_nr_offset,
 	 dev->fifo_desc->fifo.entries);
 
 	/* ring the doorbell once with the last descriptor */
 	cve_os_write_mmio_32(dev,
-		CVE_MMIO_HUB_NEW_COMMAND_BUFFER_DOOR_BELL_MMOFFSET,
-		db);
+		cfg_default.mmio_cb_doorbell_offset, db);
+
+	getnstimeofday(&dev->busy_start_time);
+	ice_swc_counter_set(dev->hswc,
+		ICEDRV_SWC_DEVICE_COUNTER_BUSY_START_TIME,
+		(dev->busy_start_time.tv_sec * USEC_PER_SEC) +
+		(dev->busy_start_time.tv_nsec / NSEC_PER_USEC));
+	ice_swc_counter_add(dev->hswc, ICEDRV_SWC_DEVICE_COUNTER_IDLE_TIME,
+		ice_get_usec_timediff(&dev->busy_start_time,
+		&dev->idle_start_time));
+	cve_os_log(CVE_LOGLEVEL_DEBUG,
+		"busy_start_time.tv_sec=%ld busy_start_time.tv_nsec=%ld\n",
+		dev->busy_start_time.tv_sec, dev->busy_start_time.tv_nsec);
 }
 
 
 void ice_di_tlb_invalidate_full(struct cve_device *cve_dev)
 {
 	u32 i;
-	union CVG_MMU_1_SYSTEM_MAP_MEM_INVALIDATE_t reg;
+	union cvg_mmu_1_system_map_mem_invalidate_t reg;
 
 	reg.val = 0;
 	reg.field.MMU_INVALIDATE = 0xffff; /* invalidate all streams */
-	for (i = 0; i < ARRAY_SIZE(m_atu_mmio_offset_bytes); i++) {
-		u32 offset_bytes = m_atu_mmio_offset_bytes[i] +
-				CVG_MMU_1_SYSTEM_MAP_MEM_INVALIDATE_OFFSET;
+	for (i = 0; i < MAX_ATU_COUNT; i++) {
+		u32 offset_bytes = cfg_default.mmu_atu0_base +
+		(i * (cfg_default.mmu_atu1_base - cfg_default.mmu_atu0_base)) +
+		cfg_default.ice_mmu_1_system_map_mem_invalidate_offset;
 		ASSERT(((offset_bytes >> 2) << 2) == offset_bytes);
 		cve_os_write_mmio_32(cve_dev, offset_bytes, reg.val);
 	}
@@ -554,7 +545,7 @@ void ice_di_tlb_invalidate_full(struct cve_device *cve_dev)
 /* write to page table base address MMIO register of all ATU's*/
 static inline void write_to_page_table_base_address(
 	struct cve_device *cve_dev,
-	const union CVG_MMU_1_SYSTEM_MAP_MEM_PAGE_TABLE_BASE_ADDRESS_t reg)
+	const union cvg_mmu_1_system_map_mem_page_table_base_address_t reg)
 {
 	u32 i;
 
@@ -562,9 +553,10 @@ static inline void write_to_page_table_base_address(
 			cve_dev->dev_index,
 			"write_to_page_table_base_address executed\n");
 
-	for (i = 0; i < ARRAY_SIZE(m_atu_mmio_offset_bytes); i++) {
-		u32 offset_bytes = m_atu_mmio_offset_bytes[i] +
-			CVG_MMU_1_SYSTEM_MAP_MEM_PAGE_TABLE_BASE_ADDRESS_OFFSET;
+	for (i = 0; i < MAX_ATU_COUNT; i++) {
+		u32 offset_bytes = cfg_default.mmu_atu0_base +
+		(i * (cfg_default.mmu_atu1_base - cfg_default.mmu_atu0_base)) +
+		cfg_default.ice_mmu_1_system_map_mem_pt_base_addr_offset;
 		ASSERT(((offset_bytes >> 2) << 2) == offset_bytes);
 		cve_os_write_mmio_32(cve_dev, offset_bytes, reg.val);
 	}
@@ -580,7 +572,8 @@ static inline void write_to_page_table_base_address(
 
 #ifdef _DEBUG
 	cve_os_write_mmio_32(cve_dev,
-		ICE_DEBUG_CFG_REG, reg.val);
+	(cfg_default.ice_dbg_cbbid_base +
+	cfg_default.ice_dbg_cbbid_cfg_offset + (1 * 4)), reg.val);
 #endif
 
 }
@@ -597,13 +590,13 @@ void cve_di_mask_interrupts(struct cve_device *cve_dev)
 	mask = (1 << cve_dev->dev_index) << 4;
 
 	value = cve_os_read_idc_mmio(cve_dev,
-		IDC_REGS_IDC_MMIO_BAR0_MEM_ICEPE_MMOFFSET);
+		cfg_default.bar0_mem_icepe_offset);
 
 	if (!(value & mask))
 		return;
 #endif
 	cve_os_write_mmio_32(cve_dev,
-			CVE_MMIO_HUB_INTERRUPT_MASK_MMOFFSET,
+			cfg_default.mmio_intr_mask_offset,
 			(u32)-1);
 }
 
@@ -621,10 +614,11 @@ void ice_di_set_shared_read_reg(struct cve_device *dev, struct ice_network *ntw,
 			u8 enable_shared_read)
 {
 	int bo_id = dev->dev_index / 2;
-	axi_shared_read_cfg_t cfg_reg;
+	AXI_SHARED_READ_CFG_T cfg_reg;
 	u32 offset;
 
-	offset = ICEDC_ICEBO_OFFSET(bo_id) + AXI_SHARED_READ_CFG_OFFSET;
+	offset = ICEDC_ICEBO_OFFSET(bo_id) +
+				cfg_default.axi_shared_read_cfg_offset;
 
 	if (!enable_shared_read) {
 		cfg_reg.field.shared_read_enable = 0;
@@ -675,7 +669,7 @@ int set_idc_registers(struct cve_device *dev, uint8_t lock)
 
 	/*PE 1 ICE without disturbing other  */
 	value = cve_os_read_idc_mmio(dev,
-		IDC_REGS_IDC_MMIO_BAR0_MEM_ICEPE_MMOFFSET);
+		cfg_default.bar0_mem_icepe_offset);
 
 	/* Device is already ON */
 	if ((value & mask) == mask) {
@@ -695,17 +689,18 @@ int set_idc_registers(struct cve_device *dev, uint8_t lock)
 	value |= mask;
 
 	cve_os_write_idc_mmio(dev,
-		IDC_REGS_IDC_MMIO_BAR0_MEM_ICEPE_MMOFFSET, value);
+		cfg_default.bar0_mem_icepe_offset, value);
 
 	/* Check if ICEs are Ready */
 	/* Driver is not yet sure how long to wait for ICERDY */
-	__wait_for_ice_rdy(dev, value, mask);
+	__wait_for_ice_rdy(dev, value, mask,
+					cfg_default.bar0_mem_icerdy_offset);
 	if ((value & mask) != mask) {
 		uint64_t val64 = (value & ~mask);
 
 		/* Power Disable the faulty ICE */
 		cve_os_write_idc_mmio(dev,
-				IDC_REGS_IDC_MMIO_BAR0_MEM_ICEPE_MMOFFSET,
+				cfg_default.bar0_mem_icepe_offset,
 				val64);
 
 		cve_os_log_default(CVE_LOGLEVEL_ERROR,
@@ -722,30 +717,30 @@ int set_idc_registers(struct cve_device *dev, uint8_t lock)
 
 	/* Enable interrupts from ICE */
 	value = cve_os_read_idc_mmio(dev,
-		IDC_REGS_IDC_MMIO_BAR0_MEM_ICEINTEN_MMOFFSET);
+		cfg_default.bar0_mem_iceinten_offset);
 	cve_os_write_idc_mmio(dev,
-		IDC_REGS_IDC_MMIO_BAR0_MEM_ICEINTEN_MMOFFSET,
+		cfg_default.bar0_mem_iceinten_offset,
 		value | mask);
 
 	/* Enable error interrupts from ICE */
 	value = cve_os_read_idc_mmio(dev,
-		IDC_REGS_IDC_MMIO_BAR0_MEM_ICEINTEN_MMOFFSET + 4);
+		cfg_default.bar0_mem_iceinten_offset + 4);
 	cve_os_write_idc_mmio(dev,
-		IDC_REGS_IDC_MMIO_BAR0_MEM_ICEINTEN_MMOFFSET + 4,
+		cfg_default.bar0_mem_iceinten_offset + 4,
 		value | mask);
 
 	value = atomic64_read(&idc->idc_err_intr_enable);
-	if (value != ICEDC_ERROR_INTR_ENABLE_ALL) {
-		value = ICEDC_ERROR_INTR_ENABLE_ALL;
+	if (value != __icedc_err_intr_enable_all()) {
+		value = __icedc_err_intr_enable_all();
 		atomic64_set(&idc->idc_err_intr_enable, value);
 
 		/* Enable lower 32 bits of IDC interrupt */
-		cve_os_write_idc_mmio(dev, ICEDC_INTR_ENABLE_OFFSET,
+		cve_os_write_idc_mmio(dev, cfg_default.bar0_mem_idcinten_offset,
 		get_low_dword(value));
 
 		/* Enable upper 32 bits of IDC interrupt */
-		cve_os_write_idc_mmio(dev, ICEDC_INTR_ENABLE_OFFSET + 4,
-		get_high_dword(value));
+		cve_os_write_idc_mmio(dev, cfg_default.bar0_mem_idcinten_offset
+		+ 4, get_high_dword(value));
 	}
 
 	/* Verify if this is the best place to keep because */
@@ -755,6 +750,8 @@ int set_idc_registers(struct cve_device *dev, uint8_t lock)
 	dev->version_info.minor = hw_rev.minor_rev;
 
 out:
+	ice_swc_counter_set(dev->hswc, ICEDRV_SWC_DEVICE_COUNTER_POWER_STATE,
+			dev->power_state);
 	if (lock)
 		cve_os_unlock(&dg->poweroff_dev_list_lock);
 
@@ -814,7 +811,7 @@ int unset_idc_registers_multi(u32 icemask, uint8_t lock)
 
 	/* Power Off all ICEs */
 	value = cve_os_read_idc_mmio(dev,
-		IDC_REGS_IDC_MMIO_BAR0_MEM_ICEPE_MMOFFSET);
+		cfg_default.bar0_mem_icepe_offset);
 	value &= ~mask;
 	if (!value)
 		all_powered_off = 1;
@@ -822,21 +819,21 @@ int unset_idc_registers_multi(u32 icemask, uint8_t lock)
 	/* Acces PE regsiter only on real SOC */
 	if (ice_is_soc())
 		cve_os_write_idc_mmio(dev,
-				IDC_REGS_IDC_MMIO_BAR0_MEM_ICEPE_MMOFFSET,
+				cfg_default.bar0_mem_icepe_offset,
 				value);
 
 	/* Disable interrupts from ICE */
 	value = cve_os_read_idc_mmio(dev,
-		IDC_REGS_IDC_MMIO_BAR0_MEM_ICEINTEN_MMOFFSET);
+		cfg_default.bar0_mem_iceinten_offset);
 	cve_os_write_idc_mmio(dev,
-		IDC_REGS_IDC_MMIO_BAR0_MEM_ICEINTEN_MMOFFSET,
+		cfg_default.bar0_mem_iceinten_offset,
 		value & (~mask));
 
 	/* Disable error interrupts from ICE */
 	value = cve_os_read_idc_mmio(dev,
-		IDC_REGS_IDC_MMIO_BAR0_MEM_ICEINTEN_MMOFFSET + 4);
+		cfg_default.bar0_mem_iceinten_offset + 4);
 	cve_os_write_idc_mmio(dev,
-		IDC_REGS_IDC_MMIO_BAR0_MEM_ICEINTEN_MMOFFSET + 4,
+		cfg_default.bar0_mem_iceinten_offset + 4,
 		value & (~mask));
 
 	/* ICENOTE is automatically cleared with 0 write to PE */
@@ -844,13 +841,15 @@ int unset_idc_registers_multi(u32 icemask, uint8_t lock)
 	if (all_powered_off) {
 		mask = atomic64_xchg(&idc->idc_err_intr_enable, 0);
 		/* Disable lower 32 bits of IDC interrupt */
-		value = cve_os_read_idc_mmio(dev, ICEDC_INTR_ENABLE_OFFSET);
-		cve_os_write_idc_mmio(dev, ICEDC_INTR_ENABLE_OFFSET,
+		value = cve_os_read_idc_mmio(dev,
+				cfg_default.bar0_mem_idcinten_offset);
+		cve_os_write_idc_mmio(dev, cfg_default.bar0_mem_idcinten_offset,
 			value & (~mask));
 		/* Disable higher 32 bits of IDC interrupt */
-		value = cve_os_read_idc_mmio(dev, ICEDC_INTR_ENABLE_OFFSET + 4);
-		cve_os_write_idc_mmio(dev, ICEDC_INTR_ENABLE_OFFSET + 4,
-			value & (~mask));
+		value = cve_os_read_idc_mmio(dev,
+				cfg_default.bar0_mem_idcinten_offset + 4);
+		cve_os_write_idc_mmio(dev, cfg_default.bar0_mem_idcinten_offset
+			+ 4, value & (~mask));
 	}
 
 	if (lock)
@@ -894,13 +893,13 @@ void cve_di_reset_device(struct cve_device *cve_dev)
 
 static inline void di_enable_interrupts(struct cve_device *cve_dev)
 {
-	union MMIO_HUB_MEM_INTERRUPT_MASK_t mask;
+	union mmio_hub_mem_interrupt_mask_t mask;
 
 	mask.val = 0;
 	mask.field.TLC_FIFO_EMPTY = 1;
 
 	/* Enable interrupts */
-	cve_os_write_mmio_32(cve_dev, CVE_MMIO_HUB_INTERRUPT_MASK_MMOFFSET,
+	cve_os_write_mmio_32(cve_dev, cfg_default.mmio_intr_mask_offset,
 			mask.val);
 }
 
@@ -912,10 +911,10 @@ void cve_di_start_running(struct cve_device *cve_dev)
 	 */
 
 	cve_os_write_mmio_32(cve_dev,
-			CVE_MMIO_HUB_PRE_IDLE_DELAY_COUNT_MMOFFSET,
+			cfg_default.mmio_pre_idle_delay_cnt_offset,
 			2000);
-	cve_os_write_mmio_32(cve_dev, CVE_MMIO_HUB_CVE_CONFIG_MMOFFSET,
-		MMIO_HUB_MEM_CVE_CONFIG_CVE_IDLE_ENABLE_MASK);
+	cve_os_write_mmio_32(cve_dev, cfg_default.mmio_cve_config_offset,
+		cfg_default.mmio_cfg_idle_enable_mask);
 
 	/* enable all the interrupts beside the FIFO empty */
 	di_enable_interrupts(cve_dev);
@@ -942,17 +941,19 @@ void cve_di_start_running(struct cve_device *cve_dev)
 #endif
 	/* Release all stalled cores */
 	cve_os_write_mmio_32(cve_dev,
-		CVE_MMIO_HUB_PROG_CORES_CONTROL_MMOFFSET, core_mask);
+		cfg_default.ice_prog_cores_ctrl_offset, core_mask);
 
 #ifdef _DEBUG
 	cve_os_write_mmio_32(cve_dev,
-		ICE_DEBUG_CFG_REG, 0xabababab);
+	(cfg_default.ice_dbg_cbbid_base +
+	cfg_default.ice_dbg_cbbid_cfg_offset + (1 * 4)), 0xabababab);
 	cve_os_write_mmio_32(cve_dev,
-		ICE_DEBUG_CFG_REG, get_process_pid());
+	(cfg_default.ice_dbg_cbbid_base + cfg_default.ice_dbg_cbbid_cfg_offset +
+	(1 * 4)), get_process_pid());
 #endif
 }
 
-int cve_di_create_subjob(cve_virtual_address_t cb_address,
+int cve_di_create_subjob(cve_virtual_address_t  cb_address,
 		u64 cb_command_buffer,
 		u16 cb_commands_nr,
 		u32 embedded_sub_job,
@@ -981,7 +982,7 @@ void ice_di_reset_counter(uint32_t cntr_id)
 {
 	struct cve_device *dev = get_first_device();
 	uint32_t offset = IA_IICS_BASE + (cntr_id * 32) +
-				IDC_REGS_IDC_MMIO_BAR1_MEM_EVCTICE0_MMOFFSET;
+				cfg_default.bar0_mem_evctice0_offset;
 
 	ASSERT(dev != NULL);
 	if (cntr_id >= MAX_HW_COUNTER_NR) {
@@ -1003,14 +1004,12 @@ void cve_di_set_pool_registers(struct cve_device *dev,
 	u32 mask, value, reg, device_index_bit;
 	u32 dev_index = dev->dev_index;
 
-	reg = IDC_REGS_IDC_MMIO_BAR0_MEM_ICEPOOL0_MMOFFSET
-			+ (pool_number * 8);
+	reg = cfg_default.bar0_mem_icepool0_offset + (pool_number * 8);
 	device_index_bit = (1<<(4+dev_index)) & 0xffff;
 
 	/* Unregister this ICE from any Pool that it is registered with */
 	for (i = 0; i < NUM_POOL_REG; i++) {
-		u32 reg_offset = IDC_REGS_IDC_MMIO_BAR0_MEM_ICEPOOL0_MMOFFSET
-					+ (i * 8);
+		u32 reg_offset = cfg_default.bar0_mem_icepool0_offset + (i * 8);
 		u32 read = cve_os_read_idc_mmio(dev, reg_offset);
 
 		if (device_index_bit & read) {
@@ -1033,11 +1032,10 @@ void cve_di_set_pool_registers(struct cve_device *dev,
 
 void cve_di_unset_pool_registers(u8 pool_number)
 {
-	u32 reg = IDC_REGS_IDC_MMIO_BAR0_MEM_ICEPOOL0_MMOFFSET;
+	u32 reg = cfg_default.bar0_mem_icepool0_offset;
 	struct cve_os_device *os_dev = to_cve_os_device(get_first_device());
 
-	reg = IDC_REGS_IDC_MMIO_BAR0_MEM_ICEPOOL0_MMOFFSET +
-		(pool_number * 8);
+	reg = cfg_default.bar0_mem_icepool0_offset + (pool_number * 8);
 
 	cve_os_write_idc_mmio(
 		os_dev->idc_dev.cve_dev, reg, 0);
@@ -1051,8 +1049,8 @@ void cve_di_unset_pool_registers(u8 pool_number)
 void cve_set_hw_sync_regs(struct idc_device *idc_dev,
 					u32 ctr_nr, int8_t pool_id)
 {
-	u32 reg = IDC_REGS_IDC_MMIO_BAR0_MEM_EVCTPROT0_MMOFFSET + (ctr_nr * 32);
-	IDC_REGS_EVCTPROT0_t evct_prot_reg;
+	u32 reg = cfg_default.bar0_mem_evctprot0_offset + (ctr_nr * 32);
+	idc_regs_evctprot0_t evct_prot_reg;
 	int value = 32 + pool_id;
 
 	evct_prot_reg.val = cve_os_read_idc_mmio(idc_dev->cve_dev, reg);
@@ -1077,14 +1075,15 @@ void cve_set_hw_sync_regs(struct idc_device *idc_dev,
 	 * to improve latency.
 	 */
 	cve_os_write_idc_mmio(idc_dev->cve_dev,
-		IDC_REGS_IDC_MMIO_BAR0_MEM_ICENOTA0_MMOFFSET,
-		ICE_TLC_DOORBELL_MAILBOX);
+		cfg_default.bar0_mem_icenota0_offset,
+		cfg_default.cbbid_tlc_offset +
+		cfg_default.ice_tlc_hi_mailbox_doorbell_offset);
 }
 
 void cve_reset_hw_sync_regs(struct idc_device *idc_dev,
 					u32 ctr_nr)
 {
-	u32 reg = IDC_REGS_IDC_MMIO_BAR0_MEM_EVCTPROT0_MMOFFSET + (ctr_nr * 32);
+	u32 reg = cfg_default.bar0_mem_evctprot0_offset + (ctr_nr * 32);
 	u32 value = 0;
 
 	cve_os_write_idc_mmio(idc_dev->cve_dev, reg, value);
@@ -1114,7 +1113,9 @@ static int is_embedded_cb_error(struct cve_device *cve_dev)
 {
 	u32 reg_val;
 
-	reg_val = cve_os_read_mmio_32(cve_dev, ICE_MMIO_GP_RESET_REG_ADDR);
+	reg_val = cve_os_read_mmio_32(cve_dev,
+			(cfg_default.mmio_gp_regs_offset +
+			 ICE_MMIO_GP_RESET_REG_ADDR_OFFSET));
 
 	return ((reg_val == ECB_SUCCESS_STATUS) ? 0 : 1);
 }
@@ -1123,10 +1124,13 @@ static void cve_executed_cbs_time_log(struct cve_device *dev,
 	struct di_job *job, u64 *exec_time)
 {
 	u32 i;
-	union cve_shared_cb_descriptor *cb_descriptor = NULL;
+	union CVE_SHARED_CB_DESCRIPTOR *cb_descriptor = NULL;
 
 	*exec_time = 0;
 
+	cve_os_log(CVE_LOGLEVEL_DEBUG,
+		"idle_start_time.tv_sec=%ld idle_start_time.tv_nsec=%ld\n",
+		dev->idle_start_time.tv_sec, dev->idle_start_time.tv_nsec);
 	for (i = job->first_cb_desc; i <= job->last_cb_desc; i++) {
 
 		cb_descriptor = &dev->fifo_desc->fifo.cb_desc_vaddr[i];
@@ -1152,9 +1156,8 @@ static struct ice_network *__get_ntw_of_overflowed_cntr(int cntr_id,
 		struct idc_device *dev)
 {
 	struct cve_device_group *dg = cve_dg_get();
-	u32 reg = IDC_REGS_IDC_MMIO_BAR0_MEM_EVCTPROT0_MMOFFSET +
-		(cntr_id * 32);
-	IDC_REGS_EVCTPROT0_t evct_prot_reg;
+	u32 reg = cfg_default.bar0_mem_evctprot0_offset + (cntr_id * 32);
+	idc_regs_evctprot0_t evct_prot_reg;
 	struct ice_network *ntw = NULL;
 
 	/* Check overflow bit of all the counters with which a valid NTW ID
@@ -1162,14 +1165,14 @@ static struct ice_network *__get_ntw_of_overflowed_cntr(int cntr_id,
 	 * base_addr_hw_cntr holds the base address of HW CNTR array and can be
 	 * used to get the network ID to which a given counter belongs.
 	 */
-	if (dg->base_addr_hw_cntr[cntr_id].network_id != INVALID_NETWORK_ID) {
+	if (dg->base_addr_hw_cntr[cntr_id].cntr_ntw_id != INVALID_NETWORK_ID) {
 		evct_prot_reg.val = cve_os_read_idc_mmio(dev->cve_dev, reg);
 		if (evct_prot_reg.field.OVF) {
 			cve_os_log_default(CVE_LOGLEVEL_ERROR,
 			"Error: NtwID:0x%llx Counter:%x overflow\n",
-			dg->base_addr_hw_cntr[cntr_id].network_id, cntr_id);
+			dg->base_addr_hw_cntr[cntr_id].cntr_ntw_id, cntr_id);
 			ntw = (struct ice_network *)
-				dg->base_addr_hw_cntr[cntr_id].network_id;
+				dg->base_addr_hw_cntr[cntr_id].cntr_ntw_id;
 		}
 	}
 
@@ -1187,6 +1190,7 @@ int cve_di_interrupt_handler(struct idc_device *idc_dev)
 	u32 head = atomic_read(&idc_dev->status_q_head);
 	u32 tail = atomic_read(&idc_dev->status_q_tail);
 	struct dev_isr_status *isr_status_node;
+	struct timespec cur_ts;
 
 	if (!is_driver_active) {
 		cve_os_log_default(CVE_LOGLEVEL_ERROR,
@@ -1208,15 +1212,15 @@ int cve_di_interrupt_handler(struct idc_device *idc_dev)
 	isr_status_node->valid = 0;
 
 	status_lo = cve_os_read_idc_mmio(idc_dev->cve_dev,
-			ICEDC_INTR_STATUS_OFFSET);
+			cfg_default.bar0_mem_idcintst_offset);
 	status_hi = cve_os_read_idc_mmio(idc_dev->cve_dev,
-			ICEDC_INTR_STATUS_OFFSET + 4);
+			cfg_default.bar0_mem_idcintst_offset + 4);
 	isr_status_node->idc_status = (((u64)status_hi << 32) | status_lo);
 
 	cve_os_write_idc_mmio(idc_dev->cve_dev,
-		ICEDC_INTR_STATUS_OFFSET, status_lo);
+		cfg_default.bar0_mem_idcintst_offset, status_lo);
 	cve_os_write_idc_mmio(idc_dev->cve_dev,
-		ICEDC_INTR_STATUS_OFFSET + 4, status_hi);
+		cfg_default.bar0_mem_idcintst_offset + 4, status_hi);
 
 	if (status_lo || status_hi) {
 		cve_os_log(CVE_LOGLEVEL_ERROR,
@@ -1226,9 +1230,9 @@ int cve_di_interrupt_handler(struct idc_device *idc_dev)
 	}
 
 	status_lo = cve_os_read_idc_mmio(idc_dev->cve_dev,
-			IDC_REGS_IDC_MMIO_BAR0_MEM_ICEINTST_MMOFFSET);
+			cfg_default.bar0_mem_iceintst_offset);
 	status_hi = cve_os_read_idc_mmio(idc_dev->cve_dev,
-			IDC_REGS_IDC_MMIO_BAR0_MEM_ICEINTST_MMOFFSET + 4);
+			cfg_default.bar0_mem_iceintst_offset + 4);
 
 	isr_status_node->ice_status = (((u64)status_hi << 32) | status_lo);
 	cve_os_log(CVE_LOGLEVEL_INFO,
@@ -1237,10 +1241,10 @@ int cve_di_interrupt_handler(struct idc_device *idc_dev)
 			status_lo, status_hi);
 
 	cve_os_write_idc_mmio(idc_dev->cve_dev,
-			IDC_REGS_IDC_MMIO_BAR0_MEM_ICEINTST_MMOFFSET,
+			cfg_default.bar0_mem_iceintst_offset,
 			status_lo & 0x0000FFF0);
 	cve_os_write_idc_mmio(idc_dev->cve_dev,
-			IDC_REGS_IDC_MMIO_BAR0_MEM_ICEINTST_MMOFFSET + 4,
+			cfg_default.bar0_mem_iceintst_offset + 4,
 			status_hi & 0x0000FFF0);
 
 	/* Spurious Interrupt */
@@ -1253,6 +1257,8 @@ int cve_di_interrupt_handler(struct idc_device *idc_dev)
 		goto exit;
 	}
 
+	getnstimeofday(&cur_ts);
+
 	/* Currently only serving ICE Int Request, not Ice Error request */
 	status_hl = status_lo | status_hi;
 	while (1) {
@@ -1262,10 +1268,22 @@ int cve_di_interrupt_handler(struct idc_device *idc_dev)
 
 		cve_dev = &idc_dev->cve_dev[index];
 
+		cve_dev->idle_start_time.tv_sec = cur_ts.tv_sec;
+		cve_dev->idle_start_time.tv_nsec = cur_ts.tv_nsec;
+
+		ice_swc_counter_set(cve_dev->hswc,
+			ICEDRV_SWC_DEVICE_COUNTER_IDLE_START_TIME,
+			(cve_dev->idle_start_time.tv_sec * USEC_PER_SEC) +
+			(cve_dev->idle_start_time.tv_nsec / NSEC_PER_USEC));
+		ice_swc_counter_add(cve_dev->hswc,
+			ICEDRV_SWC_DEVICE_COUNTER_BUSY_TIME,
+			ice_get_usec_timediff(&cve_dev->idle_start_time,
+			&cve_dev->busy_start_time));
+
 		project_hook_interrupt_handler_entry(cve_dev);
 
 		status_32 = cve_os_read_mmio_32(cve_dev,
-				CVE_MMIO_HUB_INTERRUPT_STATUS_MMOFFSET);
+				cfg_default.mmio_intr_status_offset);
 		isr_status_node->ice_isr_status[index] = status_32;
 		cve_os_dev_log(CVE_LOGLEVEL_INFO,
 			index,
@@ -1339,7 +1357,7 @@ void cve_di_interrupt_handler_deferred_proc(struct idc_device *dev)
 	union icedc_intr_status_t idc_err_status;
 	u64 exec_time, ice_status = 0, idc_status = 0;
 	struct di_job *job;
-	union cve_shared_cb_descriptor *cb_descriptor;
+	union CVE_SHARED_CB_DESCRIPTOR *cb_descriptor;
 	enum cve_job_status job_status;
 	struct cve_device *cve_dev = NULL;
 	struct sub_job *sub_job;
@@ -1500,7 +1518,14 @@ void cve_di_interrupt_handler_deferred_proc(struct idc_device *dev)
 		/* TODO: card level reset for fatal errors */
 		if (is_dsram_error(status)) {
 			store_ecc_err_count(cve_dev);
-			ice_ds_handle_ice_error(cve_dev, status);
+			if (is_single_ecc_err(status)) {
+				/* Ignore single bit error*/
+				status = unset_single_ecc_err(status);
+			}
+			if (status)
+				ice_ds_handle_ice_error(cve_dev, status);
+			else
+				continue;
 		}
 
 
@@ -1549,12 +1574,12 @@ void cve_di_interrupt_handler_deferred_proc(struct idc_device *dev)
 			}
 
 		} else {
-			if (ice_ds_is_network_active(cve_dev->dev_network_id)
+			if (ice_ds_is_network_active(cve_dev->dev_ntw_id)
 					== 0) {
 				job_status = CVE_JOBSTATUS_ABORTED;
 				cve_os_log_default(CVE_LOGLEVEL_INFO,
 						"NtwID:0x%llx is not active\n",
-						cve_dev->dev_network_id);
+						cve_dev->dev_ntw_id);
 			} else {
 				/* if job is entirely completed */
 				cve_os_log(CVE_LOGLEVEL_DEBUG,
@@ -1640,7 +1665,7 @@ void cve_di_dispatch_job(struct cve_device *cve_dev,
 void cve_di_set_page_directory_base_addr(struct cve_device *cve_dev,
 		u32 base_addr)
 {
-	union CVG_MMU_1_SYSTEM_MAP_MEM_PAGE_TABLE_BASE_ADDRESS_t reg;
+	union cvg_mmu_1_system_map_mem_page_table_base_address_t reg;
 
 	reg.val = 0;
 	reg.field.MMU_PAGE_TABLE_BASE_ADDRESS = base_addr;
@@ -1653,7 +1678,7 @@ void cve_di_set_page_directory_base_addr(struct cve_device *cve_dev,
 
 void cve_di_invalidate_page_table_base_address(struct cve_device *cve_dev)
 {
-	union CVG_MMU_1_SYSTEM_MAP_MEM_PAGE_TABLE_BASE_ADDRESS_t reg;
+	union cvg_mmu_1_system_map_mem_page_table_base_address_t reg;
 
 	reg.val = 0;
 	write_to_page_table_base_address(cve_dev, reg);
@@ -1785,14 +1810,49 @@ u32 cve_di_get_device_reset_flag(struct cve_device *cve_dev)
 void cve_di_get_debugfs_regs_list(const struct debugfs_reg32 **regs,
 		u32 *num_of_regs)
 {
+	/* rgisters to be exposed through debugfs*/
+	struct debugfs_reg32 registers[] = {
+	{"atu0_tlb_misses", cfg_default.mmu_base +
+				cfg_default.mmu_atu_misses_offset},
+	{"atu1_tlb_misses", cfg_default.mmu_base +
+				cfg_default.mmu_atu_misses_offset + 4},
+	{"atu2_tlb_misses", cfg_default.mmu_base +
+				cfg_default.mmu_atu_misses_offset + 8},
+	{"atu3_tlb_misses", cfg_default.mmu_base +
+				cfg_default.mmu_atu_misses_offset + 12},
+	{"atu0_tlb_hits", cfg_default.mmu_base +
+				cfg_default.mmu_atu_transactions_offset},
+	{"atu1_tlb_hits", cfg_default.mmu_base +
+				cfg_default.mmu_atu_transactions_offset + 4},
+	{"atu2_tlb_hits", cfg_default.mmu_base +
+				cfg_default.mmu_atu_transactions_offset + 8},
+	{"atu3_tlb_hits", cfg_default.mmu_base +
+				cfg_default.mmu_atu_transactions_offset + 12},
+	{"mmu_reads", cfg_default.mmu_base +
+				cfg_default.mmu_read_issued_offset},
+	{"mmu_writes", cfg_default.mmu_base +
+				cfg_default.mmu_write_issued_offset},
+	{"atu0_pt", cfg_default.mmu_atu0_base +
+			cfg_default.mmu_atu_pt_base_addr_offset},
+	{"atu1_pt", cfg_default.mmu_atu1_base +
+			cfg_default.mmu_atu_pt_base_addr_offset},
+	{"atu2_pt", cfg_default.mmu_atu2_base +
+			cfg_default.mmu_atu_pt_base_addr_offset},
+	{"atu3_pt", cfg_default.mmu_atu3_base +
+			cfg_default.mmu_atu_pt_base_addr_offset},
+
+	};
+
+
+
 	*regs = registers;
 	*num_of_regs = ARRAY_SIZE(registers);
 }
 
 void cve_di_set_hw_counters(struct cve_device *cve_dev)
 {
-	union ICE_MMU_INNER_MEM_MMU_CONFIG_t reg;
-	u32 offset_bytes = ICE_MMU_BASE + ICE_MMU_MMU_CONFIG_MMOFFSET;
+	union ice_mmu_inner_mem_mmu_config_t reg;
+	u32 offset_bytes = cfg_default.mmu_base + cfg_default.mmu_cfg_offset;
 
 	/* validate that we are 32bit aligned */
 	ASSERT(((offset_bytes >> 2) << 2) == offset_bytes);
@@ -1809,7 +1869,7 @@ void cve_di_set_hw_counters(struct cve_device *cve_dev)
 
 void ice_di_reset_cbdt_cb_addr(struct cve_device *dev)
 {
-	union cve_shared_cb_descriptor *cb_descriptor = NULL;
+	union CVE_SHARED_CB_DESCRIPTOR *cb_descriptor = NULL;
 	u32 i;
 
 	for (i = 0; i < dev->fifo_desc->fifo.entries; i++) {
@@ -1830,7 +1890,7 @@ int ice_di_is_network_under_execution(u64 ntw_id, struct cve_device_group *dg)
 		if (!dev)
 			continue;
 		do {
-			if (dev->dev_network_id == ntw_id &&
+			if (dev->dev_ntw_id == ntw_id &&
 				dev->state == CVE_DEVICE_BUSY) {
 				count++;
 
@@ -1854,7 +1914,7 @@ void ice_di_get_job_handle(struct cve_device *dev,
 		cve_ds_job_handle_t *ds_job_handle)
 {
 	struct di_job *job;
-	union cve_shared_cb_descriptor *cb_descriptor;
+	union CVE_SHARED_CB_DESCRIPTOR *cb_descriptor;
 
 	cb_descriptor = &dev->fifo_desc->fifo.cb_desc_vaddr[0];
 	job = get_desc_subjob(cb_descriptor)->parent;
@@ -1873,8 +1933,8 @@ void ice_di_deactivate_driver(void)
 
 void ice_di_set_mmu_address_mode(struct cve_device *ice)
 {
-	union ICE_MMU_INNER_MEM_MMU_CONFIG_t reg;
-	u32 offset_bytes = ICE_MMU_BASE + ICE_MMU_MMU_CONFIG_MMOFFSET;
+	union ice_mmu_inner_mem_mmu_config_t reg;
+	u32 offset_bytes = cfg_default.mmu_base + cfg_default.mmu_cfg_offset;
 
 	/* read current register value */
 	reg.val = cve_os_read_mmio_32(ice, offset_bytes);

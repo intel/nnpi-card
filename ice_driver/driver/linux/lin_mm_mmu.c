@@ -22,7 +22,6 @@
 #include <string.h>
 #endif
 
-#include <cve_hw_forSw.h>
 #include "os_interface.h"
 #include "osmm_interface.h"
 #include "cve_driver_internal.h"

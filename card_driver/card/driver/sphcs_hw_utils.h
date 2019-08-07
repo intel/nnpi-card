@@ -12,6 +12,6 @@ u32 dma_calc_and_gen_lli(struct sg_table *srcSgt,
 		void *lliPtr,
 		uint64_t dst_offset,
 		void *(*set_data_elem)(void *sgl, dma_addr_t src, dma_addr_t dst, uint32_t size),
-		uint32_t *transfer_size);
+		uint64_t *transfer_size);
 
 #endif /* SRC_DRIVER_CARD_SPHCS_HW_UTILS_H_ */

@@ -39,30 +39,17 @@
 #endif
 
 #include "ice_sw_counters.h"
-#include <mmio_hub_regs.h>
-#include <ice_mmu_inner_regs.h>
-#include <cve_delphi_cfg_regs.h>
-#include <cve_dse_regs.h>
-#include <idc_regs_regs.h>
 #include "device_interface_internal.h"
 #include "cve_linux_internal.h"
 /* #include "coh_dtf_log.h"*/
 /* #include "coh_platform_interface.h"*/
-#include "tlc_hi_regs.h"
-#include "TLC_command_formats_values_no_ifdef.h"
 #include "ice_trace.h"
-#include "cve_dump.h"
 #include "project_device_interface.h"
+#include "sph_device_regs.h"
 
-#define ICE_CORE_BLOB_SIZE sizeof(cveCoreBlob_t)
 #define CVE_DUMP_BLOB_NR 1
 
-
 #ifdef DEBUG_TENSILICA_ENABLE
-#include <mmio_semaphore_regs.h>
-
-#define CVE_SEM_HW_GENERAL_REG \
-	(CVE_SEMAPHORE_BASE + CVE_SEMAPHORE_MMIO_CVE_SEM_GENERAL_MMOFFSET)
 
 /* In CVE2.0 debug module reset (DReset)can be
  * decoupled from CVE functional reset (Breset)
@@ -73,13 +60,81 @@
  */
 inline void cve_decouple_debugger_reset(struct cve_device *cve_dev)
 {
-	cve_os_write_mmio_32(cve_dev, CVE_SEM_HW_GENERAL_REG, 0x07);
+	cve_os_write_mmio_32(cve_dev,
+		(cfg_default.ice_sem_base +
+		cfg_default.ice_sem_mmio_general_offset), 0x07);
 }
 
 #endif
 
+#ifndef RING3_VALIDATION
+static struct kobject *hwconfig_kobj;
+static struct kobject *llcfreq_kobj;
+
+static ssize_t show_ice_freqinfo(struct kobject *kobj,
+		struct kobj_attribute *attr,
+		char *buf);
+
+static ssize_t show_ice_freq(struct kobject *kobj,
+		struct kobj_attribute *attr,
+		char *buf);
+
+static ssize_t store_ice_freq(struct kobject *kobj,
+		struct kobj_attribute *attr,
+		const char *buf, size_t count);
+
+static ssize_t show_llc_freqinfo(struct kobject *kobj,
+		struct kobj_attribute *attr,
+		char *buf);
+
+static ssize_t show_llc_freq(struct kobject *kobj,
+		struct kobj_attribute *attr,
+		char *buf);
+
+static ssize_t store_llc_freq(struct kobject *kobj,
+		struct kobj_attribute *attr,
+		const char *buf, size_t count);
+
+static struct kobj_attribute icefreqinfo_attr =
+__ATTR(freqinfo, 0444, show_ice_freqinfo, NULL);
+
+static struct kobj_attribute icefreq_attr =
+__ATTR(freq, 0664, show_ice_freq, store_ice_freq);
+
+static struct kobj_attribute llcfreqinfo_attr =
+__ATTR(freqinfo, 0444, show_llc_freqinfo, NULL);
+
+static struct kobj_attribute llcfreq_min_attr =
+__ATTR(min, 0664, show_llc_freq, store_llc_freq);
+
+static struct kobj_attribute llcfreq_max_attr =
+__ATTR(max, 0664, show_llc_freq, store_llc_freq);
+
+static struct attribute *ice_freq_attrs[] = {
+	&icefreqinfo_attr.attr,
+	&icefreq_attr.attr,
+	NULL,	/* need to NULL terminate the list of attributes */
+};
+
+static struct attribute *llc_freq_attrs[] = {
+	&llcfreqinfo_attr.attr,
+	&llcfreq_min_attr.attr,
+	&llcfreq_max_attr.attr,
+	NULL,	/* need to NULL terminate the list of attributes */
+};
+
+static struct attribute_group freq_attr_group = {
+		.attrs = ice_freq_attrs,
+};
+
+static struct attribute_group llc_attr_group = {
+		.name = "freq",
+		.attrs = llc_freq_attrs,
+};
+
+#endif
+
 /* this variable will be updated in init_hw_revision */
-#ifndef ENABLE_SPH_STEP_B
 void get_hw_revision(struct cve_device *cve_dev,
 				struct hw_revision_t *hw_rev)
 {
@@ -88,41 +143,36 @@ void get_hw_revision(struct cve_device *cve_dev,
 	static int hw_rev_initialized;
 
 	if (!hw_rev_initialized) {
+		if (cfg_default.mmio_hw_revision_offset == INVALID_OFFSET) {
+			hw_rev->major_rev = 0;
+			hw_rev->minor_rev = 0;
+			return;
+		}
 		hw_rev_mmio_val = cve_os_read_mmio_32(cve_dev,
-				CVE_MMIO_HUB_HW_REVISION_MMOFFSET);
-		hw_rev_value.major_rev =
-			hw_rev_mmio_val &
-			MMIO_HUB_MEM_HW_REVISION_MAJOR_REV_MASK;
-		hw_rev_value.minor_rev =
-			(hw_rev_mmio_val &
-			MMIO_HUB_MEM_HW_REVISION_MINOR_REV_MASK)>>16;
+				cfg_default.mmio_hw_revision_offset);
+		hw_rev_value.major_rev = hw_rev_mmio_val &
+			cfg_default.mmio_hw_revision_major_rev_mask;
+		hw_rev_value.minor_rev = (hw_rev_mmio_val &
+			cfg_default.mmio_hw_revision_minor_rev_mask)>>16;
 		hw_rev_initialized = 1;
 	}
 
 	hw_rev->major_rev = hw_rev_value.major_rev;
 	hw_rev->minor_rev = hw_rev_value.minor_rev;
 }
-#else
-void get_hw_revision(struct cve_device *cve_dev,
-				struct hw_revision_t *hw_rev)
-{
-	hw_rev->major_rev = 0;
-	hw_rev->minor_rev = 0;
-}
 
-#endif
 int is_wd_error(u32 status)
 {
 	if (!enable_wdt_debugfs)
 		return 0;
 	return ((status &
-	MMIO_HUB_MEM_INTERRUPT_STATUS_INTERNAL_CVE_WATCHDOG_INTERRUPT_MASK)
+	cfg_default.mmio_wd_intr_mask)
 	!= 0);
 }
 
 static void configure_axi_max_inflight(struct cve_device *cve_dev)
 {
-	union CVE_DSE_MEM_AXI_MAX_INFLIGHT_t axi_inflight;
+	union cve_dse_mem_axi_max_inflight_t axi_inflight;
 
 	axi_inflight.val = 0;
 	axi_inflight.field.AXI_MAX_WRITE_INFLIGHT =
@@ -131,22 +181,35 @@ static void configure_axi_max_inflight(struct cve_device *cve_dev)
 		AXI_MAX_INFLIGHT_READ_TRANSACTION;
 
 	cve_os_write_mmio_32(cve_dev,
-		CVE_DSE_BASE + CVE_DSE_AXI_MAX_INFLIGHT_MMOFFSET,
+		cfg_default.ice_dse_base +
+		cfg_default.ice_axi_max_inflight_offset,
 		axi_inflight.val);
 }
 
 static void configure_dtf(struct cve_device *cve_dev)
 {
 #ifdef FPGA
-	union MMIO_HUB_MEM_DTF_CONTROL_t dtf_control;
+	if (ice_get_b_step_enable_flag()) {
+		union mmio_hub_mem_dtf_control_t_b_step dtf_control;
 
-	/* Set control register in cve top */
-	dtf_control.val = 0;
-	dtf_control.field.DTF_VTUNE_MODE = 1;
-	dtf_control.field.DTF_ON = 1;
-	cve_os_write_mmio_32(cve_dev,
-			CVE_MMIO_HUB_DTF_CONTROL_MMOFFSET,
+		/* Set control register in cve top */
+		dtf_control.val = 0;
+		dtf_control.field.DTF_VTUNE_MODE = 1;
+		dtf_control.field.DTF_ON = 1;
+		cve_os_write_mmio_32(cve_dev,
+			cfg_default.mmio_dtf_ctrl_offset,
 			dtf_control.val);
+	} else {
+		union mmio_hub_mem_dtf_control_t_a_step dtf_control;
+
+		/* Set control register in cve top */
+		dtf_control.val = 0;
+		dtf_control.field.DTF_VTUNE_MODE = 1;
+		dtf_control.field.DTF_ON = 1;
+		cve_os_write_mmio_32(cve_dev,
+			cfg_default.mmio_dtf_ctrl_offset,
+			dtf_control.val);
+	}
 #endif
 }
 
@@ -156,21 +219,22 @@ static void configure_llc(struct cve_device *cve_dev)
 	/* changing the AXI default bits (20-23) in page table entry
 	 * to be 24-27, value should be 0x6DA658
 	 */
-	union ICE_MMU_INNER_MEM_AXI_TABLE_PT_INDEX_BITS_t axi_pt_bits;
+	union ice_mmu_inner_mem_axi_table_pt_index_bits_t axi_pt_bits;
 	u32 llc_bit = CVE_LLC_BIT_SHIFT;
 
 	axi_pt_bits.val =
 	(llc_bit <<
-	 ICE_MMU_INNER_MEM_AXI_TABLE_PT_INDEX_BITS_TABLE_INDEX_BIT0_LSB) |
+	 cfg_default.mmu_pt_idx_bits_table_bit0_lsb) |
 	((llc_bit + 1) <<
-	 ICE_MMU_INNER_MEM_AXI_TABLE_PT_INDEX_BITS_TABLE_INDEX_BIT1_LSB) |
+	 cfg_default.mmu_pt_idx_bits_table_bit1_lsb) |
 	((llc_bit + 2) <<
-	 ICE_MMU_INNER_MEM_AXI_TABLE_PT_INDEX_BITS_TABLE_INDEX_BIT2_LSB) |
+	 cfg_default.mmu_pt_idx_bits_table_bit2_lsb) |
 	((llc_bit + 3) <<
-	 ICE_MMU_INNER_MEM_AXI_TABLE_PT_INDEX_BITS_TABLE_INDEX_BIT3_LSB);
+	 cfg_default.mmu_pt_idx_bits_table_bit3_lsb);
 	cve_os_write_mmio_32(cve_dev,
-			ICE_MMU_BASE + ICE_MMU_AXI_TABLE_PT_INDEX_BITS_MMOFFSET,
-			axi_pt_bits.val);
+		cfg_default.mmu_base +
+		cfg_default.mmu_axi_tbl_pt_idx_bits_offset,
+		axi_pt_bits.val);
 
 	/* Disabling because during HSLE bringup it was recommended
 	 * to let these registers have default value
@@ -178,35 +242,49 @@ static void configure_llc(struct cve_device *cve_dev)
 #if 0
 	/* set the attribute table */
 	cve_os_write_mmio_32(cve_dev,
-		ICE_MMU_BASE + ICE_MMU_AXI_ATTRIBUTES_TABLE_MMOFFSET,
-		AXI_ATTRIBUTE_TABLE_0);
+	cfg_default.mmu_base + ICE_MMU_AXI_ATTRIBUTES_TABLE_MMOFFSET,
+	AXI_ATTRIBUTE_TABLE_0);
 	cve_os_write_mmio_32(cve_dev,
-		ICE_MMU_BASE + ICE_MMU_AXI_ATTRIBUTES_TABLE_MMOFFSET + 4,
-		AXI_ATTRIBUTE_TABLE_1);
+	cfg_default.mmu_base + ICE_MMU_AXI_ATTRIBUTES_TABLE_MMOFFSET + 4,
+	AXI_ATTRIBUTE_TABLE_1);
 	cve_os_write_mmio_32(cve_dev,
-		ICE_MMU_BASE + ICE_MMU_AXI_ATTRIBUTES_TABLE_MMOFFSET + 8,
-		AXI_ATTRIBUTE_TABLE_2);
+	cfg_default.mmu_base + ICE_MMU_AXI_ATTRIBUTES_TABLE_MMOFFSET + 8,
+	AXI_ATTRIBUTE_TABLE_2);
 	cve_os_write_mmio_32(cve_dev,
-		ICE_MMU_BASE + ICE_MMU_AXI_ATTRIBUTES_TABLE_MMOFFSET + 12,
-		AXI_ATTRIBUTE_TABLE_3);
+	cfg_default.mmu_base + ICE_MMU_AXI_ATTRIBUTES_TABLE_MMOFFSET + 12,
+	AXI_ATTRIBUTE_TABLE_3);
 #endif
 
 	/* set tensilica cores default configuration */
 	cve_os_write_mmio_32(cve_dev,
-			ICE_MMU_BASE + ICE_MMU_TLC_AXI_ATTRIBUTES_MMOFFSET,
-			CVE_TLC_LLC_CONFIG);
+		cfg_default.mmu_base + cfg_default.mmu_tlc_axi_attri_offset,
+		CVE_TLC_LLC_CONFIG);
 	cve_os_write_mmio_32(cve_dev,
-			ICE_MMU_BASE + ICE_MMU_ASIP_AXI_ATTRIBUTES_MMOFFSET,
-			CVE_ASIP_LLC_CONFIG);
+		cfg_default.mmu_base + cfg_default.mmu_asip_axi_attri_offset,
+		CVE_ASIP_LLC_CONFIG);
 	cve_os_write_mmio_32(cve_dev,
-			ICE_MMU_BASE + ICE_MMU_DSP_AXI_ATTRIBUTES_MMOFFSET,
-			CVE_DSP_LLC_CONFIG);
+		cfg_default.mmu_base + cfg_default.mmu_dsp_axi_attri_offset,
+		CVE_DSP_LLC_CONFIG);
 
 	/* set the page walk */
 	cve_os_write_mmio_32(cve_dev,
-		ICE_MMU_BASE + ICE_MMU_PAGE_WALK_AXI_ATTRIBUTES_MMOFFSET,
+		cfg_default.mmu_base +
+		cfg_default.mmu_page_walk_axi_attri_offset,
 		CVE_PAGE_WALK_AXI_ATTRIBUTES);
 
+}
+
+int configure_ice_frequency(struct cve_device *dev)
+{
+	int ret = 0;
+	struct ice_hw_config_ice_freq freq_config;
+
+	freq_config.ice_num = dev->dev_index;
+	freq_config.ice_freq = dev->frequency;
+
+	ret = set_ice_freq((void *)&freq_config);
+
+	return ret;
 }
 
 /* return "0" if managed to set GP#13 register to "test" value */
@@ -219,10 +297,13 @@ static int set_gp_reg_to_test_val(struct cve_device *cve_dev)
 			ICE_MMIO_GP_RESET_REG_TEST_VAL);
 
 	cve_os_write_mmio_32(cve_dev,
-			ICE_MMIO_GP_RESET_REG_ADDR,
+			(cfg_default.mmio_gp_regs_offset +
+			 ICE_MMIO_GP_RESET_REG_ADDR_OFFSET),
 			ICE_MMIO_GP_RESET_REG_TEST_VAL);
 
-	reg_val = cve_os_read_mmio_32(cve_dev, ICE_MMIO_GP_RESET_REG_ADDR);
+	reg_val = cve_os_read_mmio_32(cve_dev,
+			(cfg_default.mmio_gp_regs_offset +
+			 ICE_MMIO_GP_RESET_REG_ADDR_OFFSET));
 	if (reg_val != ICE_MMIO_GP_RESET_REG_TEST_VAL)
 		cve_os_log(CVE_LOGLEVEL_ERROR,
 			   "GP#13 write 0x%08x read 0x%08x\n",
@@ -247,8 +328,9 @@ static int get_gp_reg_val_reset_done(struct cve_device *cve_dev)
 
 	for (timeout = 0; timeout < 10; timeout++) {
 		reg_val = cve_os_read_mmio_32(cve_dev,
-					      ICE_MMIO_GP_RESET_REG_ADDR);
-		if (reg_val == MMIO_HUB_MEM_GENERAL_PURPOSE_REGS_RESET) {
+		(cfg_default.mmio_gp_regs_offset +
+				ICE_MMIO_GP_RESET_REG_ADDR_OFFSET));
+		if (reg_val == cfg_default.mmio_hub_mem_gp_regs_reset) {
 			cve_os_log(CVE_LOGLEVEL_DEBUG,
 				   "GP#13 ready after %d cycles\n",
 				   timeout);
@@ -259,7 +341,7 @@ static int get_gp_reg_val_reset_done(struct cve_device *cve_dev)
 
 	cve_os_log(CVE_LOGLEVEL_ERROR,
 		   "GP#13 expected 0x%08x read 0x%08x\n",
-		   MMIO_HUB_MEM_GENERAL_PURPOSE_REGS_RESET, reg_val);
+		   cfg_default.mmio_hub_mem_gp_regs_reset, reg_val);
 
 	return 1;
 }
@@ -357,11 +439,12 @@ int do_reset_device(struct cve_device *cve_dev, uint8_t idc_reset)
 		ice_di_disable_clk_squashing(cve_dev);
 
 		cve_os_write_idc_mmio(cve_dev,
-			IDC_REGS_IDC_MMIO_BAR0_MEM_ICERST_MMOFFSET, value);
+			cfg_default.bar0_mem_icerst_offset, value);
 
 		/* Check if ICEs are Ready */
 		/* Driver is not yet sure how long to wait for ICERDY */
-		__wait_for_ice_rdy(cve_dev, value, mask);
+		__wait_for_ice_rdy(cve_dev, value, mask,
+					cfg_default.bar0_mem_icerdy_offset);
 		if ((value & mask) != mask) {
 			cve_os_log_default(CVE_LOGLEVEL_ERROR,
 				"Initialization of ICE-%d failed\n",
@@ -395,14 +478,13 @@ int do_reset_device(struct cve_device *cve_dev, uint8_t idc_reset)
 	}
 
 	value = cve_os_read_idc_mmio(cve_dev,
-		IDC_REGS_IDC_MMIO_BAR0_MEM_ICERDY_MMOFFSET);
+		cfg_default.bar0_mem_icerdy_offset);
 
 	/* Enable Inter Core Communication notifications messages to the
 	 * ICEs which are power enabled
 	 */
 	cve_os_write_idc_mmio(cve_dev,
-		IDC_REGS_IDC_MMIO_BAR0_MEM_ICENOTE_MMOFFSET,
-		value | notify_ice_mask);
+		cfg_default.bar0_mem_icenote_offset, value | notify_ice_mask);
 
 	/*cve_restore_dtf_regs(cve_dev);*/
 
@@ -420,6 +502,8 @@ int do_reset_device(struct cve_device *cve_dev, uint8_t idc_reset)
 	/* configure the LLC after reset */
 	configure_llc(cve_dev);
 
+	/* configure default ICE frequency */
+	retval = configure_ice_frequency(cve_dev);
 	return retval;
 }
 
@@ -427,19 +511,19 @@ void store_ecc_err_count(struct cve_device *cve_dev)
 {
 #ifndef RING3_VALIDATION
 	uint32_t serr, derr, parity_err;
-	union MMIO_HUB_MEM_UNMAPPED_ERR_ID_t unmapped_err;
+	union mmio_hub_mem_unmapped_err_id_t unmapped_err;
 
 	serr = cve_os_read_mmio_32_force_print(cve_dev,
-			CVE_MMIO_HUB_ECC_SERRCOUNT_MMOFFSET);
+			cfg_default.mmio_ecc_serrcount_offset);
 
 	derr = cve_os_read_mmio_32_force_print(cve_dev,
-			CVE_MMIO_HUB_ECC_DERRCOUNT_MMOFFSET);
+			cfg_default.mmio_ecc_derrcount_offset);
 
 	parity_err = cve_os_read_mmio_32_force_print(cve_dev,
-			CVE_MMIO_HUB_PARITY_ERRCOUNT_MMOFFSET);
+			cfg_default.mmio_parity_errcount_offset);
 
 	unmapped_err.val = cve_os_read_mmio_32_force_print(cve_dev,
-			CVE_MMIO_HUB_UNMAPPED_ERR_ID_MMOFFSET);
+			cfg_default.mmio_unmapped_err_id_offset);
 
 	if (cve_dev->hswc_infer) {
 		ice_swc_counter_add(cve_dev->hswc_infer,
@@ -455,6 +539,15 @@ void store_ecc_err_count(struct cve_device *cve_dev)
 			ICEDRV_SWC_INFER_DEVICE_COUNTER_UNMAPPED_ERR_ID,
 			unmapped_err.field.TID_ERR);
 	}
+#else
+	cve_os_read_mmio_32_force_print(cve_dev,
+			cfg_default.mmio_ecc_serrcount_offset);
+	cve_os_read_mmio_32_force_print(cve_dev,
+			cfg_default.mmio_ecc_derrcount_offset);
+	cve_os_read_mmio_32_force_print(cve_dev,
+			cfg_default.mmio_parity_errcount_offset);
+	cve_os_read_mmio_32_force_print(cve_dev,
+			cfg_default.mmio_unmapped_err_id_offset);
 #endif
 }
 
@@ -463,22 +556,26 @@ void cve_print_mmio_regs(struct cve_device *cve_dev)
 	int i;
 
 	cve_os_read_mmio_32_force_print(cve_dev,
-			ICE_MMU_BASE + ICE_MMU_MMU_FAULT_DETAILS_MMOFFSET);
+			cfg_default.mmu_base +
+			cfg_default.mmu_fault_details_offset);
 	cve_os_read_mmio_32_force_print(cve_dev,
-			ICE_MMU_BASE + ICE_MMU_FAULT_LINEAR_ADDRESS_MMOFFSET);
+			cfg_default.mmu_base +
+			cfg_default.mmu_fault_linear_addr_offset);
 	cve_os_read_mmio_32_force_print(cve_dev,
-			ICE_MMU_BASE + ICE_MMU_FAULT_PHYSICAL_ADDRESS_MMOFFSET);
+			cfg_default.mmu_base +
+			cfg_default.mmu_fault_physical_addr_offset);
 	cve_os_read_mmio_32_force_print(cve_dev,
-			ICE_MMU_BASE + ICE_MMU_MMU_CHICKEN_BITS_MMOFFSET);
+			cfg_default.mmu_base +
+			cfg_default.mmu_chicken_bits_offset);
 	cve_os_read_mmio_32_force_print(cve_dev,
-			CVE_MMIO_HUB_CBB_ERROR_CODE_MMOFFSET);
+			cfg_default.mmio_cbb_err_code_offset);
 	cve_os_read_mmio_32_force_print(cve_dev,
-			CVE_MMIO_HUB_CBB_ERROR_INFO_MMOFFSET);
+			cfg_default.mmio_cbb_error_info_offset);
 	cve_os_read_mmio_32_force_print(cve_dev,
-			CVE_MMIO_HUB_TLC_INFO_MMOFFSET);
+			cfg_default.mmio_tlc_info_offset);
 	for (i = 0; i < 16; i++)
 		cve_os_read_mmio_32_force_print(cve_dev,
-			CVE_MMIO_HUB_GENERAL_PURPOSE_REGS_MMOFFSET + 4*i);
+			cfg_default.mmio_gp_regs_offset + 4*i);
 }
 
 int init_platform_data(struct cve_device *cve_dev)
@@ -491,20 +588,80 @@ void cleanup_platform_data(struct cve_device *cve_dev)
 
 }
 
+int set_ice_freq(void *ice_freq_config)
+{
+	int retval = 0;
+	struct cve_device *dev;
+	u32 offset;
+	u64 value;
+
+	/* the ice value is in range of 0-11 so obtained thread num
+	 * is in range of 4 - 15
+	 */
+
+	struct ice_hw_config_ice_freq *freq_config =
+			(struct ice_hw_config_ice_freq *)ice_freq_config;
+
+	uint32_t ice_index = freq_config->ice_num;
+	uint32_t pcu_cr_thread_num = ice_index + 4;
+	struct cve_device_group *device_group = g_cve_dev_group_list;
+
+	dev = cve_device_get(ice_index);
+	dev->frequency = freq_config->ice_freq;
+
+	retval = cve_os_lock(&device_group->poweroff_dev_list_lock,
+			CVE_INTERRUPTIBLE);
+	if (retval != 0) {
+		cve_os_log_default(CVE_LOGLEVEL_ERROR,
+			"cve_os_lock error\n");
+
+		return retval;
+	}
+
+	if ((dev->power_state == ICE_POWER_ON) ||
+			(dev->power_state == ICE_POWER_OFF_INITIATED)) {
+
+		offset = PCU_CR_THREAD_P_REQ_BASE + (8 * pcu_cr_thread_num);
+		value = (freq_config->ice_freq / ICE_FREQ_DIVIDER_FACTOR);
+
+		/* As of now we are setting energy efficency , pstate
+		 * offset to 0 value as this is a write only register
+		 */
+		value = value << ICE_FREQ_SHIFT;
+		cve_os_dev_log(CVE_LOGLEVEL_DEBUG, ice_index,
+			"Setting ice frequency to: %u Mhz ( offset: 0x%x)\n",
+			freq_config->ice_freq, offset);
+		cve_os_log(CVE_LOGLEVEL_DEBUG,
+			"PCU_CR_THREAD%u_P_REQ offset(0x%x) Write 0x%llx\n",
+			pcu_cr_thread_num, offset, value);
+
+		cve_os_write_idc_mmio(dev, offset, value);
+	} else {
+		cve_os_dev_log_default(CVE_LOGLEVEL_INFO, ice_index,
+			"ICE is not powered ON, Reg write will be done after Power ON\n");
+		goto out;
+	}
+
+out:
+	cve_os_unlock(&device_group->poweroff_dev_list_lock);
+
+	return retval;
+}
+
 void project_hook_interrupt_handler_exit(struct cve_device *cve_dev,
 		u32 status)
 {
-	union MMIO_HUB_MEM_CVE_CONFIG_t cve_config;
+	union mmio_hub_mem_cve_config_t cve_config;
 
 	if (enable_wdt_debugfs) {
 		/* Disable WDT in CVE2 */
 		cve_config.val = cve_os_read_mmio_32(cve_dev,
-				CVE_MMIO_HUB_CVE_CONFIG_MMOFFSET);
+				cfg_default.mmio_cve_config_offset);
 		cve_config.val = cve_config.val &
-			~MMIO_HUB_MEM_CVE_CONFIG_CVE_WATCHDOG_ENABLE_MASK;
+			~cfg_default.mmio_wd_enable_mask;
 
 		cve_os_write_mmio_32(cve_dev,
-				CVE_MMIO_HUB_CVE_CONFIG_MMOFFSET,
+				cfg_default.mmio_cve_config_offset,
 				cve_config.val);
 	}
 }
@@ -512,7 +669,7 @@ void project_hook_interrupt_handler_exit(struct cve_device *cve_dev,
 void project_hook_dispatch_new_job(struct cve_device *cve_dev,
 						struct ice_network *ntw)
 {
-	union MMIO_HUB_MEM_CVE_WATCHDOG_INIT_t wdt_init;
+	union mmio_hub_mem_cve_watchdog_init_t wdt_init;
 
 	/* Configure CVE HW watchdog: */
 	enable_wdt_debugfs = cve_debug_get(DEBUG_WD_EN);
@@ -522,9 +679,8 @@ void project_hook_dispatch_new_job(struct cve_device *cve_dev,
 		enable_wdt_debugfs = 0;
 
 	/* Disable WD if ice debugger is used*/
-	if (unlikely(ntw->reserve_resource & ICE_SET_BREAK_POINT))
+	if (unlikely(ntw->ntw_enable_bp))
 		enable_wdt_debugfs = 0;
-
 
 	if (enable_wdt_debugfs) {
 		/* Set watchdog expiration period.
@@ -540,20 +696,20 @@ void project_hook_dispatch_new_job(struct cve_device *cve_dev,
 		wdt_init.val = 0xF0000000;
 #endif
 		cve_os_write_mmio_32(cve_dev,
-				CVE_MMIO_HUB_CVE_WATCHDOG_INIT_MMOFFSET,
+				cfg_default.mmio_wd_init_offset,
 				wdt_init.val);
 
 		/* Enable WDT in CVE2 */
 		cve_os_read_modify_write_mmio_32(cve_dev,
-			CVE_MMIO_HUB_CVE_CONFIG_MMOFFSET,
-			MMIO_HUB_MEM_CVE_CONFIG_CVE_WATCHDOG_ENABLE_MASK);
+			cfg_default.mmio_cve_config_offset,
+			cfg_default.mmio_wd_enable_mask);
 
 		/* Pet WDT in driver side (To make sure WDT is activated
 		 * in case TLC is dead)
 		 */
 		cve_os_write_mmio_32(cve_dev,
-			CVE_MMIO_HUB_TLC_WR_PULSE_MMOFFSET,
-			MMIO_HUB_MEM_TLC_WR_PULSE_CVE_WATCHDOG_PETTING_MASK);
+			cfg_default.mmio_tlc_pulse_offset,
+			cfg_default.mmio_tlc_wd_petting_mask);
 	}
 }
 
@@ -568,8 +724,8 @@ void ice_di_update_page_sz(struct cve_device *cve_dev, u32 *page_sz_array)
 
 	for (i = 0; i < ICE_PAGE_SZ_CONFIG_REG_COUNT; i++) {
 		cve_os_write_mmio_32(cve_dev,
-				(ICE_MMU_BASE +
-				 ICE_MMU_PAGE_SIZES_MMOFFSET + (i * 4)),
+				(cfg_default.mmu_base +
+				 cfg_default.mmu_page_sizes_offset + (i * 4)),
 				page_sz_array[i]);
 		cve_os_dev_log(CVE_LOGLEVEL_DEBUG,
 				cve_dev->dev_index,
@@ -603,9 +759,9 @@ out:
 void cve_di_set_cve_dump_control_register(struct cve_device *cve_dev,
 		uint8_t dumpTrigger, struct di_cve_dump_buffer ice_dump_buf)
 {
-	union TLC_HI_MEM_TLC_DUMP_CONTROL_REG_t reg;
-	u32 offset_bytes = CVE_TLC_HI_BASE +
-			CVE_TLC_HI_TLC_DUMP_CONTROL_REG_MMOFFSET;
+	union tlc_hi_mem_tlc_dump_control_reg_t reg;
+	u32 offset_bytes = cfg_default.ice_tlc_hi_base +
+			cfg_default.ice_tlc_hi_dump_control_offset;
 
 	if (ice_dump_buf.is_allowed_tlc_dump) {
 		/* validate that we are 32bit aligned */
@@ -615,7 +771,7 @@ void cve_di_set_cve_dump_control_register(struct cve_device *cve_dev,
 		if (ice_dump_buf.is_allowed_tlc_dump)
 			reg.field.dumpTrigger = dumpTrigger;
 		else
-			reg.field.dumpTrigger = DUMP_CVE_NEVER;
+			reg.field.dumpTrigger = cfg_default.ice_dump_never;
 
 		cve_os_write_mmio_32(cve_dev, offset_bytes, reg.val);
 	}
@@ -625,9 +781,9 @@ void cve_di_set_cve_dump_configuration_register(
 		struct cve_device *cve_dev,
 		struct di_cve_dump_buffer ice_dump_buf)
 {
-	union TLC_HI_MEM_TLC_DUMP_BUFFER_CONFIG_REG_t reg;
-	u32 offset_bytes = CVE_TLC_HI_BASE +
-			CVE_TLC_HI_TLC_DUMP_BUFFER_CONFIG_REG_MMOFFSET;
+	union tlc_hi_mem_tlc_dump_buffer_config_reg_t reg;
+	u32 offset_bytes = cfg_default.ice_tlc_hi_base +
+			cfg_default.ice_tlc_hi_dump_buf_offset;
 
 	if (ice_dump_buf.is_allowed_tlc_dump) {
 		/* validate that we are 32bit aligned */
@@ -644,7 +800,7 @@ int project_hook_init_cve_dump_buffer(struct cve_device *dev)
 {
 	int retval = CVE_DEFAULT_ERROR_CODE;
 	u32 dump_size_aligned = ALIGN(
-			ICE_CORE_BLOB_SIZE * CVE_DUMP_BLOB_NR,
+			sizeof(CVECOREBLOB_T) * CVE_DUMP_BLOB_NR,
 			PLAFTORM_CACHELINE_SZ);
 	if (dev == NULL)
 		goto out; /* invalid device */
@@ -703,22 +859,25 @@ void project_hook_free_cve_dump_buffer(struct cve_device *dev)
 
 int ice_di_get_core_blob_sz(void)
 {
-	return ICE_CORE_BLOB_SIZE;
+	return sizeof(CVECOREBLOB_T);
 }
 
 
-void ice_di_disable_clk_squashing_step_a(struct cve_device *dev)
+void ice_di_disable_clk_squashing(struct cve_device *dev)
 {
 	u32 offset, count = 10;
 	u64 read_val, write_val = 0, mask = 0;
 	u8 bo_id = (dev->dev_index / 2);
 
+	if (ice_get_b_step_enable_flag())
+		return;
+
 	offset = (ICEDC_ICEBO_OFFSET(bo_id) + ICEBO_GPSB_OFFSET
-			+ ICEDC_ICEBO_CLK_GATE_CTL_OFFSET);
+			+ cfg_default.gpsb_x1_regs_clk_gate_ctl_offset);
 
 
 	read_val = cve_os_read_idc_mmio(dev, offset);
-	mask = (1ULL << ICEDC_ICEBO_CLK_GATE_CTL_DISABLE_SQUASH_BIT_SHIFT);
+	mask = (1ULL << cfg_default.mem_clk_gate_ctl_dont_squash_iceclk_lsb);
 	write_val = (read_val | mask);
 	cve_os_write_idc_mmio(dev, offset, write_val);
 	cve_os_log(CVE_LOGLEVEL_DEBUG,
@@ -740,3 +899,323 @@ void ice_di_disable_clk_squashing_step_a(struct cve_device *dev)
 		count--;
 	}
 }
+
+#ifndef RING3_VALIDATION
+static ssize_t show_ice_freqinfo(struct kobject *kobj,
+				struct kobj_attribute *attr,
+				char *buf)
+{
+	int ret = 0;
+
+	ret = sprintf((buf + ret),
+		"freq value has to be in the range of 200-800 MHz, multiple of 25\n");
+	return ret;
+}
+
+
+static ssize_t show_ice_freq(struct kobject *kobj,
+				struct kobj_attribute *attr,
+				char *buf)
+{
+	cve_os_log_default(CVE_LOGLEVEL_INFO, "Not Implemented");
+
+	return 0;
+}
+
+static ssize_t store_ice_freq(struct kobject *kobj,
+				struct kobj_attribute *attr,
+				const char *buf, size_t count)
+{
+	char *freqset_s;
+	u32 dev_index;
+	u32 freq_to_set;
+	struct ice_hw_config_ice_freq freq_conf;
+	int ret = 0;
+
+	ret = sscanf(kobj->name, "ice%d", &dev_index);
+	if (ret < 1) {
+		cve_os_log(CVE_LOGLEVEL_ERROR, "failed getting ice id %s\n",
+						kobj->name);
+		return -EFAULT;
+	}
+	if (dev_index >= NUM_ICE_UNIT) {
+		cve_os_log(CVE_LOGLEVEL_ERROR, "wrong ice id %d\n", dev_index);
+		return -EFAULT;
+	}
+	freqset_s = (char *)buf;
+	freqset_s = strim(freqset_s);
+
+	if (freqset_s == NULL)
+		return -EFAULT;
+
+	ret = kstrtoint(freqset_s, 10, &freq_to_set);
+	if (ret < 0)
+		return ret;
+
+	if (freq_to_set < MIN_ICE_FREQ_PARAM ||
+			freq_to_set > MAX_ICE_FREQ_PARAM ||
+				freq_to_set % ICE_FREQ_DIVIDER_FACTOR != 0) {
+		cve_os_log_default(CVE_LOGLEVEL_ERROR,
+			"ice freq required has to be in range of 200-800, multiple of 25\n");
+		return -EINVAL;
+	}
+	if (ret < 0)
+		return ret;
+
+	cve_os_log(CVE_LOGLEVEL_DEBUG, "freq: %d\n", freq_to_set);
+	freq_conf.ice_num = dev_index;
+	freq_conf.ice_freq = freq_to_set;
+	cve_os_log(CVE_LOGLEVEL_DEBUG, "freq: %d\n", freq_conf.ice_freq);
+	cve_os_log(CVE_LOGLEVEL_DEBUG, "ice: %d\n", freq_conf.ice_num);
+	ret = set_ice_freq((void *)&freq_conf);
+	if (ret < 0)
+		return ret;
+	return count;
+}
+
+static ssize_t show_llc_freqinfo(struct kobject *kobj,
+				struct kobj_attribute *attr,
+				char *buf)
+{
+	int ret = 0;
+
+	ret = sprintf((buf + ret),
+		"freq value has to be in the range of 400-2600 MHz, multiple of 100\n");
+	return ret;
+}
+
+
+static ssize_t show_llc_freq(struct kobject *kobj,
+				struct kobj_attribute *attr,
+				char *buf)
+{
+	int ret = 0;
+	u32 val_low, freq_high, freq_low;
+	u64 freq;
+
+	freq = get_llc_freq();
+	val_low = freq & 0xFFFFFFFF;
+
+	/*min ratio - 8-14
+	 *max ratio - 0-6
+	 */
+
+	freq_high = max_llc_ratio(val_low);
+	freq_low = min_llc_ratio(val_low);
+
+	ret += sprintf((buf + ret), "LLC Freq Min: %u MHz, Max: %u MHz\n",
+		(freq_low * 100),
+		(freq_high * 100));
+
+	return ret;
+}
+
+static ssize_t store_llc_freq(struct kobject *kobj,
+				struct kobj_attribute *attr,
+				const char *buf, size_t count)
+{
+	char *freqset_s;
+	u32 freq_to_set;
+	struct ice_hw_config_llc_freq freq_conf;
+	int ret = 0;
+
+	freqset_s = (char *)buf;
+	freqset_s = strim(freqset_s);
+
+	if (freqset_s == NULL)
+		return -EFAULT;
+
+	ret = kstrtoint(freqset_s, 10, &freq_to_set);
+	if (ret < 0)
+		return ret;
+
+	if (freq_to_set < MIN_LLC_FREQ_PARAM ||
+			freq_to_set > MAX_LLC_FREQ_PARAM ||
+				freq_to_set % LLC_FREQ_DIVIDER_FACTOR != 0) {
+
+		cve_os_log_default(CVE_LOGLEVEL_ERROR,
+			"llc freq required has to be in range of 400-2600, multiple of 100\n");
+		return -EINVAL;
+	}
+
+	if (strcmp(attr->attr.name, "min") == 0) {
+		freq_conf.llc_freq_min = freq_to_set;
+		freq_conf.llc_freq_max = 0;
+		cve_os_log(CVE_LOGLEVEL_DEBUG,
+			"Min freq to set: %u\n", freq_to_set);
+	} else {
+		freq_conf.llc_freq_min = 0;
+		freq_conf.llc_freq_max = freq_to_set;
+		cve_os_log(CVE_LOGLEVEL_DEBUG,
+			"Max freq to set: %u\n", freq_to_set);
+	}
+	ret = set_llc_freq((void *)&freq_conf);
+	if (ret)
+		return -EINVAL;
+	return count;
+}
+
+static int ice_hw_config_freq_sysfs_init(struct cve_device *ice_dev)
+{
+	int ret;
+	/* Create the freq files associated with ice<n> config kobject */
+	ret = sysfs_create_group(ice_dev->ice_config_kobj, &freq_attr_group);
+	if (ret) {
+		cve_os_dev_log(CVE_LOGLEVEL_ERROR, ice_dev->dev_index,
+				"freq sysfs group creation failed\n");
+	}
+	return ret;
+}
+
+static int ice_hw_config_llc_sysfs_init(void)
+{
+	int ret;
+	/* Create the freq files associated with ice<n> config kobject */
+	ret = sysfs_create_group(llcfreq_kobj, &llc_attr_group);
+	if (ret) {
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+				"llc sysfs group creation failed\n");
+	}
+
+	return ret;
+}
+
+static void ice_hw_config_freq_sysfs_term(struct cve_device *ice_dev)
+{
+	/* Remove the filter files associated with ice<n> config kobject */
+	sysfs_remove_group(ice_dev->ice_config_kobj, &freq_attr_group);
+}
+
+void icedrv_sysfs_term(void)
+{
+
+	FUNC_ENTER();
+
+	if (icedrv_kobj) {
+		kobject_put(icedrv_kobj);
+		icedrv_kobj = NULL;
+		cve_os_log(CVE_LOGLEVEL_DEBUG,
+					"icedrv sysfs  deleted\n");
+	}
+
+	FUNC_LEAVE();
+}
+
+int icedrv_sysfs_init(void)
+{
+
+	int ret = 0;
+
+	FUNC_ENTER()
+	if (icedrv_kobj)
+		goto out;
+	icedrv_kobj = kobject_create_and_add("icedrv", kernel_kobj);
+	if (!icedrv_kobj) {
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+					"icedrv kobj creation failed\n");
+		ret = -ENOMEM;
+		goto out;
+	}
+out:
+	FUNC_LEAVE()
+	return ret;
+}
+
+int hw_config_sysfs_init(struct cve_device *ice_dev)
+{
+
+	int ret = 0;
+	struct cve_os_device *os_dev;
+	char name[10]
+
+	FUNC_ENTER();
+	os_dev = to_cve_os_device(ice_dev);
+	/* create base subdir once */
+	if (!icedrv_kobj) {
+		cve_os_dev_log(CVE_LOGLEVEL_ERROR, ice_dev->dev_index,
+					"icedrv kobj doesn't exist\n");
+		ret = -ENOMEM;
+		goto out;
+	}
+
+	if (hwconfig_kobj)
+		goto ice_sysfs;
+
+	hwconfig_kobj = kobject_create_and_add("hwconfig", icedrv_kobj);
+	if (!hwconfig_kobj) {
+		cve_os_dev_log(CVE_LOGLEVEL_ERROR, ice_dev->dev_index,
+					"hwconfig kobj creation failed\n");
+		ret = -ENOMEM;
+		goto out;
+	}
+ice_sysfs:
+	ice_dev->ice_config_kobj = NULL;
+	snprintf(name, sizeof(name), "ice%d", ice_dev->dev_index);
+	ice_dev->ice_config_kobj = kobject_create_and_add(name, hwconfig_kobj);
+	if (!ice_dev->ice_config_kobj) {
+		cve_os_dev_log(CVE_LOGLEVEL_ERROR, ice_dev->dev_index,
+				"ice%d kobj creation failed\n",
+				ice_dev->dev_index);
+		ret = -ENOMEM;
+		goto hwconfig_kobj_free;
+	}
+	ret = ice_hw_config_freq_sysfs_init(ice_dev);
+	if (ret) {
+		cve_os_dev_log(CVE_LOGLEVEL_ERROR, ice_dev->dev_index,
+				"ice_trace_dso_sysfs_init failed\n");
+		goto freq_sysfs_free;
+	} else {
+		if (llcfreq_kobj)
+			goto out;
+		llcfreq_kobj = kobject_create_and_add("llc", hwconfig_kobj);
+		if (!llcfreq_kobj) {
+			cve_os_log(CVE_LOGLEVEL_ERROR,
+						"llc kobj creation failed\n");
+			ret = -ENOMEM;
+			goto freq_sysfs_free;
+		}
+		ret = ice_hw_config_llc_sysfs_init();
+		goto out;
+	}
+
+freq_sysfs_free:
+	ice_hw_config_freq_sysfs_term(ice_dev);
+	kobject_put(ice_dev->ice_config_kobj);
+	ice_dev->ice_config_kobj = NULL;
+hwconfig_kobj_free:
+	kobject_put(hwconfig_kobj);
+	hwconfig_kobj = NULL;
+out:
+	FUNC_LEAVE();
+	return ret;
+}
+
+void hw_config_sysfs_term(struct cve_device *ice_dev)
+{
+	FUNC_ENTER();
+
+	if (ice_dev->ice_config_kobj) {
+		kobject_put(ice_dev->ice_config_kobj);
+		ice_dev->ice_config_kobj = NULL;
+		cve_os_dev_log(CVE_LOGLEVEL_DEBUG, ice_dev->dev_index,
+					"ice config kobj deleted\n");
+	}
+
+	if (llcfreq_kobj) {
+		kobject_put(llcfreq_kobj);
+		llcfreq_kobj = NULL;
+		cve_os_log(CVE_LOGLEVEL_DEBUG,
+					"llc freq kobj deleted\n");
+	}
+
+	if (hwconfig_kobj) {
+		kobject_put(hwconfig_kobj);
+		hwconfig_kobj = NULL;
+		cve_os_dev_log(CVE_LOGLEVEL_DEBUG, ice_dev->dev_index,
+					"hw_config kobj deleted\n");
+	}
+
+	FUNC_LEAVE();
+}
+
+#endif

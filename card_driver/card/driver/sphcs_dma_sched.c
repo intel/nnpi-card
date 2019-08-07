@@ -18,7 +18,6 @@
 #include "sph_debug.h"
 #include "sphcs_trace.h"
 #include "sphcs_sw_counters.h"
-#include "hw_wa.h"
 
 #define SPHCS_NUM_OF_DMA_RETRIES 3
 #define SPHCH_DMA_CHANNEL_0 BIT(0)
@@ -33,6 +32,9 @@
 #define SPH_DMA_COMPLETION_TIME_OUT_MS 3000
 
 #define MAX_SKIPPED_SERIAL 5
+
+// Disable use of C2H DMA channel 1 due since it getting hang after FLR reset.
+#define DMA_DISABLE_C2H_CHANNEL_1_WA
 
 const struct sphcs_dma_desc g_dma_desc_h2c_low = {
 	.dma_direction  = SPHCS_DMA_DIRECTION_HOST_TO_CARD,
@@ -151,7 +153,7 @@ struct sphcs_dma_req {
 	dma_addr_t src;
 	dma_addr_t dst;
 	u32 size;
-	uint32_t transfer_size;
+	uint64_t transfer_size;
 	int status;
 	u32 timeUS;
 	u32 priority;
@@ -755,7 +757,7 @@ int sphcs_dma_sched_start_xfer_single(struct sphcs_dma_sched *dmaSched,
 int sphcs_dma_sched_start_xfer(struct sphcs_dma_sched      *dmaSched,
 			       const struct sphcs_dma_desc *desc,
 			       dma_addr_t                   lli,
-			       uint32_t                     transfer_size,
+			       uint64_t                     transfer_size,
 			       sphcs_dma_sched_completion_callback callback,
 			       void                        *callback_ctx,
 			       const void                  *user_data,
@@ -997,7 +999,7 @@ static int debug_direction_show(struct seq_file *m, void *v)
 		if (dir_info->hw_channels.busy_mask & BIT(i)) {
 			const struct sphcs_dma_req *req = dir_info->hw_channels.inflight_req[i];
 
-			seq_printf(m, "\tchan%d: busy req=0x%lx xfer_size=0x%x pri=%u status=%u flags=0x%x serial=%u\n",
+			seq_printf(m, "\tchan%d: busy req=0x%lx xfer_size=0x%llx pri=%u status=%u flags=0x%x serial=%u\n",
 				   i,
 				   (uintptr_t)req,
 				   req->transfer_size,

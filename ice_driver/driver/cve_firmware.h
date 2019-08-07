@@ -31,6 +31,14 @@
 
 #define MAX_NAME_LEN 1024
 
+#define RTL_DEBUG_A_STEP_FW_PATH "intel_nnpi/a_step/debug/"
+#define RTL_RELEASE_A_STEP_FW_PATH "intel_nnpi/a_step/release/"
+#define RTL_DEBUG_B_STEP_FW_PATH "intel_nnpi/b_step/debug/"
+#define RTL_RELEASE_B_STEP_FW_PATH "intel_nnpi/b_step/release/"
+
+#define RTL_A_STEP_FW_BASE_PACKAGE_DIR "/a_step/base_package"
+#define RTL_B_STEP_FW_BASE_PACKAGE_DIR "/b_step/base_package"
+
 /* describes a firmware loading binary file path */
 struct cve_fw_file {
 	/* binary file name */
@@ -165,4 +173,8 @@ int cve_fw_load_firmware_via_files(struct cve_device *cve_dev,
 		struct cve_fw_section_descriptor **out_sections,
 		struct cve_dma_handle **out_dma_handles,
 		Version **out_fw_version);
+
+#ifndef RING3_VALIDATION
+void ice_fw_update_path(const char *path);
+#endif
 #endif /* _CVE_FIRMWARE_H_ */

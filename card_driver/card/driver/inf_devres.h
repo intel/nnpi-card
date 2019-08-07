@@ -30,7 +30,7 @@ struct inf_devres {
 	spinlock_t        lock_irq;
 
 	enum dma_data_direction dir;
-	uint32_t                size;
+	uint64_t                size;
 	uint32_t                usage_flags;
 
 	int               buf_fd;
@@ -46,7 +46,7 @@ struct inf_devres {
 
 int inf_devres_create(uint16_t            protocolID,
 		      struct inf_context *context,
-		      uint32_t            size,
+			  uint64_t            size,
 		      uint32_t            usage_flags,
 		      struct inf_devres **out_devres);
 void destroy_devres_on_create_failed(struct inf_devres *devres);

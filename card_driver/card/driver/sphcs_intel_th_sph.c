@@ -129,11 +129,12 @@ int sphcs_init_th_driver(void)
 		goto err;
 	}
 
-	hw_tracing->cmd_wq = create_singlethread_workqueue("sphcs_inf_wq");
+	hw_tracing->cmd_wq = create_singlethread_workqueue("hwtrace_cmd_wq");
 	if (!hw_tracing->cmd_wq) {
 		sph_log_err(START_UP_LOG, "Failed to initialize hwtrace commands workqueue");
 		goto pool_cleanup;
 	}
+
 	//driver will register to trace service from intel_th driver.
 
 	g_msu.owner = THIS_MODULE;
@@ -141,7 +142,7 @@ int sphcs_init_th_driver(void)
 	ret = intel_th_msu_buffer_register(&g_msu);
 	if (ret) {
 		sph_log_err(HWTRACE_LOG, "unable to register intel_th service - err %d", ret);
-		goto wq_cleanup;
+		goto cmd_wq_cleanup;
 	}
 
 	hw_tracing->hwtrace_status = SPHCS_HWTRACE_REGISTERED;
@@ -152,7 +153,7 @@ int sphcs_init_th_driver(void)
 	hw_tracing->host_resource_count = 0;
 	return ret;
 
-wq_cleanup:
+cmd_wq_cleanup:
 	destroy_workqueue(hw_tracing->cmd_wq);
 
 pool_cleanup:

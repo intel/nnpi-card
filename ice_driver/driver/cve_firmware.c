@@ -44,9 +44,6 @@
 
 #endif
 
-#define RTL_DEBUG_FW_PATH "intel_nnpi/debug/"
-#define RTL_RELEASE_FW_PATH "intel_nnpi/release/"
-
 /* MODULE LEVEL VARIABLES */
 #define BANK0_IVP_BASE_ADDR	0x00320000
 #define BANK0_IVP_SIZE	0x9E0000	/* 9.875M */
@@ -1122,12 +1119,12 @@ void cve_mapped_fw_sections_cleanup(struct cve_device *cve_dev,
 
 /* API FUNCTIONS */
 #ifndef RING3_VALIDATION
-static void __update_fw_path(void)
+void ice_fw_update_path(const char *path)
 {
 	u32 i;
 	char fw_dir[MAX_NAME_LEN];
 
-	strncpy(fw_dir, RTL_DEBUG_FW_PATH, MAX_NAME_LEN-1);
+	strncpy(fw_dir, path, MAX_NAME_LEN-1);
 
 	for (i = 0; i < ARRAY_SIZE(fw_binaries_files); i++) {
 		strncpy(fw_binaries_files[i].binary_file_name,
@@ -1170,11 +1167,6 @@ int cve_fw_load(struct cve_device *cve_dev)
 	cve_os_dev_log(CVE_LOGLEVEL_DEBUG,
 			cve_dev->dev_index,
 			"Load Firmwares on device\n");
-
-#ifndef RING3_VALIDATION
-	if (ice_fw_select == 1)
-		__update_fw_path();
-#endif
 
 	for (i = 0; i < ARRAY_SIZE(fw_binaries_files); i++) {
 		struct cve_fw_loaded_sections *loaded_fw = NULL;
@@ -1411,8 +1403,17 @@ int cve_fw_init(void)
 	char *coral_mode = getenv("CORAL_PERF_MODE");
 	char *workspace = getenv("WORKSPACE");
 	char fw_dir[MAX_NAME_LEN];
+	bool is_b_step;
 
-	if (fw_dir_path || fw_selection) {
+	if (getenv("ENABLE_B_STEP") != NULL) {
+		is_b_step = true;
+		cve_os_log(CVE_LOGLEVEL_INFO, "B STEP ENABLED\n");
+	} else {
+		is_b_step = false;
+		cve_os_log(CVE_LOGLEVEL_INFO, "B STEP DISABLED\n");
+	}
+
+	if (fw_dir_path || fw_selection || is_b_step) {
 		if (fw_selection) {
 
 			if (workspace == NULL) {
@@ -1422,28 +1423,35 @@ int cve_fw_init(void)
 			}
 			strcpy(fw_dir, workspace);
 			strcat(fw_dir, FW_PACK_DIR_BASE);
+			if (is_b_step)
+				strcat(fw_dir, RTL_B_STEP_FW_BASE_PACKAGE_DIR);
+			else
+				strcat(fw_dir, RTL_A_STEP_FW_BASE_PACKAGE_DIR);
 			if (strcmp(fw_selection, xstr(RTL_DEBUG_FW)) == 0) {
 				strcat(fw_dir, "/rtl/debug");
-
-				fw_dir_path = fw_dir;
 			} else if (strcmp(fw_selection,
 						xstr(RTL_RELEASE_FW)) == 0) {
 				strcat(fw_dir, "/rtl/release");
-
-				fw_dir_path = fw_dir;
 			} else if (strcmp(fw_selection, xstr(CORAL_FW)) == 0) {
 				strcat(fw_dir, "/coral");
-
-				fw_dir_path = fw_dir;
 			} else {
 				strcat(fw_dir, "/rtl/release");
-
-				fw_dir_path = fw_dir;
 			}
+			fw_dir_path = fw_dir;
+		} else if (is_b_step) {
+			strcpy(fw_dir, workspace);
+			strcat(fw_dir, FW_PACK_DIR_BASE);
+			strcat(fw_dir, RTL_B_STEP_FW_BASE_PACKAGE_DIR);
+			strcat(fw_dir, "/rtl/release");
+			fw_dir_path = fw_dir;
 		}
 		if (coral_mode && (strcmp(coral_mode, xstr(PERF_MODE)) == 0)) {
 			strcpy(fw_dir, workspace);
 			strcat(fw_dir, FW_PACK_DIR_BASE);
+			if (is_b_step)
+				strcat(fw_dir, RTL_B_STEP_FW_BASE_PACKAGE_DIR);
+			else
+				strcat(fw_dir, RTL_A_STEP_FW_BASE_PACKAGE_DIR);
 			strcat(fw_dir, "/rtl/release");
 
 			fw_dir_path = fw_dir;

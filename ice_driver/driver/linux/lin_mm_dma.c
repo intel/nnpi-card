@@ -301,7 +301,6 @@ static u32 calc_alloc_cve_pages_nr(const struct lin_mm_allocation *alloc)
 	cve_os_log(CVE_LOGLEVEL_DEBUG,
 		"PagesCount=%d, PageSize=0x%x, AllocSize=0x%llx\n",
 		ice_pages_nr, page_sz, alloc->actual_sz);
-
 	return ice_pages_nr;
 }
 
@@ -445,7 +444,8 @@ static int add_sglist_to_device_page_table(struct lin_mm_allocation *alloc,
 	u32 cve_pages_nr = 0;
 	u32 mapped_pages_nr = 0;
 	int retval = CVE_DEFAULT_ERROR_CODE;
-	u32 base_iova, iova, actual_sz = 0;
+	u32 base_iova, iova;
+	u64 actual_sz = 0;
 	int i;
 
 	FUNC_ENTER();
@@ -561,6 +561,7 @@ static int pin_user_memory(struct lin_mm_allocation *alloc)
 			"OS_ALLOC_ZERO failed %d\n", ret);
 		goto error;
 	}
+
 
 	down_read(&current->mm->mmap_sem);
 
@@ -1294,7 +1295,7 @@ void cve_osmm_inf_dma_buf_unmap(os_allocation_handle halloc)
 int cve_osmm_dma_buf_map(os_domain_handle *hdomain,
 		struct cve_dma_handle **dma_handle,
 		u32 dma_domain_array_size,
-		u32 size_bytes,
+		u64 size_bytes,
 		union allocation_address alloc_addr,
 		ice_va_t cve_addr,
 		u32 prot,

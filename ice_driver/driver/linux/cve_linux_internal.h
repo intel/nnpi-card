@@ -132,7 +132,5 @@ cve_isr_retval_t cve_os_interrupt_handler_bh(int irq, void *os_dev);
 /* device structure which is used by several linux-specific files */
 extern struct device *g_linux_device;
 
-/* base address of the MMIO space */
-extern struct mmio_base_addr g_cached_mmio_base;
 
 #endif /* _CVE_LINUX_INTERNAL_H_ */

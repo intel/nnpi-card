@@ -24,6 +24,14 @@
 
 /* TODO - should be replaced with a valid seq num */
 #define CVE_IOCTL_SEQ_NUM 0xFF
+#define MAX_ICE_DEVICES 12
+#define MAX_ICE_FREQ_PARAM 800
+#define MIN_ICE_FREQ_PARAM 200
+#define MAX_LLC_FREQ_PARAM 2400
+#define MIN_LLC_FREQ_PARAM 400
+#define ICE_FREQ_DIVIDER_FACTOR 25
+#define LLC_FREQ_DIVIDER_FACTOR 100
+#define ICEDRV_VALID_ICE_MASK 0xFFF
 
 typedef __u64 cve_bufferid_t;
 
@@ -134,11 +142,6 @@ enum ice_network_type {
 	ICE_PRIORITY_DEEPSRAM_NETWORK = 4
 };
 
-enum ice_reserve_resource {
-	ICE_RESERVE_NONE = 0,
-	ICE_SET_BREAK_POINT = 32
-};
-
 enum idc_error_status {
 	ILLEGAL_ACCESS = 0x01,
 	ICE_READ_ERR = 0x02,
@@ -181,6 +184,17 @@ enum ice_clos {
 	ICE_CLOS_MAX
 };
 
+enum hw_config_type {
+	ICE_FREQ = 0,
+	LLC_FREQ = 2
+};
+
+enum ice_execute_infer_priority {
+	EXE_INF_PRIORITY_0,
+	EXE_INF_PRIORITY_1,
+	EXE_INF_PRIORITY_MAX
+};
+
 struct cve_surface_descriptor {
 	/** a unique integer ID for each surface from user for debugging
 	 *  to be set to the crc32 of the surface name in the graph
@@ -195,9 +209,9 @@ struct cve_surface_descriptor {
 	/* indication if buffer is referring to allocated buffer */
 	__u8 allocation_done;
 	/* the size in bytes */
-	__u32 size_bytes;
+	__u64 size_bytes;
 	/* actual the size of the surface as in the graph blob, in bytes */
-	__u32 actual_size_bytes;
+	__u64 actual_size_bytes;
 	/* llc policy index for this buffer */
 	__u32 llc_policy;
 	/* the direction of the surface */
@@ -361,6 +375,13 @@ struct cve_create_infer {
 	struct ice_infer_descriptor infer;
 };
 
+struct ice_execute_infer_data {
+	/*in*/
+	__u8 enable_bp;
+	/*in*/
+	enum ice_execute_infer_priority priority;
+};
+
 /*
  * parameter for IOCTL-execute
  */
@@ -372,7 +393,7 @@ struct cve_execute_infer {
 	/*in, job id*/
 	__u64 inferid;
 	/*in*/
-	__u32 reserve_resource;
+	struct ice_execute_infer_data data;
 };
 
 /*
@@ -418,6 +439,19 @@ struct cve_destroy_network {
 	__u64 networkid;
 };
 
+struct ice_hw_config_llc_freq {
+	/* in, min llc frequency to be set */
+	__u32 llc_freq_min;
+	/* in, max llc frequency to be set */
+	__u32 llc_freq_max;
+};
+
+struct ice_hw_config_ice_freq {
+	/* in, ICE for which frequency has to be set*/
+	__u32 ice_num;
+	/* in, frequency value to be set */
+	__u32 ice_freq;
+};
 /*
  * IOCTL status
  * Check the status of a command buffer that was previously submitted to the
@@ -708,6 +742,16 @@ struct ice_debug_control_params {
 	enum ice_debug_control_type type;
 };
 
+struct ice_set_hw_config_params {
+	/*in, different configs related info */
+	union {
+		struct ice_hw_config_llc_freq llc_freq_config;
+		struct ice_hw_config_ice_freq ice_freq_config;
+	};
+	/*in, configuration type*/
+	enum hw_config_type config_type;
+};
+
 /* a union of all the different parameters */
 struct cve_ioctl_param {
 	union {
@@ -726,6 +770,7 @@ struct cve_ioctl_param {
 		struct ice_hw_trace_config trace_cfg;
 		struct ice_get_debug_event get_debug_event;
 		struct ice_debug_control_params debug_control;
+		struct ice_set_hw_config_params set_hw_config;
 	};
 };
 
@@ -768,4 +813,6 @@ struct cve_ioctl_param {
 	_IOWR(CVE_IOCTL_SEQ_NUM, 18, struct cve_ioctl_param)
 #define CVE_IOCTL_MANAGE_RESOURCE \
 	_IOWR(CVE_IOCTL_SEQ_NUM, 19, struct cve_ioctl_param)
+#define ICE_IOCTL_SET_HW_CONFIG \
+	_IOW(CVE_IOCTL_SEQ_NUM, 20, struct cve_ioctl_param)
 #endif /* _CVE_DRIVER_H_ */

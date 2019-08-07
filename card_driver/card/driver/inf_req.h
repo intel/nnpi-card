@@ -31,7 +31,6 @@ struct inf_req {
 	uint32_t           n_outputs;
 	struct inf_devres **outputs;
 	uint32_t           config_data_size;
-	uint32_t           max_exec_config_size;
 	void              *config_data;
 
 	struct inf_exec_infreq exec_cmd;
@@ -39,7 +38,6 @@ struct inf_req {
 
 	dma_addr_t         exec_config_data_dma_addr;
 	void              *exec_config_data_vptr;
-	bool               exec_config_data_empty;
 
 	enum create_status status;
 	// 0 - not destroyed, 1 - destroyed by user, -1 - failed to create
@@ -54,7 +52,6 @@ struct inf_req {
 
 int inf_req_create(uint16_t            protocolID,
 		   struct inf_devnet  *devnet,
-		   uint16_t            max_exec_config_size,
 		   struct inf_req    **out_infreq);
 int inf_req_add_resources(struct inf_req     *infreq,
 			  uint32_t            n_inputs,
@@ -75,6 +72,8 @@ int inf_req_schedule(struct inf_req *infreq,
 bool inf_req_ready(struct inf_exec_req *req);
 int inf_req_execute(struct inf_exec_req *req);
 void inf_req_complete(struct inf_exec_req *req, int err);
-void inf_req_release(struct inf_exec_req *req);
+
+/* This function should not be called directly, use inf_exec_req_put instead */
+void inf_req_release(struct kref *kref);
 
 #endif

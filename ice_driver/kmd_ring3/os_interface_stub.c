@@ -61,18 +61,13 @@
 struct cve_os_device *idc_os_device = NULL;
 #endif
 
-#ifdef ENABLE_SPH_STEP_B
-#define HW_FOLDER "ice_2.9_hw_m0"
-#else
-#define HW_FOLDER "ice_2.9_hw"
-#endif
-
 u32 g_icemask;
 u32 disable_embcb;
 u32 core_mask;
 bool print_debug;
 static u32 icemask;
 u32 block_mmu;
+struct config cfg_default;
 
 /* log file */
 static FILE* pLogStream = NULL;
@@ -172,6 +167,10 @@ void ice_os_update_clos(void *pmclos)
 #endif
 }
 
+int set_llc_freq(void *llc_freq_config)
+{
+	return 0;
+}
 int request_firmware(const struct firmware **fw,
 		const char *filename,
 		struct device *device){
@@ -304,6 +303,7 @@ int cve_os_interface_init(void)
 	char *icemask_user_str = NULL;
 	char *coral_config = NULL;
 	char *coral_mode = NULL;
+	char hw_folder[20];
 	char *workspace = getenv("WORKSPACE");
 	char *env_llc_config_via_axi_reg;
 	struct ice_drv_config param;
@@ -311,27 +311,6 @@ int cve_os_interface_init(void)
 	coral_mode = getenv("CORAL_PERF_MODE");
 	coral_config = getenv("CORAL_CONFIG");
 
-	if(coral_config == NULL) {
-		char coral_default_config[MAX_FILE_NAME_LEN];
-
-		if(workspace == NULL) {
-			cve_os_log(CVE_LOGLEVEL_ERROR,
-				"WORKSPACE env variable is not set");
-			ASSERT(workspace == NULL);
-		}
-		snprintf(coral_default_config, sizeof(coral_default_config), "%s%s%s%s", workspace, "/release_artifacts/", HW_FOLDER, "/config");
-
-		if(coral_mode == NULL) {
-					strcat(coral_default_config, "/coral.cfg");
-			coral_config = coral_default_config;
-		} else if (strcmp(coral_mode, xstr(PERF_MODE)) == 0) {
-					strcat(coral_default_config, "/coral_perf.cfg");
-			coral_config = coral_default_config;
-		} else {
-					strcat(coral_default_config, "/coral.cfg");
-			coral_config = coral_default_config;
-		}
-	 }
 
 	icemask_user_str = getenv("ICEMASK_USER");
 	if (icemask_user_str)
@@ -347,9 +326,47 @@ int cve_os_interface_init(void)
 	/* For RING3, space is always set to 0*/
 	param.sph_soc = 0;
 	/* For RING3, ice_power_off_delay is 1000 ms */
+
 	param.ice_power_off_delay_ms = 1000;
+	if(getenv("ENABLE_B_STEP") != NULL) {
+		param.enable_sph_b_step = true;
+		cve_os_log(CVE_LOGLEVEL_INFO, "B STEP ENABLED\n");
+	} else {
+		param.enable_sph_b_step = false;
+		cve_os_log(CVE_LOGLEVEL_INFO, "B STEP DISABLED\n");
+	}
+
 	ice_set_driver_config_param(&param);
 
+	if (ice_get_b_step_enable_flag()) {
+		sscanf("ice_2.9_hw_m0", "%s", hw_folder);
+		memcpy(&cfg_default, &cfg_b, sizeof(cfg_b));
+	} else {
+		sscanf("ice_2.9_hw", "%s", hw_folder);
+		memcpy(&cfg_default, &cfg_a, sizeof(cfg_a));
+	}
+
+	if(coral_config == NULL) {
+		char coral_default_config[MAX_FILE_NAME_LEN];
+
+		if(workspace == NULL) {
+			cve_os_log(CVE_LOGLEVEL_ERROR,
+				"WORKSPACE env variable is not set");
+			ASSERT(workspace == NULL);
+		}
+		snprintf(coral_default_config, sizeof(coral_default_config), "%s%s%s%s", workspace, "/release_artifacts/", hw_folder, "/config");
+
+		if(coral_mode == NULL) {
+					strcat(coral_default_config, "/coral.cfg");
+			coral_config = coral_default_config;
+		} else if (strcmp(coral_mode, xstr(PERF_MODE)) == 0) {
+					strcat(coral_default_config, "/coral_perf.cfg");
+			coral_config = coral_default_config;
+		} else {
+					strcat(coral_default_config, "/coral.cfg");
+			coral_config = coral_default_config;
+		}
+	 }
 	/* Coral does not support random MASK value. It can
 	 * only enable N ICEs starting from ICE-0. If ICEMASK_USER
 	 * is aligned with this then we initialize Coral with
@@ -828,7 +845,7 @@ int cve_ioctl_misc(int fd, int request, struct cve_ioctl_param *param)
 				param->execute_infer.contextid,
 				param->execute_infer.networkid,
 				param->execute_infer.inferid,
-				param->execute_infer.reserve_resource);
+				&param->execute_infer.data);
 		break;
 	case CVE_IOCTL_DESTROY_INFER:
 		cve_os_log(CVE_LOGLEVEL_DEBUG,
@@ -896,6 +913,11 @@ int cve_ioctl_misc(int fd, int request, struct cve_ioctl_param *param)
 		cve_os_log(CVE_LOGLEVEL_DEBUG,
 				"Simulation mode - ICE_IOCTL_DEBUG_CONTROL\n");
 		retval = ice_ds_debug_control(&param->debug_control);
+		break;
+	case ICE_IOCTL_SET_HW_CONFIG:
+		cve_os_log(CVE_LOGLEVEL_DEBUG,
+				"Simulation mode - ICE_IOCTL_SET_ICE_FREQ\n");
+		retval = ice_set_hw_config(&param->set_hw_config);
 		break;
 	default:
 		cve_os_log(CVE_LOGLEVEL_ERROR, "Unknown ioctl request (%d) was used\n", request);
@@ -1114,7 +1136,7 @@ uint32_t cve_os_read_icemask_bar0(struct idc_device *idc_dev, bool force_print)
 	u32 offset_bytes;
 	uint64_t value;
 
-	offset_bytes = IDC_REGS_IDC_MMIO_BAR0_MEM_ICEMASKSTS_MMOFFSET;
+	offset_bytes = cfg_default.bar0_mem_icemasksts_offset;
 
 	coral_mmio_read_multi_offset(offset_bytes, &value, 0, 0);
 	cve_os_log(force_print ? CVE_LOGLEVEL_ERROR : CVE_LOGLEVEL_DEBUG,
@@ -1281,6 +1303,12 @@ u32 cve_debug_get(enum cve_debug_config d_config)
 			break;
 	}
 
+	/* Fixme: Temp WA, disabled WD for B step */
+	if (ice_get_b_step_enable_flag()) {
+		cve_os_log(CVE_LOGLEVEL_DEBUG,
+				"WD disabled in B step\n");
+		cve_debug[DEBUG_WD_EN].val = 0;
+	}
 	cve_os_log(CVE_LOGLEVEL_DEBUG,
 			"debug configuration %s = %d\n"
 			,cve_debug[d_config].str,cve_debug[d_config].val);

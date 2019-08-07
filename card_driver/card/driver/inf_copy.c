@@ -64,7 +64,7 @@ int host_page_list_dma_completed(struct sphcs *sphcs, void *ctx, const void *use
 	if (dma_req_data->pages_count == 0) { // this is the first page
 		res = sg_alloc_table(host_sgt, chain_header->total_nents, GFP_KERNEL);
 		if (unlikely(res < 0)) {
-			sph_log_err(CREATE_COMMAND_LOG, "FATAL: line:%u err=%u failed to allocate sg_table\n",  __LINE__, res);
+			sph_log_err(CREATE_COMMAND_LOG, "FATAL: line:%u err=%d failed to allocate sg_table\n",  __LINE__, res);
 			eventVal = SPH_IPC_NO_MEMORY;
 			goto failed;
 		}
@@ -130,7 +130,7 @@ int host_page_list_dma_completed(struct sphcs *sphcs, void *ctx, const void *use
 							&dma_req_data,
 							sizeof(dma_req_data));
 		if (unlikely(res < 0)) {
-			sph_log_err(CREATE_COMMAND_LOG, "FATAL: line: %u err=%u failed to sched dma\n", __LINE__, res);
+			sph_log_err(CREATE_COMMAND_LOG, "FATAL: line: %u err=%d failed to sched dma\n", __LINE__, res);
 			eventVal = SPH_IPC_NO_MEMORY;
 			goto failed;
 		}
@@ -162,8 +162,8 @@ int host_page_list_dma_completed(struct sphcs *sphcs, void *ctx, const void *use
 			goto failed;
 		}
 
-		// send lli buffer to dma
-		copy->transfer_size = g_the_sphcs->hw_ops->dma.gen_lli(g_the_sphcs->hw_handle, src_sgt, dst_sgt, copy->lli_buf, 0);
+		// generate lli buffer for dma
+		g_the_sphcs->hw_ops->dma.gen_lli(g_the_sphcs->hw_handle, src_sgt, dst_sgt, copy->lli_buf, 0);
 
 		sphcs_send_event_report(g_the_sphcs,
 					SPH_IPC_CREATE_COPY_SUCCESS,
@@ -225,7 +225,7 @@ int inf_copy_create(uint16_t protocolCopyID, struct inf_context *context, struct
 		    struct inf_copy **out_copy)
 {
 	struct copy_dma_command_data *dma_req_data;
-	dma_addr_t dma_src_addr;
+	dma_addr_t dma_src_addr = (dma_addr_t)hostDmaAddr;
 	struct inf_copy *copy;
 	int res;
 
@@ -291,8 +291,6 @@ int inf_copy_create(uint16_t protocolCopyID, struct inf_context *context, struct
 		sph_log_err(CREATE_COMMAND_LOG, "FATAL: %s():%u err=%u failed to get free page for host dma page list\n", __func__, __LINE__, res);
 		goto free_sw_counters;
 	}
-	// get DMA from host address
-	dma_src_addr = hostDmaAddr;
 
 	dma_req_data->pages_count = 0;
 
@@ -331,8 +329,8 @@ free_dma_req:
 
 static void release_copy(struct work_struct *work)
 {
-	struct inf_copy *copy;
-	copy = container_of(work, struct inf_copy, work);
+	struct inf_copy *copy = container_of(work, struct inf_copy, work);
+	int ret;
 
 	if (likely(copy->lli_buf != NULL))
 		dma_free_coherent(g_the_sphcs->hw_device,
@@ -340,17 +338,19 @@ static void release_copy(struct work_struct *work)
 				copy->lli_buf,
 				copy->lli_addr);
 
+	sph_remove_sw_counters_values_node(copy->sw_counters);
+
+	ret = inf_devres_put(copy->devres);
+	SPH_ASSERT(ret == 0);
+	ret = inf_context_put(copy->context);
+	SPH_ASSERT(ret == 0);
+
 	if (likely(copy->destroyed))
 		sphcs_send_event_report(g_the_sphcs,
 				SPH_IPC_COPY_DESTROYED,
 				0,
 				copy->context->protocolID,
 				copy->protocolID);
-
-	sph_remove_sw_counters_values_node(copy->sw_counters);
-
-	inf_context_put(copy->context);
-	inf_devres_put(copy->devres);
 
 	kfree(copy);
 }
@@ -362,7 +362,7 @@ static void sched_release_copy(struct kref *kref)
 	copy = container_of(kref, struct inf_copy, ref);
 
 	INIT_WORK(&copy->work, release_copy);
-	queue_work(g_the_sphcs->wq, &copy->work);
+	queue_work(copy->context->wq, &copy->work);
 }
 
 inline void inf_copy_get(struct inf_copy *copy)
@@ -378,19 +378,26 @@ inline int inf_copy_put(struct inf_copy *copy)
 	return kref_put(&copy->ref, sched_release_copy);
 }
 
-void inf_copy_req_release(struct inf_exec_req *copy_req)
+/* This function should not be called directly, use inf_exec_req_put instead */
+void inf_copy_req_release(struct kref *kref)
 {
+	struct inf_exec_req *copy_req = container_of(kref,
+						     struct inf_exec_req,
+						     in_use);
+	struct inf_copy *copy = copy_req->copy;
+
 	SPH_ASSERT(copy_req->is_copy);
 
-	inf_devres_del_req_from_queue(copy_req->copy->devres, copy_req);
-	inf_context_seq_id_fini(copy_req->copy->context, &copy_req->seq);
+	inf_devres_del_req_from_queue(copy->devres, copy_req);
+	inf_context_seq_id_fini(copy->context, &copy_req->seq);
 
-	inf_copy_put(copy_req->copy);
-	kmem_cache_free(copy_req->copy->context->exec_req_slab_cache,
+
+	kmem_cache_free(copy->context->exec_req_slab_cache,
 			copy_req);
+	inf_copy_put(copy);
 }
 
-int inf_copy_sched(struct inf_copy *copy, size_t size)
+int inf_copy_sched(struct inf_copy *copy, size_t size, uint8_t priority)
 {
 	int err;
 	struct inf_exec_req *req;

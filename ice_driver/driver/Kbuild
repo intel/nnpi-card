@@ -47,10 +47,6 @@ ifdef NEXT_E2E
 subdir-ccflags-y += -DNEXT_E2E
 endif
 
-ifdef B_STEP
-subdir-ccflags-y += -DENABLE_SPH_STEP_B
-endif
-
 ifdef DEBUG
 subdir-ccflags-y += -D_DEBUG
 subdir-ccflags-y += -g
@@ -63,7 +59,7 @@ subdir-ccflags-y += -I$(src)
 subdir-ccflags-y += -D_LINUX_
 
 subdir-ccflags-y += -DFW_FILES_DIR="\"$(MODULE_NAME)\""
-subdir-ccflags-y += -DFW_PACK_DIR="\"$(MODULE_NAME)/release\""
+subdir-ccflags-y += -DFW_PACK_DIR="\"$(MODULE_NAME)/a_step/release\""
 subdir-ccflags-y += -DMODULE_NAME="\"$(MODULE_NAME)\""
 subdir-ccflags-y += -DGIT_HASH=$(GIT_HASH)
 
@@ -81,6 +77,8 @@ subdir-ccflags-y += -I$(src)/../null_device/nulldev_kmd_ring0
 endif
 
 $(MODULE_NAME)-y := cve_driver.o
+$(MODULE_NAME)-y += b_step_regs.o
+$(MODULE_NAME)-y += a_step_regs.o
 $(MODULE_NAME)-y += ../automation/version/version.o
 $(MODULE_NAME)-y += cve_device.o
 $(MODULE_NAME)-y += cve_driver_utils.o
