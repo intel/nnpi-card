@@ -18,12 +18,9 @@
 
 #include "cve_device.h"
 
-void ice_schedule_network(struct ice_network *ntw);
-int ice_schedule_remove_network(struct ice_network *ntw);
-void ice_scheduler_engine(struct ice_network *ntw);
-void ice_deschedule_network(struct ice_network *ntw);
-void ice_sch_reset_exe_order(void);
-struct ice_infer *ice_sch_get_next_ntw_infer(
-			struct ice_network *ntw);
-struct ice_infer *ice_sch_get_next_sch_infer(void);
+void ice_sch_engine(struct ice_network *ntw);
+void ice_sch_add_inf_to_queue(struct ice_infer *inf);
+void ice_sch_del_inf_from_queue(struct ice_infer *inf);
+void ice_sch_add_rr_to_queue(struct execution_node *node);
+int ice_sch_del_rr_from_queue(struct execution_node *node);
 #endif /* DRIVER_SCHEDULER_H_ */

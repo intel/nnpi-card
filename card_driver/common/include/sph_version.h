@@ -24,8 +24,8 @@
 #define STR(x) _STR(x)
 
 #define SPH_MAJOR 0
-#define SPH_MINOR 4
-#define SPH_PATCH 1
+#define SPH_MINOR 5
+#define SPH_PATCH 0
 
 #define SPH_VERSION  STR(VERSION: v.SPH_MAJOR.SPH_MINOR.SPH_PATCH)
 #define AUTHOR_STR   STR(AUTHOR: Intel Corporation 2018)

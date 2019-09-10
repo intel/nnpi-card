@@ -38,11 +38,15 @@ struct sphcs_dma_desc {
  * used.
  */
 extern const struct sphcs_dma_desc g_dma_desc_h2c_low;
+extern const struct sphcs_dma_desc g_dma_desc_h2c_low_nowait;
 extern const struct sphcs_dma_desc g_dma_desc_h2c_normal;
+extern const struct sphcs_dma_desc g_dma_desc_h2c_normal_nowait;
 extern const struct sphcs_dma_desc g_dma_desc_h2c_high;
 extern const struct sphcs_dma_desc g_dma_desc_h2c_high_nowait;
 extern const struct sphcs_dma_desc g_dma_desc_c2h_low;
+extern const struct sphcs_dma_desc g_dma_desc_c2h_low_nowait;
 extern const struct sphcs_dma_desc g_dma_desc_c2h_normal;
+extern const struct sphcs_dma_desc g_dma_desc_c2h_normal_nowait;
 extern const struct sphcs_dma_desc g_dma_desc_c2h_high;
 extern const struct sphcs_dma_desc g_dma_desc_c2h_high_nowait;
 
@@ -70,6 +74,12 @@ u32 sphcs_dma_sched_create_serial_channel(struct sphcs_dma_sched *dmaSched);
 
 int sphcs_dma_sched_reserve_channel_for_dtf(struct sphcs_dma_sched *dmaSched,
 					   bool lock_dtf_channel);
+
+int sphcs_dma_sched_update_priority(struct sphcs_dma_sched      *dmaSched,
+				    enum sphcs_dma_direction    direction,
+				    enum sphcs_dma_priority_request src_priority,
+				    enum sphcs_dma_priority_request dst_priority,
+				    dma_addr_t                   req_src);
 
 int sphcs_dma_sched_start_xfer_single(struct sphcs_dma_sched *dmaSched,
 				      const struct sphcs_dma_desc *desc,

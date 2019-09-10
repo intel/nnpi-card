@@ -72,6 +72,7 @@ int cve_dle_is_single(const struct cve_dle_t *e);
 				((_element)->_listname.next->container); \
 		} \
 		cve_dle_remove(&(_element)->_listname); \
+		cve_dle_init(&(_element)->_listname, (_element)); \
 	} \
 }
 

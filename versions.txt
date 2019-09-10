@@ -1,2 +1,2 @@
-card driver: tags/rel_19WW31.1.3_133
-ice driver: tags/rel_19WW31.2.1_110
+card driver: bf8f64852e1c0e60084d932b6b453a1411269388
+ice driver: 913ca1968fa708bf7b3b45c9258d960454694863

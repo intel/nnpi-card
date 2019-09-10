@@ -43,11 +43,25 @@ const struct sphcs_dma_desc g_dma_desc_h2c_low = {
 	.flags          = 0
 };
 
+const struct sphcs_dma_desc g_dma_desc_h2c_low_nowait = {
+	.dma_direction  = SPHCS_DMA_DIRECTION_HOST_TO_CARD,
+	.dma_priority   = SPHCS_DMA_PRIORITY_LOW,
+	.serial_channel = 0,
+	.flags          = SPHCS_DMA_START_XFER_COMPLETION_NO_WAIT
+};
+
 const struct sphcs_dma_desc g_dma_desc_h2c_normal = {
 	.dma_direction  = SPHCS_DMA_DIRECTION_HOST_TO_CARD,
 	.dma_priority   = SPHCS_DMA_PRIORITY_NORMAL,
 	.serial_channel = 0,
 	.flags          = 0
+};
+
+const struct sphcs_dma_desc g_dma_desc_h2c_normal_nowait = {
+	.dma_direction  = SPHCS_DMA_DIRECTION_HOST_TO_CARD,
+	.dma_priority   = SPHCS_DMA_PRIORITY_NORMAL,
+	.serial_channel = 0,
+	.flags          = SPHCS_DMA_START_XFER_COMPLETION_NO_WAIT
 };
 
 const struct sphcs_dma_desc g_dma_desc_h2c_high = {
@@ -71,11 +85,25 @@ const struct sphcs_dma_desc g_dma_desc_c2h_low = {
 	.flags          = 0
 };
 
+const struct sphcs_dma_desc g_dma_desc_c2h_low_nowait = {
+	.dma_direction  = SPHCS_DMA_DIRECTION_CARD_TO_HOST,
+	.dma_priority   = SPHCS_DMA_PRIORITY_LOW,
+	.serial_channel = 0,
+	.flags          = SPHCS_DMA_START_XFER_COMPLETION_NO_WAIT
+};
+
 const struct sphcs_dma_desc g_dma_desc_c2h_normal = {
 	.dma_direction  = SPHCS_DMA_DIRECTION_CARD_TO_HOST,
 	.dma_priority   = SPHCS_DMA_PRIORITY_NORMAL,
 	.serial_channel = 0,
 	.flags          = 0
+};
+
+const struct sphcs_dma_desc g_dma_desc_c2h_normal_nowait = {
+	.dma_direction  = SPHCS_DMA_DIRECTION_CARD_TO_HOST,
+	.dma_priority   = SPHCS_DMA_PRIORITY_NORMAL,
+	.serial_channel = 0,
+	.flags          = SPHCS_DMA_START_XFER_COMPLETION_NO_WAIT
 };
 
 const struct sphcs_dma_desc g_dma_desc_c2h_high = {
@@ -129,6 +157,7 @@ struct spcs_dma_direction_info {
 	struct spch_dma_hw_channels hw_channels;
 	enum SPHCS_DMA_ENGINE_STATE dma_engine_state;
 	spinlock_t lock_irq;
+	atomic_t active_high_priority_transactions;
 	struct completion dma_engine_idle;
 	struct reset_work reset_work;
 };
@@ -348,6 +377,7 @@ static void do_schedule(struct sphcs_dma_sched *dmaSched,
 			enum sphcs_dma_direction direction)
 {
 	unsigned long flags;
+	struct sphcs_dma_sched_priority_queue *high_q = DMA_QUEUE_INFO_PTR(dmaSched, direction, SPHCS_DMA_PRIORITY_HIGH);
 	u32 priority_queue = 0;
 
 	/* lock current request type schedualer */
@@ -363,6 +393,16 @@ static void do_schedule(struct sphcs_dma_sched *dmaSched,
 			u32 skipped_serial_channels[MAX_SKIPPED_SERIAL];
 			u32 s, num_skipped_serial = 0;
 
+
+			if (priority_queue != SPHCS_DMA_PRIORITY_HIGH) {
+				SPH_SPIN_LOCK_IRQSAVE(&high_q->lock_irq, queue_flags);
+				if (atomic_read(&DMA_DIRECTION_INFO(dmaSched, direction).active_high_priority_transactions) > 0 ||
+					DMA_QUEUE_INFO_PTR(dmaSched, direction, SPHCS_DMA_PRIORITY_HIGH)->reqList_size > 0) {
+					SPH_SPIN_UNLOCK_IRQRESTORE(&high_q->lock_irq, queue_flags);
+					break;
+				}
+				SPH_SPIN_UNLOCK_IRQRESTORE(&high_q->lock_irq, queue_flags);
+			}
 			/* lock current queue */
 			SPH_SPIN_LOCK_IRQSAVE(&q->lock_irq, queue_flags);
 
@@ -414,6 +454,8 @@ static void do_schedule(struct sphcs_dma_sched *dmaSched,
 				}
 				/* remove from the queue and send the request */
 				list_del(&req->node);
+				if (priority_queue == SPHCS_DMA_PRIORITY_HIGH)
+					atomic_inc(&DMA_DIRECTION_INFO(dmaSched, direction).active_high_priority_transactions);
 				start_request(dmaSched, req, hw_channel);
 				q->reqList_size--;
 			}
@@ -486,6 +528,7 @@ int sphcs_dma_sched_create(struct sphcs *sphcs,
 
 		DMA_DIRECTION_INFO(dmaSched, direction_index).dma_engine_state = SPHCS_DMA_ENGINE_STATE_ENABLED;
 		DMA_DIRECTION_INFO(dmaSched, direction_index).reset_work.hw_handle = hw_handle;
+		atomic_set(&DMA_DIRECTION_INFO(dmaSched, direction_index).active_high_priority_transactions, 0);
 
 		/* reset busy hw channels mask */
 		DMA_HW_CHANNEL(dmaSched, direction_index).busy_mask = 0x0;
@@ -682,6 +725,46 @@ inline void inc_reqSize(struct sphcs_dma_sched_priority_queue *q)
 	if (q->reqList_size > q->reqList_max_size)
 		q->reqList_max_size = q->reqList_size;
 }
+
+int sphcs_dma_sched_update_priority(struct sphcs_dma_sched      *dmaSched,
+				    enum sphcs_dma_direction    direction,
+				    enum sphcs_dma_priority_request src_priority,
+				    enum sphcs_dma_priority_request dst_priority,
+				    dma_addr_t                   req_src)
+{
+	unsigned long flags;
+	struct sphcs_dma_req *req, *tmpReq;
+	struct sphcs_dma_sched_priority_queue *src_q;
+	int ret = 1;
+
+	SPH_SPIN_LOCK_IRQSAVE(&DMA_DIRECTION_INFO(dmaSched, direction).lock_irq, flags);
+
+	SPH_SPIN_LOCK_IRQSAVE(&DMA_QUEUE_INFO(dmaSched, direction, src_priority).lock_irq, flags);
+	src_q = DMA_QUEUE_INFO_PTR(dmaSched, direction, src_priority);
+	list_for_each_entry_safe(req, tmpReq, &src_q->reqList, node) {
+		if (req->src == req_src) {
+			//Remove from src queue
+			list_del(&req->node);
+			src_q->reqList_size--;
+			//Add to dest queue
+			SPH_SPIN_LOCK_IRQSAVE(&DMA_QUEUE_INFO(dmaSched, direction, dst_priority).lock_irq, flags);
+			list_add_tail(&req->node, &DMA_QUEUE_INFO(dmaSched, direction,
+						  dst_priority).reqList);
+			inc_reqSize(&DMA_QUEUE_INFO(dmaSched, direction, dst_priority));
+			SPH_SPIN_UNLOCK_IRQRESTORE(&DMA_QUEUE_INFO(dmaSched, direction, dst_priority).lock_irq, flags);
+			ret = 0;
+			break;
+		}
+	}
+	SPH_SPIN_UNLOCK_IRQRESTORE(&DMA_QUEUE_INFO(dmaSched, direction, src_priority).lock_irq, flags);
+
+	SPH_SPIN_UNLOCK_IRQRESTORE(&DMA_DIRECTION_INFO(dmaSched, direction).lock_irq, flags);
+
+	if (ret == 0)
+		do_schedule(dmaSched, direction);
+	return ret;
+}
+
 
 int sphcs_dma_sched_start_xfer_single(struct sphcs_dma_sched *dmaSched,
 				      const struct sphcs_dma_desc *desc,
@@ -901,8 +984,11 @@ static int sphcs_dma_sched_xfer_complete_int(struct sphcs_dma_sched *dmaSched,
 			}
 
 			SPH_SPIN_UNLOCK_IRQRESTORE(&(DMA_DIRECTION_INFO(dmaSched, dma_direction).lock_irq), flags);
-		} else
+		} else {
+			if (req->priority == SPHCS_DMA_PRIORITY_HIGH)
+				atomic_dec(&DMA_DIRECTION_INFO(dmaSched, dma_direction).active_high_priority_transactions);
 			do_schedule(dmaSched, req->direction);
+		}
 
 		/* Once all channels of the DMA engine are idle and DMA engine recovery flow has been started  */
 		SPH_SPIN_LOCK_IRQSAVE(&(DMA_DIRECTION_INFO(dmaSched, dma_direction).lock_irq), flags);
@@ -978,6 +1064,26 @@ int sphcs_dma_sched_c2h_xfer_complete_int(struct sphcs_dma_sched *dmaSched,
 	return 0;
 }
 
+static int debug_directions_info_show(struct seq_file *m, void *v)
+{
+	struct sphcs_dma_sched *dmaSched = m->private;
+	unsigned long flags;
+
+	seq_puts(m, "Direction Info\n");
+	seq_puts(m, "Direction Info host to card\n");
+	SPH_SPIN_LOCK_IRQSAVE(&(DMA_DIRECTION_INFO(dmaSched, SPHCS_DMA_DIRECTION_HOST_TO_CARD).lock_irq), flags);
+	seq_printf(m, "active_high_priority_transactions %d\n",
+			atomic_read(&DMA_DIRECTION_INFO(dmaSched, SPHCS_DMA_DIRECTION_HOST_TO_CARD).active_high_priority_transactions));
+	SPH_SPIN_UNLOCK_IRQRESTORE(&(DMA_DIRECTION_INFO(dmaSched, SPHCS_DMA_DIRECTION_HOST_TO_CARD).lock_irq), flags);
+	seq_puts(m, "Direction Info card to host\n");
+	SPH_SPIN_LOCK_IRQSAVE(&(DMA_DIRECTION_INFO(dmaSched, SPHCS_DMA_DIRECTION_CARD_TO_HOST).lock_irq), flags);
+	seq_printf(m, "active_high_priority_transactions %d\n",
+			atomic_read(&DMA_DIRECTION_INFO(dmaSched, SPHCS_DMA_DIRECTION_CARD_TO_HOST).active_high_priority_transactions));
+	SPH_SPIN_UNLOCK_IRQRESTORE(&(DMA_DIRECTION_INFO(dmaSched, SPHCS_DMA_DIRECTION_CARD_TO_HOST).lock_irq), flags);
+
+	return 0;
+}
+
 static int debug_direction_show(struct seq_file *m, void *v)
 {
 	struct spcs_dma_direction_info *dir_info = m->private;
@@ -1031,6 +1137,11 @@ static int debug_direction_show(struct seq_file *m, void *v)
 	return 0;
 }
 
+static int debug_directions_info_open(struct inode *inode, struct file *filp)
+{
+	return single_open(filp, debug_directions_info_show, inode->i_private);
+}
+
 static int debug_direction_open(struct inode *inode, struct file *filp)
 {
 	return single_open(filp, debug_direction_show, inode->i_private);
@@ -1038,6 +1149,13 @@ static int debug_direction_open(struct inode *inode, struct file *filp)
 
 static const struct file_operations debug_direction_stats_fops = {
 	.open		= debug_direction_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+};
+
+static const struct file_operations debug_directions_info_fops = {
+	.open		= debug_directions_info_open,
 	.read		= seq_read,
 	.llseek		= seq_lseek,
 	.release	= single_release,
@@ -1071,6 +1189,14 @@ void sphcs_dma_sched_init_debugfs(struct sphcs_dma_sched *dmaSched,
 				dir,
 				&dmaSched->direction[SPHCS_DMA_DIRECTION_CARD_TO_HOST],
 				&debug_direction_stats_fops);
+	if (IS_ERR_OR_NULL(f))
+		goto err;
+
+	f = debugfs_create_file("direction_info",
+				0444,
+				dir,
+				dmaSched,
+				&debug_directions_info_fops);
 	if (IS_ERR_OR_NULL(f))
 		goto err;
 

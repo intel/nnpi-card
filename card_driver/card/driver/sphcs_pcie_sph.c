@@ -158,6 +158,9 @@ static struct dentry *s_debugfs_dir;
 static DEFINE_INT_STAT(int_stats, 8);
 #endif
 
+bool no_dma_retries;
+module_param(no_dma_retries,  bool, 0400);
+
 /* interrupt mask bits we enable and handle at interrupt level */
 static u32 s_host_status_int_mask =
 		   ELBI_IOSF_STATUS_RESPONSE_FIFO_READ_UPDATE_MASK |
@@ -268,7 +271,7 @@ static inline void sph_mmio_write(struct sph_pci_device *sph_pci,
 				  uint32_t               off,
 				  uint32_t               val)
 {
-	DO_TRACE(trace_pep_mmio('w', off - ELBI_BASE, val));
+	//DO_TRACE(trace_pep_mmio('w', off - ELBI_BASE, val));
 	iowrite32(val, sph_pci->mmio.va + off);
 }
 
@@ -278,7 +281,7 @@ static inline uint32_t sph_mmio_read(struct sph_pci_device *sph_pci,
 	uint32_t ret;
 
 	ret = ioread32(sph_pci->mmio.va + off);
-	DO_TRACE(trace_pep_mmio('r', off - ELBI_BASE, ret));
+	//DO_TRACE(trace_pep_mmio('r', off - ELBI_BASE, ret));
 
 	return ret;
 }
@@ -428,9 +431,18 @@ static void handle_dma_interrupt(struct sph_pci_device *sph_pci, u32 dma_read_st
 							(status_lo & DMA_SET_CHAN_BIT(i, DMA_RD_LLE_FETCH_ERR_OFF)) ||
 							(status_hi & DMA_SET_CHAN_BIT(i, DMA_RD_DATA_POISIONING_OFF)))
 						recovery_action = SPHCS_RA_RESET_DMA;
-					else
+					else if (!no_dma_retries)
 						recovery_action = SPHCS_RA_RETRY_DMA;
+					else
+						recovery_action = SPHCS_RA_NONE;
 
+					sph_log_err(DMA_LOG, "DMA error on read ch %d (no_dma_retries=%d) recovery=%s, status_hi=0x%x status_lo=0x%x\n",
+						    i,
+						    no_dma_retries,
+						    recovery_action == SPHCS_RA_RESET_DMA ? "reset" :
+						    recovery_action == SPHCS_RA_RETRY_DMA ? "retry" : "none",
+						    status_hi,
+						    status_lo);
 				}
 			}
 
@@ -477,6 +489,11 @@ static void handle_dma_interrupt(struct sph_pci_device *sph_pci, u32 dma_read_st
 						recovery_action = SPHCS_RA_RESET_DMA;
 					else
 						recovery_action = SPHCS_RA_NONE;
+
+					sph_log_err(DMA_LOG, "DMA error on write ch %d recovery=%s, status=0x%x\n",
+						    i,
+						    recovery_action == SPHCS_RA_RESET_DMA ? "reset" : "none",
+						    status);
 				}
 			}
 
@@ -921,13 +938,17 @@ u64 sphcs_sph_dma_gen_lli(void            *hw_handle,
 	uint64_t transfer_size = 0;
 
 	if (hw_handle == NULL || src == NULL || dst == NULL || outLli == NULL)
-		return -1;
+		return 0;
 
 
 	lli_header->cut_element = NULL;
 
 	/* Fill SGL */
 	num_of_elements = dma_calc_and_gen_lli(src, dst, data_element, dst_offset, dma_set_lli_data_element, &transfer_size);
+	if (num_of_elements == 0) {
+		sph_log_err(EXECUTE_COMMAND_LOG, "ERROR: gen_lli cannot generate any data element.\n");
+		return 0;
+	}
 
 	/* Move to the last element and set local interrupt enable bit */
 	data_element = data_element + (num_of_elements - 1);

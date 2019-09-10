@@ -441,24 +441,13 @@ static int add_sglist_to_device_page_table(struct lin_mm_allocation *alloc,
 		(struct cve_lin_mm_domain *)cve_alloc_data->domain;
 	struct ice_mmu_config *mmu_config = &(adom->mmu_config[partition_id]);
 	struct scatterlist *sg = NULL;
-	u32 cve_pages_nr = 0;
 	u32 mapped_pages_nr = 0;
 	int retval = CVE_DEFAULT_ERROR_CODE;
 	u32 base_iova, iova;
-	u64 actual_sz = 0;
 	int i;
+	u64 total_size_bytes = 0;
 
 	FUNC_ENTER();
-
-	for_each_sg(sglist, sg, nents, i) {
-		actual_sz += round_up_cve_pagesize(
-				(sg->offset & (mmu_config->page_sz - 1)) +
-				sg_dma_len(sg), mmu_config->page_sz);
-	}
-	alloc->actual_sz = actual_sz;
-
-	cve_pages_nr = calc_alloc_cve_pages_nr(alloc);
-	ASSERT(cve_pages_nr == alloc->ice_pages_nr);
 
 	iova = VADDR_TO_IOVA(alloc->cve_vaddr, mmu_config->page_shift);
 	base_iova = iova;
@@ -476,6 +465,10 @@ static int add_sglist_to_device_page_table(struct lin_mm_allocation *alloc,
 				mmu_config->page_shift);
 		ice_va_t cva = IOVA_TO_VADDR(iova, mmu_config->page_shift);
 
+		total_size_bytes += size_bytes;
+		if (total_size_bytes >= alloc->size_bytes)
+			size_bytes -= (total_size_bytes - alloc->size_bytes);
+
 		retval = lin_mm_map(adom,
 				cva,
 				sg_dma_address(sg),
@@ -486,6 +479,9 @@ static int add_sglist_to_device_page_table(struct lin_mm_allocation *alloc,
 				"lin_mm_map failed %d\n", retval);
 			goto cleanup_error;
 		}
+
+		if (total_size_bytes >= alloc->size_bytes)
+			break;
 
 		iova += size_cve_pages;
 		mapped_pages_nr += size_cve_pages;

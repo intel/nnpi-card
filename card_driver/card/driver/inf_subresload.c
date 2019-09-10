@@ -54,14 +54,15 @@ int complete_subresload(struct sphcs *sphcs, void *ctx, const void *user_data, i
 
 	msg.value = 0;
 	msg.opcode = SPH_IPC_C2H_OP_INF_SUBRES_LOAD_REPLY;
-	msg.contextID = dma_req_data->ctxID;
-	msg.sessionID = dma_req_data->session->sessionID;
-	msg.host_pool_index = dma_req_data->host_pool_index;
+	msg.contextID = ctxId;
+	msg.sessionID = sessionId;
+	msg.host_pool_index = host_pool_idx;
+
+	DO_TRACE(trace_inf_net_subres(ctxId, sessionId, -1, host_pool_idx,
+			-1, dma_addr, SPH_TRACE_OP_STATUS_COMPLETE));
 
 	sphcs_msg_scheduler_queue_add_msg(g_the_sphcs->public_respq, &msg.value, 1);
 
-	DO_TRACE(trace_inf_net_subres(ctxId, sessionId, -1, host_pool_idx,
-			0, dma_addr, SPH_TRACE_OP_STATUS_COMPLETE));
 
 	return 0;
 }
@@ -93,12 +94,18 @@ enum event_val inf_subresload_execute(struct inf_context *context, union h2c_Sub
 		sph_log_err(EXECUTE_COMMAND_LOG, "FATAL: %u err=%d failed to allocate sg_table\n", __LINE__, res);
 		return SPH_IPC_NO_MEMORY;
 	}
+	/* check if offset not bigger than device resource size */
+	if (cmd->res_offset >= session->devres->size) {
+		sph_log_err(EXECUTE_COMMAND_LOG, "Failed to execute subres, offset %llu exceeds devres size %llu\n", cmd->res_offset, session->devres->size);
+		return SPH_IPC_DMA_ERROR;
+	}
 
 	src_sgt.sgl->dma_address = SPH_IPC_DMA_PFN_TO_ADDR(cmd->host_pool_dma_address);
 	src_sgt.sgl->length = data_size;
 
 	res_dst_sgt = session->devres->dma_map;
 	lli_size = g_the_sphcs->hw_ops->dma.calc_lli_size(g_the_sphcs->hw_handle, &src_sgt, res_dst_sgt, cmd->res_offset);
+	SPH_ASSERT(lli_size > 0);
 
 	lli_space = lli_find_space(session, lli_size);
 	while (lli_space == NULL) {
@@ -109,6 +116,7 @@ enum event_val inf_subresload_execute(struct inf_context *context, union h2c_Sub
 
 	dma_req_data.lli_offset = lli_space->offset;
 	transfer_size = g_the_sphcs->hw_ops->dma.gen_lli(g_the_sphcs->hw_handle, &src_sgt, res_dst_sgt, session->lli_buf + lli_space->offset, cmd->res_offset);
+	SPH_ASSERT(transfer_size > 0);
 
 	sg_free_table(&src_sgt);
 

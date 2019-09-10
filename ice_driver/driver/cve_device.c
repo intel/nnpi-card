@@ -26,10 +26,11 @@
 #include "icedrv_internal_sw_counter_funcs.h"
 #include "ice_debug_event.h"
 
-int cve_device_init(struct cve_device *dev, int index)
+int cve_device_init(struct cve_device *dev, int index, u64 pe_value)
 {
 	/* struct hw_revision_t hw_rev; */
 
+	u64 pe_mask;
 	int retval = CVE_DEFAULT_ERROR_CODE;
 
 	dev->dev_index = index;
@@ -60,10 +61,12 @@ int cve_device_init(struct cve_device *dev, int index)
 	/* Initializes Invalid Persistent Nw*/
 	dev->dev_ntw_id = INVALID_NETWORK_ID;
 
-	/* Power state of device is not known at this point */
-	dev->power_state = ICE_POWER_UNKNOWN;
-	ice_swc_counter_set(dev->hswc, ICEDRV_SWC_DEVICE_COUNTER_POWER_STATE,
-			dev->power_state);
+	pe_mask = BIT_ULL(dev->dev_index) << 4;
+	/*If device is ON*/
+	if ((pe_value & pe_mask) != pe_mask)
+		dev->power_state = ICE_POWER_OFF;
+	else
+		dev->power_state = ICE_POWER_ON;
 
 	/*set default value for ice freq due to issue in P-Code (ICE-14643)*/
 	dev->frequency = ICE_FREQ_DEFAULT;
@@ -122,6 +125,9 @@ int cve_device_init(struct cve_device *dev, int index)
 	cve_dg_add_device(dev);
 
 	ice_swc_create_dev_node(dev);
+
+	ice_swc_counter_set(dev->hswc, ICEDRV_SWC_DEVICE_COUNTER_POWER_STATE,
+			dev->power_state);
 
 	getnstimeofday(&dev->idle_start_time);
 	ice_swc_counter_set(dev->hswc,

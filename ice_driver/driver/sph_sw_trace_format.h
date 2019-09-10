@@ -23,6 +23,10 @@
 #define SPH_TRACE_ICEDRV_NETWORK_RESOURCE         icedrvNetworkResource
 #define SPH_TRACE_ICEDRV_DESTROY_NETWORK          icedrvDestroyNetwork
 #define SPH_TRACE_ICEDRV_DESTROY_CONTEXT          icedrvDestroyContext
+#define SPH_TRACE_ICEDRV_SCHEDULE_INFER           _icedrvScheduleInfer
+#define SPH_TRACE_ICEDRV_SCHEDULE_JOB             icedrvScheduleJob
+#define SPH_TRACE_ICEDRV_TOP_HALF                 _icedrvTopHalf
+#define SPH_TRACE_ICEDRV_BOTTOM_HALF              _icedrvBottomHalf
 
 #define SPH_TRACE_FIELD_STATE           "state"
 
@@ -32,7 +36,20 @@
 #define SPH_TRACE_STR_ABORT     "a"    /* state - a: operation has aborted*/
 #define SPH_TRACE_STR_PASS      "pass" /* status - pass: operation passed*/
 #define SPH_TRACE_STR_FAIL      "fail" /* status - fail: operation failed */
-
+#define SPH_TRACE_STR_DB        "db"   /* state - db: doorbell done*/
+#define SPH_TRACE_STR_REQ       "req"  /* state - request: */
+#define SPH_TRACE_STR_AVG       "avg"  /* state - average: */
+#define SPH_TRACE_STR_ICE       "ice"  /* state - ice number or ice mask */
+#define SPH_TRACE_STR_PRIORITY  "prioLevel" /* state - priority of inference */
+#define SPH_TRACE_STR_TIME      "time" /* state - time */
+#define SPH_TRACE_STR_LOCATION  "line" /* state - line number in the function*/
+#define SPH_TRACE_STR_ADD       "add"  /* state - add: add data to a Q*/
+#define SPH_TRACE_STR_BH        "bh"    /* state - bh: in bottom half*/
+#define SPH_TRACE_STR_PERF      "perf"  /* state - perf: ice cycles */
+#define SPH_TRACE_STR_Q_HEAD    "qhead"  /* state - qhead: isr q head */
+#define SPH_TRACE_STR_Q_TAIL    "qtail"  /* state - qtail: isr q tail */
+#define SPH_TRACE_STR_EXEC_TYPE "cold" /* state - type of exection cold/warm */
+#define SPH_TRACE_STR_DEV_RESET "iceReset" /* state - ice reset status */
 /*driver commands*/
 
 #define SPH_TRACE_STR_CREATE_CTXT               "create_context"
@@ -42,6 +59,10 @@
 #define SPH_TRACE_STR_NTW_RESOURCE              "network_resource"
 #define SPH_TRACE_STR_DESTROY_NTW               "destroy_network"
 #define SPH_TRACE_STR_DESTROY_CTXT              "destroy_context"
+#define SPH_TRACE_STR_SCHEDULE_INFER            "sch_infer"
+#define SPH_TRACE_STR_SCHEDULE_JOB              "sch_job"
+#define SPH_TRACE_STR_TOP_HALF                  "top_half"
+#define SPH_TRACE_STR_BOTTOM_HALF               "bottom_half"
 #define SPH_TRACE_STR_UNDEF                     "undefined"
 #define SPH_TRACE_STR_NULL                      "NULL"
 

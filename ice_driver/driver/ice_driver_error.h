@@ -112,7 +112,13 @@ enum ice_kerror_type {
 	/** LLC Frequency request has invalid values */
 	ICEDRV_KERROR_INVAL_LLC_FREQ, /* [1138] */
 	/** LLC Frequency set request failure  */
-	ICEDRV_KERROR_SET_LLC_HW /* [1139] */
+	ICEDRV_KERROR_SET_LLC_HW, /* [1139] */
+	/** Resource Reservation failed  */
+	ICEDRV_KERROR_RESERVATION_FAIL, /* [1140] */
+	/** Duplicate Request */
+	ICEDRV_KERROR_DUPLICATE_REQUEST, /* [1141] */
+	/** Invalid ICE id */
+	ICEDRV_KERROR_ICE_NODEV /*[1142]*/
 };
 
 #endif /* _ICE_DRIVER_ERROR_H_ */

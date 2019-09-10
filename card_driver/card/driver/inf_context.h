@@ -99,6 +99,7 @@ struct inf_exec_req {
 	size_t            size;
 
 	/* following fields are used only by infer exec req */
+	/* priority field in sched_params is used for copy priority */
 	struct inf_sched_params   sched_params;
 	bool              sched_params_is_null;
 };

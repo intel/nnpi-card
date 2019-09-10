@@ -57,7 +57,7 @@ struct inf_data {
 	DECLARE_HASHTABLE(context_hash, 4);
 	struct workqueue_struct *inf_wq;
 	struct inf_daemon *daemon;
-#ifdef SPH_RELEASE_INTERNAL
+#ifdef ULT
 	struct inf_daemon *ult_daemon_save;
 #endif
 };
@@ -91,7 +91,7 @@ static int init_daemon(struct inf_data *inf_data)
 	return 0;
 }
 
-#ifdef SPH_RELEASE_INTERNAL
+#ifdef ULT
 static int switch_daemon(struct inf_data *inf_data)
 {
 	int ret;
@@ -156,7 +156,7 @@ static void fini_daemon(struct inf_data *inf_data)
 	inf_cmd_queue_fini(&inf_data->daemon->cmdq);
 
 	kfree(inf_data->daemon);
-#ifdef SPH_RELEASE_INTERNAL
+#ifdef ULT
 	inf_data->daemon = inf_data->ult_daemon_save;
 	inf_data->ult_daemon_save = NULL;
 #else
@@ -437,7 +437,7 @@ static long sphcs_inf_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 
 		f->private_data = g_the_sphcs->inf_data->daemon;
 		break;
-#ifdef SPH_RELEASE_INTERNAL
+#ifdef ULT
 	case IOCTL_INF_SWITCH_DAEMON:
 		ret = switch_daemon(g_the_sphcs->inf_data);
 		if (unlikely(ret < 0))
@@ -1643,7 +1643,7 @@ void IPC_OPCODE_HANDLER(INF_SUBRES_LOAD)(struct sphcs *sphcs,
 	INIT_WORK(&work->work, subres_load_op_work_handler);
 	queue_work(context->wq, &work->work);
 
-	DO_TRACE(trace_inf_net_subres(cmd->contextID, cmd->sessionID, cmd->res_offset, cmd->host_pool_index, 0, 0, SPH_TRACE_OP_STATUS_QUEUED));
+	DO_TRACE(trace_inf_net_subres(cmd->contextID, cmd->sessionID, cmd->res_offset, cmd->host_pool_index, -1, -1, SPH_TRACE_OP_STATUS_QUEUED));
 
 	return;
 
@@ -1928,6 +1928,7 @@ static void network_reservation_op_work_handler(struct work_struct *work)
 				SPH_IPC_NO_SUCH_NET,
 				op->cmd.ctxID,
 				op->cmd.netID);
+		goto free_op;
 	}
 
 	memset(&cmd_args, 0, sizeof(cmd_args));
@@ -1954,6 +1955,7 @@ static void network_reservation_op_work_handler(struct work_struct *work)
 		inf_devnet_put(devnet);
 	}
 
+free_op:
 	kfree(op);
 }
 

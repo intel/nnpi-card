@@ -38,6 +38,7 @@ define LMBENCH_INSTALL_TARGET_CMDS
 	$(TARGET_MAKE_ENV) $(MAKE) CFLAGS="$(TARGET_CFLAGS)" OS=$(ARCH) CC="$(TARGET_CC)" BASE=$(TARGET_DIR)/usr -C $(@D)/src install
 	#mkdir $(TARGET_DIR)/moshe
 	cp package/lmbench/CONFIG.SPH_simics $(TARGET_DIR)/usr/bin
+	cp package/lmbench/CONFIG.SPH_rvp $(TARGET_DIR)/usr/bin
 	cp package/lmbench/lmbench_SPH $(TARGET_DIR)/usr/bin
 	chmod 777 $(TARGET_DIR)/usr/bin/lmbench_SPH
 endef

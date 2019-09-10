@@ -173,6 +173,10 @@ struct config {
 	uint32_t mmio_dtf_ctrl_offset;
 	uint32_t mmio_ecc_serrcount_offset;
 	uint32_t mmio_ecc_derrcount_offset;
+	uint32_t mmio_parity_low_err_offset;
+	uint32_t mmio_parity_high_err_offset;
+	uint32_t mmio_parity_low_err_mask;
+	uint32_t mmio_parity_high_err_mask;
 	uint32_t mmio_parity_errcount_offset;
 	uint32_t mmio_unmapped_err_id_offset;
 	uint32_t mmio_cbb_err_code_offset;

@@ -525,20 +525,21 @@ void store_ecc_err_count(struct cve_device *cve_dev)
 	unmapped_err.val = cve_os_read_mmio_32_force_print(cve_dev,
 			cfg_default.mmio_unmapped_err_id_offset);
 
-	if (cve_dev->hswc_infer) {
-		ice_swc_counter_add(cve_dev->hswc_infer,
-		ICEDRV_SWC_INFER_DEVICE_COUNTER_ECC_SERRCOUNT, serr);
+	ice_swc_counter_add(cve_dev->hswc_infer,
+			ICEDRV_SWC_INFER_DEVICE_COUNTER_ECC_SERRCOUNT,
+			serr);
 
-		ice_swc_counter_add(cve_dev->hswc_infer,
-		ICEDRV_SWC_INFER_DEVICE_COUNTER_ECC_DERRCOUNT, derr);
+	ice_swc_counter_add(cve_dev->hswc_infer,
+			ICEDRV_SWC_INFER_DEVICE_COUNTER_ECC_DERRCOUNT,
+			derr);
 
-		ice_swc_counter_add(cve_dev->hswc_infer,
-		ICEDRV_SWC_INFER_DEVICE_COUNTER_PARITY_ERRCOUNT, parity_err);
+	ice_swc_counter_add(cve_dev->hswc_infer,
+			ICEDRV_SWC_INFER_DEVICE_COUNTER_PARITY_ERRCOUNT,
+			parity_err);
 
-		ice_swc_counter_set(cve_dev->hswc_infer,
+	ice_swc_counter_set(cve_dev->hswc_infer,
 			ICEDRV_SWC_INFER_DEVICE_COUNTER_UNMAPPED_ERR_ID,
 			unmapped_err.field.TID_ERR);
-	}
 #else
 	cve_os_read_mmio_32_force_print(cve_dev,
 			cfg_default.mmio_ecc_serrcount_offset);
@@ -607,6 +608,16 @@ int set_ice_freq(void *ice_freq_config)
 	struct cve_device_group *device_group = g_cve_dev_group_list;
 
 	dev = cve_device_get(ice_index);
+	/* Check if this device is valid, might be NULL in case its masked */
+	if (!dev) {
+		retval = -ICEDRV_KERROR_ICE_NODEV;
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+				"Error:%d ICE%d does not exist\n",
+				retval, ice_index);
+
+		return retval;
+	}
+
 	dev->frequency = freq_config->ice_freq;
 
 	retval = cve_os_lock(&device_group->poweroff_dev_list_lock,

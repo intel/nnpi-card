@@ -30,7 +30,7 @@
 #define SPH_TRACE_INFREQ		infreq
 #define SPH_TRACE_DMA			dma
 #define SPH_TRACE_INF_CREATE		infer_create
-#define SPH_TRACE_INF_NET_SUBTES	inf_net_subres
+#define SPH_TRACE_INF_NET_SUBRES	inf_net_subres
 #define SPH_TRACE_IPC			ipc
 #define SPH_TRACE_MMIO			pep_mmio
 

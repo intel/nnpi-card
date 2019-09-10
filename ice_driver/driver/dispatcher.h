@@ -142,9 +142,6 @@ void cve_ds_handle_job_completion(struct cve_device *dev,
 		enum cve_job_status job_status,
 		u64 exec_time);
 
-void ice_ds_handle_ntw_error(struct cve_device *dev,
-		u64 icedc_err_status, u8 cntr_overflow);
-
 void ice_ds_handle_ice_error(struct cve_device *dev,
 		u64 ice_err_status);
 
@@ -192,10 +189,18 @@ int cve_ds_get_version(cve_context_process_id_t context_pid,
  *  icemask - [out] bitmap of masked ICEs
  */
 int cve_ds_get_metadata(u32 *icemask);
-
+#define _no_op_return_zero 0
 #ifdef RING3_VALIDATION
 void *cve_ds_get_di_context(cve_context_id_t context_id);
+
+#define get_sw_id_from_context_pid(context_pid, context_id) __no_op_return_zero
+#else
+#define get_sw_id_from_context_pid(context_pid, context_id) \
+	 __get_sw_id_from_context_pid(context_pid, context_id)
 #endif
+u64 __get_sw_id_from_context_pid(cve_context_process_id_t context_pid,
+			cve_context_id_t context_id);
+
 
 #ifdef IDC_ENABLE
 void free_assigned_counters(struct jobgroup_descriptor *jobgroup);
@@ -205,8 +210,11 @@ void cve_ds_unmap_pool_context(struct ds_context *context);
 
 int ice_ds_is_network_active(u64 network_id);
 
-int ice_ds_ntw_resource_reserve(struct ice_network *ntw);
-void ice_ds_ntw_resource_release(struct ice_network *ntw);
+enum resource_status ice_ds_ntw_reserve_resource(struct ice_network *ntw);
+void ice_ds_ntw_release_resource(struct ice_network *ntw);
+
+enum resource_status ice_ds_ntw_borrow_resource(struct ice_network *ntw);
+void ice_ds_ntw_return_resource(struct ice_network *ntw);
 
 int ice_ds_debug_control(struct ice_debug_control_params *dc);
 
@@ -215,5 +223,8 @@ int ice_di_get_core_blob_sz(void);
 int ice_ds_dispatch_jg(struct jobgroup_descriptor *jobgroup);
 
 int ice_set_hw_config(struct ice_set_hw_config_params *set_hw_config);
+
+int ice_ds_raise_event(struct ice_network *ntw, bool reschedule);
+
 
 #endif /* _DISPATCHER_H_ */

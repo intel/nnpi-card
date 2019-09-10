@@ -22,12 +22,16 @@
 
 #ifdef RING3_VALIDATION
 #include "coral.h"
+#include <icedrv_sw_trace_stub.h>
 #else
 #include "icedrv_sw_trace.h"
 #endif
 #include "ice_debug_event.h"
 
-static struct ice_network *scheduled_ntw_list;
+static void __del_rr_from_queue(struct execution_node *node);
+
+/* Each scheduler queue is associated with Priority */
+static struct execution_node *sch_queue[EXE_INF_PRIORITY_MAX];
 
 /* return 1 iff job is marked as finished */
 static inline int is_jobgroup_finished(struct jobgroup_descriptor *jobgroup)
@@ -35,118 +39,20 @@ static inline int is_jobgroup_finished(struct jobgroup_descriptor *jobgroup)
 	return (jobgroup->ended_jobs_nr == jobgroup->submitted_jobs_nr);
 }
 
-void ice_schedule_network(struct ice_network *ntw)
+enum sch_status {
+	SCH_STATUS_DONE,
+	SCH_STATUS_WAIT,
+	SCH_STATUS_DISCARD
+};
+
+/* Wait, Discard or push to Ntw queue */
+static enum sch_status __schedule_node(struct execution_node *node)
 {
-	if (!ntw->ntw_queued) {
-
-		cve_os_log(CVE_LOGLEVEL_DEBUG,
-			"Adding NtwID:0x%llx to Scheduler List\n",
-			ntw->network_id);
-
-		ntw->ntw_queued = true;
-		cve_dle_add_to_list_before(scheduled_ntw_list,
-				exe_list, ntw);
-
-	} else if (ntw->ntw_running) {
-		/* Since this Ntw is running, scheduler will be
-		 * automatically invoked once the Ntw is over.
-		 */
-
-		goto exit;
-	}
-
-	ice_scheduler_engine(ntw);
-
-#ifdef RING3_VALIDATION
-	cve_os_log(CVE_LOGLEVEL_DEBUG, "Execute ICEs\n");
-	coral_trigger_simulation();
-#endif
-
-exit:
-	return;
-}
-
-static void __reset_scheduler_param(void)
-{
-	struct ice_network *head_ntw, *ntw;
-
-	head_ntw = scheduled_ntw_list;
-	ntw = head_ntw;
-
-	if (!ntw)
-		goto end;
-
-	do {
-		ntw->handled_by_sch = 0;
-
-		ntw = cve_dle_next(ntw, exe_list);
-	} while (head_ntw != ntw);
-
-end:
-	return;
-}
-
-struct ice_infer *ice_sch_get_next_ntw_infer(struct ice_network *ntw)
-{
-	struct ice_infer *inf = NULL;
-	enum ice_execute_infer_priority pr;
-
-	for (pr = EXE_INF_PRIORITY_0; pr < EXE_INF_PRIORITY_MAX; pr++) {
-
-		inf = ntw->inf_exe_list[pr];
-		if (inf)
-			break;
-	}
-
-	return inf;
-}
-
-struct ice_infer *ice_sch_get_next_sch_infer(void)
-{
-	u64 min_exe_order = EXE_ORDER_MAX;
-	struct ice_network *head_ntw, *ntw;
-	struct ice_infer *inf, *next_inf = NULL;
-	enum ice_execute_infer_priority min_pr = EXE_INF_PRIORITY_MAX;
-
-	head_ntw = scheduled_ntw_list;
-	ntw = head_ntw;
-
-	if (!ntw)
-		goto end;
-
-	do {
-		if (ntw->ntw_running || ntw->ntw_aborted || ntw->handled_by_sch)
-			goto skip_ntw;
-
-		inf = ice_sch_get_next_ntw_infer(ntw);
-		if (!inf)
-			goto skip_ntw;
-
-		if (inf->inf_pr < min_pr) {
-
-			min_pr = inf->inf_pr;
-			min_exe_order = inf->inf_exe_order;
-			next_inf = inf;
-		} else if ((inf->inf_pr == min_pr) &&
-			(inf->inf_exe_order < min_exe_order)) {
-
-			min_exe_order = inf->inf_exe_order;
-			next_inf = inf;
-		}
-
-skip_ntw:
-		ntw = cve_dle_next(ntw, exe_list);
-	} while (head_ntw != ntw);
-
-end:
-	return next_inf;
-}
-
-static void ice_schedule_list(struct ice_network *ntw)
-{
-	int retval = CVE_DEFAULT_ERROR_CODE;
-	bool multi_ntw = true;
-	struct ice_infer *inf = NULL;
+	int ret;
+	enum resource_status res_status;
+	enum sch_status status;
+	struct ice_infer *inf = node->inf;
+	struct ice_network *ntw = inf->ntw;
 	struct jobgroup_descriptor *cur_jg;
 #ifdef _DEBUG
 	struct cve_device *head, *next;
@@ -154,204 +60,381 @@ static void ice_schedule_list(struct ice_network *ntw)
 	struct ice_debug_event_info_power_on evt_info;
 #endif
 
-	if (ntw) {
-		cve_os_log(CVE_LOGLEVEL_DEBUG,
-			"Running specific Ntw. NtwID=0x%lx\n",
-			(uintptr_t)ntw);
-
-		multi_ntw = false;
-		inf = ice_sch_get_next_ntw_infer(ntw);
-	} else {
+	if (ntw->ntw_running) {
+		/* If Ntw is already running then scheduler will mark it for
+		 * execution once the previous infer is complete. When an Infer
+		 * execution completes, priority is given to the pending
+		 * inferences of same Ntw.
+		 */
 
 		cve_os_log(CVE_LOGLEVEL_DEBUG,
-			"Running generic Scheduler\n");
+			"Queuing this Inference. NtwID=0x%lx, InfID=0x%lx\n",
+			(uintptr_t)ntw, (uintptr_t)inf);
 
-		__reset_scheduler_param();
+		inf->inf_sch_node.ready_to_run = true;
 
-		/* Return next valid inference that can be executed */
-		inf = ice_sch_get_next_sch_infer();
+		cve_dle_remove_from_list(sch_queue[inf->inf_pr],
+			sch_list[inf->inf_pr], &inf->inf_sch_node);
+
+		status = SCH_STATUS_DONE;
+		goto out;
 	}
 
-	if (!inf) {
+	res_status = ice_ds_ntw_borrow_resource(ntw);
+	if (res_status == RESOURCE_BUSY) {
+		/* Wait */
 
 		cve_os_log(CVE_LOGLEVEL_DEBUG,
-			"No Infer for execution\n");
-		goto exit;
-	}
+			"Inference must wait. NtwID=0x%lx, InfID=0x%lx\n",
+			(uintptr_t)ntw, (uintptr_t)inf);
 
-	do {
-		ntw = inf->ntw;
-		ntw->handled_by_sch = 1;
+		status = SCH_STATUS_WAIT;
+		goto out;
 
-		/* NWA is must have */
-		ASSERT(ntw->num_ice > 0);
+	} else if (res_status == RESOURCE_INSUFFICIENT) {
+		/* Discard */
 
-		/* TODO: Segregate into Get and Reserve resource */
-		retval = ice_ds_ntw_resource_reserve(ntw);
-		if (retval < 0)
-			goto skip_ntw;
+		cve_os_log(CVE_LOGLEVEL_DEBUG,
+			"Inference will be discarded. NtwID=0x%lx, InfID=0x%lx\n",
+			(uintptr_t)ntw, (uintptr_t)inf);
+
+		ice_sch_del_inf_from_queue(inf);
+
+		/* Aborting Network without giving reason :( */
+		cur_jg = ntw->jg_list;
+		cur_jg->aborted_jobs_nr++;
 
 		ntw->curr_exe = inf;
-		ntw->ntw_running = true;
-		inf->inf_running = true;
 
-		cve_os_log(CVE_LOGLEVEL_INFO,
-			"Scheduling Infer Request. NtwID=0x%llx, InfID=0x%lx, Order=%llu\n",
-			ntw->network_id, (uintptr_t)inf, inf->inf_exe_order);
+		ice_ds_raise_event(ntw, false);
 
-		/* Strictly 1 Ntw 1 JG */
-		ASSERT(ntw->num_jg == 1);
-		cur_jg = ntw->jg_list;
+		status = SCH_STATUS_DISCARD;
+		goto out;
+	}
 
-		/* ICEs must be enough to schedule all Jobs */
-		ASSERT(cur_jg->submitted_jobs_nr <= ntw->num_ice);
-		cur_jg->next_dispatch = cur_jg->jobs;
+	/* Got the resources. Run it. */
+	ntw->curr_exe = inf;
 
-		retval = ice_ds_dispatch_jg(cur_jg);
-		if (retval < 0) {
-			cve_os_log_default(CVE_LOGLEVEL_ERROR,
-					"Unable to Schedule JG_ID=0x%lx. Error=%d\n",
-					(uintptr_t)cur_jg, retval);
+	cve_os_log(CVE_LOGLEVEL_INFO,
+		"Scheduling Infer Request. NtwID=0x%llx, InfID=0x%lx, Order=%llu\n",
+		ntw->network_id, (uintptr_t)inf, inf->inf_exe_order);
 
-			/* Schedule failed. So this network will be aborted */
-			if (retval == -ICEDRV_KERROR_ICE_DOWN)
-				cur_jg->aborted_jobs_nr++;
-		}
+	/* Strictly 1 Ntw 1 JG */
+	ASSERT(ntw->num_jg == 1);
+	cur_jg = ntw->jg_list;
 
-		cve_os_log(CVE_LOGLEVEL_DEBUG,
-			"Scheduling Infer Request completed. NtwID:0x%llx, InfID:0x%lx\n",
-			ntw->network_id, (uintptr_t)inf);
+	DO_TRACE(trace_icedrvExecuteNetwork(
+				SPH_TRACE_OP_STATE_START,
+				ntw->wq->context->swc_node.sw_id,
+				ntw->swc_node.parent_sw_id,
+				ntw->swc_node.sw_id, ntw->network_id,
+				inf->swc_node.sw_id,
+				SPH_TRACE_OP_STATUS_ICE,
+				ntw->ntw_icemask));
+
+	/* ICEs must be enough to schedule all Jobs */
+	ASSERT(cur_jg->submitted_jobs_nr <= ntw->num_ice);
+	cur_jg->next_dispatch = cur_jg->jobs;
+
+	ret = ice_ds_dispatch_jg(cur_jg);
+	if (ret < 0) {
+
+		cve_os_log_default(CVE_LOGLEVEL_ERROR,
+				"Unable to Schedule JG_ID=0x%lx. Error=%d\n",
+				(uintptr_t)cur_jg, ret);
+
+		/* Schedule failed. So this network will be aborted */
+		if (ret == -ICEDRV_KERROR_ICE_DOWN)
+			cur_jg->aborted_jobs_nr++;
+	}
+
+	cve_os_log(CVE_LOGLEVEL_DEBUG,
+		"Scheduling Infer Request completed. NtwID:0x%llx, InfID:0x%lx\n",
+		ntw->network_id, (uintptr_t)inf);
+
+	ice_sch_del_inf_from_queue(inf);
 
 #ifdef _DEBUG
-		head = ntw->ice_list;
-		next = head;
-		if (next) {
-			do {
-				if (next->power_state == ICE_POWER_ON)
-					ices_bitmap |=
-						(1 << next->dev_index);
-				next = cve_dle_next(next, owner_list);
-			} while (next != head);
-		}
+	head = ntw->ice_list;
+	next = head;
+	if (next) {
+		do {
+			if (next->power_state == ICE_POWER_ON)
+				ices_bitmap |=
+					(1 << next->dev_index);
+			next = cve_dle_next(next, owner_list);
+		} while (next != head);
+	}
 
-		evt_info.network_id = ntw->network_id;
-		evt_info.powered_on_ices = ices_bitmap;
+	evt_info.network_id = ntw->network_id;
+	evt_info.powered_on_ices = ices_bitmap;
 
-		/* Send Ice debug event (ICE_POWER_ON) */
-		ice_debug_wake_up_event(ICE_DEBUG_EVENT_ICE_POWERED_ON,
-					&evt_info);
+	/* Send Ice debug event (ICE_POWER_ON) */
+	ice_debug_wake_up_event(ICE_DEBUG_EVENT_ICE_POWERED_ON,
+				&evt_info);
 #endif
 
-		cve_dle_remove_from_list(ntw->inf_exe_list[inf->inf_pr],
-			exe_list, inf);
-		inf->inf_queued = false;
-
-skip_ntw:
-		inf = ice_sch_get_next_sch_infer();
-
-	} while (inf && multi_ntw);
-
-exit:
-	return;
+	status = SCH_STATUS_DONE;
+out:
+	return status;
 }
 
-void ice_deschedule_network(struct ice_network *ntw)
+static enum sch_status __schedule_rr_node(
+	struct execution_node *node)
 {
-	if (ntw->ntw_queued) {
-		cve_dle_remove_from_list(scheduled_ntw_list, exe_list, ntw);
-		ntw->ntw_queued = false;
+	enum sch_status status = SCH_STATUS_DONE;
+	enum resource_status res_status;
+	struct ice_network *ntw = node->ntw;
+
+	if (ntw->ntw_running) {
+
+		node->ready_to_run = true;
+		status = SCH_STATUS_WAIT;
+		goto out;
 	}
+
+	ASSERT(node->ntype != NODE_TYPE_INFERENCE);
+
+	/* Reserve or Release as per node */
+	if (node->ntype == NODE_TYPE_RESERVE) {
+
+		res_status = ice_ds_ntw_reserve_resource(node->ntw);
+		if (res_status == RESOURCE_BUSY) {
+			cve_os_log(CVE_LOGLEVEL_DEBUG,
+				"Waiting for resource availability\n");
+			status = SCH_STATUS_WAIT;
+			goto out;
+		} else if (res_status == RESOURCE_INSUFFICIENT) {
+			cve_os_log(CVE_LOGLEVEL_DEBUG,
+				"Cannot reserve resource\n");
+			status = SCH_STATUS_DISCARD;
+			node->is_success = false;
+		} else {
+			cve_os_log(CVE_LOGLEVEL_DEBUG,
+				"Reserved resource\n");
+			status = SCH_STATUS_DONE;
+			node->is_success = true;
+		}
+
+		node->ntw->rr_node =  &node->ntw->ntw_res_node;
+		cve_os_wakeup(&node->ntw->rr_wait_queue);
+
+	} else {
+		/* node->ntype == NODE_TYPE_RELEASE */
+
+		ice_ds_ntw_release_resource(node->ntw);
+		cve_os_log(CVE_LOGLEVEL_DEBUG,
+			"Released resource\n");
+	}
+
+	__del_rr_from_queue(node);
+
+out:
+	return status;
 }
 
-void ice_scheduler_engine(struct ice_network *ntw)
+void ice_sch_engine(struct ice_network *ntw)
 {
+	enum sch_status status;
+	struct execution_node *head, *pr0_head, *pr1_head;
+	bool pr0_head_rdy = false, pr1_head_rdy = false;
+
 	if (ntw) {
-		cve_os_log(CVE_LOGLEVEL_DEBUG,
-			"Scheduling NtwID=0x%lx\n", (uintptr_t)ntw);
-		ice_schedule_list(ntw);
+		/* If any request pending in this Ntw then run it, else
+		 * trigger a generic scheduler.
+		 */
+		pr0_head = ntw->sch_queue[EXE_INF_PRIORITY_0];
+		if (pr0_head) {
+
+			pr0_head_rdy = (ntw->res_resource) ?
+					true : pr0_head->ready_to_run;
+		}
+
+		pr1_head = ntw->sch_queue[EXE_INF_PRIORITY_1];
+		if (pr1_head) {
+
+			pr1_head_rdy = (ntw->res_resource) ?
+					true : pr1_head->ready_to_run;
+		}
+
+		if (ntw->res_resource) {
+			cve_os_log(CVE_LOGLEVEL_DEBUG,
+				"In reserved Ntw path. NtwID=0x%lx\n",
+				(uintptr_t)ntw);
+		} else {
+			cve_os_log(CVE_LOGLEVEL_DEBUG,
+				"In non-reserved Ntw path. NtwID=0x%lx\n",
+				(uintptr_t)ntw);
+		}
+
+		if (pr0_head_rdy && (pr0_head->ntype == NODE_TYPE_INFERENCE)) {
+
+			__schedule_node(pr0_head);
+			goto scheduler_beginning;
+		}
+
+		if (pr1_head_rdy && (pr1_head->ntype == NODE_TYPE_INFERENCE)) {
+
+			__schedule_node(pr1_head);
+			goto scheduler_beginning;
+		}
+
+		if (pr0_head_rdy && pr1_head_rdy) {
+
+			ASSERT(pr0_head == pr1_head);
+			if (ntw->res_resource) {
+				ASSERT(pr0_head->ntype ==
+						NODE_TYPE_RELEASE);
+			} else {
+				ASSERT(pr0_head->ntype ==
+						NODE_TYPE_RESERVE);
+			}
+			 __schedule_rr_node(pr0_head);
+			ice_sch_engine(ntw);
+			return;
+		}
+
+		ice_ds_ntw_return_resource(ntw);
+	}
+
+	cve_os_log(CVE_LOGLEVEL_DEBUG,
+		"In generic path\n");
+
+scheduler_beginning:
+
+	while (sch_queue[EXE_INF_PRIORITY_0]) {
+
+		if (sch_queue[EXE_INF_PRIORITY_0]->ntype != NODE_TYPE_INFERENCE)
+			break;
+
+		status = __schedule_node(sch_queue[EXE_INF_PRIORITY_0]);
+		if (status == SCH_STATUS_WAIT) {
+			cve_os_log(CVE_LOGLEVEL_DEBUG, "Waiting\n");
+			goto out;
+		}
+	};
+
+	while (sch_queue[EXE_INF_PRIORITY_1]) {
+
+		if (sch_queue[EXE_INF_PRIORITY_1]->ntype != NODE_TYPE_INFERENCE)
+			break;
+
+		status = __schedule_node(sch_queue[EXE_INF_PRIORITY_1]);
+		if (status == SCH_STATUS_WAIT) {
+			cve_os_log(CVE_LOGLEVEL_DEBUG, "Waiting\n");
+			goto out;
+		}
+	};
+
+	if (!sch_queue[EXE_INF_PRIORITY_0] && !sch_queue[EXE_INF_PRIORITY_1])
+		return;
+
+	ASSERT(sch_queue[EXE_INF_PRIORITY_0]);
+	ASSERT(sch_queue[EXE_INF_PRIORITY_0] == sch_queue[EXE_INF_PRIORITY_1]);
+	ASSERT(sch_queue[EXE_INF_PRIORITY_0]->ntype != NODE_TYPE_INFERENCE);
+
+	head = sch_queue[EXE_INF_PRIORITY_0];
+
+	status = __schedule_rr_node(head);
+	if (status == SCH_STATUS_DONE) {
+
+		if (head->ntype == NODE_TYPE_RESERVE)
+			ice_sch_engine(head->ntw);
+		else
+			ice_sch_engine(NULL);
+
 		return;
 	}
 
-	/* Priority networks are scheduled first */
-	if (scheduled_ntw_list) {
-		cve_os_log(CVE_LOGLEVEL_DEBUG,
-			"Scheduling Networks\n");
-		ice_schedule_list(NULL);
-	}
-}
-
-static void __reset_exe_order(u64 offset)
-{
-	struct ice_infer *head_inf, *inf;
-	struct ice_network *head_ntw, *ntw;
-	enum ice_execute_infer_priority pr;
-
-	head_ntw = scheduled_ntw_list;
-	ntw = head_ntw;
-
-	if (!ntw)
-		goto end;
-
-	do {
-		for (pr = EXE_INF_PRIORITY_0; pr < EXE_INF_PRIORITY_MAX; pr++) {
-
-			head_inf = ntw->inf_exe_list[pr];
-			inf = head_inf;
-
-			if (!inf)
-				continue;
-
-			do {
-				inf->inf_exe_order -= offset;
-
-				inf = cve_dle_next(inf, exe_list);
-			} while (head_inf != inf);
-		}
-
-		ntw = cve_dle_next(ntw, exe_list);
-	} while (head_ntw != ntw);
-
-end:
+out:
 	return;
 }
 
-static u64 __get_min_order(void)
+void ice_sch_add_inf_to_queue(struct ice_infer *inf)
 {
-	u64 min_exe_order = EXE_ORDER_MAX;
-	struct ice_network *head_ntw, *ntw;
-	struct ice_infer *inf;
-	enum ice_execute_infer_priority pr;
+	struct ice_network *ntw = inf->ntw;
 
-	head_ntw = scheduled_ntw_list;
-	ntw = head_ntw;
+	ASSERT(!inf->inf_sch_node.is_queued);
 
-	if (!ntw)
-		goto end;
+	inf->inf_sch_node.is_queued = true;
+	inf->inf_sch_node.ready_to_run = false;
 
-	do {
-		for (pr = EXE_INF_PRIORITY_0; pr < EXE_INF_PRIORITY_MAX; pr++) {
+	cve_dle_add_to_list_before(sch_queue[inf->inf_pr],
+		sch_list[inf->inf_pr], &inf->inf_sch_node);
 
-			inf = ntw->inf_exe_list[pr];
-			if (inf && (inf->inf_exe_order < min_exe_order))
-				min_exe_order = inf->inf_exe_order;
-		}
+	cve_dle_add_to_list_before(ntw->sch_queue[inf->inf_pr],
+		ntw_queue[inf->inf_pr], &inf->inf_sch_node);
 
-		ntw = cve_dle_next(ntw, exe_list);
-	} while (head_ntw != ntw);
+	inf->ntw->sch_queued_inf_count++;
 
-end:
-	return min_exe_order;
+	ice_sch_engine(NULL);
+
+#ifdef RING3_VALIDATION
+	cve_os_log(CVE_LOGLEVEL_DEBUG, "Execute ICEs\n");
+	coral_trigger_simulation();
+#endif
+
 }
 
-void ice_sch_reset_exe_order(void)
+void ice_sch_del_inf_from_queue(struct ice_infer *inf)
 {
-	u64 min_exe_order = EXE_ORDER_MAX;
-	struct cve_device_group *dg = cve_dg_get();
+	struct ice_network *ntw = inf->ntw;
 
-	min_exe_order = __get_min_order();
+	ASSERT(inf->inf_sch_node.is_queued);
 
-	__reset_exe_order(min_exe_order);
+	inf->inf_sch_node.is_queued = false;
 
-	dg->dg_exe_order -= min_exe_order;
+	cve_dle_remove_from_list(sch_queue[inf->inf_pr],
+		sch_list[inf->inf_pr], &inf->inf_sch_node);
+
+	cve_dle_remove_from_list(ntw->sch_queue[inf->inf_pr],
+		ntw_queue[inf->inf_pr], &inf->inf_sch_node);
+
+	inf->ntw->sch_queued_inf_count--;
+}
+
+void ice_sch_add_rr_to_queue(struct execution_node *node)
+{
+	node->ready_to_run = false;
+
+	cve_dle_add_to_list_before(sch_queue[EXE_INF_PRIORITY_0],
+		sch_list[EXE_INF_PRIORITY_0], node);
+	cve_dle_add_to_list_before(sch_queue[EXE_INF_PRIORITY_1],
+		sch_list[EXE_INF_PRIORITY_1], node);
+	cve_dle_add_to_list_before(node->ntw->sch_queue[EXE_INF_PRIORITY_0],
+		ntw_queue[EXE_INF_PRIORITY_0], node);
+	cve_dle_add_to_list_before(node->ntw->sch_queue[EXE_INF_PRIORITY_1],
+		ntw_queue[EXE_INF_PRIORITY_1], node);
+
+	node->is_success = false;
+
+	ice_sch_engine(NULL);
+}
+
+static void __del_rr_from_queue(struct execution_node *node)
+{
+	cve_dle_remove_from_list(sch_queue[EXE_INF_PRIORITY_0],
+		sch_list[EXE_INF_PRIORITY_0], node);
+	cve_dle_remove_from_list(sch_queue[EXE_INF_PRIORITY_1],
+		sch_list[EXE_INF_PRIORITY_1], node);
+	cve_dle_remove_from_list(node->ntw->sch_queue[EXE_INF_PRIORITY_0],
+		ntw_queue[EXE_INF_PRIORITY_0], node);
+	cve_dle_remove_from_list(node->ntw->sch_queue[EXE_INF_PRIORITY_1],
+		ntw_queue[EXE_INF_PRIORITY_1], node);
+}
+
+int ice_sch_del_rr_from_queue(struct execution_node *node)
+{
+	int ret = -1;
+	/* Dispatcher will delete only reservation node.
+	 * If it is reserved by now then node is already deleted.
+	 */
+	if (!node->ntw->res_resource) {
+
+		__del_rr_from_queue(node);
+		ret = 0;
+	}
+
+	return ret;
 }
 

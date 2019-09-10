@@ -405,7 +405,8 @@ union h2c_InferenceNetworkResourceReservation {
 		u64 opcode        : 5; /* SPH_IPC_H2C_OP_INF_NETWORK_RESOURCE_RESERVATION */
 		u64 ctxID         : SPH_IPC_INF_CONTEXT_BITS;
 		u64 netID         : SPH_IPC_INF_DEVNET_BITS;
-		u64 reserve       : 3; //reserve or release
+		u64 not_used      : 2; //reserve or release
+		u64 reserve       : 1; //reserve or release
 		u64 timeout       : 32;
 	};
 

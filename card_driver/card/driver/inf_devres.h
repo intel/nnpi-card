@@ -61,6 +61,7 @@ int is_inf_devres_ptr(void *ptr);
 void inf_devres_get(struct inf_devres *devres);
 int inf_devres_put(struct inf_devres *devres);
 
+void inf_devres_migrate_priority_to_req_queue(struct inf_devres *devres, struct inf_exec_req *exec_infreq, bool read);
 int inf_devres_add_req_to_queue(struct inf_devres *devres, struct inf_exec_req *req, bool read);
 void inf_devres_del_req_from_queue(struct inf_devres   *devres,
 				   struct inf_exec_req *req);

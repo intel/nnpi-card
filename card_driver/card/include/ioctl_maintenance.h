@@ -79,6 +79,7 @@ struct maint_ioctl_fpga_update {
 	uint32_t thermal_event_mc;
 	uint8_t  DDR_thermal_status;
 	uint32_t avg_power_mW;
+	uint32_t power_limit1_mW;
 
 };
 

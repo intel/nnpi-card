@@ -233,6 +233,7 @@ struct dma_res_info *sphcs_hwtrace_alloc_dma_info(struct sphcs_dma_res_info *r)
 	int ret = 0;
 	size_t size;
 	uint32_t max_segment;
+	uint64_t transfer_size;
 
 	dma = kzalloc(sizeof(*dma), GFP_NOWAIT);
 	if (unlikely(dma == NULL)) {
@@ -279,6 +280,7 @@ struct dma_res_info *sphcs_hwtrace_alloc_dma_info(struct sphcs_dma_res_info *r)
 		g_the_sphcs->hw_ops->dma.calc_lli_size(g_the_sphcs->hw_handle,
 						       dma->sgt,
 						       &(r->host_res->sgt), 0);
+	SPH_ASSERT(dma->lli_size > 0);
 
 	// allocate memory in size lli_size
 	dma->lli_buf =
@@ -292,11 +294,13 @@ struct dma_res_info *sphcs_hwtrace_alloc_dma_info(struct sphcs_dma_res_info *r)
 	}
 
 	//generate lli
-	g_the_sphcs->hw_ops->dma.gen_lli(g_the_sphcs->hw_handle,
+	transfer_size = g_the_sphcs->hw_ops->dma.gen_lli(g_the_sphcs->hw_handle,
 					 dma->sgt,
 					 &(r->host_res->sgt),
 					 dma->lli_buf,
 					 0);
+	SPH_ASSERT(transfer_size > 0);
+
 	r->dma_res = dma;
 
 	r->state &= ~HWTRACE_STATE_DMA_INFO_DIRTY;

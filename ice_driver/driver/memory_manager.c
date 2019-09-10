@@ -839,13 +839,6 @@ static int __patch_surface(struct cve_ntw_buffer *buf_info,
 			goto out;
 		}
 	}
-
-	/*
-	* find the buffer that was patched and set the dirty
-	* cache bit for this buffer - for cache flush operation
-	*/
-	cve_mm_set_dirty_cache(buf_info->ntw_buf_alloc);
-
 out:
 	return ret;
 }

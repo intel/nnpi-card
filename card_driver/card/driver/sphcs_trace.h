@@ -60,14 +60,14 @@ TRACE_EVENT(SPH_TRACE_INFREQ,
 );
 
 TRACE_EVENT(SPH_TRACE_COPY,
-	TP_PROTO(u8 state, u32 ctxID, u32 copyID, u8 isC2H, u32 size),
+	TP_PROTO(u8 state, u32 ctxID, u32 copyID, u8 isC2H, u64 size),
 	TP_ARGS(state, ctxID, copyID, isC2H, size),
 	SPH_TP_STRUCT__entry(
 			__field(u8, state)
 			__field(u32, ctxID)
 			__field(u32, copyID)
 			__field(u8, isC2H)
-			__field(u32, size)
+			__field(u64, size)
 	),
 	SPH_TP_fast_assign(
 			__entry->state = state;
@@ -76,7 +76,7 @@ TRACE_EVENT(SPH_TRACE_COPY,
 			__entry->isC2H = isC2H;
 			__entry->size = size;
 	),
-	SPH_TP_printk("state=%s ctxID=%u copyID=%u isC2H=%d size=%d",
+	SPH_TP_printk("state=%s ctxID=%u copyID=%u isC2H=%d size=0x%llx",
 		  sph_trace_op_to_str[__entry->state],
 		  __entry->ctxID,
 		  __entry->copyID,
@@ -140,15 +140,15 @@ TRACE_EVENT(SPH_TRACE_INF_CREATE,
 		  sph_trace_op_to_str[__entry->state])
 );
 
-TRACE_EVENT(SPH_TRACE_INF_NET_SUBTES,
-	TP_PROTO(u32 ctxId, u32 sessionId, int offset, u8 host_pool_idx, u32 size, u64 dma_addr, u8 state),
+TRACE_EVENT(SPH_TRACE_INF_NET_SUBRES,
+	TP_PROTO(u32 ctxId, u32 sessionId, u64 offset, u8 host_pool_idx, u64 size, u64 dma_addr, u8 state),
 	TP_ARGS(ctxId, sessionId, offset, host_pool_idx, size, dma_addr, state),
 	SPH_TP_STRUCT__entry(
 			__field(u32, ctxId)
 			__field(u32, sessionId)
-			__field(int, offset)
+			__field(u64, offset)
 			__field(u8, host_pool_idx)
-			__field(u32, size)
+			__field(u64, size)
 			__field(u64, dma_addr)
 			__field(u8, state)
 	),
@@ -161,7 +161,7 @@ TRACE_EVENT(SPH_TRACE_INF_NET_SUBTES,
 			__entry->dma_addr = dma_addr;
 			__entry->state = state;
 	),
-	SPH_TP_printk("state=%s ctxID=%u sessionID=%u offset=%d pool_idx=%u dma_size=%x dma_src_addr=0x%llx",
+	SPH_TP_printk("state=%s ctxID=%u sessionID=%u offset=0x%llx pool_idx=%u dma_size=0x%llx dma_src_addr=0x%llx",
 		  sph_trace_op_to_str[__entry->state],
 		  __entry->ctxId,
 		  __entry->sessionId,

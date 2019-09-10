@@ -136,7 +136,25 @@ struct timer_desc {
 };
 static struct timer_desc *m_timer_desc = NULL;
 
-void ice_os_update_clos(void *pmclos)
+void ice_os_read_clos(void *pmclos)
+{
+	struct clos_manager *mclos = (struct clos_manager *)pmclos;
+
+	mclos->clos_default[ICE_CLOS_0] = 0xFFFFFF;
+	cve_os_log(CVE_LOGLEVEL_INFO, "CLOS0: 0x%llx\n",
+		mclos->clos_default[ICE_CLOS_0]);
+	mclos->clos_default[ICE_CLOS_1] = 0x3F;
+	cve_os_log(CVE_LOGLEVEL_INFO, "CLOS1: 0x%llx\n",
+		mclos->clos_default[ICE_CLOS_1]);
+	mclos->clos_default[ICE_CLOS_2] = 0x3FFF;
+	cve_os_log(CVE_LOGLEVEL_INFO, "CLOS2: 0x%llx\n",
+		mclos->clos_default[ICE_CLOS_2]);
+	mclos->pqr_default = 0;
+	cve_os_log(CVE_LOGLEVEL_INFO, "PQR_ASSOC: 0x%llx\n",
+		 mclos->pqr_default);
+}
+
+void ice_os_set_clos(void *pmclos)
 {
 #ifdef _DEBUG
 	u32 lo;
@@ -165,6 +183,25 @@ void ice_os_update_clos(void *pmclos)
 	cve_os_log(CVE_LOGLEVEL_DEBUG, "IA32_PQR_ASSOC=0x%llx\n",
 		lo);
 #endif
+}
+
+void ice_os_reset_clos(void *pmclos)
+{
+	struct clos_manager __maybe_unused *mclos =
+		(struct clos_manager *)pmclos;
+
+	cve_os_log(CVE_LOGLEVEL_INFO, "CLOS0: Write=0x%llx\n",
+		mclos->clos_default[ICE_CLOS_0]);
+
+	cve_os_log(CVE_LOGLEVEL_INFO, "CLOS1: Write=0x%llx\n",
+		mclos->clos_default[ICE_CLOS_1]);
+
+	cve_os_log(CVE_LOGLEVEL_INFO, "CLOS2: Write=0x%llx\n",
+		mclos->clos_default[ICE_CLOS_2]);
+
+	cve_os_log(CVE_LOGLEVEL_INFO,
+		"IA32_PQR_ASSOC: Write=0x%llx\n",
+		mclos->pqr_default);
 }
 
 int set_llc_freq(void *llc_freq_config)
@@ -307,6 +344,7 @@ int cve_os_interface_init(void)
 	char *workspace = getenv("WORKSPACE");
 	char *env_llc_config_via_axi_reg;
 	struct ice_drv_config param;
+	u64 pe_reg_value;
 
 	coral_mode = getenv("CORAL_PERF_MODE");
 	coral_config = getenv("CORAL_CONFIG");
@@ -418,13 +456,16 @@ int cve_os_interface_init(void)
 		cve_os_log(CVE_LOGLEVEL_ERROR, "No Active ICE\n");
 		goto out;
 	}
+	pe_reg_value = cve_os_read_idc_mmio(
+		&idc_os_device->idc_dev.cve_dev[0],
+			cfg_default.bar0_mem_icepe_offset);
 
 	/* Still not initializing all 12 ICE */
 	while (active_ice) {
 		i = __builtin_ctz(active_ice);
 		CVE_CLEAR_BIT(active_ice, i);
 
-		retval = cve_device_init(&idc_os_device->idc_dev.cve_dev[i], i);
+		retval = cve_device_init(&idc_os_device->idc_dev.cve_dev[i], i, pe_reg_value);
 		if (retval != 0) {
 			cve_os_log(CVE_LOGLEVEL_ERROR, "cve_device_init failed %d\n", retval);
 			goto cve_device_init_failed;
@@ -518,6 +559,7 @@ int cve_os_interface_init(void)
 	u32 devices_nr = g_driver_settings.config->devices_nr;
 	char *workspace = getenv("WORKSPACE");
 	char coral_default_config[MAX_FILE_NAME_LEN];
+	u64 pe_reg_value = 0;
 
 	int retval = pthread_mutex_init(&m_mutex, NULL);
 	if (retval != 0) {
@@ -554,7 +596,7 @@ int cve_os_interface_init(void)
 		}
 
 		cve_os_device->dev = NULL;
-		retval = cve_device_init(&cve_os_device->cve_dev, i);
+		retval = cve_device_init(&cve_os_device->cve_dev, i, pe_reg_value);
 		if (retval != 0) {
 			cve_os_log(CVE_LOGLEVEL_ERROR, "cve_device_init failed %d\n", retval);
 			goto cve_device_init_failed;

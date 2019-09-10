@@ -255,52 +255,108 @@ static ssize_t cve_dump_read(struct file *fp,
 	return 0;
 }
 
-void ice_os_update_clos(void *pmclos)
+#define CLOS0_MSR 0xC90
+#define CLOS1_MSR 0xC91
+#define CLOS2_MSR 0xC92
+#define PQR_ASSOC 0xC8F
+
+void ice_os_read_clos(void *pmclos)
 {
-	u32 lo, hi, msr;
+	struct clos_manager *mclos = (struct clos_manager *)pmclos;
+
+	mclos->clos_default[ICE_CLOS_0] = native_read_msr(CLOS0_MSR);
+	cve_os_log(CVE_LOGLEVEL_INFO, "CLOS0: 0x%llx\n",
+		mclos->clos_default[ICE_CLOS_0]);
+	mclos->clos_default[ICE_CLOS_1] = native_read_msr(CLOS1_MSR);
+	cve_os_log(CVE_LOGLEVEL_INFO, "CLOS1: 0x%llx\n",
+		mclos->clos_default[ICE_CLOS_1]);
+	mclos->clos_default[ICE_CLOS_2] = native_read_msr(CLOS2_MSR);
+	cve_os_log(CVE_LOGLEVEL_INFO, "CLOS2: 0x%llx\n",
+		mclos->clos_default[ICE_CLOS_2]);
+	mclos->pqr_default = native_read_msr(PQR_ASSOC);
+	cve_os_log(CVE_LOGLEVEL_INFO, "PQR_ASSOC: 0x%llx\n",
+		 mclos->pqr_default);
+}
+
+void ice_os_set_clos(void *pmclos)
+{
+	u32 lo, hi;
 	u32 clos_shift;
 	u64 val;
 	struct clos_manager *mclos = (struct clos_manager *)pmclos;
 
 	/* CLOS 0 */
-	msr = 0xC90;
-	lo = (1 << mclos->clos_size[0]) - 1;
+	lo = (1 << mclos->clos_size[ICE_CLOS_0]) - 1;
 	hi = 0;
-	native_write_msr(msr, lo, hi);
-	val = native_read_msr(msr);
-	cve_os_log(CVE_LOGLEVEL_DEBUG, "CLOS0=0x%llx\n",
-		val);
+	native_write_msr(CLOS0_MSR, lo, hi);
+	val = native_read_msr(CLOS0_MSR);
+	cve_os_log(CVE_LOGLEVEL_INFO, "CLOS0: Write=0x%x, Read=0x%llx\n",
+		lo, val);
 
 	/* CLOS 1 */
-	clos_shift = (24 - mclos->clos_size[1]);
-	msr = 0xC91;
-	lo = ((1 << mclos->clos_size[1]) - 1) << clos_shift;
+	clos_shift = (24 - mclos->clos_size[ICE_CLOS_1]);
+	lo = ((1 << mclos->clos_size[ICE_CLOS_1]) - 1) << clos_shift;
 	hi = 0;
-	native_write_msr(msr, lo, hi);
-	val = native_read_msr(msr);
-	cve_os_log(CVE_LOGLEVEL_DEBUG, "CLOS1=0x%llx\n",
-		val);
+	native_write_msr(CLOS1_MSR, lo, hi);
+	val = native_read_msr(CLOS1_MSR);
+	cve_os_log(CVE_LOGLEVEL_INFO, "CLOS1: Write=0x%x, Read=0x%llx\n",
+		lo, val);
 
 	/* CLOS 2 */
-	clos_shift = mclos->clos_size[0];
-	msr = 0xC92;
-	lo = ((1 << mclos->clos_size[2]) - 1) << clos_shift;
+	clos_shift = mclos->clos_size[ICE_CLOS_0];
+	lo = ((1 << mclos->clos_size[ICE_CLOS_2]) - 1) << clos_shift;
 	hi = 0;
-	native_write_msr(msr, lo, hi);
-	val = native_read_msr(msr);
-	cve_os_log(CVE_LOGLEVEL_DEBUG, "CLOS2=0x%llx\n",
-		val);
+	native_write_msr(CLOS2_MSR, lo, hi);
+	val = native_read_msr(CLOS2_MSR);
+	cve_os_log(CVE_LOGLEVEL_INFO, "CLOS2: Write=0x%x, Read=0x%llx\n",
+		lo, val);
 
 	/* IA32_PQR_ASSOC.COS */
-	msr = 0xC8F;
 	lo = 0x0;
 	hi = 0x0;
-	native_write_msr(msr, lo, hi);
-	val = native_read_msr(msr);
-	cve_os_log(CVE_LOGLEVEL_DEBUG, "IA32_PQR_ASSOC=0x%llx\n",
+	native_write_msr(PQR_ASSOC, lo, hi);
+	val = native_read_msr(PQR_ASSOC);
+	cve_os_log(CVE_LOGLEVEL_INFO, "IA32_PQR_ASSOC=0x%llx\n",
 		val);
 
 }
+
+void ice_os_reset_clos(void *pmclos)
+{
+	u32 lo, hi;
+	u64 val;
+	struct clos_manager *mclos = (struct clos_manager *)pmclos;
+
+	lo = mclos->clos_default[ICE_CLOS_0] & 0xFFFFFFFF;
+	hi = (mclos->clos_default[ICE_CLOS_0] >> 32) & 0xFFFFFFFF;
+	native_write_msr(CLOS0_MSR, lo, hi);
+	val = native_read_msr(CLOS0_MSR);
+	cve_os_log(CVE_LOGLEVEL_INFO, "CLOS0: Write=0x%llx, Read=0x%llx\n",
+		mclos->clos_default[ICE_CLOS_0], val);
+
+	lo = mclos->clos_default[ICE_CLOS_1] & 0xFFFFFFFF;
+	hi = (mclos->clos_default[ICE_CLOS_1] >> 32) & 0xFFFFFFFF;
+	native_write_msr(CLOS1_MSR, lo, hi);
+	val = native_read_msr(CLOS1_MSR);
+	cve_os_log(CVE_LOGLEVEL_INFO, "CLOS1: Write=0x%llx, Read=0x%llx\n",
+		mclos->clos_default[ICE_CLOS_1], val);
+
+	lo = mclos->clos_default[ICE_CLOS_2] & 0xFFFFFFFF;
+	hi = (mclos->clos_default[ICE_CLOS_2] >> 32) & 0xFFFFFFFF;
+	native_write_msr(CLOS2_MSR, lo, hi);
+	val = native_read_msr(CLOS2_MSR);
+	cve_os_log(CVE_LOGLEVEL_INFO, "CLOS2: Write=0x%llx, Read=0x%llx\n",
+		mclos->clos_default[ICE_CLOS_2], val);
+
+	lo = mclos->pqr_default & 0xFFFFFFFF;
+	hi = (mclos->pqr_default >> 32) & 0xFFFFFFFF;
+	native_write_msr(PQR_ASSOC, lo, hi);
+	val = native_read_msr(PQR_ASSOC);
+	cve_os_log(CVE_LOGLEVEL_INFO,
+		"IA32_PQR_ASSOC: Write=0x%llx, Read=0x%llx\n",
+		mclos->pqr_default, val);
+}
+
 uint64_t get_llc_freq(void)
 {
 	return native_read_msr(LLC_FREQ_MSR);
@@ -600,7 +656,7 @@ int cve_os_write_user_memory_32(u32 *user_addr, u32 val)
 }
 
 /* memory allocation */
-#ifdef _DEBUG
+#ifdef ENABLE_MEM_DETECT
 struct ice_drv_memleak *g_leak_list;
 u32 mem_leak_count;
 #endif
@@ -608,23 +664,25 @@ u32 mem_leak_count;
 int __cve_os_malloc_zero(u32 size_bytes, void **out_ptr)
 {
 	void *p = NULL;
-#ifdef _DEBUG
-	struct ice_drv_memleak *leak = kzalloc(sizeof(struct ice_drv_memleak),
-						GFP_KERNEL);
-#endif
 
 	FUNC_ENTER();
 	p = kzalloc(size_bytes, GFP_KERNEL);
 	*out_ptr = p;
 
-#ifdef _DEBUG
+#ifdef ENABLE_MEM_DETECT
 	if (enable_ice_drv_memleak && p) {
+		struct ice_drv_memleak *leak;
+
+		leak = kzalloc(sizeof(struct ice_drv_memleak), GFP_KERNEL);
 		if (leak) {
 			leak->caller_fn = __builtin_return_address(0);
 			leak->caller_fn2 = __builtin_return_address(1);
 			leak->va = p;
 			leak->size = size_bytes;
 			cve_dle_add_to_list_before(g_leak_list, list, leak);
+		} else {
+			cve_os_log(CVE_LOGLEVEL_ERROR,
+			   "##failed in allocating memory for book keeping\n");
 		}
 		mem_leak_count++;
 	}
@@ -637,14 +695,12 @@ int __cve_os_malloc_zero(u32 size_bytes, void **out_ptr)
 int __cve_os_free(void *base_address,
 		u32 size_bytes)
 {
-#ifdef _DEBUG
-	struct ice_drv_memleak *leak;
-#endif
-
 	FUNC_ENTER();
 
-#ifdef _DEBUG
+#ifdef ENABLE_MEM_DETECT
 	if (enable_ice_drv_memleak) {
+		struct ice_drv_memleak *leak;
+
 		leak = cve_dle_lookup(g_leak_list, list, va, base_address);
 		if (leak) {
 			cve_dle_remove_from_list(g_leak_list, list, leak);
@@ -1338,6 +1394,7 @@ cve_isr_retval_t cve_os_interrupt_handler_bh(int irq, void *os_dev)
 int cve_probe_common(struct cve_os_device *linux_device, int dev_ind)
 {
 	int i, retval = 0;
+	u64 pe_reg_value;
 	struct dentry *file;
 	char dev_name[8];
 	char file_name[30];
@@ -1387,7 +1444,9 @@ int cve_probe_common(struct cve_os_device *linux_device, int dev_ind)
 	cve_os_log(CVE_LOGLEVEL_DEBUG,
 		"DISABLE_EMBCB=%u, CORE_MASK=0x%x\n",
 		disable_embcb, core_mask);
-
+	pe_reg_value = cve_os_read_idc_mmio(
+		&linux_device->idc_dev.cve_dev[0],
+			cfg_default.bar0_mem_icepe_offset);
 	/* Still not initializing all 12 ICE */
 	while (active_ice) {
 		i = __builtin_ctz(active_ice);
@@ -1395,7 +1454,7 @@ int cve_probe_common(struct cve_os_device *linux_device, int dev_ind)
 
 		retval = cve_device_init(
 				&linux_device->idc_dev.cve_dev[i],
-				i);
+				i, pe_reg_value);
 		if (retval != 0) {
 			cve_os_log(CVE_LOGLEVEL_ERROR,
 					"cve_device_init failed %d\n", retval);
@@ -1524,6 +1583,7 @@ int cve_probe_common(struct cve_os_device *linux_device, int dev_ind)
 	int retval = 0;
 	struct dentry *file;
 	char dev_name[8];
+	u64 pe_reg_value = 0;
 
 	FUNC_ENTER();
 
@@ -1534,7 +1594,7 @@ int cve_probe_common(struct cve_os_device *linux_device, int dev_ind)
 	cve_os_log(CVE_LOGLEVEL_DEBUG,
 			"adding device ID = %d\n", dev_ind);
 
-	retval = cve_device_init(&linux_device->cve_dev, dev_ind);
+	retval = cve_device_init(&linux_device->cve_dev, dev_ind, pe_reg_value);
 	if (retval != 0) {
 		cve_os_log(CVE_LOGLEVEL_ERROR,
 				"cve_device_init failed %d\n", retval);
@@ -2021,7 +2081,7 @@ cleanup_misc:
 	goto out;
 }
 
-#ifdef _DEBUG
+#ifdef ENABLE_MEM_DETECT
 static void __dump_leak(void)
 {
 	struct ice_drv_memleak *head = g_leak_list;
@@ -2080,7 +2140,7 @@ static void __exit cve_exit(void)
 	misc_deregister(&cve_misc_device);
 
 	ice_swc_fini();
-#ifdef _DEBUG
+#ifdef ENABLE_MEM_DETECT
 	__dump_leak();
 #endif
 	FUNC_LEAVE();

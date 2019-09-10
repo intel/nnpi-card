@@ -32,8 +32,11 @@
 #include "ice_debug.h"
 #include "sph_device_regs.h"
 
-
-#ifndef RING3_VALIDATION
+#ifdef RING3_VALIDATION
+#include "coral.h"
+#include <icedrv_sw_trace_stub.h>
+#else
+#include "icedrv_sw_trace.h"
 #include "linux/delay.h"
 #endif
 
@@ -44,6 +47,7 @@
 
 #define PART_SUBMISSION_STEP (CVE_FIFO_ENTRIES_NR/2)
 
+#define ENABLE_CARD_RESET_FEATURE 0
 /* We expect 5 because the same value has been programmed in ECB */
 #define ECB_SUCCESS_STATUS 5
 
@@ -451,6 +455,13 @@ static void dispatch_next_subjobs(struct di_job *job,
 
 		job->cold_run = 0;
 
+		/* call project hook right before ringing the doorbell */
+		project_hook_dispatch_new_job(dev, ntw);
+
+		/** Configure CBDT entry size only for cold run*/
+		cve_os_write_mmio_32(dev,
+				cfg_default.mmio_cbd_entries_nr_offset,
+				dev->fifo_desc->fifo.entries);
 	} else if (job->has_scb) {
 		/* Warm Run with SCB */
 		job->first_cb_desc = 2;
@@ -477,11 +488,6 @@ static void dispatch_next_subjobs(struct di_job *job,
 	if (block_mmu)
 		ice_di_mmu_unblock_entrance(dev);
 
-	/* call project hook right before ringing the doorbell */
-	project_hook_dispatch_new_job(dev, ntw);
-
-	/* make sure the compiler doesn't reorder the instructions */
-	cve_os_memory_barrier();
 
 	ice_swc_counter_add(dev->hswc,
 		ICEDRV_SWC_DEVICE_COUNTER_COMMANDS,
@@ -504,9 +510,6 @@ static void dispatch_next_subjobs(struct di_job *job,
 	cve_os_write_mmio_32(dev,
 	 cfg_default.mmio_cbd_base_addr_offset,
 	 iceva);
-	cve_os_write_mmio_32(dev,
-	 cfg_default.mmio_cbd_entries_nr_offset,
-	 dev->fifo_desc->fifo.entries);
 
 	/* ring the doorbell once with the last descriptor */
 	cve_os_write_mmio_32(dev,
@@ -523,6 +526,17 @@ static void dispatch_next_subjobs(struct di_job *job,
 	cve_os_log(CVE_LOGLEVEL_DEBUG,
 		"busy_start_time.tv_sec=%ld busy_start_time.tv_nsec=%ld\n",
 		dev->busy_start_time.tv_sec, dev->busy_start_time.tv_nsec);
+
+	DO_TRACE(trace_icedrvScheduleJob(
+				SPH_TRACE_OP_STATE_START,
+				dev->dev_index,
+				ntw->wq->context->swc_node.sw_id,
+				ntw->swc_node.parent_sw_id,
+				ntw->swc_node.sw_id, ntw->network_id,
+				ntw->curr_exe->swc_node.sw_id,
+				(void *)job->ds_hjob,
+				SPH_TRACE_OP_STATUS_EXEC_TYPE, job->cold_run));
+
 }
 
 
@@ -806,7 +820,7 @@ int unset_idc_registers_multi(u32 icemask, uint8_t lock)
 		temp_mask &= ~((u32)1 << i);
 
 		cve_os_log(CVE_LOGLEVEL_DEBUG,
-			"Power disabling ICE-%d. Mask=%x\n", i, icemask);
+			"Power disabling ICE-%d. Mask=0x%x\n", i, icemask);
 	}
 
 	/* Power Off all ICEs */
@@ -893,10 +907,25 @@ void cve_di_reset_device(struct cve_device *cve_dev)
 
 static inline void di_enable_interrupts(struct cve_device *cve_dev)
 {
+#define __MASK_TLC_PARITY_ERR 0x4
+
 	union mmio_hub_mem_interrupt_mask_t mask;
 
 	mask.val = 0;
 	mask.field.TLC_FIFO_EMPTY = 1;
+
+	/*Disable Single ECC error as its recoverable. In BH, sw counters
+	 * can be updated based Single ECC status in interrupt status
+	 */
+	mask.field.DSRAM_SINGLE_ERR_INTERRUPT = 1;
+
+	/*TODO HACK:
+	 * For parity errors, mask TLC parity error interrupt as
+	 * a WA for ICE-19832. Intrrupt status will still show the parity error
+	 */
+	cve_os_write_mmio_32(cve_dev,
+			cfg_default.mmio_parity_high_err_mask,
+			__MASK_TLC_PARITY_ERR);
 
 	/* Enable interrupts */
 	cve_os_write_mmio_32(cve_dev, cfg_default.mmio_intr_mask_offset,
@@ -916,7 +945,7 @@ void cve_di_start_running(struct cve_device *cve_dev)
 	cve_os_write_mmio_32(cve_dev, cfg_default.mmio_cve_config_offset,
 		cfg_default.mmio_cfg_idle_enable_mask);
 
-	/* enable all the interrupts beside the FIFO empty */
+	/* enable ICE interrupts including errors */
 	di_enable_interrupts(cve_dev);
 
 #if !defined RING3_VALIDATION
@@ -1141,13 +1170,17 @@ static void cve_executed_cbs_time_log(struct cve_device *dev,
 			cb_descriptor->start_time));
 
 		cve_os_dev_log(CVE_LOGLEVEL_DEBUG, dev->dev_index,
-			"CBD_ID=0x%lx, StartTime=%u, EndTime=%u\n",
-			(uintptr_t)cb_descriptor,
+			"CBD_ID[%d]=0x%lx, StartTime=%u, EndTime=%u\n",
+			i, (uintptr_t)cb_descriptor,
 			cb_descriptor->start_time,
 			cb_descriptor->completion_time);
 
 		*exec_time += (cb_descriptor->completion_time -
 				cb_descriptor->start_time);
+
+		/*reset the time stamp variable for next reuse */
+		cb_descriptor->completion_time = 0;
+		cb_descriptor->start_time = 0;
 	}
 }
 
@@ -1191,6 +1224,11 @@ int cve_di_interrupt_handler(struct idc_device *idc_dev)
 	u32 tail = atomic_read(&idc_dev->status_q_tail);
 	struct dev_isr_status *isr_status_node;
 	struct timespec cur_ts;
+
+	DO_TRACE(trace__icedrvTopHalf(
+				SPH_TRACE_OP_STATE_START,
+				0, 0, 0,
+				SPH_TRACE_OP_STATUS_Q_HEAD, head));
 
 	if (!is_driver_active) {
 		cve_os_log_default(CVE_LOGLEVEL_ERROR,
@@ -1301,6 +1339,11 @@ int cve_di_interrupt_handler(struct idc_device *idc_dev)
 	atomic_set(&idc_dev->status_q_head, head);
 
 exit:
+	DO_TRACE(trace__icedrvTopHalf(
+				SPH_TRACE_OP_STATE_COMPLETE,
+				isr_status_node->idc_status,
+				(status_lo >> 4), (status_hi >> 4),
+				SPH_TRACE_OP_STATUS_Q_HEAD, head));
 	return need_dpc;
 }
 
@@ -1362,9 +1405,15 @@ void cve_di_interrupt_handler_deferred_proc(struct idc_device *dev)
 	struct cve_device *cve_dev = NULL;
 	struct sub_job *sub_job;
 	struct di_fifo *fifo;
+	struct cve_device_group *dg = cve_dg_get();
 
 	u32 head, tail;
 	struct dev_isr_status *isr_status_node;
+
+	DO_TRACE(trace__icedrvBottomHalf(
+				SPH_TRACE_OP_STATE_QUEUED,
+				0, 0, 0,
+				SPH_TRACE_OP_STATUS_LOCATION, __LINE__));
 
 	cve_os_lock(&g_cve_driver_biglock, CVE_NON_INTERRUPTIBLE);
 
@@ -1391,6 +1440,15 @@ void cve_di_interrupt_handler_deferred_proc(struct idc_device *dev)
 	atomic_set(&dev->status_q_tail, tail);
 
 	idc_err_status.val = idc_status;
+	status_lo = (ice_status & 0xFFFF);
+	status_hi = ((ice_status >> 32) & 0xFFFF);
+
+
+	DO_TRACE(trace__icedrvBottomHalf(
+				SPH_TRACE_OP_STATE_START,
+				idc_status, (status_lo >> 4), (status_hi >> 4),
+				SPH_TRACE_OP_STATUS_Q_TAIL, tail));
+
 
 	if (idc_err_status.val) {
 		uint8_t cntr_overflow = idc_err_status.field.cntr_oflow_err;
@@ -1413,32 +1471,36 @@ void cve_di_interrupt_handler_deferred_proc(struct idc_device *dev)
 		if (cntr_overflow) {
 			struct ice_network *ntw;
 
+			/* Affects all Networks that are using counter */
+
 			for (i = 0; i < MAX_HW_COUNTER_NR; i++) {
 				ntw = __get_ntw_of_overflowed_cntr(i, dev);
 				if (ntw)
 					ntw->icedc_err_status =
 							idc_err_status.val;
 			}
-		}
+		} else {
+			struct ice_network *ntw, *ntw_head;
 
-		for (i = 0; i < NUM_ICE_UNIT; i++) {
-			if (dev->cve_dev[i].state == CVE_DEVICE_IDLE)
-				continue;
+			/* Affects all networks */
 
-			cve_os_dev_log(CVE_LOGLEVEL_ERROR,
-				i,
+			ntw_head = dg->ntw_with_resources;
+			ntw = ntw_head;
+
+			cve_os_log(CVE_LOGLEVEL_ERROR,
 				"Received error interrupt from IceDC\n");
 
-			cve_dev = &dev->cve_dev[i];
-			/* notify the dispatcher */
-			ice_ds_handle_ntw_error(&dev->cve_dev[i],
-				idc_err_status.val, cntr_overflow);
+			do {
+				ntw->icedc_err_status = idc_err_status.val;
+
+				ntw = cve_dle_next(ntw, resource_list);
+			} while (ntw != ntw_head);
 		}
 
+#if ENABLE_CARD_RESET_FEATURE
+		dg->icedc_state = ICEDC_STATE_CARD_RESET_REQUIRED;
+#endif
 	}
-
-	status_lo = (ice_status & 0xFFFF);
-	status_hi = ((ice_status >> 32) & 0xFFFF);
 
 	status_hl = status_lo | status_hi;
 	cve_os_log(CVE_LOGLEVEL_INFO,
@@ -1518,13 +1580,20 @@ void cve_di_interrupt_handler_deferred_proc(struct idc_device *dev)
 		/* TODO: card level reset for fatal errors */
 		if (is_dsram_error(status)) {
 			store_ecc_err_count(cve_dev);
-			if (is_single_ecc_err(status)) {
-				/* Ignore single bit error*/
-				status = unset_single_ecc_err(status);
-			}
+			/* Ignore single bit error*/
+			status = unset_single_ecc_err(status);
+
 			if (status)
 				ice_ds_handle_ice_error(cve_dev, status);
-			else
+
+			/*TODO HACK:
+			 * Ignore Memory errors w.r.t job abort flow
+			 * for now as WA, let the ICE continue till
+			 * completion or WD
+			 */
+			status = unset_sram_parity_err(status);
+
+			if (!status)
 				continue;
 		}
 
@@ -1573,6 +1642,13 @@ void cve_di_interrupt_handler_deferred_proc(struct idc_device *dev)
 				cve_dev->cve_dump_buf.is_allowed_tlc_dump = 0;
 			}
 
+			DO_TRACE(trace_icedrvScheduleJob(
+						SPH_TRACE_OP_STATE_BH,
+						cve_dev->dev_index, 0, 0, 0,
+						cve_dev->dev_ntw_id, 0,
+						(void *)job->ds_hjob,
+						SPH_TRACE_OP_STATUS_FAIL,
+						status));
 		} else {
 			if (ice_ds_is_network_active(cve_dev->dev_ntw_id)
 					== 0) {
@@ -1612,6 +1688,10 @@ end:
 	cve_os_log(CVE_LOGLEVEL_DEBUG, "Execute ICEs\n");
 	coral_trigger_simulation();
 #endif
+	DO_TRACE(trace__icedrvBottomHalf(
+				SPH_TRACE_OP_STATE_COMPLETE,
+				idc_status, (status_lo >> 4), (status_hi >> 4),
+				SPH_TRACE_OP_STATUS_Q_TAIL, tail));
 
 	cve_os_unlock(&g_cve_driver_biglock);
 }

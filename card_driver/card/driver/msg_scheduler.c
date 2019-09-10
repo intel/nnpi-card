@@ -46,6 +46,8 @@ int msg_scheduler_thread_func(void *data)
 	int i;
 	int is_empty;
 	unsigned long flags;
+	u32 local_total_msgs_num = 0;
+	u32 left = 0;
 
 	sph_log_debug(GENERAL_LOG, "msg scheduler thread started\n");
 
@@ -53,7 +55,7 @@ int msg_scheduler_thread_func(void *data)
 		mutex_lock(&dev_sched->destroy_lock);
 		SPH_SPIN_LOCK_IRQSAVE(&dev_sched->queue_lock_irq, flags);
 		set_current_state(TASK_INTERRUPTIBLE);
-		if (dev_sched->total_msgs_num == 0) {
+		if (dev_sched->total_msgs_num == local_total_msgs_num && left == 0) {
 			mutex_unlock(&dev_sched->destroy_lock);
 			SPH_SPIN_UNLOCK_IRQRESTORE(&dev_sched->queue_lock_irq, flags);
 			/* wait until messages arrive to some queue */
@@ -62,6 +64,9 @@ int msg_scheduler_thread_func(void *data)
 			SPH_SPIN_LOCK_IRQSAVE(&dev_sched->queue_lock_irq, flags);
 		}
 		set_current_state(TASK_RUNNING);
+
+		local_total_msgs_num = dev_sched->total_msgs_num;
+		left = 0;
 
 		is_empty = list_empty(&dev_sched->queues_list_head);
 		if (likely(!is_empty))
@@ -116,11 +121,9 @@ int msg_scheduler_thread_func(void *data)
 
 				if (!queue_node->msgs_num)
 					wake_up_all(&queue_node->flush_waitq);
-
-				SPH_SPIN_LOCK_IRQSAVE(&dev_sched->queue_lock_irq, flags);
-				dev_sched->total_msgs_num--;
-				SPH_SPIN_UNLOCK_IRQRESTORE(&dev_sched->queue_lock_irq, flags);
 			}
+
+			left += queue_node->msgs_num;
 skip_queue:
 			SPH_SPIN_LOCK_IRQSAVE(&dev_sched->queue_lock_irq, flags);
 			queue_node = list_next_entry(queue_node, queues_list_node);
@@ -207,15 +210,10 @@ int msg_scheduler_queue_destroy(struct msg_scheduler *scheduler, struct msg_sche
 	}
 	SPH_SPIN_UNLOCK_IRQRESTORE(&queue->list_lock_irq, flags);
 
-	/* decrement queue's left messages from the total messages number of the scheduler */
-	if (queue->msgs_num) {
-		SPH_SPIN_LOCK_IRQSAVE(&scheduler->queue_lock_irq, flags);
-		scheduler->total_msgs_num -= queue->msgs_num;
-		SPH_SPIN_UNLOCK_IRQRESTORE(&scheduler->queue_lock_irq, flags);
-	}
-
 	/* destroy the queue */
+	SPH_SPIN_LOCK_IRQSAVE(&queue->scheduler->queue_lock_irq, flags);
 	list_del(&queue->queues_list_node);
+	SPH_SPIN_UNLOCK_IRQRESTORE(&queue->scheduler->queue_lock_irq, flags);
 	kfree(queue);
 	mutex_unlock(&scheduler->destroy_lock);
 

@@ -243,11 +243,13 @@ static long fpga_update(void __user *arg)
 	u16 thermal_event;
 	u16 mem_therm_status;
 	u16 avg_power;
+	u16 PLone;
 	uint32_t max_thermal;
 	static u16 prev_temp, prev_max_temp;
 	static u16 prev_mem_therm_status;
 	static u16 prev_thermal_event;
 	static u16 prev_avg_power;
+	static u16 prev_PLone;
 	static uint32_t prev_max_thermal;
 
 	ret = copy_from_user(&data, arg, sizeof(data));
@@ -262,6 +264,7 @@ static long fpga_update(void __user *arg)
 	thermal_event = milli_celcius_to_fpga_units(data.thermal_event_mc);
 	mem_therm_status = data.DDR_thermal_status & 0x7;
 	avg_power = milli_watt_to_fpga_units(data.avg_power_mW);
+	PLone = milli_watt_to_fpga_units(data.power_limit1_mW);
 
 	power_hw_get_ratl(&max_thermal, NULL, NULL, false);
 
@@ -305,6 +308,14 @@ static long fpga_update(void __user *arg)
 					  FPGA_MEMORY_THERMAL_STATUS_REG,
 					  mem_therm_status);
 		prev_mem_therm_status = mem_therm_status;
+	}
+
+	if (PLone != prev_PLone || s_force_update_fpga) {
+		i2c_smbus_write_word_data(s_fpga_client,
+					  FPGA_TDP_REG,
+					  PLone);
+
+		prev_PLone = PLone;
 	}
 
 	s_force_update_fpga = false;
@@ -437,14 +448,6 @@ static int sphcs_maint_attach_fpga(struct device *dev, void *dummy)
 
 	s_fpga_rev = i2c_smbus_read_word_data(s_fpga_client,
 					      FPGA_REVISION_REG);
-
-	//
-	// Write TDP value
-	// sph_power_get_tdp returns TDP in units of micro-watts,
-	//
-	i2c_smbus_write_word_data(s_fpga_client,
-				  FPGA_TDP_REG,
-				  milli_watt_to_fpga_units(sph_power_get_tdp() / 1000));
 
 	sph_log_info(MAINTENANCE_LOG, "Found FPGA SMBus device BoardID=0x%x FabID=0x%x FPGA Revision %u\n",
 		     s_board_id, s_fab_id, s_fpga_rev);

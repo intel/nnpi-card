@@ -211,7 +211,7 @@ static const struct sph_sw_counter_info g_swc_device_info[] = {
 	 "Last timestamp when ICE completed execution in microseconds"},
 	/* ICEDRV_SWC_DEVICE_COUNTER_POWER_STATE*/
 	{ICEDRV_SWC_DEVICE_GROUP_GEN, "icePowerState",
-	 "Power state of ICE"},
+	 "Power state of ICE - 0=OFF 1=ON 2=OFF initiated 3=UNKNOWN"},
 };
 
 static const struct sph_sw_counters_set g_swc_device_set = {

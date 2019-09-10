@@ -214,6 +214,18 @@ inline int inf_req_put(struct inf_req *infreq)
 	return kref_put(&infreq->ref, release_infreq);
 }
 
+static void migrate_priority(struct inf_req *infreq, struct inf_exec_req *req)
+{
+	int i = 0;
+	int j = 0;
+
+	for (i = 0; i < infreq->n_inputs; i++)
+		inf_devres_migrate_priority_to_req_queue(infreq->inputs[i], req, true);
+
+	for (j = 0; j < infreq->n_outputs; j++)
+		inf_devres_migrate_priority_to_req_queue(infreq->outputs[j], req, false);
+}
+
 int inf_req_schedule(struct inf_req *infreq,
 		     union h2c_InferenceReqSchedule *cmd)
 {
@@ -278,6 +290,10 @@ int inf_req_schedule(struct inf_req *infreq,
 		if (unlikely(err < 0))
 			goto fail;
 	}
+
+	// Migrate high priority
+	if (req->sched_params.priority == 0)
+		migrate_priority(infreq, req);
 
 	// Request scheduled
 	SPH_SW_COUNTER_INC(context->sw_counters,

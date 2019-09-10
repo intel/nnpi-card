@@ -10,6 +10,7 @@
 #include "sphcs_cs.h"
 #include "sph_log.h"
 #include "inf_context.h"
+#include "inf_copy.h"
 #include "ioctl_inf.h"
 
 int inf_devres_create(uint16_t            protocolID,
@@ -209,6 +210,46 @@ inline void inf_devres_get(struct inf_devres *devres)
 inline int inf_devres_put(struct inf_devres *devres)
 {
 	return kref_put(&devres->ref, release_devres);
+}
+
+
+void inf_devres_migrate_priority_to_req_queue(struct inf_devres *devres, struct inf_exec_req *exec_infreq, bool read)
+{
+	struct exec_queue_entry *pos;
+	unsigned long flags;
+	int ret;
+
+	SPH_SPIN_LOCK_IRQSAVE(&devres->lock_irq, flags);
+	list_for_each_entry(pos, &devres->exec_queue, node) {
+		struct inf_exec_req *req = pos->req;
+		//reached infreq
+		if (req == exec_infreq)
+			break;
+		if (pos->read && read)
+			continue;
+		if (req->is_copy) {
+			if (req->sched_params.priority != exec_infreq->sched_params.priority) {
+				SPH_SPIN_LOCK_IRQSAVE(&req->lock_irq, flags);
+				if (!req->in_progress) {
+					//Request didn't reached HW yet , just update priority here
+					req->sched_params.priority = exec_infreq->sched_params.priority;
+				} else {
+					//Call Dma scheduler for update
+					ret = sphcs_dma_sched_update_priority(g_the_sphcs->dmaSched,
+										req->copy->card2Host ? 0 : 1,
+										req->sched_params.priority,
+										exec_infreq->sched_params.priority,
+										req->copy->lli_addr);
+					if (ret)
+						sph_log_debug(CREATE_COMMAND_LOG, "Copy request %u priority not updated\n", req->copy->protocolID);
+					else
+						req->sched_params.priority = exec_infreq->sched_params.priority;
+				}
+				SPH_SPIN_UNLOCK_IRQRESTORE(&req->lock_irq, flags);
+			}
+		}
+	}
+	SPH_SPIN_UNLOCK_IRQRESTORE(&devres->lock_irq, flags);
 }
 
 int inf_devres_add_req_to_queue(struct inf_devres *devres, struct inf_exec_req *req, bool read)

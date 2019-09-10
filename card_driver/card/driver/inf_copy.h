@@ -24,6 +24,7 @@ struct inf_copy {
 	bool                  card2Host;
 	bool                  active;
 
+
 	dma_addr_t  lli_addr;
 	int         lli_size;
 	void       *lli_buf;

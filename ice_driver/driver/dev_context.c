@@ -215,15 +215,9 @@ out:
 static void cve_dev_release_per_cve_ctx(struct dev_context *dev_ctx)
 {
 	struct dev_context *context = dev_ctx;
-	struct cve_device *dev = context->cve_dev;
+	struct cve_device __maybe_unused *dev = context->cve_dev;
 
 	if (context) {
-
-		/* Block MMU if ICE is powered on */
-		if ((dev->power_state == ICE_POWER_ON) ||
-			(dev->power_state == ICE_POWER_OFF_INITIATED))
-			ice_di_mmu_block_entrance(dev);
-
 		cve_os_dev_log(CVE_LOGLEVEL_DEBUG,
 				dev->dev_index,
 				"Unload & Unmap FW\n");

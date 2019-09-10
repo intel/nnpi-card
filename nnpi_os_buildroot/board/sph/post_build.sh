@@ -2,15 +2,20 @@
 
 set -x
 
-KVER=5.1
-KVER_REAL=5.1.0
-ROOTFS_PATH=$1
 BUILD_FLAVOUR=$4
 BUILD_FLAVOUR_LC=${BUILD_FLAVOUR,,}
+echo "Buildroot Build Flavour is: "${BUILD_FLAVOUR}
 #sph_sa or sph_ep
 BUILD_CONFIGURATION=$5 
 FULL_STACK_VER_TAG=$6
-echo "Buildroot Build Flavour is: "${BUILD_FLAVOUR}
+PLATFORM_KERNEL_AUTO=${PWD}/../../automation/
+pushd ${PLATFORM_KERNEL_AUTO}
+. common_defs.sh -f ${BUILD_FLAVOUR_LC} -c ${BUILD_CONFIGURATION}
+popd
+
+#KVER=5.1 (KVER and KVER_REAL are now calculated in common_defs.sh)
+#KVER_REAL=5.1.0
+ROOTFS_PATH=$1
 
 KERNEL_SRC_DIR="$BUILD_DIR/linux-$KVER"
 KERNEL_HEADERS_DIR="$BUILD_DIR/linux-headers-$KVER"
@@ -18,20 +23,17 @@ TOOLCHAIN_DIR="$HOST_DIR"
 echo "PWD="$PWD
 
 THIS_MANIFEST_BASE_PATH=${PWD}/../../../
-PLATFORM_KERNEL_AUTO=${PWD}/../../automation/
 
 if [ "${BUILD_CONFIGURATION}" == "sph_sa" ]
 then
 	EXTRA_DIR=${PLATFORM_KERNEL_AUTO}extra
 fi
 
-pushd ${PLATFORM_KERNEL_AUTO}
-. common_defs.sh  -f ${BUILD_FLAVOUR_LC}
-curr_maj_ver=`grep BR2_TARGET_GENERIC_ISSUE $DEFCONFIG_SIMICS_SRC_PATH | sed "s/\(BR2_TARGET_GENERIC_ISSUE=\"Welcome\ to\ SPH\ OS\ -\ V\)\([0-9]*\).\([0-9]*\).*/\2/"`
-curr_min_ver=`grep BR2_TARGET_GENERIC_ISSUE $DEFCONFIG_SIMICS_SRC_PATH | sed "s/\(BR2_TARGET_GENERIC_ISSUE=\"Welcome\ to\ SPH\ OS\ -\ V\)\([0-9]*\).\([0-9]*\).*/\3/"`
-curr_ver=`grep BR2_TARGET_GENERIC_ISSUE $DEFCONFIG_SIMICS_SRC_PATH | sed "s/\(BR2_TARGET_GENERIC_ISSUE=\"Welcome\ to\ SPH\ OS\ -\ V\)\([0-9]*\).\([0-9]*\).\([0-9]*\).*/\4/"`
+curr_maj_ver=`grep BR2_TARGET_GENERIC_ISSUE $DEFCONFIG | sed "s/\(BR2_TARGET_GENERIC_ISSUE=\"Welcome\ to\ NNPI\ OS\ -\ V\)\([0-9A-Za-z_-]*\).\([0-9A-Za-z_-]*\).*/\2/"`
+curr_min_ver=`grep BR2_TARGET_GENERIC_ISSUE $DEFCONFIG | sed "s/\(BR2_TARGET_GENERIC_ISSUE=\"Welcome\ to\ NNPI\ OS\ -\ V\)\([0-9A-Za-z_-]*\).\([0-9A-Za-z_-]*\).*/\3/"`
+curr_ver=`grep BR2_TARGET_GENERIC_ISSUE $DEFCONFIG | sed "s/\(BR2_TARGET_GENERIC_ISSUE=\"Welcome\ to\ NNPI\ OS\ -\ V\)\([0-9A-Za-z_-]*\).\([0-9A-Za-z_-]*\).\([0-9A-Za-z_-]*\).*/\4/"`
+
 VANILLA_VER_TAG="V$curr_maj_ver.$curr_min_ver.$curr_ver"
-popd
 ARTIFACTS_BASE_PATH=${THIS_MANIFEST_BASE_PATH}/release_artifacts
 REL_ART_PLAT_SW_BASE_PATH=${ARTIFACTS_BASE_PATH}/platform_sw/build_artifact/${BUILD_CONFIGURATION}/${BUILD_FLAVOUR}
 REL_ART_INFERENCE_API_BASE_PATH=${ARTIFACTS_BASE_PATH}/inference_api/build_artifact/${BUILD_CONFIGURATION}/${BUILD_FLAVOUR^}
@@ -57,11 +59,11 @@ RUNTIME_ASIP_FW=${THIS_MANIFEST_BASE_PATH}/runtime_asip_fw
 RUNTIME_IVP_FW=${THIS_MANIFEST_BASE_PATH}/runtime_ivp_fw
 
 #ice driver
-ICE_DRIVER_KERNEL_ARTIFACT_TAR_PATH=${ARTIFACTS_BASE_PATH}/driver_kernel/build_artifact/${BUILD_CONFIGURATION}/${BUILD_FLAVOUR_LC}/ice_kmd-*-${BUILD_CONFIGURATION}-${BUILD_FLAVOUR_LC}_64_driver.tar.gz
-ICE_DRIVER_USER_ARTIFACT=${ARTIFACTS_BASE_PATH}/driver_user/build_artifact/${BUILD_CONFIGURATION}/${BUILD_FLAVOUR_LC}/ice_umd-*-${BUILD_CONFIGURATION}-${BUILD_FLAVOUR_LC}_64_driver.tar.gz
+ICE_DRIVER_KERNEL_ARTIFACT_TAR_PATH=${ARTIFACTS_BASE_PATH}/driver_kernel/build_artifact/${BUILD_CONFIGURATION}/${BUILD_FLAVOUR}/ice_kmd-*-${BUILD_CONFIGURATION}-${BUILD_FLAVOUR_LC}_64_driver.tar.gz
+ICE_DRIVER_USER_ARTIFACT=${ARTIFACTS_BASE_PATH}/driver_user/build_artifact/${BUILD_CONFIGURATION}/${BUILD_FLAVOUR}/ice_umd-*-${BUILD_CONFIGURATION}-${BUILD_FLAVOUR_LC}_64_driver.tar.gz
 
-ICE_DRIVER_USER_TESTS_ARTIFACT=${ARTIFACTS_BASE_PATH}/driver_user/build_artifact/${BUILD_CONFIGURATION}/${BUILD_FLAVOUR_LC}/ice_umd-*-${BUILD_CONFIGURATION}-${BUILD_FLAVOUR_LC}_64_tests.tar.gz
-ICE_DRIVER_USER_LIBS_ARTIFACT=${ARTIFACTS_BASE_PATH}/driver_user/build_artifact/${BUILD_CONFIGURATION}/${BUILD_FLAVOUR_LC}/libs
+ICE_DRIVER_USER_TESTS_ARTIFACT=${ARTIFACTS_BASE_PATH}/driver_user/build_artifact/${BUILD_CONFIGURATION}/${BUILD_FLAVOUR}/ice_umd-*-${BUILD_CONFIGURATION}-${BUILD_FLAVOUR_LC}_64_tests.tar.gz
+ICE_DRIVER_USER_LIBS_ARTIFACT=${ARTIFACTS_BASE_PATH}/driver_user/build_artifact/${BUILD_CONFIGURATION}/${BUILD_FLAVOUR}/libs
 
 #runtime
 RUNTIME_ARTIFACT=${ARTIFACTS_BASE_PATH}/runtime/build_artifact/${BUILD_CONFIGURATION}/${BUILD_FLAVOUR}/sph_runtime_*_${BUILD_CONFIGURATION}_${BUILD_FLAVOUR}.tar.gz
@@ -85,15 +87,24 @@ function add_line_to_file() {
 		read -p "Press Enter..."
 	fi
 }
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+NC='\033[0m' # No Color
+
 function check_success() {
 	retcode=$1
 	action=$2
 	filename=$3
 	if [ ${retcode} -eq 0 ]; then
-    		echo "${action} on ${filename} OK"
+    		echo -e "${GREEN} ${action} on ${filename} OK ${NC}"
 	else
-    		echo "${action} on ${filename} FAILED"
-		read -p "Press Enter..."
+		echo -e "${RED}"
+		echo -e "************FAIL FAIL FAIL**************"
+    		echo -e "${action} on ${filename} FAILED"
+		echo -e "************FAIL FAIL FAIL**************"
+		echo -e "${NC}"
+		exit -1
 	fi	
 }
 
@@ -109,6 +120,11 @@ add_line_to_file "PermitRootLogin yes" "${ROOTFS_PATH}/etc/ssh/sshd_config"
 if [ "${BUILD_FLAVOUR}" == "Debug" ]; then
 	add_line_to_file "debugfs /sys/kernel/debug debugfs defaults" "${ROOTFS_PATH}/etc/fstab"
 fi
+
+## Add more meaningful version to /etc/issue - e.x.[Platform_SPH_OS_sph_ep_debug_19WW22.3.3_93_2019_05_28]
+#DATE=`date +%Y%m%d`
+#touch ${ROOTFS_PATH}/etc/packagename
+#add_line_to_file "Platform_SPH_OS${BUILD_CONFIGURATION}_${BUILD_FLAVOUR}_${VANILLA_VER_TAG}_${DATE}" "${ROOTFS_PATH}/etc/packagename"
 
 #If its a vanilla os then we do not pack any ingredients on ROOTFS
 if [ "${BUILD_CONFIGURATION}" == "" ]
@@ -314,7 +330,7 @@ add_line_to_file "VIRUS_RUNTIME_TEST"  ${VERSION_PATH}
 ver_file=$(echo "$ver_file" | sed 's/\.tar.gz//g')
 add_line_to_file $ver_file  ${VERSION_PATH}
 
-tar -xvf ${PTU_TOOL_ARTIFACT} -C ${ROOTFS_PATH}/opt/intel_nnpi/bit/
+tar -xvf ${PTU_TOOL_ARTIFACT} -C ${ROOTFS_PATH}
 check_success "$?" "tar -xvf" "${PTU_TOOL_ARTIFACT}"
 ver_file=$(basename -- "$PTU_TOOL_ARTIFACT")
 add_line_to_file "PTU_TOOL"  ${VERSION_PATH}
@@ -328,7 +344,6 @@ if [[ -f "${RELEASE_NOTES}" ]]; then
     rm ${RELEASE_NOTES}
 fi
 
-
 if [ "${BUILD_CONFIGURATION}" == "sph_sa" ]; then
 	sed -i 's/sph_memalloc_placeholder/memalloc_sph_sa/' ${ROOTFS_PATH}/usr/local/bin/sph_platform_start 
 else
@@ -340,6 +355,3 @@ if [ "${BUILD_CONFIGURATION}" == "sph_sa" ]; then
 else
 	sed -i 's/sph_start_placeholder/start_sph_ep/' ${ROOTFS_PATH}/usr/local/bin/sph_platform_start 
 fi
-
-
-

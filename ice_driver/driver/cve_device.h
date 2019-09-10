@@ -40,12 +40,12 @@ enum CVE_DEVICE_STATE {
 };
 
 enum ICE_POWER_STATE {
+	/* ICE is powered off */
+	ICE_POWER_OFF,
 	/* ICE is powered on */
 	ICE_POWER_ON,
 	/* ICE is in power off queue */
 	ICE_POWER_OFF_INITIATED,
-	/* ICE is powered off */
-	ICE_POWER_OFF,
 	/* When driver starts then power state is unknown */
 	ICE_POWER_UNKNOWN
 };
@@ -258,8 +258,10 @@ struct cve_device {
 struct icebo_desc {
 	/* icebo id */
 	u8 bo_id;
+	/* Initial state of BO */
+	enum ICEBO_STATE bo_init_state;
 	/* State of ICEBO */
-	u32 state;
+	enum ICEBO_STATE bo_curr_state;
 	/* link to the owner picebo/sicebo/dicebo list */
 	struct cve_dle_t owner_list;
 	/* List of devices - static list */
@@ -276,15 +278,15 @@ struct dg_dev_info {
 	/* for reference - static icebo list */
 	struct icebo_desc *icebo_list;
 	/* Number of ICEBO whose both the ICEs are idle, paired ICEBOs=picebo */
-	u8 num_picebo;
+	u8 num_avl_picebo;
 	/* Number of ICEBO whose one ICE is idle but cannot be used by any ntw,
 	 * single ICEBOs=sicebo
 	 */
-	u8 num_sicebo;
+	u8 num_avl_sicebo;
 	/* Number of ICEBOs whose one ICE is idle and can be used by any ntw,
 	 * don't care ICEBOs=dicebo
 	 */
-	u8 num_dicebo;
+	u8 num_avl_dicebo;
 	/* Number of active devices */
 	u32 active_device_nr;
 };
@@ -295,8 +297,6 @@ struct ds_dev_data;
 #define CLOS_0_SIZE 3
 #define CLOS_MAX_SIZE 24
 #define CLOS_INVALID_SIZE (CLOS_MAX_SIZE + 1)
-/* Max Networks that can reserve resource at a time */
-#define CLOS_2_ARRAY_SIZE KMD_NUM_ICE
 
 /*
  * ------------------------------------
@@ -312,12 +312,19 @@ struct clos_manager {
 	u32 clos_size[ICE_CLOS_MAX];
 	/* Free size in use per CLOS */
 	u32 clos_free[ICE_CLOS_MAX];
-	/* CLOS2 req for each executing Ntw. Max = KMD_NUM_ICE */
-	u32 clos2_reqs[CLOS_2_ARRAY_SIZE];
+	/* Reserved CLOS size */
+	u32 clos_res[ICE_CLOS_MAX];
+	/* Non-reserved CLOS_1 + CLOS_2 */
+	u32 num_nonres_clos;
 	/* Grows Up */
 	u32 clos2_idx;
 	/* Grows Down */
 	u32 clos1_idx;
+	/* -------------- */
+	/* Default values */
+	u64 clos_default[ICE_CLOS_MAX];
+	u64 pqr_default;
+	/* -------------- */
 };
 
 /* TODO: In future DG can be rebranded as ResourcePool.
@@ -334,10 +341,26 @@ struct cve_device_group {
 	struct cve_hw_cntr_descriptor *hw_cntr_list;
 	/* holds start address of hardware counter array */
 	struct cve_hw_cntr_descriptor *base_addr_hw_cntr;
-	/* actual count of free HW counters in the device group */
-	u16 counters_nr;
+	/* number of counters in free pool */
+	u16 num_avl_cntr;
+	/* number of non-reserved counters */
+	u16 num_nonres_cntr;
 	/* Pool to Context ID mapping */
 	u64 pool_context_map[MAX_IDC_POOL_NR];
+	/* number of pool in free pool */
+	u16 num_avl_pool;
+	/* number of non-reserved pool */
+	u16 num_nonres_pool;
+	/* book-keeping for reserved dices in system */
+	u8 dice_res_status[MAX_CVE_DEVICES_NR];
+	/* number of non-reserved (picebo + sicebo) */
+	u8 num_nonres_picebo;
+	/* number of non-reserved dicebo */
+	u8 num_nonres_dicebo;
+	/* List of ntw holding resources */
+	struct ice_network *ntw_with_resources;
+	/* number of running networks */
+	u32 num_running_ntw;
 	/* dispatcher data */
 	struct ds_dev_data *ds_data;
 	/* IceDc state, whether card reset is required or not*/
@@ -361,8 +384,10 @@ struct cve_device_group {
 	cve_os_lock_t poweroff_dev_list_lock;
 	/* CLOS book keeping */
 	struct clos_manager dg_clos_manager;
+#ifdef _DEBUG
 	/* Book keeping for Order of ExecuteInfer call */
 	u64 dg_exe_order;
+#endif
 };
 
 /* Holds all the relevant IDs required for maintaining a map between
@@ -404,6 +429,8 @@ struct cve_workqueue {
 	struct cve_dle_t list_context_wqs;
 	/* list of networks within this WQ*/
 	struct ice_network *ntw_list;
+	/* count of network using the pool */
+	u32 num_ntw_using_pool;
 	/* count of network requested for pool reservation */
 	u32 num_ntw_reserving_pool;
 };
@@ -557,6 +584,49 @@ struct ice_dump_desc {
 	struct di_cve_dump_buffer *ice_dump_buf;
 };
 
+/* Possible outcome when someone requests resource */
+enum resource_status {
+	RESOURCE_OK,
+	RESOURCE_BUSY,
+	RESOURCE_INSUFFICIENT
+};
+
+/* Possible types of execution node */
+enum node_type {
+	NODE_TYPE_INFERENCE,
+	NODE_TYPE_RESERVE,
+	NODE_TYPE_RELEASE
+};
+
+struct execution_node {
+
+	/* Inference, Reserve or Release */
+	enum node_type ntype;
+
+	struct cve_dle_t sch_list[EXE_INF_PRIORITY_MAX];
+	struct cve_dle_t ntw_queue[EXE_INF_PRIORITY_MAX];
+
+	/* ------------------- */
+	/* Valid for INFERENCE */
+	/* ------------------- */
+	struct ice_infer *inf;
+	/* This flag is bypassed when resources are reserved */
+	bool ready_to_run;
+	/* INFERENCE nodes are also added to ntw->sch_queue */
+	/* Is this inference queued */
+	bool is_queued;
+	/* ------------------- */
+
+	/* ------------------------- */
+	/* Valid for RESERVE/RELEASE */
+	/* ------------------------- */
+	/* Ntw with which this node is associated */
+	struct ice_network *ntw;
+	bool is_success;
+	/* ------------------------- */
+
+};
+
 /* hold information about a network */
 struct ice_network {
 	/* stores a reference to self, should always be first member */
@@ -609,6 +679,8 @@ struct ice_network {
 
 	/****************************************/
 	u8 has_resource;
+	/* Ntw using resources are added to dg->ntw_with_resources */
+	struct cve_dle_t resource_list;
 	/* Indicates if this Network needs to reserve the resources */
 	bool res_resource;
 	struct cve_device *ice_list;
@@ -644,11 +716,6 @@ struct ice_network {
 	/* Shared read error status */
 	u32 shared_read_err_status;
 
-	/* abort wait queue - signaled when pending interrupts are received,
-	 * 1 per ICE
-	 */
-	cve_os_wait_que_t abort_wq;
-
 	/* active ice executing a job from this network*/
 	uint8_t active_ice;
 
@@ -674,18 +741,13 @@ struct ice_network {
 	enum ice_network_type network_type;
 	u8 max_shared_distance;
 	u8 shared_read;
-
-	/* New Variables */
+	/* Last Infer that was executed */
 	struct ice_infer *curr_exe;
+	/* List of all Infer created against this Ntw */
 	struct ice_infer *inf_list;
-	struct ice_infer *inf_exe_list[EXE_INF_PRIORITY_MAX];
 
-	/* In scheduler queue */
-	bool ntw_queued;
 	/* Is running */
 	bool ntw_running;
-	/* Is aborted by user */
-	bool ntw_aborted;
 
 	/* Array of indexes corresponding to inference buffer */
 	u64 *infer_idx_list;
@@ -698,8 +760,27 @@ struct ice_network {
 	u64 ntw_icemask;
 	u64 ntw_cntrmask;
 
+	/* ------------------------- */
 	/* Exclusively for scheduler */
-	bool handled_by_sch;
+	/* ------------------------- */
+	/* List of all Infer waiting for execution */
+	struct execution_node *sch_queue[EXE_INF_PRIORITY_MAX];
+	/* Number of Inf queued for execution */
+	u64 sch_queued_inf_count;
+	/* Multi back to back reserve/release will be rejected */
+	/* Initialize to RELEASE */
+	enum node_type last_request_type;
+	/* Network's Reservation node */
+	struct execution_node ntw_res_node;
+	/* Network's Release node */
+	struct execution_node ntw_rel_node;
+	/* ------------------------- */
+
+	/* Initialize to NULL */
+	struct execution_node *rr_node;
+
+	/* Waitqueue for resource Reservation/Release request */
+	cve_os_wait_que_t rr_wait_queue;
 
 	/* Is Counter patching required? */
 	bool patch_cntr;
@@ -720,16 +801,14 @@ struct ice_infer {
 	u32 num_buf;
 	/* user data*/
 	u64 user_data;
-	/* In execution queue */
-	bool inf_queued;
 	/* Is running */
 	bool inf_running;
-	/* Is aborted */
-	bool inf_aborted;
 
 	/******************************************************/
 	/* Valid only when inf_queued=true || inf_running=true*/
+#ifdef _DEBUG
 	u64 inf_exe_order;
+#endif
 	enum ice_execute_infer_priority inf_pr;
 	/******************************************************/
 
@@ -744,11 +823,14 @@ struct ice_infer {
 
 	/************************/
 	/* SW Counter handle */
+	/************************/
 	void *hswc;
 	/* SW counter object */
 	struct ice_swc_node swc_node;
 	/************************/
 	u64 process_pid;
+	/* Scheduler's Inference node */
+	struct execution_node inf_sch_node;
 };
 
 /* hold information about user buffer allocation (surface or cb) */
@@ -858,8 +940,10 @@ struct cve_completion_event {
 	u64 user_data;
 	/* IceDc error state*/
 	u64 icedc_err_status;
-	/* Toal CB exec time per ICE */
+	/* Total CB exec time per ICE */
 	u64 total_time[MAX_CVE_DEVICES_NR];
+	/* Store average ICE cycles*/
+	u64 average_ice_cycles;
 	/* Ice error status*/
 	u64 ice_err_status;
 	/* Shared read error status */
@@ -875,7 +959,7 @@ struct ice_debug_event_bp {
 	u64 network_id;
 };
 
-int cve_device_init(struct cve_device *dev, int index);
+int cve_device_init(struct cve_device *dev, int index, u64 pe_value);
 void cve_device_clean(struct cve_device *dev);
 
 #endif /* CVE_DEVICE_H_ */

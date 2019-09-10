@@ -72,6 +72,13 @@ extern struct config cfg_default;
 
 #endif
 
+#define declare_u32_var(x) u32 x __attribute__((unused)); x = 0
+#define declare_u64_var(x) u64 x __attribute__((unused)); x = 0
+#define declare_u16_var(x) u16 x __attribute__((unused)); x = 0
+#define declare_u8_var(x)  u8  x __attribute__((unused)); x = 0
+
+#define declare_int_var(x) int x __attribute__((unused)); x = 0
+
 enum dg_settings_types {
 	DG_SETTINGS_DEFAULT = 0,
 	DG_SETTINGS_SINGLE_DEVICE_PER_GROUP,
@@ -390,8 +397,7 @@ struct ice_drv_memleak {
 		vaddr, dma_addr, aligned); \
 })
 
-#define OS_ALLOC_DMA_SG(cve_dev, size_of_elem, num_of_elem, out_vaddr, \
-		out_dma_addr) ({ \
+#define OS_ALLOC_DMA_SG(cve_dev, size_of_elem, num_of_elem, out_dma_addr) ({ \
 	int ret = __cve_os_alloc_dma_sg(cve_dev, size_of_elem, \
 			num_of_elem, out_dma_addr); \
 	ret; \
@@ -799,7 +805,9 @@ void cve_os_vunmap_dma_handle(void *vaddr);
 
 uint32_t get_process_pid(void);
 
-void ice_os_update_clos(void *pmclos);
+void ice_os_read_clos(void *pmclos);
+void ice_os_set_clos(void *pmclos);
+void ice_os_reset_clos(void *pmclos);
 
 int set_llc_freq(void *llc_freq_config);
 uint64_t get_llc_freq(void);

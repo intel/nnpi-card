@@ -25,6 +25,15 @@
 
 #define MAX_STALE_ATTR_NAME_LEN    32
 
+#define SW_COUNTERS_ASSERT(x)						\
+	do {							\
+		if (likely(x))					\
+			break;					\
+		pr_err("SPH ASSERTION FAILED %s: %s: %u: %s\n", \
+			__FILE__, __func__, __LINE__, #x);      \
+		BUG();                                          \
+	} while (0)
+
 /* file attributre for group file */
 struct sph_sw_counters_group_file_attr {
 	struct attribute attr;
@@ -47,6 +56,7 @@ struct bin_stale_node {
 	struct kobject			    *kobj;
 	struct sph_sw_counters_bin_file_attr bin_file;
 	struct list_head		     node;
+	struct list_head                     kobject_list;
 };
 
 struct kobj_node {
@@ -354,16 +364,31 @@ void release_bin_file(struct kobject *kobj, struct sph_sw_counters_bin_file_attr
 static void move_to_stale_list(struct gen_sync_attr                 *gen_sync,
 			       struct kobject                       *kobj,
 			       struct sph_sw_counters_bin_file_attr *attr,
+			       struct list_head                     *kobject_list,
 			       u64                                   dirty_val)
 {
 	struct bin_stale_node *stale_node;
 	int ret;
 	int stale_id;
+	struct kobj_node *kobj_node;
 
 	stale_node = kzalloc(sizeof(*stale_node) + MAX_STALE_ATTR_NAME_LEN,
 			     GFP_KERNEL);
 	if (!stale_node)
 		goto fail_alloc;
+
+	INIT_LIST_HEAD(&stale_node->kobject_list);
+	SW_COUNTERS_ASSERT(kobject_list != NULL);
+	list_for_each_entry(kobj_node, kobject_list, node) {
+		struct kobj_node *new_kobj = kzalloc(sizeof(*new_kobj), GFP_KERNEL);
+
+		if (new_kobj == NULL) {
+			sph_log_err(GENERAL_LOG, "unable to allocate memory for new_kobj\n");
+			goto fail_create_list;
+		}
+		new_kobj->kobj = kobject_get(kobj_node->kobj);
+		list_add_tail(&new_kobj->node, &stale_node->kobject_list);
+	}
 
 	stale_node->kobj = kobject_get(kobj);
 	memcpy(&stale_node->bin_file, attr, sizeof(struct sph_sw_counters_bin_file_attr));
@@ -396,6 +421,13 @@ static void move_to_stale_list(struct gen_sync_attr                 *gen_sync,
 fail_create:
 	kobject_put(stale_node->kobj);
 	kfree(stale_node);
+fail_create_list:
+	while (!list_empty(&stale_node->kobject_list)) {
+		kobj_node = list_first_entry(&stale_node->kobject_list, struct kobj_node, node);
+		list_del(&kobj_node->node);
+		kobject_put(kobj_node->kobj);
+		kfree(kobj_node);
+	}
 fail_alloc:
 	sph_log_err(GENERAL_LOG, "Failed to create stale attr, removing object!!\n");
 	release_bin_file(kobj, attr);
@@ -412,9 +444,17 @@ static void remove_stale_bin_files(struct gen_sync_attr *gen_sync,
 	list_for_each_entry_safe(stale_node, n, &gen_sync->stale_list, node) {
 		if (force ||
 		    (stale_node->bin_file.dirty_at_remove <= dirty_val)) {
+			struct kobj_node *kobj_node;
+
 			list_del(&stale_node->node);
 			spin_unlock(&gen_sync->lock);
 			release_bin_file(stale_node->kobj, &stale_node->bin_file);
+			while (!list_empty(&stale_node->kobject_list)) {
+				kobj_node = list_first_entry(&stale_node->kobject_list, struct kobj_node, node);
+				list_del(&kobj_node->node);
+				kobject_put(kobj_node->kobj);
+				kfree(kobj_node);
+			}
 			kobject_put(stale_node->kobj);
 			kfree(stale_node);
 			spin_lock(&gen_sync->lock);
@@ -835,6 +875,9 @@ int sph_create_sw_counters_values_node(void *hInfoNode,
 	char *dir_name = NULL;
 	struct kobject *kobj;
 
+	struct bin_stale_node *stale_node = NULL;
+	bool   dir_exist = false;
+
 	u32 counters_size = sw_counters_info->counters_set->counters_count * SPH_COUNTER_SIZE;
 	u32 n;
 
@@ -894,7 +937,6 @@ int sph_create_sw_counters_values_node(void *hInfoNode,
 	/* in case counters set is set as perID , driver will create a directory with node_id*/
 	if (sw_counters_info->counters_set->perID) {
 		u32 alloc_size = 1; // 1 for NULL terminating char
-		struct bin_stale_node *stale_node;
 
 		alloc_size += snprintf(NULL, 0, "%u", node_id);
 		dir_name = kmalloc_array(alloc_size, sizeof(char), GFP_KERNEL);
@@ -913,6 +955,7 @@ int sph_create_sw_counters_values_node(void *hInfoNode,
 			if (stale_node->kobj->parent == kobj &&
 			    !strcmp(kobject_name(stale_node->kobj), dir_name)) {
 				sw_counters_values->kobj = kobject_get(stale_node->kobj);
+				dir_exist = true;
 				break;
 			}
 		}
@@ -988,21 +1031,43 @@ int sph_create_sw_counters_values_node(void *hInfoNode,
 		struct sph_internal_sw_counters *infoNode;
 
 		mutex_lock(&sw_counters_info->list_lock);
-		list_for_each_entry(infoNode, &sw_counters_info->children_List, node) {
-			const char *name = infoNode->counters_set->name;
-			struct kobj_node *new_kobj = kzalloc(sizeof(*new_kobj), GFP_KERNEL);
+		if (dir_exist) {
+			struct kobj_node *kobj_node;
 
-			if (new_kobj == NULL) {
-				sph_log_err(GENERAL_LOG, "unable to allocate memory for new_kobj\n");
-				ret = -ENOMEM;
-				mutex_unlock(&sw_counters_info->list_lock);
-				goto cleanup_sw_counters_children_kobject_list;
+			SW_COUNTERS_ASSERT(stale_node != NULL);
+			list_for_each_entry(kobj_node, &stale_node->kobject_list, node) {
+				struct kobj_node *new_kobj = kzalloc(sizeof(*new_kobj), GFP_KERNEL);
+
+				if (new_kobj == NULL) {
+					sph_log_err(GENERAL_LOG, "unable to allocate memory for new_kobj\n");
+					ret = -ENOMEM;
+					mutex_unlock(&sw_counters_info->list_lock);
+					goto cleanup_sw_counters_children_kobject_list;
+				}
+				new_kobj->kobj = kobject_get(kobj_node->kobj);
+
+				mutex_lock(&sw_counters_values->list_lock);
+				list_add_tail(&new_kobj->node, &sw_counters_values->kobject_list);
+				mutex_unlock(&sw_counters_values->list_lock);
 			}
+		} else {
+			list_for_each_entry(infoNode, &sw_counters_info->children_List, node) {
+				const char *name = infoNode->counters_set->name;
+				struct kobj_node *new_kobj = kzalloc(sizeof(*new_kobj), GFP_KERNEL);
 
-			new_kobj->kobj = kobject_create_and_add(name, kobj);
-			mutex_lock(&sw_counters_values->list_lock);
-			list_add_tail(&new_kobj->node, &sw_counters_values->kobject_list);
-			mutex_unlock(&sw_counters_values->list_lock);
+				if (new_kobj == NULL) {
+					sph_log_err(GENERAL_LOG, "unable to allocate memory for new_kobj\n");
+					ret = -ENOMEM;
+					mutex_unlock(&sw_counters_info->list_lock);
+					goto cleanup_sw_counters_children_kobject_list;
+				}
+
+				new_kobj->kobj = kobject_create_and_add(name, kobj);
+
+				mutex_lock(&sw_counters_values->list_lock);
+				list_add_tail(&new_kobj->node, &sw_counters_values->kobject_list);
+				mutex_unlock(&sw_counters_values->list_lock);
+			}
 		}
 		mutex_unlock(&sw_counters_info->list_lock);
 	}
@@ -1093,18 +1158,6 @@ int sph_sw_counters_release_values_node(struct sph_internal_sw_counters *sw_coun
 	struct kobj_node *kobjNode;
 	u64 root_dirty = 0;
 
-	/* cleanup child directories*/
-	mutex_lock(&sw_counters_values->list_lock);
-	while (!list_empty(&sw_counters_values->kobject_list)) {
-		kobjNode = list_first_entry(&sw_counters_values->kobject_list,
-					    struct kobj_node, node);
-		list_del(&kobjNode->node);
-		kobject_put(kobjNode->kobj);
-		kfree(kobjNode);
-	}
-	mutex_unlock(&sw_counters_values->list_lock);
-
-
 	/* once new object was deleted we will update node to root */
 	while (tmp_sw_counters_values->parent != NULL) {
 		++(*tmp_sw_counters_values->dirty);
@@ -1130,14 +1183,29 @@ int sph_sw_counters_release_values_node(struct sph_internal_sw_counters *sw_coun
 	 * we create a stale copy instead of removing the attribute file
 	 * to let all clients get a chance to map and read it.
 	 */
-	if (gen_sync_has_clients(sw_counters_values->gen_sync_attr))
+	if (gen_sync_has_clients(sw_counters_values->gen_sync_attr)) {
+		mutex_lock(&sw_counters_values->list_lock);
 		move_to_stale_list(sw_counters_values->gen_sync_attr,
 				   sw_counters_values->kobj,
 				   &sw_counters_values->bin_file,
+				   &sw_counters_values->kobject_list,
 				   root_dirty);
-	else
+		mutex_unlock(&sw_counters_values->list_lock);
+	} else {
 		release_bin_file(sw_counters_values->kobj,
 				 &sw_counters_values->bin_file);
+	}
+
+	/* cleanup child directories*/
+	mutex_lock(&sw_counters_values->list_lock);
+	while (!list_empty(&sw_counters_values->kobject_list)) {
+		kobjNode = list_first_entry(&sw_counters_values->kobject_list,
+					    struct kobj_node, node);
+		list_del(&kobjNode->node);
+		kobject_put(kobjNode->kobj);
+		kfree(kobjNode);
+	}
+	mutex_unlock(&sw_counters_values->list_lock);
 
 	if (sw_counters_values->kobj_owner)
 		kobject_put(sw_counters_values->kobj);

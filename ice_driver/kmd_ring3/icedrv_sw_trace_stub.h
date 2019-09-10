@@ -20,7 +20,7 @@
 #include "sph_sw_trace_format.h"
 #include "inttypes.h"
 
-#define DO_TRACE(x) (x)
+#define DO_TRACE(x) do {} while (0);
 #define DO_TRACE_IF(cond, x) do {\
 	if (cond) \
 	x; \

@@ -185,13 +185,19 @@ static inline int is_cve_error(u32 status)
 			is_bus_error(status) ||
 			is_wd_error(status) ||
 			is_ice_dump_completed(status) ||
-			is_tlc_panic(status)
+			is_tlc_panic(status) ||
+			is_dsram_error(status)
 	);
 }
 
 static inline u32 is_single_ecc_err(u32 status)
 {
 	return (status & cfg_default.mmio_dsram_single_err_intr_mask);
+}
+
+static inline u32 unset_sram_parity_err(u32 status)
+{
+	return (status & ~cfg_default.mmio_sram_parity_err_intr_mask);
 }
 
 static inline u32 unset_single_ecc_err(u32 status)

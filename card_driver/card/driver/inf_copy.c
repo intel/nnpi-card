@@ -152,6 +152,7 @@ int host_page_list_dma_completed(struct sphcs *sphcs, void *ctx, const void *use
 		}
 
 		copy->lli_size = g_the_sphcs->hw_ops->dma.calc_lli_size(g_the_sphcs->hw_handle, src_sgt, dst_sgt, 0);
+		SPH_ASSERT(copy->lli_size > 0);
 
 		// allocate memory in size lli_size
 		copy->lli_buf = dma_alloc_coherent(g_the_sphcs->hw_device, copy->lli_size, &copy->lli_addr, GFP_KERNEL);
@@ -163,7 +164,8 @@ int host_page_list_dma_completed(struct sphcs *sphcs, void *ctx, const void *use
 		}
 
 		// generate lli buffer for dma
-		g_the_sphcs->hw_ops->dma.gen_lli(g_the_sphcs->hw_handle, src_sgt, dst_sgt, copy->lli_buf, 0);
+		total_entries_bytes = g_the_sphcs->hw_ops->dma.gen_lli(g_the_sphcs->hw_handle, src_sgt, dst_sgt, copy->lli_buf, 0);
+		SPH_ASSERT(total_entries_bytes > 0);
 
 		sphcs_send_event_report(g_the_sphcs,
 					SPH_IPC_CREATE_COPY_SUCCESS,
@@ -417,6 +419,7 @@ int inf_copy_sched(struct inf_copy *copy, size_t size, uint8_t priority)
 	req->copy = copy;
 	req->size = size;
 	req->time = 0;
+	req->sched_params.priority = priority;
 	inf_context_seq_id_init(req->copy->context, &req->seq);
 
 	if (SPH_SW_GROUP_IS_ENABLE(req->copy->sw_counters,
@@ -499,10 +502,27 @@ int inf_copy_req_execute(struct inf_exec_req *copy_req)
 	} else
 		copy_req->time = 0;
 
-	if (copy_req->copy->card2Host)
-		desc = &g_dma_desc_c2h_high_nowait;
-	else
-		desc = &g_dma_desc_h2c_high_nowait;
+	if (copy_req->copy->card2Host) {
+		switch (copy_req->sched_params.priority) {
+		case 1:
+			desc = &g_dma_desc_c2h_high_nowait;
+			break;
+		case 0:
+		default:
+			desc = &g_dma_desc_c2h_normal_nowait;
+			break;
+		}
+	} else {
+		switch (copy_req->sched_params.priority) {
+		case 1:
+			desc = &g_dma_desc_h2c_high_nowait;
+			break;
+		case 0:
+		default:
+			desc = &g_dma_desc_h2c_normal_nowait;
+			break;
+		}
+	}
 
 	copy_req->copy->active = true;
 

@@ -46,7 +46,7 @@
 #define IOCTL_INF_ALLOC_RESOURCE_REPLY    _IOW('I', 7, struct inf_alloc_resource_reply)
 #define IOCTL_INF_DEVNET_RESOURCES_RESERVATION_REPLY _IOW('I', 8, struct inf_devnet_resource_reserve_reply)
 
-#ifdef SPH_RELEASE_INTERNAL
+#ifdef ULT
 #define IOCTL_INF_SWITCH_DAEMON            _IO('I', 9)
 #endif
 

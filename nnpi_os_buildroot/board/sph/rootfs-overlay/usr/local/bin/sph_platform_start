@@ -9,7 +9,12 @@ echo "** Running /usr/local/bin/sph_platform_start_main (kernel $KVER)... **"
 echo "**********************************************************************"
 
 dmesg -c > /dev/null 2>&1
-mount -t debugfs none /sys/kernel/debug
+
+#mount debug file system hostname contains Debug flavor
+RES=$(hostname)
+if [ "$RES" != "${RES%"Debug"*}" ]; then         
+        mount -t debugfs none /sys/kernel/debug
+fi
 
 if [ -e /sys/kernel/debug/kmemleak ]; then
         echo clear > /sys/kernel/debug/kmemleak

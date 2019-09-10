@@ -68,7 +68,8 @@ static int cve_dg_add_hw_counter(struct cve_device_group *p)
 		hw_cntr_list[i].hw_cntr_id,
 		(uintptr_t)p, (uintptr_t)&hw_cntr_list[i]);
 	}
-	p->counters_nr = NUM_COUNTER_REG;
+	p->num_avl_cntr = NUM_COUNTER_REG;
+	p->num_nonres_cntr = NUM_COUNTER_REG;
 	p->base_addr_hw_cntr = hw_cntr_list;
 	/* indicate success */
 	retval = 0;
@@ -90,10 +91,11 @@ static void cve_dg_remove_hw_counter(struct cve_device_group *p)
 	OS_FREE(cntr, sizeof(*cntr) * NUM_COUNTER_REG);
 	cve_os_log(CVE_LOGLEVEL_DEBUG,
 		"SUCCESS> DG:%p, CountersNr:%d removed from the DG\n",
-		p, p->counters_nr);
+		p, p->num_avl_cntr);
 
 	p->hw_cntr_list = NULL;
-	p->counters_nr = 0;
+	p->num_avl_cntr = 0;
+	p->num_nonres_cntr = 0;
 }
 
 static int __add_icebo_list(struct cve_device_group *dg)
@@ -111,16 +113,17 @@ static int __add_icebo_list(struct cve_device_group *dg)
 	}
 	for (i = 0; i < MAX_NUM_ICEBO; i++) {
 		bo_list[i].bo_id = i;
-		bo_list[i].state = NO_ICE;
+		bo_list[i].bo_curr_state = NO_ICE;
+		bo_list[i].bo_init_state = NO_ICE;
 		bo_list[i].dev_list = NULL;
 	}
 	dg->dev_info.icebo_list = bo_list;
 	dg->dev_info.picebo_list = NULL;
 	dg->dev_info.sicebo_list = NULL;
 	dg->dev_info.dicebo_list = NULL;
-	dg->dev_info.num_picebo = 0;
-	dg->dev_info.num_sicebo = 0;
-	dg->dev_info.num_dicebo = 0;
+	dg->dev_info.num_avl_picebo = 0;
+	dg->dev_info.num_avl_sicebo = 0;
+	dg->dev_info.num_avl_dicebo = 0;
 	/* indicate success */
 	retval = 0;
 
@@ -136,9 +139,9 @@ static void __remove_icebo_list(struct cve_device_group *dg)
 	dg->dev_info.sicebo_list = NULL;
 	dg->dev_info.dicebo_list = NULL;
 	dg->dev_info.icebo_list = NULL;
-	dg->dev_info.num_picebo = 0;
-	dg->dev_info.num_sicebo = 0;
-	dg->dev_info.num_dicebo = 0;
+	dg->dev_info.num_avl_picebo = 0;
+	dg->dev_info.num_avl_sicebo = 0;
+	dg->dev_info.num_avl_dicebo = 0;
 }
 
 static int cve_ds_create_ds_dev_data(
@@ -381,28 +384,6 @@ out:
 	return retval;
 }
 
-static void __init_clos_manager(struct clos_manager *mclos)
-{
-	u32 i;
-
-	mclos->size = CLOS_MAX_SIZE;
-	mclos->free = (CLOS_MAX_SIZE - CLOS_0_SIZE);
-
-	mclos->clos_size[ICE_CLOS_0] = CLOS_0_SIZE;
-	mclos->clos_free[ICE_CLOS_0] = 0;
-
-	for (i = ICE_CLOS_1; i < ICE_CLOS_MAX; i++) {
-		mclos->clos_size[i] = 0;
-		mclos->clos_free[i] = 0;
-	}
-
-	for (i = 0; i < CLOS_2_ARRAY_SIZE; i++)
-		mclos->clos2_reqs[i] = CLOS_INVALID_SIZE;
-
-	mclos->clos2_idx =  mclos->clos_size[ICE_CLOS_0];
-	mclos->clos1_idx = CLOS_MAX_SIZE;
-}
-
 int ice_kmd_create_dg(void)
 {
 	int retval = CVE_DEFAULT_ERROR_CODE;
@@ -460,13 +441,23 @@ int ice_kmd_create_dg(void)
 	}
 
 	device_group->dg_id = i;
-	device_group->dg_exe_order = 0;
 	device_group->expected_devices_nr =
 			config->groups[i].devices_nr;
 	device_group->dev_info.active_device_nr = 0;
 	device_group->icedc_state = ICEDC_STATE_NO_ERROR;
+#ifdef _DEBUG
+	device_group->dg_exe_order = 0;
+#endif
+	device_group->num_avl_pool = MAX_IDC_POOL_NR;
+	device_group->num_nonres_pool = MAX_IDC_POOL_NR;
+	device_group->ntw_with_resources = NULL;
+	device_group->num_running_ntw = 0;
 
-	__init_clos_manager(&device_group->dg_clos_manager);
+	device_group->dg_clos_manager.size = CLOS_MAX_SIZE;
+	ice_os_read_clos((void *)&device_group->dg_clos_manager);
+
+	for (i = 0; i < MAX_CVE_DEVICES_NR; i++)
+		device_group->dice_res_status[i] = 0;
 
 	cve_os_log(CVE_LOGLEVEL_DEBUG,
 			"Added device group %d\n",
@@ -497,6 +488,8 @@ int ice_kmd_destroy_dg(void)
 	while (g_cve_dev_group_list) {
 		struct cve_device_group *device_group = g_cve_dev_group_list;
 
+		ice_os_reset_clos((void *)&device_group->dg_clos_manager);
+
 		cve_dle_remove_from_list(
 				g_cve_dev_group_list, list, device_group);
 
@@ -525,7 +518,7 @@ int cve_dg_add_device(struct cve_device *cve_dev)
 	int retval = CVE_DEFAULT_ERROR_CODE;
 	struct cve_device_group *curr = g_cve_dev_group_list;
 	struct cve_device_group *p = curr;
-	int bo_id = cve_dev->dev_index / 2;
+	struct icebo_desc *bo = &p->dev_info.icebo_list[cve_dev->dev_index / 2];
 
 	do {
 		/* if the device group does not complete
@@ -539,25 +532,32 @@ int cve_dg_add_device(struct cve_device *cve_dev)
 
 			p->dev_info.active_device_nr++;
 
-			cve_dle_add_to_list_before(
-				p->dev_info.icebo_list[bo_id].dev_list,
-				bo_list, cve_dev);
-			if (p->dev_info.icebo_list[bo_id].state == NO_ICE) {
+			cve_dle_add_to_list_before(bo->dev_list,
+					bo_list, cve_dev);
+
+			if (bo->bo_init_state == NO_ICE) {
+
 				cve_dle_add_to_list_before(
 					p->dev_info.dicebo_list, owner_list,
-					&p->dev_info.icebo_list[bo_id]);
-				p->dev_info.num_dicebo++;
-				p->dev_info.icebo_list[bo_id].state = ONE_ICE;
-			} else if (p->dev_info.icebo_list[bo_id].state ==
-				ONE_ICE){
+					bo);
+				p->dev_info.num_avl_dicebo++;
+				bo->bo_init_state = ONE_ICE;
+				bo->bo_curr_state = ONE_ICE;
+
+			} else if (bo->bo_init_state == ONE_ICE) {
+
 				cve_dle_move(p->dev_info.picebo_list,
 					p->dev_info.dicebo_list, owner_list,
-					&p->dev_info.icebo_list[bo_id]);
-				p->dev_info.num_dicebo--;
-				p->dev_info.num_picebo++;
-				p->dev_info.icebo_list[bo_id].state = TWO_ICE;
+					bo);
+				p->dev_info.num_avl_dicebo--;
+				p->dev_info.num_avl_picebo++;
+				bo->bo_init_state = TWO_ICE;
+				bo->bo_curr_state = TWO_ICE;
 			} else
 				ASSERT(false);
+
+			p->num_nonres_picebo = p->dev_info.num_avl_picebo;
+			p->num_nonres_dicebo = p->dev_info.num_avl_dicebo;
 
 			cve_dev->dg = p;
 			cve_dev->in_free_pool = true;

@@ -247,14 +247,18 @@ fi
 date >> ${OUTPUT}
 echo Local networking >> ${OUTPUT}
 if [ ! -d ../../src/webpage-lm ]
-then	(cd ../../src && tar xf webpage-lm.tar)
-	sync
-	sleep 1
+then
+	if [ -d ../../src ]
+	then
+		(cd ../../src && tar xf webpage-lm.tar)
+		sync
+		sleep 1
+		SERVERS="lat_udp lat_tcp lat_rpc lat_connect bw_tcp"
+		for server in $SERVERS; do $server -s; done
+		DOCROOT=../../src/webpage-lm lmhttp 8008 &
+		sleep 2;
+	fi
 fi
-SERVERS="lat_udp lat_tcp lat_rpc lat_connect bw_tcp"
-for server in $SERVERS; do $server -s; done
-DOCROOT=../../src/webpage-lm lmhttp 8008 &
-sleep 2;
 
 if [ X$BENCHMARK_OS = XYES -o X$BENCHMARK_UDP = XYES ]; then
 	lat_udp -P $SYNC_MAX localhost
@@ -286,11 +290,12 @@ if [ X$BENCHMARK_OS = XYES -o X$BENCHMARK_TCP = XYES ]; then
 	echo "" 1>&2
 fi
 bw_tcp -S localhost
-
-if [ X$BENCHMARK_OS = XYES -o X$BENCHMARK_HTTP = XYES ]; then
-	# I want a hot cache number
-	lat_http localhost 8008 < ../../src/webpage-lm/URLS > /dev/null 2>&1
-	lat_http localhost 8008 < ../../src/webpage-lm/URLS
+if [ -d ../../src/webpage-lm ]; then
+	if [ X$BENCHMARK_OS = XYES -o X$BENCHMARK_HTTP = XYES ]; then
+		# I want a hot cache number
+		lat_http localhost 8008 < ../../src/webpage-lm/URLS > /dev/null 2>&1
+		lat_http localhost 8008 < ../../src/webpage-lm/URLS
+	fi
 fi
 lat_http -S localhost 8008
 
@@ -394,14 +399,17 @@ fi
 if [ X$BENCHMARK_OS = XYES -o X$BENCHMARK_HARDWARE = XYES \
      -o X$BENCHMARK_BCOPY = XYES ]; then
 	echo "" 1>&2
-	#echo \"libc bcopy unaligned 1>&2
-	#for i in $HALF; do bw_mem -P $SYNC_MAX $i bcopy; done; echo "" 1>&2
 
-	#echo \"libc bcopy aligned 1>&2
-	#for i in $HALF; do bw_mem -P $SYNC_MAX $i bcopy conflict; done; echo "" 1>&2
+	if [ X$BENCHMARK_TARGET = Xrvp ]; then
+		echo \"libc bcopy unaligned 1>&2
+		for i in $HALF; do bw_mem -P $SYNC_MAX $i bcopy; done; echo "" 1>&2
 
-	#echo "Memory bzero bandwidth" 1>&2
-	#for i in $ALL; do bw_mem -P $SYNC_MAX $i bzero; done; echo "" 1>&2
+		echo \"libc bcopy aligned 1>&2
+		for i in $HALF; do bw_mem -P $SYNC_MAX $i bcopy conflict; done; echo "" 1>&2
+
+		echo "Memory bzero bandwidth" 1>&2
+		for i in $ALL; do bw_mem -P $SYNC_MAX $i bzero; done; echo "" 1>&2
+	fi
 
 	echo \"unrolled bcopy unaligned 1>&2
 	for i in $HALF; do bw_mem -P $SYNC_MAX $i fcp; done; echo "" 1>&2

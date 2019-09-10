@@ -1,7 +1,7 @@
 
 echo "sph_memalloc_ep Enter"
 #insmod of memory allocator so that ice_driver will be able to work before the "formal" load of sph_start_card
-echo "initializing sph_memory_allocator sph_mem=10G@6G"
-insmod /opt/intel_nnpi/modules/sph_memory_allocator.ko sph_mem=10G@6G test=1
+echo "initializing sph_memory_allocator sph_mem=12G@4G"
+insmod /opt/intel_nnpi/modules/sph_memory_allocator.ko sph_mem=12G@4G test=1
 error_check "insmod sph_memory_allocator.ko"
 echo "sph_memalloc_ep Exit"

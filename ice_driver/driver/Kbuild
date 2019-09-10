@@ -50,6 +50,9 @@ endif
 ifdef DEBUG
 subdir-ccflags-y += -D_DEBUG
 subdir-ccflags-y += -g
+# Enable memory detection in KMD
+# Should be removed for performence optimization
+subdir-ccflags-y += -DENABLE_MEM_DETECT
 endif
 
 subdir-ccflags-y += -I$(src)/../../release_artifacts/platform_sw/src/driver/include/
@@ -63,9 +66,6 @@ subdir-ccflags-y += -DFW_PACK_DIR="\"$(MODULE_NAME)/a_step/release\""
 subdir-ccflags-y += -DMODULE_NAME="\"$(MODULE_NAME)\""
 subdir-ccflags-y += -DGIT_HASH=$(GIT_HASH)
 
-# Enable memory detection in KMD
-# Should be removed for performence optimization
-subdir-ccflags-y += -DENABLE_MEM_DETECT
 
 subdir-ccflags-$(CONFIG_SPH) += -I$(src)/../external/hw_interface/ice2.9
 subdir-ccflags-$(CONFIG_SPH) += -I$(src)/sph

@@ -1,20 +1,4 @@
-/*
- * NNP-I Linux Driver
- * Copyright (c) 2019, Intel Corporation.
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms and conditions of the GNU General Public License,
- * version 2, as published by the Free Software Foundation.
- *
- * This program is distributed in the hope it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
- *
- */
-
 #include "sw_counters.h"
-#include "os_interface.h"
 #include <linux/init.h>
 #include <linux/kernel.h>
 #include <linux/sysfs.h>
@@ -30,15 +14,8 @@
 #include <linux/anon_inodes.h>
 #include <linux/uaccess.h>
 #include <linux/fcntl.h>
+#include "sph_log.h"
 
-#ifdef pr_fmt
-#undef pr_fmt
-#endif
-#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
-
-#include <linux/printk.h>
-
-#define sw_counters_log_err(fmt, arg...)     pr_err("%s: " fmt, __func__, ##arg)
 
 #define SPH_SW_COUNTERS_GLOBAL_DIR_NAME		"sw_counters"
 
@@ -47,6 +24,15 @@
 #define SW_COUNTERS_TO_INTERNAL(a) ((struct sph_internal_sw_counters *)(((char *)a) - offsetof(struct sph_internal_sw_counters, sw_counters)))
 
 #define MAX_STALE_ATTR_NAME_LEN    32
+
+#define SW_COUNTERS_ASSERT(x)						\
+	do {							\
+		if (likely(x))					\
+			break;					\
+		pr_err("SPH ASSERTION FAILED %s: %s: %u: %s\n", \
+			__FILE__, __func__, __LINE__, #x);      \
+		BUG();                                          \
+	} while (0)
 
 /* file attributre for group file */
 struct sph_sw_counters_group_file_attr {
@@ -70,6 +56,7 @@ struct bin_stale_node {
 	struct kobject			    *kobj;
 	struct sph_sw_counters_bin_file_attr bin_file;
 	struct list_head		     node;
+	struct list_head                     kobject_list;
 };
 
 struct kobj_node {
@@ -155,7 +142,7 @@ int create_sw_counters_description_data(const  struct sph_sw_counters_set *count
 	/* try to allocate buffer in given size */
 	*buffer = kmalloc_array(alloc_size, sizeof(char), GFP_KERNEL);
 	if (!*buffer) {
-		sw_counters_log_err("unable to allocated counters description array size: %d\n", alloc_size);
+		sph_log_err(GENERAL_LOG, "unable to allocated counters description array size: %d\n", alloc_size);
 		return -ENOMEM;
 	}
 
@@ -311,7 +298,7 @@ int create_sph_bin_file(struct kobject *kobj, struct sph_sw_counters_bin_file_at
 		/* allocate page for counter values information */
 		attr->bin_page = alloc_pages(GFP_KERNEL, get_order(page_count));
 		if (!attr->bin_page) {
-			sw_counters_log_err("unable to allocate page for file : %s\n", attr->attr.attr.name);
+			sph_log_err(GENERAL_LOG, "unable to allocate page for file : %s\n", attr->attr.attr.name);
 			return -ENOMEM;
 		}
 
@@ -330,7 +317,7 @@ int create_sph_bin_file(struct kobject *kobj, struct sph_sw_counters_bin_file_at
 	ret = sysfs_create_bin_file(kobj, &attr->attr);
 
 	if (ret) {
-		sw_counters_log_err("unable to create binary file: %s\n", attr->attr.attr.name);
+		sph_log_err(GENERAL_LOG, "unable to create binary file: %s\n", attr->attr.attr.name);
 		if (page_count)
 			goto cleanup_page;
 		return ret;
@@ -377,16 +364,31 @@ void release_bin_file(struct kobject *kobj, struct sph_sw_counters_bin_file_attr
 static void move_to_stale_list(struct gen_sync_attr                 *gen_sync,
 			       struct kobject                       *kobj,
 			       struct sph_sw_counters_bin_file_attr *attr,
+			       struct list_head                     *kobject_list,
 			       u64                                   dirty_val)
 {
 	struct bin_stale_node *stale_node;
 	int ret;
 	int stale_id;
+	struct kobj_node *kobj_node;
 
 	stale_node = kzalloc(sizeof(*stale_node) + MAX_STALE_ATTR_NAME_LEN,
 			     GFP_KERNEL);
 	if (!stale_node)
 		goto fail_alloc;
+
+	INIT_LIST_HEAD(&stale_node->kobject_list);
+	SW_COUNTERS_ASSERT(kobject_list != NULL);
+	list_for_each_entry(kobj_node, kobject_list, node) {
+		struct kobj_node *new_kobj = kzalloc(sizeof(*new_kobj), GFP_KERNEL);
+
+		if (new_kobj == NULL) {
+			sph_log_err(GENERAL_LOG, "unable to allocate memory for new_kobj\n");
+			goto fail_create_list;
+		}
+		new_kobj->kobj = kobject_get(kobj_node->kobj);
+		list_add_tail(&new_kobj->node, &stale_node->kobject_list);
+	}
 
 	stale_node->kobj = kobject_get(kobj);
 	memcpy(&stale_node->bin_file, attr, sizeof(struct sph_sw_counters_bin_file_attr));
@@ -419,8 +421,15 @@ static void move_to_stale_list(struct gen_sync_attr                 *gen_sync,
 fail_create:
 	kobject_put(stale_node->kobj);
 	kfree(stale_node);
+fail_create_list:
+	while (!list_empty(&stale_node->kobject_list)) {
+		kobj_node = list_first_entry(&stale_node->kobject_list, struct kobj_node, node);
+		list_del(&kobj_node->node);
+		kobject_put(kobj_node->kobj);
+		kfree(kobj_node);
+	}
 fail_alloc:
-	pr_err("Failed to create stale attr, removing object!!\n");
+	sph_log_err(GENERAL_LOG, "Failed to create stale attr, removing object!!\n");
 	release_bin_file(kobj, attr);
 }
 
@@ -435,9 +444,17 @@ static void remove_stale_bin_files(struct gen_sync_attr *gen_sync,
 	list_for_each_entry_safe(stale_node, n, &gen_sync->stale_list, node) {
 		if (force ||
 		    (stale_node->bin_file.dirty_at_remove <= dirty_val)) {
+			struct kobj_node *kobj_node;
+
 			list_del(&stale_node->node);
 			spin_unlock(&gen_sync->lock);
 			release_bin_file(stale_node->kobj, &stale_node->bin_file);
+			while (!list_empty(&stale_node->kobject_list)) {
+				kobj_node = list_first_entry(&stale_node->kobject_list, struct kobj_node, node);
+				list_del(&kobj_node->node);
+				kobject_put(kobj_node->kobj);
+				kfree(kobj_node);
+			}
 			kobject_put(stale_node->kobj);
 			kfree(stale_node);
 			spin_lock(&gen_sync->lock);
@@ -465,7 +482,7 @@ static int create_group_files(struct kobject *kobj,
 	sw_counters->groups_kobj = kobject_create_and_add("groups", kobj);
 	sw_counters->groups_files = kmalloc_array(groups_count, sizeof(struct sph_sw_counters_group_file_attr), GFP_KERNEL);
 	if (!sw_counters->groups_files) {
-		sw_counters_log_err("unable to allocate sw_counter groups files array for groups\n");
+		sph_log_err(GENERAL_LOG, "unable to allocate sw_counter groups files array for groups\n");
 		ret = -ENOMEM;
 		goto failed_to_allocate_array;
 	}
@@ -479,7 +496,7 @@ static int create_group_files(struct kobject *kobj,
 
 		ret = create_sph_file(sw_counters->groups_kobj, (struct attribute *)&sw_counters->groups_files[i]);
 		if (unlikely(ret < 0)) {
-			sw_counters_log_err("unable to create group %s file for groups\n", sw_counters->counters_set->groups_info[i].name);
+			sph_log_err(GENERAL_LOG, "unable to create group %s file for groups\n", sw_counters->counters_set->groups_info[i].name);
 			goto failed_to_create_file;
 		}
 
@@ -630,7 +647,7 @@ static struct gen_sync_attr *create_gen_sync_attr(struct kobject *kobj)
 
 	ret = create_sph_file(kobj, &gen_sync->attr);
 	if (ret) {
-		pr_err("Failed to create stale_enable attribute\n");
+		sph_log_err(GENERAL_LOG, "Failed to create stale_enable attribute\n");
 		kfree(gen_sync);
 		return NULL;
 	}
@@ -657,7 +674,7 @@ int sph_create_sw_counters_info_node(struct kobject *kobj,
 
 	sw_counters_info = kzalloc(sizeof(*sw_counters_info), GFP_KERNEL);
 	if (!sw_counters_info) {
-		sw_counters_log_err("unable to generate sph_sw_counters_object\n");
+		sph_log_err(GENERAL_LOG, "unable to generate sph_sw_counters_object\n");
 		return -ENOMEM;
 	}
 
@@ -672,7 +689,7 @@ int sph_create_sw_counters_info_node(struct kobject *kobj,
 		struct module *module = THIS_MODULE;
 
 		if (!module) {
-			sw_counters_log_err("Could not retrieve module owner!\n");
+			sph_log_err(GENERAL_LOG, "Could not retrieve module owner!\n");
 			ret = -EINVAL;
 			goto cleanup_sw_counters_info;
 		}
@@ -686,7 +703,7 @@ int sph_create_sw_counters_info_node(struct kobject *kobj,
 	/* create counters set directory for given kobj */
 	sw_counters_info->kobj = kobject_create_and_add(counters_set->name, kobj);
 	if (!sw_counters_info->kobj) {
-		sw_counters_log_err("unable to create kobject directory for %s\n", counters_set->name);
+		sph_log_err(GENERAL_LOG, "unable to create kobject directory for %s\n", counters_set->name);
 		ret = -ENOMEM;
 		goto cleanup_sw_counters_info;
 	}
@@ -704,7 +721,7 @@ int sph_create_sw_counters_info_node(struct kobject *kobj,
 	else {
 		sw_counters_info->gen_sync_attr = create_gen_sync_attr(kobj);
 		if (sw_counters_info->gen_sync_attr == NULL) {
-			sw_counters_log_err("failed to create sync attr\n");
+			sph_log_err(GENERAL_LOG, "failed to create sync attr\n");
 			ret = -ENOMEM;
 			goto cleanup_sw_counters_info;
 		}
@@ -728,13 +745,13 @@ int sph_create_sw_counters_info_node(struct kobject *kobj,
 						  &sw_counters_info->bin_file.info_buf,
 						  &sw_counters_info->bin_file.info_size);
 	if (ret) {
-		sw_counters_log_err("unable to create info buffer for %s\n", counters_set->name);
+		sph_log_err(GENERAL_LOG, "unable to create info buffer for %s\n", counters_set->name);
 		goto cleanup_sw_counters_kobj;
 	}
 	/* create binary file - will present counters description */
 	ret = create_sph_bin_file(kobj, &sw_counters_info->bin_file, 0x0);
 	if (ret) {
-		sw_counters_log_err("unable to create sw_counters info file for %s\n", counters_set->name);
+		sph_log_err(GENERAL_LOG, "unable to create sw_counters info file for %s\n", counters_set->name);
 		goto cleanup_sw_counters_description_data;
 	}
 
@@ -744,7 +761,7 @@ int sph_create_sw_counters_info_node(struct kobject *kobj,
 			      sizeof(u32),
 			      GFP_KERNEL | __GFP_ZERO);
 	if (!sw_counters_info->sw_counters.groups) {
-		sw_counters_log_err("unable to allocate sw_counter groups array for %s\n", counters_set->name);
+		sph_log_err(GENERAL_LOG, "unable to allocate sw_counter groups array for %s\n", counters_set->name);
 		ret = -ENOMEM;
 		goto cleanup_sw_counters_bin_file;
 	}
@@ -858,12 +875,15 @@ int sph_create_sw_counters_values_node(void *hInfoNode,
 	char *dir_name = NULL;
 	struct kobject *kobj;
 
+	struct bin_stale_node *stale_node = NULL;
+	bool   dir_exist = false;
+
 	u32 counters_size = sw_counters_info->counters_set->counters_count * SPH_COUNTER_SIZE;
 	u32 n;
 
 	sw_counters_values = kzalloc(sizeof(*sw_counters_values), GFP_KERNEL);
 	if (!sw_counters_values) {
-		sw_counters_log_err("unable to generate sph_sw_counters_object\n");
+		sph_log_err(GENERAL_LOG, "unable to generate sph_sw_counters_object\n");
 		return -ENOMEM;
 	}
 
@@ -900,7 +920,7 @@ int sph_create_sw_counters_values_node(void *hInfoNode,
 
 				new_kobj->kobj = kobject_create_and_add(name, kobj);
 				if (!new_kobj->kobj) {
-					sw_counters_log_err("unable to create dirname for counters values - %s\n", name);
+					sph_log_err(GENERAL_LOG, "unable to create dirname for counters values - %s\n", name);
 					ret = -ENOMEM;
 					goto cleanup_sw_counters_values;
 				}
@@ -917,12 +937,11 @@ int sph_create_sw_counters_values_node(void *hInfoNode,
 	/* in case counters set is set as perID , driver will create a directory with node_id*/
 	if (sw_counters_info->counters_set->perID) {
 		u32 alloc_size = 1; // 1 for NULL terminating char
-		struct bin_stale_node *stale_node;
 
 		alloc_size += snprintf(NULL, 0, "%u", node_id);
 		dir_name = kmalloc_array(alloc_size, sizeof(char), GFP_KERNEL);
 		if (dir_name == NULL) {
-			sw_counters_log_err("unable to allocate buffer for dir name\n");
+			sph_log_err(GENERAL_LOG, "unable to allocate buffer for dir name\n");
 			ret = -ENOMEM;
 			goto cleanup_sw_counters_values;
 		}
@@ -936,6 +955,7 @@ int sph_create_sw_counters_values_node(void *hInfoNode,
 			if (stale_node->kobj->parent == kobj &&
 			    !strcmp(kobject_name(stale_node->kobj), dir_name)) {
 				sw_counters_values->kobj = kobject_get(stale_node->kobj);
+				dir_exist = true;
 				break;
 			}
 		}
@@ -945,7 +965,7 @@ int sph_create_sw_counters_values_node(void *hInfoNode,
 		if (!sw_counters_values->kobj)
 			sw_counters_values->kobj = kobject_create_and_add(dir_name, kobj);
 		if (!sw_counters_values->kobj) {
-			sw_counters_log_err("unable to create kobject directory for %s\n", dir_name);
+			sph_log_err(GENERAL_LOG, "unable to create kobject directory for %s\n", dir_name);
 			ret = -ENOMEM;
 			goto cleanup_sw_counters_values_dir_name;
 		}
@@ -977,7 +997,7 @@ int sph_create_sw_counters_values_node(void *hInfoNode,
 	/* create binary file for values - function will allocated pages*/
 	ret = create_sph_bin_file(kobj, &sw_counters_values->bin_file, counters_size);
 	if (ret) {
-		sw_counters_log_err("unable to create sw_counters values file for %s\n", dir_name);
+		sph_log_err(GENERAL_LOG, "unable to create sw_counters values file\n");
 		goto cleanup_sw_counters_kobj;
 	}
 
@@ -988,7 +1008,7 @@ int sph_create_sw_counters_values_node(void *hInfoNode,
 				      sizeof(u32),
 				      GFP_KERNEL | __GFP_ZERO);
 		if (!sw_counters_values->sw_counters.groups) {
-			sw_counters_log_err("unable to allocate sw_counter groups array for %s\n", dir_name);
+			sph_log_err(GENERAL_LOG, "unable to allocate sw_counter groups array\n");
 			ret = -ENOMEM;
 			goto cleanup_sw_counters_bin_file;
 		}
@@ -1011,21 +1031,43 @@ int sph_create_sw_counters_values_node(void *hInfoNode,
 		struct sph_internal_sw_counters *infoNode;
 
 		mutex_lock(&sw_counters_info->list_lock);
-		list_for_each_entry(infoNode, &sw_counters_info->children_List, node) {
-			const char *name = infoNode->counters_set->name;
-			struct kobj_node *new_kobj = kzalloc(sizeof(*new_kobj), GFP_KERNEL);
+		if (dir_exist) {
+			struct kobj_node *kobj_node;
 
-			if (new_kobj == NULL) {
-				sw_counters_log_err("unable to allocate memory for new_kobj\n");
-				ret = -ENOMEM;
-				mutex_unlock(&sw_counters_info->list_lock);
-				goto cleanup_sw_counters_children_kobject_list;
+			SW_COUNTERS_ASSERT(stale_node != NULL);
+			list_for_each_entry(kobj_node, &stale_node->kobject_list, node) {
+				struct kobj_node *new_kobj = kzalloc(sizeof(*new_kobj), GFP_KERNEL);
+
+				if (new_kobj == NULL) {
+					sph_log_err(GENERAL_LOG, "unable to allocate memory for new_kobj\n");
+					ret = -ENOMEM;
+					mutex_unlock(&sw_counters_info->list_lock);
+					goto cleanup_sw_counters_children_kobject_list;
+				}
+				new_kobj->kobj = kobject_get(kobj_node->kobj);
+
+				mutex_lock(&sw_counters_values->list_lock);
+				list_add_tail(&new_kobj->node, &sw_counters_values->kobject_list);
+				mutex_unlock(&sw_counters_values->list_lock);
 			}
+		} else {
+			list_for_each_entry(infoNode, &sw_counters_info->children_List, node) {
+				const char *name = infoNode->counters_set->name;
+				struct kobj_node *new_kobj = kzalloc(sizeof(*new_kobj), GFP_KERNEL);
 
-			new_kobj->kobj = kobject_create_and_add(name, kobj);
-			mutex_lock(&sw_counters_values->list_lock);
-			list_add_tail(&new_kobj->node, &sw_counters_values->kobject_list);
-			mutex_unlock(&sw_counters_values->list_lock);
+				if (new_kobj == NULL) {
+					sph_log_err(GENERAL_LOG, "unable to allocate memory for new_kobj\n");
+					ret = -ENOMEM;
+					mutex_unlock(&sw_counters_info->list_lock);
+					goto cleanup_sw_counters_children_kobject_list;
+				}
+
+				new_kobj->kobj = kobject_create_and_add(name, kobj);
+
+				mutex_lock(&sw_counters_values->list_lock);
+				list_add_tail(&new_kobj->node, &sw_counters_values->kobject_list);
+				mutex_unlock(&sw_counters_values->list_lock);
+			}
 		}
 		mutex_unlock(&sw_counters_info->list_lock);
 	}
@@ -1054,7 +1096,7 @@ int sph_create_sw_counters_values_node(void *hInfoNode,
 									  sizeof(spinlock_t),
 									  GFP_KERNEL);
 		if (sw_counters_values->sw_counters.spinlocks == NULL) {
-			sw_counters_log_err("unable to allocate memory for spinlocks\n");
+			sph_log_err(GENERAL_LOG, "unable to allocate memory for spinlocks\n");
 			ret = -ENOMEM;
 			goto cleanup_sw_counters_children_kobject_list;
 		}
@@ -1116,18 +1158,6 @@ int sph_sw_counters_release_values_node(struct sph_internal_sw_counters *sw_coun
 	struct kobj_node *kobjNode;
 	u64 root_dirty = 0;
 
-	/* cleanup child directories*/
-	mutex_lock(&sw_counters_values->list_lock);
-	while (!list_empty(&sw_counters_values->kobject_list)) {
-		kobjNode = list_first_entry(&sw_counters_values->kobject_list,
-					    struct kobj_node, node);
-		list_del(&kobjNode->node);
-		kobject_put(kobjNode->kobj);
-		kfree(kobjNode);
-	}
-	mutex_unlock(&sw_counters_values->list_lock);
-
-
 	/* once new object was deleted we will update node to root */
 	while (tmp_sw_counters_values->parent != NULL) {
 		++(*tmp_sw_counters_values->dirty);
@@ -1153,14 +1183,29 @@ int sph_sw_counters_release_values_node(struct sph_internal_sw_counters *sw_coun
 	 * we create a stale copy instead of removing the attribute file
 	 * to let all clients get a chance to map and read it.
 	 */
-	if (gen_sync_has_clients(sw_counters_values->gen_sync_attr))
+	if (gen_sync_has_clients(sw_counters_values->gen_sync_attr)) {
+		mutex_lock(&sw_counters_values->list_lock);
 		move_to_stale_list(sw_counters_values->gen_sync_attr,
 				   sw_counters_values->kobj,
 				   &sw_counters_values->bin_file,
+				   &sw_counters_values->kobject_list,
 				   root_dirty);
-	else
+		mutex_unlock(&sw_counters_values->list_lock);
+	} else {
 		release_bin_file(sw_counters_values->kobj,
 				 &sw_counters_values->bin_file);
+	}
+
+	/* cleanup child directories*/
+	mutex_lock(&sw_counters_values->list_lock);
+	while (!list_empty(&sw_counters_values->kobject_list)) {
+		kobjNode = list_first_entry(&sw_counters_values->kobject_list,
+					    struct kobj_node, node);
+		list_del(&kobjNode->node);
+		kobject_put(kobjNode->kobj);
+		kfree(kobjNode);
+	}
+	mutex_unlock(&sw_counters_values->list_lock);
 
 	if (sw_counters_values->kobj_owner)
 		kobject_put(sw_counters_values->kobj);
@@ -1190,4 +1235,3 @@ int sph_remove_sw_counters_values_node(struct sph_sw_counters *counters)
 
 	return 0;
 }
-
