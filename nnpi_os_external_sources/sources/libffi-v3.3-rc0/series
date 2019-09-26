@@ -1,0 +1,3 @@
+0001-Fix-installation-location-of-libffi.patch
+0002-Fix-use-of-compact-eh-frames-on-MIPS.patch
+0003-libffi-enable-hardfloat-in-the-MIPS-assembly-code.patch

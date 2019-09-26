@@ -128,6 +128,7 @@ enum event_val {
 	SPH_IPC_CONTEXT_BROKEN                  = 17,
 	SPH_IPC_DEVNET_RESERVE_INSUFFICIENT_RESOURCES = 18,
 	SPH_IPC_TIMEOUT_EXCEEDED = 19,
+	SPH_IPC_ECC_ALLOC_FAILED = 20,
 };
 
 int eventValToSphErrno(enum event_val eventVal);
@@ -137,7 +138,7 @@ int eventValToSphErrno(enum event_val eventVal);
  * eventCode                        eventVal         ContextID   objID                         objID_2
  * ---------                        --------         ---------   ------                        ------
  * SPH_IPC_CREATE_CONTEXT_SUCCESS   0                Valid       Not-Valid                     Not-Valid
- * SPH_IPC_CREATE_DEVRES_SUCCESS    0                Valid       Device resource protocolID    Not-Valid
+ * SPH_IPC_CREATE_DEVRES_SUCCESS    bid (for p2p     Valid       Device resource protocolID    offset (valid for p2p resource only)
  * SPH_IPC_CREATE_COPY_SUCCESS      0                Valid       Copy handle protocolID        Not-Valid
  * SPH_IPC_CREATE_DEVNET_SUCCESS    0                Valid       Device network protocolID     Not-Valid
  * SPH_IPC_CREATE_INFREQ_SUCCESS    devnetID         Valid       inf req protocolID            Not-Valid

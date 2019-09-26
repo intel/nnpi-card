@@ -4,3 +4,4 @@
 0005-intel_th_support.patch
 0006-uart8250_force_polling.patch
 0008-Added-INTEL_FAM6_ICELAKE_NNPI-to-intel-family.h-and-intel_rapl.c.patch
+0009-Temporary-fix-for-buggy-IFWI-that-keeps-using-boot-m.patch

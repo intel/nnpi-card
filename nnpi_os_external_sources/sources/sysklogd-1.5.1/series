@@ -1,6 +1,0 @@
-0001-Replace-deprecated-union-wait-with-int.patch
-0002-Fix-improper-header-includes.patch
-0003-Remove-include-of-linux-time.h.patch
-0004-Remove-bogus-hand-written-klogctl-syscall-implementa.patch
-0005-Add-missing-headers-for-open-flags.patch
-0006-syslogd.c-rename-dprintf-to-mydprintf.patch

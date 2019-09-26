@@ -1,0 +1,2 @@
+0001-fix-build-on-uclibc.patch
+0002-build-make-dlsym-optional.patch

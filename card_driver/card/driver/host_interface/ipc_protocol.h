@@ -22,6 +22,7 @@ typedef unsigned short u16;
 typedef unsigned char  u8;
 #endif
 
+#define SPH_MSG_SIZE(msg) (sizeof(msg) / sizeof(u64))
 /*
  * We use 4096 since host and card can use different PAGE_SIZE.
  * Possible improvement might be to negotiate PAGE_SIZE with card during startup
@@ -44,7 +45,7 @@ SPH_STATIC_ASSERT(SPH_PAGE_SHIFT <= PAGE_SHIFT, "SPH_PAGE_SIZE is bigger than PA
 					     ((minor) & 0x1f) << 5 | \
 					     ((dot) & 0x1f))
 
-#define SPH_IPC_PROTOCOL_VERSION SPH_MAKE_VERSION(1, 14, 1)
+#define SPH_IPC_PROTOCOL_VERSION SPH_MAKE_VERSION(1, 20, 1)
 
 /* Maximumum of free pages, which device can hold at any time */
 #define MAX_HOST_RESPONSE_PAGES 32
@@ -362,18 +363,22 @@ CHECK_MESSAGE_SIZE(union ClockSyncMsg, 2);
 
 union h2c_InferenceResourceOp {
 	struct {
-		u64 opcode     : 5;  /* SPH_IPC_H2C_OP_INF_RESOURCE */
-		u64 ctxID      : SPH_IPC_INF_CONTEXT_BITS;
-		u64 resID      : SPH_IPC_INF_DEVRES_BITS;
-		u64 destroy    : 1;
-		u64 is_input   : 1;
-		u64 is_output  : 1;
+		u64 opcode      : 5;  /* SPH_IPC_H2C_OP_INF_RESOURCE */
+		u64 ctxID       : SPH_IPC_INF_CONTEXT_BITS;
+		u64 resID       : SPH_IPC_INF_DEVRES_BITS;
+		u64 destroy     : 1;
+		u64 is_input    : 1;
+		u64 is_output   : 1;
 
-		u64 is_network : 1;
+		u64 is_network  : 1;
 		u64 is_force_4G : 1;
-		u64 reserved  : 30;
+		u64 is_ecc      : 1;
+		u64 is_p2p_dst  : 1;
+		u64 is_p2p_src  : 1;
+		u64 depth       : 8;
+		u64 reserved    : 19;
 
-		u64 size       : 64;
+		u64 size        : 64;
 	};
 
 	u64 value[2];
@@ -433,10 +438,10 @@ union h2c_InferenceCopyOp {
 		u64 ctxID      : SPH_IPC_INF_CONTEXT_BITS;
 		u64 protResID  : 16;
 		u64 protCopyID : 16;
-		u64 c2h        :  1;
+		u64 d2d        :  1;
+		u64 c2h        :  1; /* if d2d = 0, c2h defines the copy direction */
 		u64 destroy    :  1;
-		u64 reserved1  : 17;
-
+		u64 reserved1  : 16;
 		u64 hostPtr    : SPH_IPC_DMA_PFN_BITS;
 		u64 reserved2  : 19;
 	};
@@ -582,7 +587,34 @@ union h2c_HwTraceState {
 };
 CHECK_MESSAGE_SIZE(union h2c_HwTraceState, 1);
 
+union h2c_P2PDev {
+	struct {
+		u64 opcode		: 5;  /* SPH_IPC_H2C_OP_P2P_DEV */
+		u64 destroy		: 1;
+		u64 dev_id		: 5;
+		u64 is_producer		: 1;
+		u64 db_addr		: 57;
+		u64 cr_fifo_addr	: SPH_IPC_DMA_PFN_BITS;
+		u64 reserved		: 14;
+	};
+	u64 value[2];
+};
+CHECK_MESSAGE_SIZE(union h2c_P2PDev, 2);
 
+union h2c_PeerBuf {
+	struct {
+		u64 opcode     :  5;  /* SPH_IPC_H2C_OP_PEER_BUF */
+		u64 buf_id     :  5;
+		u64 is_src_buf :  1;
+		u64 dev_id     :  5;
+		u64 peer_buf_id:  5;
+		u64 destroy    :  1;
+		u64 reserved1  : 42;
+	};
+
+	u64 value;
+};
+CHECK_MESSAGE_SIZE(union h2c_PeerBuf, 1);
 
 #ifdef ULT
 union ult_message {
@@ -756,7 +788,7 @@ struct sph_c2h_system_info {
 
 #define SPH_BIOS_VERSION_LEN    (sizeof(struct sph_c2h_bios_version) / sizeof(u16))
 #define SPH_BOARD_NAME_LEN      72
-#define SPH_IMAGE_VERSION_LEN   72
+#define SPH_IMAGE_VERSION_LEN   128
 
 struct sph_sys_info {
 	uint32_t ice_mask;
@@ -764,6 +796,8 @@ struct sph_sys_info {
 	char board_name[SPH_BOARD_NAME_LEN];
 	char image_version[SPH_IMAGE_VERSION_LEN];
 	u16  fpga_rev;
+	uint64_t totalUnprotectedMemory;
+	uint64_t totalEccMemory;
 };
 
 /*

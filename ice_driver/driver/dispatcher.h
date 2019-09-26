@@ -208,8 +208,6 @@ enum pool_status cve_ds_map_pool_context(struct ds_context *context);
 void cve_ds_unmap_pool_context(struct ds_context *context);
 #endif
 
-int ice_ds_is_network_active(u64 network_id);
-
 enum resource_status ice_ds_ntw_reserve_resource(struct ice_network *ntw);
 void ice_ds_ntw_release_resource(struct ice_network *ntw);
 

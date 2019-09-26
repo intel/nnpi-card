@@ -130,9 +130,17 @@
 #define ELBI_HOST_PCI_DOORBELL_VALUE                        (ELBI_BASE + 0x38)
 
 /* CPU_STATUS registers */
-#define ELBI_CPU_STATUS_0                                   (ELBI_BASE + 0x1b8)
-#define ELBI_CPU_STATUS_1                                   (ELBI_BASE + 0x1bc)
-#define ELBI_CPU_STATUS_2                                   (ELBI_BASE + 0x1c0)
+#define ELBI_CPU_STATUS_0                                   (ELBI_BASE + 0x1b8)  /*< Updated by bios with postcode */
+#define ELBI_CPU_STATUS_1                                   (ELBI_BASE + 0x1bc)  /*< Updated by bios with bios flash progress */
+#define ELBI_CPU_STATUS_2                                   (ELBI_BASE + 0x1c0)  /*< Updated by card driver - see bitfields below */
 #define ELBI_CPU_STATUS_3                                   (ELBI_BASE + 0x1c4)
+
+/* Bitfields updated in ELBI_CPU_STATUS_2 indicating card driver states */
+#define ELBI_CPU_STATUS_2_FLR_MODE_MASK                     GENMASK(1, 0)  /* indicates next card reset behaviour:
+									    *   00 - warm reset
+									    *   01 - cold reset
+									    *   02 - ignore FLR (will not reset the card)
+									    */
+#define ELBI_CPU_STATUS_2_FLR_MODE_SHIFT                    0
 
 #endif

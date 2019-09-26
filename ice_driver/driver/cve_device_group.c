@@ -32,7 +32,8 @@ static struct ice_drv_config drv_config_param = {
 	.enable_llc_config_via_axi_reg = 0,
 	.sph_soc = 0,
 	.ice_power_off_delay_ms = 1000,
-	.enable_sph_b_step = false
+	.enable_sph_b_step = false,
+	.ice_sch_preemption = 1
 };
 
 
@@ -735,13 +736,15 @@ void ice_set_driver_config_param(struct ice_drv_config *param)
 	drv_config_param.sph_soc = param->sph_soc;
 	drv_config_param.ice_power_off_delay_ms = param->ice_power_off_delay_ms;
 	drv_config_param.enable_sph_b_step = param->enable_sph_b_step;
+	drv_config_param.ice_sch_preemption = param->ice_sch_preemption;
 
 	cve_os_log(CVE_LOGLEVEL_INFO,
-			"DriverConfig: enable_llc_config_via_axi_reg:%d sph_soc:%d ice_power_off_delay_ms:%d, is_b_step_enabled: %d\n",
+			"DriverConfig: enable_llc_config_via_axi_reg:%d sph_soc:%d ice_power_off_delay_ms:%d, is_b_step_enabled: %d Preemption:%d\n",
 			drv_config_param.enable_llc_config_via_axi_reg,
 			drv_config_param.sph_soc,
 			drv_config_param.ice_power_off_delay_ms,
-			drv_config_param.enable_sph_b_step);
+			drv_config_param.enable_sph_b_step,
+			drv_config_param.ice_sch_preemption);
 }
 
 struct ice_drv_config *ice_get_driver_config_param(void)
@@ -783,4 +786,9 @@ struct cve_device *ice_get_first_dev(void)
 u8 ice_is_soc(void)
 {
 	return drv_config_param.sph_soc;
+}
+
+u8 ice_sch_allow_preemption(void)
+{
+	return drv_config_param.ice_sch_preemption;
 }

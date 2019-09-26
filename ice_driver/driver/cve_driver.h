@@ -83,7 +83,7 @@ struct cve_patch_point_descriptor {
 	/* the id of the buffer to patch - for flushing operation */
 	cve_bufferid_t bufferid;
 	/* offset from Base Address where patching has to be done */
-	__u32 byte_offset;
+	__u64 byte_offset;
 	/* the address of the patching place in memory */
 	__u64 patch_address;
 	/* the patch point bit offset inside the patching address. */
@@ -105,7 +105,7 @@ struct cve_patch_point_descriptor {
 	/* the offset to add to the allocation base address
 	 * in bytes (could be negative)
 	 */
-	__s32 byte_offset_from_base;
+	__s64 byte_offset_from_base;
 	/* Patch point type */
 	enum ice_pp_type patch_point_type;
 	/* is patch point for the MSB address for 35 Bit VA default is 0 */

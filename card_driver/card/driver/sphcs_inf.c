@@ -425,6 +425,7 @@ static long sphcs_inf_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 	long ret;
 	uint32_t            contextID;
 	struct inf_context *context;
+	u16 off = 0;
 
 	if (unlikely(!is_inf_file(f)))
 		return -EINVAL;
@@ -558,11 +559,23 @@ static long sphcs_inf_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 		DO_TRACE(trace_infer_create(SPH_TRACE_INF_CREATE_DEVRES, devres->context->protocolID,
 			devres->protocolID, SPH_TRACE_OP_STATUS_COMPLETE, -1, -1));
 
-		sphcs_send_event_report(g_the_sphcs,
-					SPH_IPC_CREATE_DEVRES_SUCCESS,
-					0,
-					devres->context->protocolID,
-					devres->protocolID);
+		/* If the resource is for p2p */
+		if ((devres->usage_flags & IOCTL_INF_RES_P2P_SRC) || (devres->usage_flags & IOCTL_INF_RES_P2P_DST)) {
+			off = (sg_dma_address(&devres->dma_map->sgl[0]) - g_the_sphcs->inbound_mem_dma_addr) >> PAGE_SHIFT;
+			inf_devres_add_to_p2p(devres);
+			sphcs_send_event_report_ext(g_the_sphcs,
+						    SPH_IPC_CREATE_DEVRES_SUCCESS,
+						    devres->p2p_buf.buf_id,
+						    devres->context->protocolID,
+						    devres->protocolID,
+						    off);
+
+		} else
+			sphcs_send_event_report(g_the_sphcs,
+						SPH_IPC_CREATE_DEVRES_SUCCESS,
+						0,
+						devres->context->protocolID,
+						devres->protocolID);
 
 		// put kref, taken for waiting for runtime response
 		inf_devres_put(devres);
@@ -607,6 +620,10 @@ failed_devres:
 			}
 			case IOCTL_SPHCS_NO_MEMORY: {
 				eventVal = SPH_IPC_NO_MEMORY;
+				break;
+			}
+			case IOCTL_SPHCS_ECC_ALLOC_FAILED: {
+				eventVal = SPH_IPC_ECC_ALLOC_FAILED;
 				break;
 			}
 			default: {
@@ -1047,14 +1064,25 @@ static void resource_op_work_handler(struct work_struct *work)
 		DO_TRACE(trace_infer_create(SPH_TRACE_INF_CREATE_DEVRES, op->cmd.ctxID, op->cmd.resID, SPH_TRACE_OP_STATUS_START, -1, -1));
 
 		usage_flags = 0;
-		if (op->cmd.is_input) usage_flags |= IOCTL_INF_RES_INPUT;
-		if (op->cmd.is_output) usage_flags |= IOCTL_INF_RES_OUTPUT;
-		if (op->cmd.is_network) usage_flags |= IOCTL_INF_RES_NETWORK;
-		if (op->cmd.is_force_4G) usage_flags |= IOCTL_INF_RES_FORCE_4G_ALLOC;
+		if (op->cmd.is_input)
+			usage_flags |= IOCTL_INF_RES_INPUT;
+		if (op->cmd.is_output)
+			usage_flags |= IOCTL_INF_RES_OUTPUT;
+		if (op->cmd.is_network)
+			usage_flags |= IOCTL_INF_RES_NETWORK;
+		if (op->cmd.is_force_4G)
+			usage_flags |= IOCTL_INF_RES_FORCE_4G_ALLOC;
+		if (op->cmd.is_ecc)
+			usage_flags |= IOCTL_INF_RES_ECC;
+		if (op->cmd.is_p2p_dst)
+			usage_flags |= IOCTL_INF_RES_P2P_DST;
+		if (op->cmd.is_p2p_src)
+			usage_flags |= IOCTL_INF_RES_P2P_SRC;
 
 		ret = inf_context_create_devres(op->context,
 						op->cmd.resID,
 						op->cmd.size,
+						op->cmd.depth,
 						usage_flags,
 						&devres);
 		if (unlikely(ret < 0)) {
@@ -1489,12 +1517,20 @@ static void copy_op_work_handler(struct work_struct *work)
 		DO_TRACE(trace_infer_create((op->cmd.c2h ? SPH_TRACE_INF_CREATE_C2H_COPY_HANDLE : SPH_TRACE_INF_CREATE_H2C_COPY_HANDLE),
 				op->cmd.ctxID, op->cmd.protCopyID, SPH_TRACE_OP_STATUS_START, -1, -1));
 
-		ret = inf_copy_create(op->cmd.protCopyID,
-					      op->context,
-					      devres,
-					      SPH_IPC_DMA_PFN_TO_ADDR(op->cmd.hostPtr),
-					      op->cmd.c2h,
-					      &copy);
+		if (op->cmd.d2d) {
+			ret = inf_d2d_copy_create(op->cmd.protCopyID,
+						  op->context,
+						  devres,
+						  SPH_IPC_DMA_PFN_TO_ADDR(op->cmd.hostPtr),
+						  &copy);
+		} else {
+			ret = inf_copy_create(op->cmd.protCopyID,
+						      op->context,
+						      devres,
+						      SPH_IPC_DMA_PFN_TO_ADDR(op->cmd.hostPtr),
+						      op->cmd.c2h,
+						      &copy);
+		}
 		if (unlikely(ret < 0)) {
 			val = SPH_IPC_NO_MEMORY;
 			goto send_error;
@@ -2085,6 +2121,27 @@ int sphcs_free_resource(struct sphcs  *sphcs,
 	return rc;
 }
 
+static void sphcs_inf_new_data_arrived(struct sphcs_p2p_buf *buf)
+{
+	struct inf_devres *devres;
+
+	sph_log_debug(START_UP_LOG, "New data arrived (buf id %u)\n", buf->buf_id);
+
+	devres = container_of(buf, struct inf_devres, p2p_buf);
+	buf->ready = true;
+	inf_devres_try_execute(devres);
+;
+}
+
+static void sphcs_inf_data_consumed(struct sphcs_p2p_buf *buf)
+{
+
+}
+
+static struct sphcs_p2p_cbs s_p2p_cbs = {
+		.new_data_arrived = sphcs_inf_new_data_arrived,
+		.data_consumed = sphcs_inf_data_consumed,
+};
 
 int inference_init(struct sphcs *sphcs)
 {
@@ -2143,6 +2200,8 @@ int inference_init(struct sphcs *sphcs)
 
 	sphcs->inf_data = inf_data;
 
+	sphcs_p2p_init(sphcs, &s_p2p_cbs);
+
 	return 0;
 
 free_ctx_uids:
@@ -2164,6 +2223,7 @@ unreg:
 
 int inference_fini(struct sphcs *sphcs)
 {
+	sphcs_p2p_fini(sphcs);
 	sphcs_ctx_uids_fini();
 	destroy_workqueue(sphcs->inf_data->inf_wq);
 	device_destroy(s_class, s_devnum);

@@ -55,5 +55,6 @@
 #define SPHER_CARD_RESET                        (SPH_ERRNO_BASE + 27)   /* Card has been reset */
 #define SPHER_INCOMPLETE_NETWORK                (SPH_ERRNO_BASE + 28)   /* Network handle is incomplete */
 #define	SPHER_INSUFFICIENT_RESOURCES		(SPH_ERRNO_BASE + 29)	/* insufficient resources for DevNet */
+#define SPHER_ECC_ALLOC_FAILED                  (SPH_ERRNO_BASE + 30)   /* insufficient ecc memory on device */
 
 #endif

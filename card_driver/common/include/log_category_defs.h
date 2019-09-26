@@ -69,5 +69,9 @@
 /* all logs related to hw trace collection */
 #define HWTRACE_LOG "SPHLOG_HWTRACE"
 
+/* all logs related to sph power balancer collection */
+#define POWER_BALANCER_LOG "SPHLOG_POWER_BALANCER"
+
+
 
 

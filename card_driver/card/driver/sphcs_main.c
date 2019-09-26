@@ -20,6 +20,7 @@
 #include "sph_version.h"
 #include "sphcs_maintenance.h"
 #include "sphcs_trace.h"
+#include "sphcs_p2p_test.h"
 
 
 int sphcs_init_module(void)
@@ -57,11 +58,15 @@ int sphcs_init_module(void)
 		ret = -ENODEV;
 		goto sphcs_maint_cleanup;
 	}
+
+	sphcs_p2p_test_init();
 #endif
+
 
 	return 0;
 
 #ifdef ULT
+	sphcs_p2p_test_cleanup();
 	sphcs_fini_ult_module();
 
 sphcs_maint_cleanup:
@@ -79,6 +84,8 @@ void sphcs_cleanup(void)
 {
 	sph_log_debug(GO_DOWN_LOG, "Cleaning Up the Module\n");
 #ifdef ULT
+	sphcs_p2p_test_cleanup();
+
 	sphcs_fini_ult_module();
 #endif
 	sphcs_net_dev_exit();

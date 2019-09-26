@@ -429,6 +429,7 @@ static void dispatch_next_subjobs(struct di_job *job,
 		struct cve_device *dev)
 {
 	u32 db = 0;
+	u32 __maybe_unused is_cold_run = job->cold_run;
 	u32 cbd_size = sizeof(union CVE_SHARED_CB_DESCRIPTOR);
 	cve_virtual_address_t iceva;
 	struct ice_network *ntw = (struct ice_network *) dev->dev_ntw_id;
@@ -535,7 +536,7 @@ static void dispatch_next_subjobs(struct di_job *job,
 				ntw->swc_node.sw_id, ntw->network_id,
 				ntw->curr_exe->swc_node.sw_id,
 				(void *)job->ds_hjob,
-				SPH_TRACE_OP_STATUS_EXEC_TYPE, job->cold_run));
+				SPH_TRACE_OP_STATUS_EXEC_TYPE, is_cold_run));
 
 }
 
@@ -1650,20 +1651,10 @@ void cve_di_interrupt_handler_deferred_proc(struct idc_device *dev)
 						SPH_TRACE_OP_STATUS_FAIL,
 						status));
 		} else {
-			if (ice_ds_is_network_active(cve_dev->dev_ntw_id)
-					== 0) {
-				job_status = CVE_JOBSTATUS_ABORTED;
-				cve_os_log_default(CVE_LOGLEVEL_INFO,
-						"NtwID:0x%llx is not active\n",
-						cve_dev->dev_ntw_id);
-			} else {
-				/* if job is entirely completed */
-				cve_os_log(CVE_LOGLEVEL_DEBUG,
-						"job completed\n");
-				job_status = CVE_JOBSTATUS_COMPLETED;
-			}
-
-
+			/* if job is entirely completed */
+			cve_os_log(CVE_LOGLEVEL_DEBUG,
+					"job completed\n");
+			job_status = CVE_JOBSTATUS_COMPLETED;
 		}
 
 handle_interrupt_check_completion:

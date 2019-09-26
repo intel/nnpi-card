@@ -289,8 +289,17 @@ void ice_sch_engine(struct ice_network *ntw)
 				ASSERT(pr0_head->ntype ==
 						NODE_TYPE_RESERVE);
 			}
-			 __schedule_rr_node(pr0_head);
-			ice_sch_engine(ntw);
+			status = __schedule_rr_node(pr0_head);
+			if (status == SCH_STATUS_DONE) {
+
+				if (pr0_head->ntype == NODE_TYPE_RESERVE)
+					ice_sch_engine(pr0_head->ntw);
+				else
+					ice_sch_engine(NULL);
+
+			} else if (status == SCH_STATUS_DISCARD)
+				ice_sch_engine(NULL);
+
 			return;
 		}
 
@@ -343,8 +352,8 @@ scheduler_beginning:
 		else
 			ice_sch_engine(NULL);
 
-		return;
-	}
+	} else if (status == SCH_STATUS_DISCARD)
+		ice_sch_engine(NULL);
 
 out:
 	return;

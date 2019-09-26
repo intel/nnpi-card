@@ -172,19 +172,19 @@ static const struct sph_sw_counter_info g_sphcs_sw_counters_info[] = {
 	 "Total number of completed infer requests"},
 	 /* SPHCS_SW_COUNTERS_ECC_CORRECTABLE_ERROR */
 	 {SPHCS_SW_COUNTERS_GROUP_MCE, "correctable_ecc",
-	 "number of correctable ecc errors"},
+	 "[r]number of correctable ecc errors"},
 	 /* SPHCS_SW_COUNTERS_ECC_UNCORRECTABLE_ERROR */
 	 {SPHCS_SW_COUNTERS_GROUP_MCE, "uncorrectable_ecc",
-	 "number of uncorrectable ecc errors"},
+	 "[r]number of uncorrectable ecc errors"},
 	 /* SPHCS_SW_COUNTERS_ECC_UNCORRECTABLE_ERROR_FATAL */
 	 {SPHCS_SW_COUNTERS_GROUP_MCE, "uncorrectable_fatal_ecc",
-	 "number of fatal uncorrectable ecc errors"},
+	 "[r]number of fatal uncorrectable ecc errors"},
 	 /* SPHCS_SW_COUNTERS_MCE_UNCORRECTABLE_ERROR */
 	 {SPHCS_SW_COUNTERS_GROUP_MCE, "uncorrectable",
-	 "number of uncorrectable general MCE event (not ecc related)"},
+	 "[r]number of uncorrectable general MCE event (not ecc related)"},
 	 /* SPHCS_SW_COUNTERS_MCE_UNCORRECTABLE_ERROR_FATAL */
 	 {SPHCS_SW_COUNTERS_GROUP_MCE, "uncorrectable_fatal",
-	 "number of fatal uncorrectable general MCE events (not ecc related)"},
+	 "[r]number of fatal uncorrectable general MCE events (not ecc related)"},
 };
 
 static const struct sph_sw_counters_set g_sw_counters_set_global = {

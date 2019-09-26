@@ -136,6 +136,7 @@ void inf_context_add_sync_point(struct inf_context *context,
 int inf_context_create_devres(struct inf_context *context,
 			      uint16_t            protocolID,
 			      uint64_t            byte_size,
+			      uint8_t             depth,
 			      uint32_t            usage_flags,
 			      struct inf_devres **out_devres);
 

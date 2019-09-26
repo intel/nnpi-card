@@ -43,6 +43,8 @@
 #define SPH_HOST_ERROR_SHIFT                4
 #define SPH_HOST_DRV_STATE_MASK             0xf00
 #define SPH_HOST_DRV_STATE_SHIFT            8
+#define SPH_HOST_DRV_REQUEST_SELF_RESET_MASK  0x10000  /* set by the host driver to request card to reset itself (not through FLR flow) */
+#define SPH_HOST_DRV_REQUEST_SELF_RESET_SHIFT 16
 
 /* Possible values for host boot state */
 #define SPH_HOST_BOOT_STATE_IMAGE_NOT_READY         0             /* boot/bios image is not loaded yet to memory */

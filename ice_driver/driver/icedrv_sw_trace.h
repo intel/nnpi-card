@@ -278,7 +278,7 @@ TRACE_EVENT(SPH_TRACE_ICEDRV_DESTROY_CONTEXT,
 			__entry->status = status;
 			__entry->reason = reason;
 	),
-	SPH_TP_printk("state=%s ctxID=%llu(%llxu) status=%s reason=%d",
+	SPH_TP_printk("state=%s ctxID=%llu(%llx) status=%s reason=%d",
 		sph_trace_op_state_to_str[__entry->state],
 		__entry->ctxID, __entry->internalctxId,
 		sph_trace_op_status_to_str[__entry->status],

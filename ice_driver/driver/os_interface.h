@@ -812,5 +812,29 @@ void ice_os_reset_clos(void *pmclos);
 int set_llc_freq(void *llc_freq_config);
 uint64_t get_llc_freq(void);
 
+#ifdef RING3_VALIDATION
+
+#define ice_sch_preemption() 1
+#define os_disable_preemption() do {} while (0)
+#define os_enable_preemption() do {} while (0)
+
+#else /* RING3_VALIDATION */
+
+#ifdef _DEBUG
+
+#define ice_sch_preemption() 1
+#define os_disable_preemption() do {} while (0)
+#define os_enable_preemption() do {} while (0)
+
+#else /* #ifdef _DEBUG */
+
+#define ice_sch_preemption() ice_sch_allow_preemption()
+#define os_disable_preemption() preempt_disable()
+#define os_enable_preemption() preempt_enable()
+
+#endif /* #ifdef _DEBUG */
+
+#endif /*RING3_VALIDATION*/
+
 #endif /* _OS_INTERFACE_H_ */
 

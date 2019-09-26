@@ -704,9 +704,6 @@ struct ice_network {
 	struct ice_user_full_ntw *user_full_ntw;
 	/************************/
 
-	/* Flag, set to true if deletion is initiated */
-	uint8_t abort_ntw;
-
 	/* IceDc error status*/
 	u64 icedc_err_status;
 

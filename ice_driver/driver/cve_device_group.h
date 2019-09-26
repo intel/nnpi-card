@@ -29,6 +29,7 @@ struct ice_drv_config {
 	u8 sph_soc;
 	int ice_power_off_delay_ms;
 	bool enable_sph_b_step;
+	u8 ice_sch_preemption;
 };
 
 /*
@@ -140,4 +141,7 @@ u32 ice_get_usec_timediff(struct timespec *time1, struct timespec *time2);
 
 /* retrieve  b step enable flag */
 int ice_get_b_step_enable_flag(void);
+
+/* check if user has requested to disable preemption*/
+u8 ice_sch_allow_preemption(void);
 #endif /* CVE_DEVICE_GROUP_H_ */

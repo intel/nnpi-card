@@ -20,6 +20,7 @@
 #include <linux/errno.h>
 #include <linux/sched.h>
 #include <linux/completion.h>
+#include <linux/preempt.h>
 #include "icedrv_sw_trace.h"
 #endif
 #include "ice_sw_counters.h"
@@ -1029,6 +1030,9 @@ int ice_ds_dispatch_jg(struct jobgroup_descriptor *jobgroup)
 	struct ice_network *ntw = jobgroup->network;
 	struct job_descriptor *job;
 
+	if (!ice_sch_preemption())
+		os_disable_preemption();
+
 	DO_TRACE(trace__icedrvScheduleInfer(
 		SPH_TRACE_OP_STATE_QUEUED,
 		ntw->wq->context->swc_node.sw_id,
@@ -1119,6 +1123,10 @@ exit:
 		ntw->swc_node.sw_id, ntw->network_id,
 		ntw->curr_exe->swc_node.sw_id,
 		SPH_TRACE_OP_STATUS_ICE, ice_mask));
+
+	if (!ice_sch_preemption())
+		os_enable_preemption();
+
 	return retval;
 }
 
@@ -1735,10 +1743,6 @@ static int __process_job_list(struct cve_job_group *jg_desc,
 			i);
 	}
 
-	ice_swc_counter_set(ntw->hswc,
-			ICEDRV_SWC_SUB_NETWORK_TOTAL_JOBS, jg_desc->jobs_nr);
-
-
 	ret = max_cb;
 
 err_alloc_job_list:
@@ -2262,50 +2266,18 @@ static void __block_ice_if_on(struct ice_network *ntw)
 static int __destroy_network(struct ice_network *ntw)
 {
 	int ret = 0;
-	struct cve_device *dev, *dev_head;
-	struct cve_device_group *dg = cve_dg_get();
 
+	ntw->ntw_running = false;
 	cve_dle_remove_from_list(ntw->wq->ntw_list, list, ntw);
-
-	dev_head = ntw->ice_list;
-	dev = dev_head;
-	if (dev) {
-		/* Block all running ICEs */
-
-		ret = cve_os_lock(&dg->poweroff_dev_list_lock,
-				CVE_INTERRUPTIBLE);
-		if (ret != 0) {
-			cve_os_log_default(CVE_LOGLEVEL_ERROR,
-				"cve_os_lock error\n");
-
-			return ret;
-		}
-
-		do {
-			if ((dev->power_state == ICE_POWER_OFF_INITIATED) ||
-				(dev->power_state == ICE_POWER_ON)) {
-
-				if (!ice_di_mmu_block_entrance(dev)) {
-
-					cve_os_dev_log_default(
-						CVE_LOGLEVEL_ERROR,
-						dev->dev_index,
-						"Unable to set BLOCK_ENTRANCE. ICE may access invalid location.\n");
-				}
-			}
-
-			dev = cve_dle_next(dev, owner_list);
-		} while (dev != dev_head);
-
-		cve_os_unlock(&dg->poweroff_dev_list_lock);
-	}
 
 	__block_ice_if_on(ntw);
 	__destroy_pending_inference(ntw);
 
 	/* All resource must be released */
-	ntw->res_resource = false;
-	ice_ds_ntw_return_resource(ntw);
+	if (ntw->res_resource)
+		ice_ds_ntw_release_resource(ntw);
+	else
+		ice_ds_ntw_return_resource(ntw);
 
 	dealloc_and_unmap_network_fifo(ntw);
 
@@ -2381,7 +2353,6 @@ static int __process_network_desc(
 	ntw->cntr_bitmap = 0;
 	ntw->ice_list = NULL;
 	ntw->cntr_list = NULL;
-	ntw->abort_ntw = 0;
 	ntw->network_id = (u64)ntw;
 	ntw->icebo_req = network_desc->icebo_req;
 	ntw->num_picebo_req = 0;
@@ -2734,6 +2705,13 @@ int cve_ds_handle_create_network(
 	*network_id = network->network_id;
 
 	ice_swc_create_ntw_node(network);
+	/* referencing JG list directly assuming that we have
+	 * one job group always with multiple jobs <= max ice
+	*/
+	ice_swc_counter_set(network->hswc,
+			ICEDRV_SWC_SUB_NETWORK_TOTAL_JOBS,
+			network->jg_list->total_jobs);
+
 
 	ntw_resources[0] = network->clos[ICE_CLOS_0];
 	ntw_resources[1] = network->clos[ICE_CLOS_0];
@@ -3030,9 +3008,12 @@ int cve_ds_handle_manage_resource(
 		}
 
 		/* status=0 when timeout occurs before reservation node is
-		 * picked by the scheduler
+		 * picked by the scheduler.
+		 * For infinite wait, status = 0 means condition is
+		 * evaluated true, so its picked by the scheduler or network
+		 * deletion is requested.
 		 */
-		if (!status)
+		if (!ntw->rr_node)
 			is_success = false;
 		else
 			is_success = ntw->rr_node->is_success;
@@ -3335,16 +3316,6 @@ void cve_ds_handle_job_completion(struct cve_device *dev,
 
 	if (ntw->shared_read)
 		is_shared_read_error(ntw, dev, dev->dev_index / 2);
-
-	if (ice_ds_is_network_active(dev->dev_ntw_id) == 0) {
-
-		/* TODO: Must verify this flow  */
-		/* All resource must be released */
-		ntw->res_resource = false;
-		ice_ds_ntw_release_resource(ntw);
-
-		return;
-	}
 
 	/* remove the job from the jobgroup list */
 	jobgroup->ended_jobs_nr++;
@@ -3886,16 +3857,6 @@ int cve_ds_get_metadata(u32 *icemask)
 	cve_os_unlock(&g_cve_driver_biglock);
 out:
 	return retval;
-}
-
-int ice_ds_is_network_active(u64 network_id)
-{
-	struct ice_network *network;
-
-	network = (struct ice_network *)network_id;
-	if (network->abort_ntw == 1)
-		return 0;
-	return 1;
 }
 
 static void __link_ices_and_pool(struct ice_network *ntw)

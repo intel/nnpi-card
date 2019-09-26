@@ -23,4 +23,5 @@
  ********************************************************************************/
 #define ECC_PROTECTED_HEAP_NAME "ecc_protected_heap"
 #define ECC_NON_PROTECTED_HEAP_NAME "ecc_non_protected_heap"
+#define P2P_HEAP_NAME "p2p_heap"
 

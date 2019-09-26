@@ -16,6 +16,7 @@
 int inf_devres_create(uint16_t            protocolID,
 		      struct inf_context *context,
 		      uint64_t            size,
+		      uint8_t             depth,
 		      uint32_t            usage_flags,
 		      struct inf_devres **out_devres)
 {
@@ -37,6 +38,7 @@ int inf_devres_create(uint16_t            protocolID,
 
 	spin_lock_init(&devres->lock_irq);
 	devres->size = size;
+	devres->depth = depth;
 	devres->usage_flags = usage_flags;
 	if ((usage_flags & IOCTL_INF_RES_INPUT) &&
 	    (usage_flags & IOCTL_INF_RES_OUTPUT))
@@ -49,6 +51,8 @@ int inf_devres_create(uint16_t            protocolID,
 		devres->dir = DMA_NONE;
 	devres->status = CREATE_STARTED;
 	devres->destroyed = 0;
+
+	sphcs_p2p_init_p2p_buf(&devres->p2p_buf);
 
 	SPH_SW_COUNTER_ADD(context->sw_counters, CTX_SPHCS_SW_COUNTERS_INFERENCE_DEVICE_RESOURCE_SIZE, size);
 
@@ -178,6 +182,9 @@ static void release_devres(struct kref *kref)
 	SPH_SPIN_LOCK(&devres->context->lock);
 	hash_del(&devres->hash_node);
 	SPH_SPIN_UNLOCK(&devres->context->lock);
+
+	if ((devres->usage_flags & IOCTL_INF_RES_P2P_SRC) || (devres->usage_flags & IOCTL_INF_RES_P2P_DST))
+		inf_devres_remove_from_p2p(devres);
 
 	if (likely(devres->status == CREATED)) {
 		inf_devres_detach_buf(devres);
@@ -338,6 +345,9 @@ bool inf_devres_req_ready(struct inf_devres *devres, struct inf_exec_req *req, b
 
 	SPH_ASSERT(devres != NULL);
 
+	/* If the request is the first one in the queue or
+	 * it is read request and all previous requests are read requests
+	 */
 	SPH_SPIN_LOCK_IRQSAVE(&devres->lock_irq, flags);
 	list_for_each_entry(pos, &devres->exec_queue, node) {
 		if (pos->req == req) {
@@ -350,6 +360,30 @@ bool inf_devres_req_ready(struct inf_devres *devres, struct inf_exec_req *req, b
 	}
 	SPH_SPIN_UNLOCK_IRQRESTORE(&devres->lock_irq, flags);
 
+	/* If dev res is a destination p2p resource, it's ready
+	 * when the appropriate d2d copy is completed
+	 */
+	if (ready && (devres->usage_flags & IOCTL_INF_RES_P2P_DST)) {
+		if (devres->p2p_buf.ready) {
+			sph_log_debug(GENERAL_LOG, "p2p dst buffer is ready\n");
+			devres->p2p_buf.ready = false;
+		} else
+			ready = false;
+	}
+
 	return ready;
 
+}
+
+void inf_devres_add_to_p2p(struct inf_devres *devres)
+{
+	if (devres->usage_flags & IOCTL_INF_RES_P2P_SRC)
+		sphcs_p2p_add_buffer(true, &devres->p2p_buf);
+	else
+		sphcs_p2p_add_buffer(false, &devres->p2p_buf);
+}
+
+void inf_devres_remove_from_p2p(struct inf_devres *devres)
+{
+	sphcs_p2p_remove_buffer(&devres->p2p_buf);
 }

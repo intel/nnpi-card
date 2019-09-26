@@ -458,6 +458,7 @@ static void config_card_eth(struct work_struct *work)
 
 	if (op->cmd.card_ip == 0) {
 		sphcs_net_dev_exit();
+		sphcs_response_pool_clean_page_pool(SPH_NET_RESPONSE_POOL_INDEX);
 	} else {
 		memcpy(s_mac_addr, &op->cmd.value[10], ETH_ALEN);
 		ret = sphcs_net_dev_init();

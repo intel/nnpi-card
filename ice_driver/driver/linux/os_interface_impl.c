@@ -115,6 +115,7 @@ struct config cfg_default;
 static u32 icemask_user;
 static u32 enable_llc_config_via_axi_reg;
 static u32 sph_soc;
+static int ice_sch_preemption = 1;
 
 static int ice_power_off_delay_ms = 1000;
 static int enable_ice_drv_memleak;
@@ -151,6 +152,10 @@ MODULE_PARM_DESC(enable_ice_drv_memleak, "If set to non-zero value memory leak d
 
 module_param(enable_b_step, int, 0);
 MODULE_PARM_DESC(enable_b_step, "Enable B step flow in driver. Default 0 i.e disabled");
+
+module_param(ice_sch_preemption, int, 0);
+MODULE_PARM_DESC(enable_b_step, "Enable kernel premeption during inference scheduling");
+
 
 /* UITILITY FUNCTIONS */
 
@@ -1425,9 +1430,9 @@ int cve_probe_common(struct cve_os_device *linux_device, int dev_ind)
 	g_icemask = icemask_user | icemask_reg;
 
 	cve_os_log(CVE_LOGLEVEL_DEBUG,
-		"UserConfig: ICEMASK_USER: 0x%x, ICEMASK_REG: 0x%x enable_llc_config_via_axi_reg:0x%x\n sph_soc:0x%x",
+		"UserConfig: ICEMASK_USER: 0x%x, ICEMASK_REG: 0x%x enable_llc_config_via_axi_reg:0x%x sph_soc:0x%x Preemption:%d\n",
 		icemask_user, icemask_reg, enable_llc_config_via_axi_reg,
-		sph_soc);
+		sph_soc, ice_sch_preemption);
 
 
 	active_ice = (~g_icemask) & VALID_ICE_MASK;
@@ -2017,6 +2022,7 @@ static int __init cve_init(void)
 	param.sph_soc = sph_soc;
 	param.enable_llc_config_via_axi_reg = enable_llc_config_via_axi_reg;
 	param.ice_power_off_delay_ms = ice_power_off_delay_ms;
+	param.ice_sch_preemption = ice_sch_preemption;
 	ice_set_driver_config_param(&param);
 
 	retval = ice_swc_init();

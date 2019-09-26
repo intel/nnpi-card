@@ -46,7 +46,15 @@ struct inf_copy {
 	// size validations during copy execution
 	uint64_t    hostres_size;
 #endif
+
+	bool d2d;
 };
+
+int inf_d2d_copy_create(uint16_t protocolCopyID,
+		    struct inf_context *context,
+		    struct inf_devres *devres,
+		    uint64_t hostDmaAddr,
+		    struct inf_copy **out_copy);
 
 int inf_copy_create(uint16_t protocolCopyID, struct inf_context *context, struct inf_devres *devres, uint64_t hostDmaAddr, bool card2Host,
 		    struct inf_copy **out_copy);

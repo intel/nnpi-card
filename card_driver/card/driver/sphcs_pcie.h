@@ -40,10 +40,7 @@ struct sphcs_pcie_hw_ops {
 	int (*write_mesg)(void *hw_handle, u64 *msg, u32 size);
 	u32 (*get_host_doorbell_value)(void *hw_handle);
 	int (*set_card_doorbell_value)(void *hw_handle, u32 value);
-	int (*map_inbound_mem)(void      *hw_handle,
-			       dma_addr_t host_address,
-			       dma_addr_t target_address,
-			       uint64_t   size);
+	void (*get_inbound_mem)(void *hw_handle, dma_addr_t *base_addr, size_t *size);
 
 	struct sphcs_dma_hw_ops dma;
 };

@@ -1,0 +1,6 @@
+0001-Dont-waste-time-building-manpages-if-we-re-not-going.patch
+0002-Reproducible-build-do-not-leak-compiler-path.patch
+0003-Introduce-the-OPENSSL_NO_MADVISE-to-disable-call-to-.patch
+0004-apps-ocsp.c-Use-the-same-HAVE_FORK-NO_FORK-as-in-spe.patch
+0005-Revert-Reduce-stack-usage-in-tls13_hkdf_expand.patch
+0006-Fix-some-SSL_export_keying_material-issues.patch

@@ -63,13 +63,6 @@ void cve_debug_init(void)
 	 */
 	cve_debug[DEBUG_TENS_EN].val = tens_en;
 
-	/* Fixme: Temp WA, disabled WD for B step */
-	if (ice_get_b_step_enable_flag()) {
-		cve_os_log(CVE_LOGLEVEL_WARNING,
-				"WD disabled in B step\n");
-		cve_debug[DEBUG_WD_EN].val = 0;
-	}
-
 	/*debugfs section*/
 
 	/* create a directory by the name cve in /sys/kernel/debugfs */

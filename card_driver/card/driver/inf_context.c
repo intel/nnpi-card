@@ -561,6 +561,7 @@ void inf_context_add_sync_point(struct inf_context *context,
 int inf_context_create_devres(struct inf_context *context,
 			      uint16_t            protocolID,
 			      uint64_t            byte_size,
+			      uint8_t             depth,
 			      uint32_t            usage_flags,
 			      struct inf_devres **out_devres)
 {
@@ -571,6 +572,7 @@ int inf_context_create_devres(struct inf_context *context,
 	ret = inf_devres_create(protocolID,
 				context,
 				byte_size,
+				depth,
 				usage_flags,
 				&devres);
 	if (unlikely(ret < 0))
@@ -578,7 +580,7 @@ int inf_context_create_devres(struct inf_context *context,
 
 	/* place a create device resource command for the runtime */
 	cmd_args.drv_handle = (uint64_t)(uintptr_t)devres;
-	cmd_args.size = byte_size;
+	cmd_args.size = byte_size * depth;
 	cmd_args.usage_flags = usage_flags;
 
 	SPH_SPIN_LOCK(&context->lock);

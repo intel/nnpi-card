@@ -49,8 +49,9 @@ struct sphcs {
 	struct notifier_block mce_notifier;
 	struct delayed_work init_delayed_reset;
 
-	struct sph_inbound_mem     *inbound_mem;
-	dma_addr_t                  inbound_mem_dma_addr;
+	union sph_inbound_mem     *inbound_mem;
+	size_t inbound_mem_size;
+	dma_addr_t inbound_mem_dma_addr;
 
 	struct dentry              *debugfs_dir;
 	struct sphcs_hwtrace_data	hw_tracing;

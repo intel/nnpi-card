@@ -1,4 +1,4 @@
-From 16a4cd84fd54ee10358750eb5738588613d50aea Mon Sep 17 00:00:00 2001
+From 1078f9fd599a06215bdeef1a929cf21b189aa7ba Mon Sep 17 00:00:00 2001
 From: Alexey Skidanov <alexey.skidanov@intel.com>
 Date: Tue, 23 Apr 2019 11:33:42 +0300
 Subject: [PATCH] staging: android: ion: Change allocation ioctl and chunk heap
@@ -12,16 +12,16 @@ memory chunks and be initaliazed with specific name.
 
 Signed-off-by: Alexey Skidanov <alexey.skidanov@intel.com>
 ---
- drivers/staging/android/ion/ion.c            |  87 ++++++++++++++++++++--
- drivers/staging/android/ion/ion.h            |  14 +++-
- drivers/staging/android/ion/ion_chunk_heap.c | 106 +++++++++++++++++++++------
- drivers/staging/android/uapi/ion.h           |   3 +-
- include/linux/ion_exp.h                      |  15 ++++
- 5 files changed, 193 insertions(+), 32 deletions(-)
+ drivers/staging/android/ion/ion.c            |  94 +++++++++--
+ drivers/staging/android/ion/ion.h            |  17 +-
+ drivers/staging/android/ion/ion_chunk_heap.c | 231 ++++++++++++++++++++++-----
+ drivers/staging/android/uapi/ion.h           |   4 +-
+ include/linux/ion_exp.h                      |  15 ++
+ 5 files changed, 299 insertions(+), 62 deletions(-)
  create mode 100644 include/linux/ion_exp.h
 
 diff --git a/drivers/staging/android/ion/ion.c b/drivers/staging/android/ion/ion.c
-index 92c2914..4ef9316 100644
+index 92c2914..6a35d69 100644
 --- a/drivers/staging/android/ion/ion.c
 +++ b/drivers/staging/android/ion/ion.c
 @@ -59,7 +59,9 @@ static void ion_buffer_add(struct ion_device *dev,
@@ -35,9 +35,11 @@ index 92c2914..4ef9316 100644
  {
  	struct ion_buffer *buffer;
  	int ret;
-@@ -72,15 +74,16 @@ static struct ion_buffer *ion_buffer_create(struct ion_heap *heap,
+@@ -71,16 +73,18 @@ static struct ion_buffer *ion_buffer_create(struct ion_heap *heap,
+ 	buffer->heap = heap;
  	buffer->flags = flags;
  	buffer->dev = dev;
++	/* buffer size is at least len but may be larger */
  	buffer->size = len;
 +	buffer->user_data = user_data;
  
@@ -54,7 +56,16 @@ index 92c2914..4ef9316 100644
  		if (ret)
  			goto err2;
  	}
-@@ -374,6 +377,13 @@ static int ion_dma_buf_end_cpu_access(struct dma_buf *dmabuf,
+@@ -93,7 +97,7 @@ static struct ion_buffer *ion_buffer_create(struct ion_heap *heap,
+ 
+ 	spin_lock(&heap->stat_lock);
+ 	heap->num_of_buffers++;
+-	heap->num_of_alloc_bytes += len;
++	heap->num_of_alloc_bytes += buffer->size;
+ 	if (heap->num_of_alloc_bytes > heap->alloc_bytes_wm)
+ 		heap->alloc_bytes_wm = heap->num_of_alloc_bytes;
+ 	spin_unlock(&heap->stat_lock);
+@@ -374,6 +378,13 @@ static int ion_dma_buf_end_cpu_access(struct dma_buf *dmabuf,
  	return 0;
  }
  
@@ -68,7 +79,7 @@ index 92c2914..4ef9316 100644
  static const struct dma_buf_ops dma_buf_ops = {
  	.map_dma_buf = ion_map_dma_buf,
  	.unmap_dma_buf = ion_unmap_dma_buf,
-@@ -385,9 +395,15 @@ static const struct dma_buf_ops dma_buf_ops = {
+@@ -385,9 +396,15 @@ static const struct dma_buf_ops dma_buf_ops = {
  	.end_cpu_access = ion_dma_buf_end_cpu_access,
  	.map = ion_dma_buf_kmap,
  	.unmap = ion_dma_buf_kunmap,
@@ -85,7 +96,7 @@ index 92c2914..4ef9316 100644
  {
  	struct ion_device *dev = internal_dev;
  	struct ion_buffer *buffer = NULL;
-@@ -414,7 +430,12 @@ static int ion_alloc(size_t len, unsigned int heap_id_mask, unsigned int flags)
+@@ -414,7 +431,12 @@ static int ion_alloc(size_t len, unsigned int heap_id_mask, unsigned int flags)
  		/* if the caller didn't specify this heap id */
  		if (!((1 << heap->id) & heap_id_mask))
  			continue;
@@ -99,7 +110,7 @@ index 92c2914..4ef9316 100644
  		if (!IS_ERR(buffer))
  			break;
  	}
-@@ -467,8 +488,10 @@ static int ion_query_heaps(struct ion_heap_query *query)
+@@ -467,8 +489,10 @@ static int ion_query_heaps(struct ion_heap_query *query)
  	max_cnt = query->cnt;
  
  	plist_for_each_entry(heap, &dev->heaps, node) {
@@ -112,7 +123,7 @@ index 92c2914..4ef9316 100644
  		hdata.type = heap->type;
  		hdata.heap_id = heap->id;
  
-@@ -541,8 +564,10 @@ static long ion_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
+@@ -541,8 +565,10 @@ static long ion_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
  		int fd;
  
  		fd = ion_alloc(data.allocation.len,
@@ -124,26 +135,58 @@ index 92c2914..4ef9316 100644
  		if (fd < 0)
  			return fd;
  
-@@ -673,6 +698,52 @@ void ion_device_add_heap(struct ion_heap *heap)
+@@ -611,7 +637,6 @@ void ion_device_add_heap(struct ion_heap *heap)
+ {
+ 	struct ion_device *dev = internal_dev;
+ 	int ret;
+-	struct dentry *heap_root;
+ 	char debug_name[64];
+ 
+ 	if (!heap->ops->allocate || !heap->ops->free)
+@@ -636,17 +661,17 @@ void ion_device_add_heap(struct ion_heap *heap)
+ 	heap->num_of_alloc_bytes = 0;
+ 	heap->alloc_bytes_wm = 0;
+ 
+-	heap_root = debugfs_create_dir(heap->name, dev->debug_root);
++	heap->heap_root = debugfs_create_dir(heap->name, dev->debug_root);
+ 	debugfs_create_u64("num_of_buffers",
+-			   0444, heap_root,
++			   0444, heap->heap_root,
+ 			   &heap->num_of_buffers);
+ 	debugfs_create_u64("num_of_alloc_bytes",
+ 			   0444,
+-			   heap_root,
++			   heap->heap_root,
+ 			   &heap->num_of_alloc_bytes);
+ 	debugfs_create_u64("alloc_bytes_wm",
+ 			   0444,
+-			   heap_root,
++			   heap->heap_root,
+ 			   &heap->alloc_bytes_wm);
+ 
+ 	if (heap->shrinker.count_objects &&
+@@ -654,7 +679,7 @@ void ion_device_add_heap(struct ion_heap *heap)
+ 		snprintf(debug_name, 64, "%s_shrink", heap->name);
+ 		debugfs_create_file(debug_name,
+ 				    0644,
+-				    heap_root,
++				    heap->heap_root,
+ 				    heap,
+ 				    &debug_shrink_fops);
+ 	}
+@@ -673,6 +698,45 @@ void ion_device_add_heap(struct ion_heap *heap)
  }
  EXPORT_SYMBOL(ion_device_add_heap);
  
 +void ion_device_remove_heap(struct ion_heap *heap)
 +{
 +	struct ion_device *dev = internal_dev;
-+	struct dentry *debug_file;
 +
 +	down_write(&dev->lock);
 +	plist_del(&heap->node, &dev->heaps);
 +
-+	if (heap->shrinker.count_objects && heap->shrinker.scan_objects) {
-+		char debug_name[64];
-+
-+		snprintf(debug_name, 64, "%s_shrink", heap->name);
-+		debug_file = debugfs_lookup(debug_name, dev->debug_root);
-+
-+		debugfs_remove(debug_file);
-+	}
++	debugfs_remove_recursive(heap->heap_root);
++	heap->heap_root = NULL;
 +
 +	dev->heap_cnt--;
 +	heap_id--;
@@ -178,7 +221,7 @@ index 92c2914..4ef9316 100644
  {
  	struct ion_device *idev;
 diff --git a/drivers/staging/android/ion/ion.h b/drivers/staging/android/ion/ion.h
-index e291299..ec6d057 100644
+index e291299..28f41f0 100644
 --- a/drivers/staging/android/ion/ion.h
 +++ b/drivers/staging/android/ion/ion.h
 @@ -18,6 +18,7 @@
@@ -207,7 +250,17 @@ index e291299..ec6d057 100644
  	void (*free)(struct ion_buffer *buffer);
  	void * (*map_kernel)(struct ion_heap *heap, struct ion_buffer *buffer);
  	void (*unmap_kernel)(struct ion_heap *heap, struct ion_buffer *buffer);
-@@ -175,7 +178,7 @@ struct ion_heap {
+@@ -161,6 +164,9 @@ struct ion_heap {
+ 	wait_queue_head_t waitqueue;
+ 	struct task_struct *task;
+ 
++	/* debugfs root */
++	struct dentry *heap_root;
++
+ 	/* heap statistics */
+ 	u64 num_of_buffers;
+ 	u64 num_of_alloc_bytes;
+@@ -175,7 +181,7 @@ struct ion_heap {
   * @heap:		the heap to add
   */
  void ion_device_add_heap(struct ion_heap *heap);
@@ -216,7 +269,7 @@ index e291299..ec6d057 100644
  /**
   * some helpers for common operations on buffers using the sg_table
   * and vaddr fields
-@@ -187,6 +190,13 @@ int ion_heap_map_user(struct ion_heap *heap, struct ion_buffer *buffer,
+@@ -187,6 +193,13 @@ int ion_heap_map_user(struct ion_heap *heap, struct ion_buffer *buffer,
  int ion_heap_buffer_zero(struct ion_buffer *buffer);
  int ion_heap_pages_zero(struct page *page, size_t size, pgprot_t pgprot);
  
@@ -231,7 +284,7 @@ index e291299..ec6d057 100644
   * ion_heap_init_shrinker
   * @heap:		the heap
 diff --git a/drivers/staging/android/ion/ion_chunk_heap.c b/drivers/staging/android/ion/ion_chunk_heap.c
-index 3cdde9c..441aefb 100644
+index 3cdde9c..2e29dc9 100644
 --- a/drivers/staging/android/ion/ion_chunk_heap.c
 +++ b/drivers/staging/android/ion/ion_chunk_heap.c
 @@ -11,6 +11,8 @@
@@ -243,7 +296,84 @@ index 3cdde9c..441aefb 100644
  
  #include "ion.h"
  
-@@ -25,7 +27,8 @@ struct ion_chunk_heap {
+@@ -22,21 +24,107 @@ struct ion_chunk_heap {
+ 	unsigned long allocated;
+ };
+ 
++static int ion_chunk_heap_allocate_contig(struct ion_chunk_heap *chunk_heap,
++					  unsigned long allocated_size,
++					  struct sg_table *table,
++					  struct genpool_data_align *data)
++{
++	struct scatterlist *sg;
++	unsigned long paddr;
++	int rc;
++
++	paddr = gen_pool_alloc_algo(chunk_heap->pool,
++				    allocated_size,
++				    gen_pool_first_fit_align,
++				    data);
++	if (!paddr)
++		return -ENOMEM;
++
++	rc = sg_alloc_table(table, 1, GFP_KERNEL);
++	if (rc)
++		goto failed_to_allocate_table;
++
++	sg = table->sgl;
++	sg_set_page(sg, pfn_to_page(PFN_DOWN(paddr)),
++		    allocated_size, 0);
++
++	return 0;
++
++failed_to_allocate_table:
++	gen_pool_free(chunk_heap->pool, paddr, allocated_size);
++	return rc;
++}
++
++static int ion_chunk_heap_allocate_scattered(struct ion_chunk_heap *chunk_heap,
++					     unsigned long num_chunks,
++					     unsigned long chunk_size,
++					     struct sg_table *table,
++					     struct genpool_data_align *data)
++{
++	struct scatterlist *sg;
++	unsigned long paddr;
++	int i, rc;
++
++	rc = sg_alloc_table(table, num_chunks, GFP_KERNEL);
++	if (rc)
++		return rc;
++
++	sg = table->sgl;
++	for (i = 0; i < num_chunks; i++) {
++		paddr = gen_pool_alloc_algo(chunk_heap->pool,
++					    chunk_size,
++					    gen_pool_first_fit_align,
++					    data);
++
++		if (!paddr)
++			goto err;
++
++		sg_set_page(sg, pfn_to_page(PFN_DOWN(paddr)),
++			    chunk_size, 0);
++		sg = sg_next(sg);
++	}
++
++	return 0;
++
++err:
++	sg = table->sgl;
++	for (i -= 1; i >= 0; i--) {
++		gen_pool_free(chunk_heap->pool, page_to_phys(sg_page(sg)),
++			      sg->length);
++		sg = sg_next(sg);
++	}
++	sg_free_table(table);
++
++	return -ENOMEM;
++}
++
  static int ion_chunk_heap_allocate(struct ion_heap *heap,
  				   struct ion_buffer *buffer,
  				   unsigned long size,
@@ -253,17 +383,17 @@ index 3cdde9c..441aefb 100644
  {
  	struct ion_chunk_heap *chunk_heap =
  		container_of(heap, struct ion_chunk_heap, heap);
-@@ -34,10 +37,22 @@ static int ion_chunk_heap_allocate(struct ion_heap *heap,
- 	int ret, i;
- 	unsigned long num_chunks;
+ 	struct sg_table *table;
+-	struct scatterlist *sg;
+-	int ret, i;
+-	unsigned long num_chunks;
++	int rc;
  	unsigned long allocated_size;
--
--	allocated_size = ALIGN(size, chunk_heap->chunk_size);
--	num_chunks = allocated_size / chunk_heap->chunk_size;
--
 +	unsigned long allocated_chunk;
 +	struct genpool_data_align data;
-+
+ 
+-	allocated_size = ALIGN(size, chunk_heap->chunk_size);
+-	num_chunks = allocated_size / chunk_heap->chunk_size;
 +	 /* Set alignment */
 +	if (!is_power_of_2(alignment))
 +		return -EINVAL;
@@ -274,40 +404,94 @@ index 3cdde9c..441aefb 100644
 +	allocated_chunk = (chunk_heap->chunk_size >= alignment)
 +			? chunk_heap->chunk_size
 +					: alignment;
++
 +	/* Calculate number of allocated chunks */
 +	allocated_size = ALIGN(size, allocated_chunk);
-+	num_chunks = allocated_size / allocated_chunk;
+ 
  	if (allocated_size > chunk_heap->size - chunk_heap->allocated)
  		return -ENOMEM;
- 
-@@ -52,15 +67,22 @@ static int ion_chunk_heap_allocate(struct ion_heap *heap,
- 
- 	sg = table->sgl;
- 	for (i = 0; i < num_chunks; i++) {
--		unsigned long paddr = gen_pool_alloc(chunk_heap->pool,
--						     chunk_heap->chunk_size);
-+		unsigned long paddr = gen_pool_alloc_algo(chunk_heap->pool,
-+							  allocated_chunk,
-+							  gen_pool_first_fit_align,
-+							  &data);
+@@ -44,36 +132,44 @@ static int ion_chunk_heap_allocate(struct ion_heap *heap,
+ 	table = kmalloc(sizeof(*table), GFP_KERNEL);
+ 	if (!table)
+ 		return -ENOMEM;
+-	ret = sg_alloc_table(table, num_chunks, GFP_KERNEL);
+-	if (ret) {
+-		kfree(table);
+-		return ret;
 +
- 		if (!paddr)
- 			goto err;
- 		sg_set_page(sg, pfn_to_page(PFN_DOWN(paddr)),
--			    chunk_heap->chunk_size, 0);
-+			    allocated_chunk, 0);
- 		sg = sg_next(sg);
++	/* Always try to allocate the buffer to be physically contiguous */
++	rc = ion_chunk_heap_allocate_contig(chunk_heap,
++					    allocated_size,
++					    table,
++					    &data);
++
++	/* If allocation succeeded, we are done */
++	if (rc == 0) {
++		pr_debug("%s: Buffer allocated contiguously\n", __func__);
++		goto done;
  	}
  
+-	sg = table->sgl;
+-	for (i = 0; i < num_chunks; i++) {
+-		unsigned long paddr = gen_pool_alloc(chunk_heap->pool,
+-						     chunk_heap->chunk_size);
+-		if (!paddr)
+-			goto err;
+-		sg_set_page(sg, pfn_to_page(PFN_DOWN(paddr)),
+-			    chunk_heap->chunk_size, 0);
+-		sg = sg_next(sg);
++	/* If the allocation failed and the buffer must be contiguous */
++	if (rc && (flags & ION_FLAG_CONTIG)) {
++		pr_err("Failed to allocate physically contiguous buffer\n");
++		goto err;
+ 	}
+ 
++	/* Fall back to scattered allocation */
++	pr_debug("%s: Fall back to scattered allocation\n", __func__);
++	rc = ion_chunk_heap_allocate_scattered(chunk_heap,
++					       allocated_size / allocated_chunk,
++					       allocated_chunk, table, &data);
++	if (rc)
++		goto err;
++done:
 +	pr_debug("%s: Allocated memory buffer of %lu bytes (aligned on 0x%X)\n",
-+		 __func__, size, alignment);
++		 __func__, allocated_size, alignment);
 +
 +	buffer->size = allocated_size;
  	buffer->sg_table = table;
  	chunk_heap->allocated += allocated_size;
  	return 0;
-@@ -97,6 +119,8 @@ static void ion_chunk_heap_free(struct ion_buffer *buffer)
- 	chunk_heap->allocated -= allocated_size;
++
+ err:
+-	sg = table->sgl;
+-	for (i -= 1; i >= 0; i--) {
+-		gen_pool_free(chunk_heap->pool, page_to_phys(sg_page(sg)),
+-			      sg->length);
+-		sg = sg_next(sg);
+-	}
+-	sg_free_table(table);
+ 	kfree(table);
+-	return -ENOMEM;
++	return rc;
+ }
+ 
+ static void ion_chunk_heap_free(struct ion_buffer *buffer)
+@@ -84,9 +180,6 @@ static void ion_chunk_heap_free(struct ion_buffer *buffer)
+ 	struct sg_table *table = buffer->sg_table;
+ 	struct scatterlist *sg;
+ 	int i;
+-	unsigned long allocated_size;
+-
+-	allocated_size = ALIGN(buffer->size, chunk_heap->chunk_size);
+ 
+ 	ion_heap_buffer_zero(buffer);
+ 
+@@ -94,9 +187,11 @@ static void ion_chunk_heap_free(struct ion_buffer *buffer)
+ 		gen_pool_free(chunk_heap->pool, page_to_phys(sg_page(sg)),
+ 			      sg->length);
+ 	}
+-	chunk_heap->allocated -= allocated_size;
++	chunk_heap->allocated -= buffer->size;
  	sg_free_table(table);
  	kfree(table);
 +
@@ -315,7 +499,7 @@ index 3cdde9c..441aefb 100644
  }
  
  static struct ion_heap_ops chunk_heap_ops = {
-@@ -107,40 +131,80 @@ static struct ion_heap_ops chunk_heap_ops = {
+@@ -107,40 +202,88 @@ static struct ion_heap_ops chunk_heap_ops = {
  	.unmap_kernel = ion_heap_unmap_kernel,
  };
  
@@ -359,7 +543,9 @@ index 3cdde9c..441aefb 100644
 +			/* Zero out the chunk*/
 +			page = pfn_to_page(PFN_DOWN(mem_region->start));
 +			size = mem_region->size;
-+			ret = ion_heap_pages_zero(page, size, pgprot_writecombine(PAGE_KERNEL));
++			ret = ion_heap_pages_zero(page,
++						  size,
++						  pgprot_writecombine(PAGE_KERNEL));
 +			if (ret)
 +				goto error_gen_pool_add;
 +
@@ -370,7 +556,9 @@ index 3cdde9c..441aefb 100644
 +				     -1);
 +
 +			pr_debug("%s: New memory chunk of 0x%zX bytes starting at %pa added to the pool\n",
-+				 __func__, mem_region->size, &mem_region->start);
++				 __func__,
++				 mem_region->size,
++				 &mem_region->start);
 +
 +			chunk_heap->size +=  mem_region->size;
 +		}
@@ -406,14 +594,26 @@ index 3cdde9c..441aefb 100644
 +
 +void ion_chunk_heap_remove(void *ion_heap)
 +{
++	void *chunk_heap;
++
 +	ion_device_remove_heap(ion_heap);
++	chunk_heap = container_of(ion_heap, struct ion_chunk_heap, heap);
++	kfree(chunk_heap);
 +}
 +EXPORT_SYMBOL(ion_chunk_heap_remove);
 diff --git a/drivers/staging/android/uapi/ion.h b/drivers/staging/android/uapi/ion.h
-index 46c93fc..57c27cc 100644
+index 46c93fc..d895102 100644
 --- a/drivers/staging/android/uapi/ion.h
 +++ b/drivers/staging/android/uapi/ion.h
-@@ -68,10 +68,11 @@ enum ion_heap_type {
+@@ -47,6 +47,7 @@ enum ion_heap_type {
+  * when the buffer is mapped for dma
+  */
+ #define ION_FLAG_CACHED 1
++#define ION_FLAG_CONTIG 2
+ 
+ /**
+  * DOC: Ion Userspace API
+@@ -68,10 +69,11 @@ enum ion_heap_type {
   */
  struct ion_allocation_data {
  	__u64 len;

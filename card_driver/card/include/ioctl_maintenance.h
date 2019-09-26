@@ -45,7 +45,7 @@
 
 #define MAINT_BIOS_VERSION_LEN    72
 #define MAINT_BOARD_NAME_LEN      72
-#define MAINT_IMAGE_VERSION_LEN   72
+#define MAINT_IMAGE_VERSION_LEN   128
 
 struct maint_ioctl_ratl {
 	uint32_t time_window_ms;
@@ -68,6 +68,8 @@ struct maint_ioctl_thermal_trip {
 
 struct maint_ioctl_sys_info {
 	uint32_t ice_mask;
+	uint64_t total_unprotected_memory;
+	uint64_t total_ecc_memory;
 	char bios_version[MAINT_BIOS_VERSION_LEN];
 	char board_name[MAINT_BOARD_NAME_LEN];
 	char image_version[MAINT_IMAGE_VERSION_LEN];

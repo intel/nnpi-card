@@ -25,6 +25,7 @@
 #include "sphcs_sw_counters.h"
 #include "sphcs_trace.h"
 #include "int_stats.h"
+#include "sph_boot_defs.h"
 
 /*
  * SpringHill PCI card identity settings
@@ -150,6 +151,9 @@
 #define IATU_LWR_TARGET_ADDR_INBOUND_OFF(i)  (0x300000 + 0x114 + i*0x200)
 #define IATU_UPPER_TARGET_ADDR_INBOUND_OFF(i)  (0x300000 + 0x118 + i*0x200)
 
+/* Amount of mapped memory - 64 MB */
+#define MAPPED_MEMORY_SIZE (64ULL << 20)
+
 static const char sph_driver_name[] = "sph_pcie";
 static struct sphcs_pcie_callbacks *s_callbacks;
 
@@ -235,36 +239,6 @@ struct sph_lli_header {
 	uint32_t size;
 };
 
-static ssize_t sph_show_flr_mode(struct device *dev,
-				 struct device_attribute *attr, char *buf)
-{
-	switch (s_flr_mode) {
-	case SPH_FLR_MODE_COLD:
-		return sprintf(buf, "cold\n");
-	case SPH_FLR_MODE_IGNORE:
-		return sprintf(buf, "ignore\n");
-	case SPH_FLR_MODE_WARM:
-	default:
-		return sprintf(buf, "warm\n");
-	}
-}
-
-static ssize_t sph_store_flr_mode(struct device *dev,
-				  struct device_attribute *attr,
-				  const char *buf, size_t count)
-{
-	if (count >= 4 && !strncmp(buf, "warm", 4))
-		s_flr_mode = SPH_FLR_MODE_WARM;
-	else if (count >= 4 && !strncmp(buf, "cold", 4))
-		s_flr_mode = SPH_FLR_MODE_COLD;
-	else if (count >= 6 && !strncmp(buf, "ignore", 6))
-		s_flr_mode = SPH_FLR_MODE_IGNORE;
-
-	return count;
-}
-
-static DEVICE_ATTR(flr_mode, 0644, sph_show_flr_mode, sph_store_flr_mode);
-
 static int sphcs_sph_init_dma_engine(void *hw_handle);
 
 static inline void sph_mmio_write(struct sph_pci_device *sph_pci,
@@ -285,6 +259,51 @@ static inline uint32_t sph_mmio_read(struct sph_pci_device *sph_pci,
 
 	return ret;
 }
+
+static ssize_t sph_show_flr_mode(struct device *dev,
+				 struct device_attribute *attr, char *buf)
+{
+	switch (s_flr_mode) {
+	case SPH_FLR_MODE_COLD:
+		return sprintf(buf, "cold\n");
+	case SPH_FLR_MODE_IGNORE:
+		return sprintf(buf, "ignore\n");
+	case SPH_FLR_MODE_WARM:
+	default:
+		return sprintf(buf, "warm\n");
+	}
+}
+
+static ssize_t sph_store_flr_mode(struct device *dev,
+				  struct device_attribute *attr,
+				  const char *buf, size_t count)
+{
+	struct pci_dev *pdev = to_pci_dev(dev);
+	struct sph_pci_device *sph_pci;
+
+	sph_pci = pci_get_drvdata(pdev);
+	if (!sph_pci)
+		return count;
+
+	if (count >= 4 && !strncmp(buf, "warm", 4))
+		s_flr_mode = SPH_FLR_MODE_WARM;
+	else if (count >= 4 && !strncmp(buf, "cold", 4))
+		s_flr_mode = SPH_FLR_MODE_COLD;
+	else if (count >= 6 && !strncmp(buf, "ignore", 6))
+		s_flr_mode = SPH_FLR_MODE_IGNORE;
+
+	sph_mmio_write(sph_pci,
+		       ELBI_CPU_STATUS_2,
+		       s_flr_mode);
+
+	sph_log_debug(GENERAL_LOG, "wrote 0x%x to cpu_status_2 (0x%x)\n",
+		      s_flr_mode,
+		      sph_mmio_read(sph_pci, ELBI_CPU_STATUS_2));
+
+	return count;
+}
+
+static DEVICE_ATTR(flr_mode, 0644, sph_show_flr_mode, sph_store_flr_mode);
 
 static void sph_process_commands(struct sph_pci_device *sph_pci)
 {
@@ -636,6 +655,12 @@ static irqreturn_t interrupt_handler(int irq, void *data)
 	    (sph_pci->host_status &
 	     ELBI_IOSF_STATUS_DOORBELL_MASK)) {
 		u32 val = sph_mmio_read(sph_pci, ELBI_PCI_HOST_DOORBELL_VALUE);
+
+		/* Issue card reset if requested from host */
+		if (val & SPH_HOST_DRV_REQUEST_SELF_RESET_MASK) {
+			sph_log_err(GENERAL_LOG, "Self reset requested from host !!\n");
+			sph_warm_reset();
+		}
 
 		s_callbacks->host_doorbell_value_changed(sph_pci->sphcs, val);
 	}
@@ -1381,48 +1406,18 @@ static int sph_set_card_doorbell_value(void *hw_handle, u32 value)
 	return 0;
 }
 
-static int sph_map_inbound_mem(void      *hw_handle,
-			       dma_addr_t host_address,
-			       dma_addr_t target_address,
-			       uint64_t   size)
+static void sph_get_inbound_mem(void *hw_handle, dma_addr_t *base_addr, size_t *size)
 {
 	struct sph_pci_device *sph_pci = (struct sph_pci_device *)hw_handle;
-	uint64_t limit_addr = host_address + size;
+	u32 base_addr_lo, base_addr_hi;
 
-	sph_mmio_write(sph_pci,
-		       IATU_LWR_BASE_ADDR_INBOUND_OFF(0),
-		       lower_32_bits(host_address));
+	base_addr_lo = sph_mmio_read(sph_pci, IATU_LWR_TARGET_ADDR_INBOUND_OFF(0));
+	base_addr_hi = sph_mmio_read(sph_pci, IATU_UPPER_TARGET_ADDR_INBOUND_OFF(0));
 
-	sph_mmio_write(sph_pci,
-		       IATU_UPPER_BASE_ADDR_INBOUND_OFF(0),
-		       upper_32_bits(host_address));
-
-	sph_mmio_write(sph_pci,
-		       IATU_LIMIT_ADDR_INBOUND_OFF(0),
-		       lower_32_bits(limit_addr));
-
-	sph_mmio_write(sph_pci,
-		       IATU_UPPER_LIMIT_ADDR_INBOUND_OFF(0),
-		       upper_32_bits(limit_addr));
-
-	sph_mmio_write(sph_pci,
-		       IATU_LWR_TARGET_ADDR_INBOUND_OFF(0),
-		       lower_32_bits(target_address));
-
-	sph_mmio_write(sph_pci,
-		       IATU_UPPER_TARGET_ADDR_INBOUND_OFF(0),
-		       upper_32_bits(target_address));
-
-	sph_mmio_write(sph_pci,
-		       IATU_REGION_CTRL_1_INBOUND_OFF(0),
-		       0);
-
-	sph_mmio_write(sph_pci,
-		       IATU_REGION_CTRL_2_INBOUND_OFF(0),
-		       0x80000000); /* Enable region in address match mode */
-
-	return 0;
+	*base_addr = ((u64)base_addr_hi << 32 | base_addr_lo);
+	*size = MAPPED_MEMORY_SIZE;
 }
+
 
 #ifdef ULT
 static int debug_cmdq_show(struct seq_file *m, void *v)
@@ -1524,7 +1519,8 @@ static struct sphcs_pcie_hw_ops s_pcie_sph_ops = {
 	.write_mesg = sph_respq_write_mesg,
 	.get_host_doorbell_value = sph_get_host_doorbell_value,
 	.set_card_doorbell_value = sph_set_card_doorbell_value,
-	.map_inbound_mem = sph_map_inbound_mem,
+	.get_inbound_mem = sph_get_inbound_mem,
+
 
 	.dma.reset_rd_dma_engine = sphcs_sph_reset_rd_dma_engine,
 	.dma.reset_wr_dma_engine = sphcs_sph_reset_wr_dma_engine,
@@ -1645,6 +1641,11 @@ static int sph_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 	/* update bus master state - enable DMA if bus master is set */
 	set_bus_master_state(sph_pci);
 
+	/* update default flr_mode in card status reg */
+	sph_mmio_write(sph_pci,
+		       ELBI_CPU_STATUS_2,
+		       s_flr_mode);
+
 	/* Update sphcs with current host doorbell value */
 	doorbell_val = sph_mmio_read(sph_pci, ELBI_PCI_HOST_DOORBELL_VALUE);
 	s_callbacks->host_doorbell_value_changed(sph_pci->sphcs, doorbell_val);
@@ -1698,11 +1699,6 @@ static void sph_remove(struct pci_dev *pdev)
 	debugfs_remove_recursive(s_debugfs_dir);
 	s_debugfs_dir = NULL;
 #endif
-
-	/* Disable IATU inbound region 0 */
-	sph_mmio_write(sph_pci,
-		       IATU_REGION_CTRL_2_INBOUND_OFF(0),
-		       0x0);
 
 	rc = s_callbacks->destroy_sphcs(sph_pci->sphcs);
 	if (rc)

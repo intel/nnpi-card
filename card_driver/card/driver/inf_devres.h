@@ -12,6 +12,7 @@
 #include <linux/spinlock.h>
 #include <linux/dma-buf.h>
 #include "inf_types.h"
+#include "sphcs_p2p.h"
 
 struct exec_queue_entry {
 	struct inf_exec_req *req;
@@ -31,6 +32,7 @@ struct inf_devres {
 
 	enum dma_data_direction dir;
 	uint64_t                size;
+	uint8_t                 depth;
 	uint32_t                usage_flags;
 
 	int               buf_fd;
@@ -42,11 +44,14 @@ struct inf_devres {
 	unsigned int      queue_version;
 	enum create_status status;
 	int                destroyed;
+
+	struct sphcs_p2p_buf p2p_buf;
 };
 
 int inf_devres_create(uint16_t            protocolID,
 		      struct inf_context *context,
-			  uint64_t            size,
+		      uint64_t            size,
+		      uint8_t             depth,
 		      uint32_t            usage_flags,
 		      struct inf_devres **out_devres);
 void destroy_devres_on_create_failed(struct inf_devres *devres);
@@ -67,5 +72,8 @@ void inf_devres_del_req_from_queue(struct inf_devres   *devres,
 				   struct inf_exec_req *req);
 void inf_devres_try_execute(struct inf_devres *devres);
 bool inf_devres_req_ready(struct inf_devres *devres, struct inf_exec_req *req, bool for_read);
+
+void inf_devres_add_to_p2p(struct inf_devres *devres);
+void inf_devres_remove_from_p2p(struct inf_devres *devres);
 
 #endif

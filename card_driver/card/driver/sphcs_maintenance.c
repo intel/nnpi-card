@@ -49,7 +49,6 @@ static u16 s_fpga_rev;
 
 static struct sph_sys_info s_sys_info_packet;
 static bool                s_sys_info_packet_valid;
-static struct work_struct  s_sys_info_work;
 
 
 /*****************************************************************************
@@ -183,6 +182,8 @@ static void send_sys_info_handler(struct work_struct *work)
 	}
 }
 
+static DECLARE_WORK(s_sys_info_work, send_sys_info_handler);
+
 int sphcs_maint_send_sys_info(void)
 {
 	schedule_work(&s_sys_info_work);
@@ -199,6 +200,8 @@ static long set_sys_info(void __user *arg)
 		return -EIO;
 
 	s_sys_info_packet.ice_mask = sys_info.ice_mask;
+	s_sys_info_packet.totalUnprotectedMemory = sys_info.total_unprotected_memory;
+	s_sys_info_packet.totalEccMemory = sys_info.total_ecc_memory;
 	memcpy(s_sys_info_packet.bios_version,
 	       sys_info.bios_version,
 	       SPH_BIOS_VERSION_LEN);
@@ -493,7 +496,6 @@ int sphcs_init_maint_interface(void)
 		return ret;
 	}
 
-	INIT_WORK(&s_sys_info_work, send_sys_info_handler);
 	sph_power_init();
 
 	// Try to attach to FPGA SMBus device if adapter already present

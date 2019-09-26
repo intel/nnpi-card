@@ -142,15 +142,31 @@ static struct kmsg_dumper dumper = {
 int sphcs_crash_dump_init(void)
 {
 	int retval;
+	struct page *crash_dump_pages[SPH_CRASH_DUMP_SIZE_PAGES];
+	int i;
 
 	/* setup crash dump memory */
-	if (g_the_sphcs->inbound_mem) {
+	if (g_the_sphcs->inbound_mem_dma_addr) {
+
+		for (i = 0; i < SPH_CRASH_DUMP_SIZE_PAGES; i++)
+			crash_dump_pages[i] = pfn_to_page(__phys_to_pfn(dma_to_phys(g_the_sphcs->hw_device, g_the_sphcs->inbound_mem_dma_addr + i*PAGE_SIZE)));
+
+		g_the_sphcs->inbound_mem = vm_map_ram(crash_dump_pages, SPH_CRASH_DUMP_SIZE_PAGES, -1, PAGE_KERNEL);
+
+		if (!g_the_sphcs->inbound_mem) {
+			sph_log_err(START_UP_LOG,
+				    "Failed to map inbound memory region\n");
+			return -ENOMEM;
+		}
+
+		g_the_sphcs->inbound_mem->magic = SPH_INBOUND_MEM_MAGIC;
+		g_the_sphcs->inbound_mem->crash_dump_size = 0;
+
 		crash_dump_desc.card_vaddr = &g_the_sphcs->inbound_mem->crash_dump[0];
 		crash_dump_desc.card_dma_addr =
 			g_the_sphcs->inbound_mem_dma_addr +
-			offsetof(struct sph_inbound_mem, crash_dump);
+			offsetof(union sph_inbound_mem, crash_dump);
 
-		crash_dump_desc.alloced = false;
 	} else {
 		crash_dump_desc.card_vaddr =
 			dma_alloc_coherent(g_the_sphcs->hw_device,
@@ -160,11 +176,9 @@ int sphcs_crash_dump_init(void)
 
 		if (!crash_dump_desc.card_vaddr) {
 			sph_log_err(START_UP_LOG, "Failed to allocate crash dump buffer\n");
-			retval = -ENOMEM;
-			goto failed_to_allocate;
+			return -ENOMEM;
 		}
 
-		crash_dump_desc.alloced = true;
 	}
 
 	sph_log_info(START_UP_LOG, "Crash log buffer at: 0x%llx\n",
@@ -185,12 +199,13 @@ int sphcs_crash_dump_init(void)
 	return 0;
 
 failed_to_register_dump:
-	if (crash_dump_desc.alloced)
+	if (g_the_sphcs->inbound_mem_dma_addr)
+		vm_unmap_ram(g_the_sphcs->inbound_mem, SPH_CRASH_DUMP_SIZE_PAGES);
+	else
 		dma_free_coherent(g_the_sphcs->hw_device,
 				  SPH_CRASH_DUMP_SIZE,
 				  crash_dump_desc.card_vaddr,
 				  crash_dump_desc.card_dma_addr);
-failed_to_allocate:
 
 	return retval;
 }
@@ -198,11 +213,14 @@ failed_to_allocate:
 void sphcs_crash_dump_cleanup(void)
 {
 	kmsg_dump_unregister(&dumper);
-	if (crash_dump_desc.alloced)
+	if (g_the_sphcs->inbound_mem_dma_addr)
+		vm_unmap_ram(g_the_sphcs->inbound_mem, SPH_CRASH_DUMP_SIZE_PAGES);
+	else
 		dma_free_coherent(g_the_sphcs->hw_device,
 				  SPH_CRASH_DUMP_SIZE,
 				  crash_dump_desc.card_vaddr,
 				  crash_dump_desc.card_dma_addr);
+
 }
 
 void sphcs_crash_dump_setup_host_addr(u64 host_dma_addr)

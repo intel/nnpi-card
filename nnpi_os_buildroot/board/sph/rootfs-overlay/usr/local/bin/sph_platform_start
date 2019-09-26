@@ -4,6 +4,8 @@
 
 KVER=`uname -r`
 
+
+
 echo "**********************************************************************"
 echo "** Running /usr/local/bin/sph_platform_start_main (kernel $KVER)... **"
 echo "**********************************************************************"
@@ -54,25 +56,35 @@ ln -sf /opt/intel_nnpi/bin/sph_trace    /usr/bin/sph_trace
 ln -sf /opt/intel_nnpi/bin/sph_hwtrace    /usr/bin/sph_hwtrace
 ln -sf /opt/intel_nnpi/bin/sph_maintenance /usr/bin/sph_maintenance
 
-
-#post_build will replace by memalloc_sph_sa or memalloc_sph_ep
-. sph_memalloc_placeholder
-
-#TEMPORARY PATCH: ice_driver is loaded by init_ice_driver after it performs some mapping of good/bad ICEs
-HOSTNAME=`hostname`
-FLAVOR=`echo $HOSTNAME | cut -d "[" -f2 | cut -d "]" -f1`
-
 #post_build will replace by start_spa_sa ot start_eph_ep
 . sph_start_placeholder 
+
+#Order of modules insertion shall be:
+# 1. sphcs
+# 2. intel_sphpb
+# 3. sph_memalloc
+# 4. intel_cve
 
 #initializing SPH card driver
 echo "initializing SPH card driver"
 insmod /opt/intel_nnpi/modules/sphcs.ko
 error_check "insmod sphcs.ko"
 
+#initializing SPH power balancing driver
+echo "initializing SPH power balancing driver"
+insmod /opt/intel_nnpi/modules/intel_sphpb.ko
+error_check "insmod intel_sphpb.ko"
+
+#post_build will replace by memalloc_sph_sa or memalloc_sph_ep
+. sph_memalloc_placeholder
+
 export LD_LIBRARY_PATH=/usr/local/lib
 
 init_ice_driver ${FLAVOR}
+#TEMPORARY PATCH: ice_driver is loaded by init_ice_driver after it performs some mapping of good/bad ICEs
+
+HOSTNAME=`hostname`
+FLAVOR=`echo $HOSTNAME | cut -d "[" -f2 | cut -d "]" -f1`
 
 #register counters
 echo "initializing register counters"

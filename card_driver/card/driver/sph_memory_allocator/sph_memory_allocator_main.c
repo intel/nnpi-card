@@ -83,8 +83,8 @@ static const struct sph_sw_counters_group_info sw_counters_groups_info[] = {
 static const struct sph_sw_counter_info sw_counters_info[] = {
 		{0, "non_protected.bytes.total", "Total number of bytes of device memory in the unprotected region"},
 		{0, "non_protected.bytes.bad", "Number of bad bytes in the unprotected region (memory test failed)"},
-		{0, "protected.bytes.total", "Total number of bytes of device memory in the unprotected region"},
-		{0, "protected.bytes.bad", "Number of bad bytes in the unprotected region (memory test failed)"},
+		{0, "protected.bytes.total", "Total number of bytes of device memory in the protected region"},
+		{0, "protected.bytes.bad", "Number of bad bytes in the protected region (memory test failed)"},
 };
 
 static const struct sph_sw_counters_set sw_counters_set = {
@@ -642,6 +642,11 @@ int sph_memory_allocator_init_module(void)
 
 	sph_log_debug(START_UP_LOG, "module (version %s) started\n", SPH_VERSION);
 
+	if (sph_mem == NULL) {
+		sph_log_err(START_UP_LOG, "sph_mem module parameter is empty\n");
+		return -EINVAL;
+	}
+
 	rc = sph_create_sw_counters_info_node(NULL,
 					       &sw_counters_set,
 					       NULL,
@@ -659,6 +664,7 @@ int sph_memory_allocator_init_module(void)
 		sph_log_err(START_UP_LOG, "Failed to create sw counters values\n");
 		goto failed_to_create_sw_counters_values;
 	}
+
 
 	/* Parse module param and create list of managed memory regions */
 	rc = parse_sph_mem(sph_mem);

@@ -29,6 +29,16 @@
 #include <linux/delay.h>
 #include <linux/reboot.h>
 #include <linux/version.h>
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(4, 16, 0)) /* SPH_IGNORE_STYLE_CHECK */
+#include <linux/dma-direct.h>
+#else
+#include <linux/dma-mapping.h>
+#endif
+#ifdef CARD_PLATFORM_BR
+#include <linux/ion_exp.h>
+#include "sph_mem_alloc_defs.h"
+#endif
+#include "sphcs_p2p.h"
 
 /* Disable MCE support on COH and CentOS local builds */
 #if defined(RHEL_RELEASE_CODE) || defined(HW_LAYER_LOCAL)
@@ -47,6 +57,11 @@ void *g_hSwCountersInfo_network;
 void *g_hSwCountersInfo_infreq;
 void *g_hSwCountersInfo_copy;
 struct sph_sw_counters *g_sph_sw_counters;
+
+#ifdef CARD_PLATFORM_BR
+LIST_HEAD(p2p_regions);
+static void *p2p_heap_handle;
+#endif
 
 void sphcs_send_event_report(struct sphcs *sphcs,
 			     uint16_t eventCode,
@@ -127,14 +142,7 @@ static void IPC_OPCODE_HANDLER(SETUP_CRASH_DUMP)(
 	sph_log_info(CREATE_COMMAND_LOG, "Setup Crash dump received\n");
 
 	sphcs_crash_dump_setup_host_addr(SPH_IPC_DMA_PFN_TO_ADDR(setup_msg->dma_addr));
-	if (sphcs->hw_ops->map_inbound_mem &&
-	    sphcs->inbound_mem &&
-	    setup_msg->membar_addr) {
-		sphcs->hw_ops->map_inbound_mem(sphcs->hw_handle,
-					       setup_msg->membar_addr,
-					       sphcs->inbound_mem_dma_addr,
-					       SPH_INBOUND_MEM_SIZE);
-	}
+
 }
 
 static void IPC_OPCODE_HANDLER(CLOCK_SYNC)(
@@ -424,6 +432,45 @@ static int handle_mce_event(struct notifier_block *nb, unsigned long val, void *
 }
 #endif
 
+static void sphcs_remove_p2p_heap(void)
+{
+#ifdef CARD_PLATFORM_BR
+	if (p2p_heap_handle)
+		ion_chunk_heap_remove(p2p_heap_handle);
+#endif
+}
+
+static int sphcs_create_p2p_heap(struct sphcs *sphcs)
+{
+	int ret = 0;
+
+#ifdef CARD_PLATFORM_BR
+	struct mem_region *reg;
+
+	reg = vmalloc(sizeof(struct mem_region));
+
+	/* the first SPH_CRASH_DUMP_SIZE bytes of the memory, accessed through BAR2,
+	 * are reserved for the crash dump, the rest are managed by peer-to-peer heap
+	 */
+	reg->start = sphcs->inbound_mem_dma_addr + SPH_CRASH_DUMP_SIZE;
+	reg->size = sphcs->inbound_mem_size - SPH_CRASH_DUMP_SIZE;
+	list_add(&reg->list, &p2p_regions);
+	p2p_heap_handle = ion_chunk_heap_setup(&p2p_regions, P2P_HEAP_NAME);
+	list_del(&reg->list);
+	vfree(reg);
+
+	if (IS_ERR(p2p_heap_handle)) {
+		sph_log_err(START_UP_LOG, "Failed to create p2p heap\n");
+		ret = PTR_ERR(p2p_heap_handle);
+		p2p_heap_handle = NULL;
+	} else
+		sph_log_debug(START_UP_LOG, "p2p heap successfully created\n");
+#endif
+
+	return ret;
+
+}
+
 static int sphcs_create_sphcs(void                           *hw_handle,
 			      struct device                  *hw_device,
 			      const struct sphcs_pcie_hw_ops *hw_ops,
@@ -589,29 +636,23 @@ static int sphcs_create_sphcs(void                           *hw_handle,
 	*out_dmaSched = sphcs->dmaSched;
 	g_the_sphcs = sphcs;
 
-	if (sphcs->hw_ops->map_inbound_mem) {
-		sphcs->inbound_mem =
-			(struct sph_inbound_mem *)dma_alloc_coherent(sphcs->hw_device,
-								     SPH_INBOUND_MEM_SIZE,
-								     &sphcs->inbound_mem_dma_addr,
-								     GFP_KERNEL);
-		if (!sphcs->inbound_mem) {
-			sph_log_err(START_UP_LOG,
-				    "Failed to allocate inbound memory region of %u bytes vaddr=0x%lx\n",
-				    SPH_INBOUND_MEM_SIZE,
-				    (uintptr_t)sphcs->inbound_mem);
-			ret = -ENOMEM;
-			goto free_counters_infreq;
-		} else {
-			sphcs->inbound_mem->magic = SPH_INBOUND_MEM_MAGIC;
-			sphcs->inbound_mem->crash_dump_size = 0;
+	/* Retrieve addresses set by BIOS and create peer-to-peer heap */
+	if (sphcs->hw_ops->get_inbound_mem) {
+		sphcs->hw_ops->get_inbound_mem(sphcs->hw_handle, &sphcs->inbound_mem_dma_addr, &sphcs->inbound_mem_size);
+		sph_log_info(GENERAL_LOG, "Inbound memory: base addr %pad, size - %zu\n", &sphcs->inbound_mem_dma_addr, sphcs->inbound_mem_size);
+		if (sphcs->inbound_mem_dma_addr) {
+			ret = sphcs_create_p2p_heap(sphcs);
+			if (ret) {
+				sph_log_err(START_UP_LOG, "Failed to create p2p heap\n");
+				goto free_counters_infreq;
+			}
 		}
 	}
 
 	ret = sphcs_init_th_driver();
 	if (ret) {
 		sph_log_err(START_UP_LOG, "Failed to initialize intel trace hub module\n");
-		goto free_inbound_mem;
+		goto release_p2p_heap;
 	}
 
 	ret = sphcs_crash_dump_init();
@@ -635,12 +676,8 @@ static int sphcs_create_sphcs(void                           *hw_handle,
 	return 0;
 free_intel_th_driver:
 	sphcs_deinit_th_driver();
-free_inbound_mem:
-	if (sphcs->inbound_mem)
-		dma_free_coherent(sphcs->hw_device,
-				  SPH_INBOUND_MEM_SIZE,
-				  sphcs->inbound_mem,
-				  sphcs->inbound_mem_dma_addr);
+release_p2p_heap:
+	sphcs_remove_p2p_heap();
 free_counters_infreq:
 	sph_remove_sw_counters_info_node(g_hSwCountersInfo_infreq);
 free_counters_copy:
@@ -690,6 +727,8 @@ void sphcs_host_doorbell_value_changed(struct sphcs *sphcs,
 
 	sph_log_debug(GENERAL_LOG, "Got host doorbell value 0x%x\n", doorbell_value);
 
+	sphcs_p2p_new_message_arrived(doorbell_value);
+
 	sphcs->host_doorbell_val = doorbell_value;
 
 	if (sphcs->host_connected &&
@@ -727,7 +766,6 @@ static int sphcs_destroy_sphcs(struct sphcs *sphcs)
 	sphcs->hw_ops->set_card_doorbell_value(sphcs->hw_handle,
 			    (SPH_CARD_BOOT_STATE_NOT_READY <<
 			     SPH_CARD_BOOT_STATE_SHIFT));
-
 	sphcs_crash_dump_cleanup();
 	destroy_workqueue(sphcs->wq);
 	inference_fini(sphcs);
@@ -751,11 +789,7 @@ static int sphcs_destroy_sphcs(struct sphcs *sphcs)
 	g_the_sphcs = NULL;
 	debugfs_remove_recursive(sphcs->debugfs_dir);
 
-	if (sphcs->inbound_mem)
-		dma_free_coherent(sphcs->hw_device,
-				  SPH_INBOUND_MEM_SIZE,
-				  sphcs->inbound_mem,
-				  sphcs->inbound_mem_dma_addr);
+	sphcs_remove_p2p_heap();
 
 	kfree(sphcs);
 	return 0;

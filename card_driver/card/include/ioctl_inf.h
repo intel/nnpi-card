@@ -103,13 +103,17 @@ typedef enum {
 	IOCTL_SPHCS_INFER_SCHEDULE_ERROR              = 13,
 	IOCTL_SPHCS_NO_MEMORY                         = 14,
 	IOCTL_SPHCS_INSUFFICIENT_RESOURCES            = 15,
+	IOCTL_SPHCS_ECC_ALLOC_FAILED                  = 16,
 } IoctlSphcsError;
 
 /* Resource usage_flags bits */
-#define IOCTL_INF_RES_INPUT         1
-#define IOCTL_INF_RES_OUTPUT        2
-#define IOCTL_INF_RES_NETWORK       4
+#define IOCTL_INF_RES_INPUT          1
+#define IOCTL_INF_RES_OUTPUT         2
+#define IOCTL_INF_RES_NETWORK        4
 #define IOCTL_INF_RES_FORCE_4G_ALLOC 8
+#define IOCTL_INF_RES_ECC            16
+#define IOCTL_INF_RES_P2P_DST        32
+#define IOCTL_INF_RES_P2P_SRC        64
 
 struct inf_cmd_header {
 	uint32_t opcode;

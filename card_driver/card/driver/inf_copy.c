@@ -223,6 +223,108 @@ static int copy_complete_cb(struct sphcs *sphcs, void *ctx, const void *user_dat
 	return err;
 }
 
+int inf_d2d_copy_create(uint16_t protocolCopyID,
+		    struct inf_context *context,
+		    struct inf_devres *from_devres,
+		    uint64_t dest_host_addr,
+		    struct inf_copy **out_copy)
+{
+	struct inf_copy *copy;
+	struct sg_table to_sgt;
+	int ret;
+	u64 transfer_size;
+
+	ret = sg_alloc_table(&to_sgt, 1, GFP_KERNEL);
+	if (ret != 0) {
+		sph_log_err(CREATE_COMMAND_LOG, "Failed to allocate sg table\n");
+		return ret;
+	}
+
+	to_sgt.sgl->length = from_devres->size;
+	to_sgt.sgl->dma_address = dest_host_addr;
+
+	sph_log_debug(GENERAL_LOG, "d2d target dma addr %pad, length %u\n", &to_sgt.sgl->dma_address, to_sgt.sgl->length);
+
+	copy = kzalloc(sizeof(struct inf_copy), GFP_KERNEL);
+	if (unlikely(copy == NULL)) {
+		sph_log_err(CREATE_COMMAND_LOG, "FATAL: %s():%u failed to allocate copy object\n", __func__, __LINE__);
+		ret = -ENOMEM;
+		goto failed_to_allocate_copy;
+	}
+
+	/* Initialize the copy structure*/
+	kref_init(&copy->ref);
+	copy->magic = inf_copy_create;
+	copy->protocolID = protocolCopyID;
+	copy->context = context;
+	copy->devres = from_devres;
+	copy->lli_buf = NULL;
+	copy->destroyed = false;
+	copy->min_block_time = U64_MAX;
+	copy->max_block_time = 0;
+	copy->min_exec_time = U64_MAX;
+	copy->max_exec_time = 0;
+	copy->min_hw_exec_time = U64_MAX;
+	copy->max_hw_exec_time = 0;
+	/* d2d copy needs DMA Wr*/
+	copy->card2Host = true;
+	copy->d2d = true;
+
+	ret = sph_create_sw_counters_values_node(g_hSwCountersInfo_copy,
+						 (u32)protocolCopyID,
+						 context->sw_counters,
+						 &copy->sw_counters);
+	if (unlikely(ret < 0))
+		goto failed_to_create_counters;
+
+	/* Increment devres and context refcount as copy has the references to them */
+	inf_devres_get(from_devres);
+	inf_context_get(context);
+
+	/* Add copy to the context hash */
+	SPH_SPIN_LOCK(&copy->context->lock);
+	hash_add(copy->context->copy_hash,
+		 &copy->hash_node,
+		 copy->protocolID);
+	SPH_SPIN_UNLOCK(&copy->context->lock);
+
+	/* Calculate DMA LLI size */
+	copy->lli_size = g_the_sphcs->hw_ops->dma.calc_lli_size(g_the_sphcs->hw_handle, from_devres->dma_map, &to_sgt, 0);
+	SPH_ASSERT(copy->lli_size > 0);
+
+	/* Allocate memory for DMA LLI */
+	copy->lli_buf = dma_alloc_coherent(g_the_sphcs->hw_device, copy->lli_size, &copy->lli_addr, GFP_KERNEL);
+	if (unlikely(copy->lli_buf == NULL)) {
+		sph_log_err(CREATE_COMMAND_LOG, "FATAL: line:%u failed to allocate lli buffer\n", __LINE__);
+		ret = -ENOMEM;
+		goto failed_to_allocate_lli;
+	}
+
+	/* Generate LLI */
+	transfer_size = g_the_sphcs->hw_ops->dma.gen_lli(g_the_sphcs->hw_handle, from_devres->dma_map, &to_sgt, copy->lli_buf, 0);
+	SPH_ASSERT(transfer_size == from_devres->size);
+
+	/* Send report to host */
+	sphcs_send_event_report(g_the_sphcs,
+				SPH_IPC_CREATE_COPY_SUCCESS,
+				0,
+				copy->context->protocolID,
+				copy->protocolID);
+
+	sg_free_table(&to_sgt);
+
+	return 0;
+
+failed_to_allocate_lli:
+	sph_remove_sw_counters_values_node(copy->sw_counters);
+failed_to_create_counters:
+	kfree(copy);
+failed_to_allocate_copy:
+	sg_free_table(&to_sgt);
+
+	return ret;
+}
+
 int inf_copy_create(uint16_t protocolCopyID, struct inf_context *context, struct inf_devres *devres, uint64_t hostDmaAddr, bool card2Host,
 		    struct inf_copy **out_copy)
 {
@@ -264,6 +366,7 @@ int inf_copy_create(uint16_t protocolCopyID, struct inf_context *context, struct
 	copy->max_exec_time = 0;
 	copy->min_hw_exec_time = U64_MAX;
 	copy->max_hw_exec_time = 0;
+	copy->d2d = false;
 #ifdef _DEBUG
 	copy->hostres_size = 0;
 #endif
@@ -339,8 +442,8 @@ static void release_copy(struct work_struct *work)
 				copy->lli_size,
 				copy->lli_buf,
 				copy->lli_addr);
-
-	sph_remove_sw_counters_values_node(copy->sw_counters);
+	if (copy->sw_counters)
+		sph_remove_sw_counters_values_node(copy->sw_counters);
 
 	ret = inf_devres_put(copy->devres);
 	SPH_ASSERT(ret == 0);
@@ -604,29 +707,33 @@ void inf_copy_req_complete(struct inf_exec_req *req, int err, u32 xferTimeUS)
 	}
 	req->time = 0;
 
-
-	if (unlikely(err < 0)) {
-		sph_log_err(EXECUTE_COMMAND_LOG, "Execute copy failed with err=%d\n", err);
-		status = SPH_IPC_EXECUTE_COPY_FAILED;
-		switch (err) {
-		case -ENOMEM:
-			eventVal = SPH_IPC_NO_MEMORY;
-			break;
-		case -SPHER_CONTEXT_BROKEN:
-			eventVal = SPH_IPC_CONTEXT_BROKEN;
-			break;
-		default:
-			eventVal = SPH_IPC_DMA_ERROR;
-		}
+	/* Notify the peer */
+	if (req->copy->d2d) {
+		sphcs_p2p_ring_doorbell(req->copy->devres->p2p_buf.peer_dev);
 	} else {
-		status = SPH_IPC_EXECUTE_COPY_SUCCESS;
-		eventVal = 0;
+		if (unlikely(err < 0)) {
+			sph_log_err(EXECUTE_COMMAND_LOG, "Execute copy failed with err=%d\n", err);
+			status = SPH_IPC_EXECUTE_COPY_FAILED;
+			switch (err) {
+			case -ENOMEM:
+				eventVal = SPH_IPC_NO_MEMORY;
+				break;
+			case -SPHER_CONTEXT_BROKEN:
+				eventVal = SPH_IPC_CONTEXT_BROKEN;
+				break;
+			default:
+				eventVal = SPH_IPC_DMA_ERROR;
+			}
+		} else {
+			status = SPH_IPC_EXECUTE_COPY_SUCCESS;
+			eventVal = 0;
+		}
+		sphcs_send_event_report(g_the_sphcs,
+					status,
+					eventVal,
+					req->copy->context->protocolID,
+					req->copy->protocolID);
 	}
-	sphcs_send_event_report(g_the_sphcs,
-				status,
-				eventVal,
-				req->copy->context->protocolID,
-				req->copy->protocolID);
 
 	if (unlikely(err < 0))
 		inf_context_set_state(req->copy->context,
