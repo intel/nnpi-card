@@ -1,0 +1,140 @@
+From 65b7204a576b839527651677f8126421f4786198 Mon Sep 17 00:00:00 2001
+From: Alexey Skidanov <alexey.skidanov@intel.com>
+Date: Sat, 14 Sep 2019 17:01:07 -0400
+Subject: [PATCH 2/2] staging: android: ion: Use ida to manage heaps id
+
+ION uses running counter to assign heap id.
+
+As heaps may be installed and removed independetly, using
+running counter is not appropriate anymore.
+
+To fix this, IDA is used to manages heaps id.\
+
+Signed-off-by: Alexey Skidanov <alexey.skidanov@intel.com>
+---
+ drivers/staging/android/ion/ion.c            | 30 +++++++++++++++++++++++-----
+ drivers/staging/android/ion/ion.h            |  2 +-
+ drivers/staging/android/ion/ion_chunk_heap.c | 11 ++++++++--
+ 3 files changed, 35 insertions(+), 8 deletions(-)
+
+diff --git a/drivers/staging/android/ion/ion.c b/drivers/staging/android/ion/ion.c
+index ebbe1c5..3d15238 100644
+--- a/drivers/staging/android/ion/ion.c
++++ b/drivers/staging/android/ion/ion.c
+@@ -23,11 +23,14 @@
+ #include <linux/slab.h>
+ #include <linux/uaccess.h>
+ #include <linux/vmalloc.h>
++#include <linux/idr.h>
+ 
+ #include "ion.h"
+ 
+ static struct ion_device *internal_dev;
+-static int heap_id;
++
++#define NUM_OF_HEAPS 32
++DEFINE_IDA(heap_id_ida);
+ 
+ /* this function should only be called while dev->lock is held */
+ static void ion_buffer_add(struct ion_device *dev,
+@@ -633,15 +636,28 @@ static int debug_shrink_get(void *data, u64 *val)
+ DEFINE_SIMPLE_ATTRIBUTE(debug_shrink_fops, debug_shrink_get,
+ 			debug_shrink_set, "%llu\n");
+ 
+-void ion_device_add_heap(struct ion_heap *heap)
++int ion_device_add_heap(struct ion_heap *heap)
+ {
+ 	struct ion_device *dev = internal_dev;
+ 	int ret;
+ 	char debug_name[64];
++	int id;
+ 
+-	if (!heap->ops->allocate || !heap->ops->free)
++	if (!heap->ops->allocate || !heap->ops->free) {
+ 		pr_err("%s: can not add heap with invalid ops struct.\n",
+ 		       __func__);
++		return -EINVAL;
++	}
++
++	id = ida_alloc_range(&heap_id_ida, 0, NUM_OF_HEAPS - 1, GFP_KERNEL);
++	if (id < 0) {
++		pr_err("No more heaps may be allocated\n");
++		return id;
++	}
++
++	pr_debug("New %s heap [id %u] added\n", heap->name, heap->id);
++
++	heap->id = id;
+ 
+ 	spin_lock_init(&heap->free_lock);
+ 	spin_lock_init(&heap->stat_lock);
+@@ -685,7 +701,7 @@ void ion_device_add_heap(struct ion_heap *heap)
+ 	}
+ 
+ 	down_write(&dev->lock);
+-	heap->id = heap_id++;
++
+ 	/*
+ 	 * use negative heap->id to reverse the priority -- when traversing
+ 	 * the list later attempt higher id numbers first
+@@ -695,6 +711,8 @@ void ion_device_add_heap(struct ion_heap *heap)
+ 
+ 	dev->heap_cnt++;
+ 	up_write(&dev->lock);
++
++	return 0;
+ }
+ EXPORT_SYMBOL(ion_device_add_heap);
+ 
+@@ -709,8 +727,10 @@ void ion_device_remove_heap(struct ion_heap *heap)
+ 	heap->heap_root = NULL;
+ 
+ 	dev->heap_cnt--;
+-	heap_id--;
++	ida_free(&heap_id_ida, heap->id);
+ 	up_write(&dev->lock);
++
++	pr_debug("%s heap [id %u] removed\n", heap->name, heap->id);
+ }
+ EXPORT_SYMBOL(ion_device_remove_heap);
+ 
+diff --git a/drivers/staging/android/ion/ion.h b/drivers/staging/android/ion/ion.h
+index 995c2c8..1e1c632 100644
+--- a/drivers/staging/android/ion/ion.h
++++ b/drivers/staging/android/ion/ion.h
+@@ -185,7 +185,7 @@ struct ion_heap {
+  * ion_device_add_heap - adds a heap to the ion device
+  * @heap:		the heap to add
+  */
+-void ion_device_add_heap(struct ion_heap *heap);
++int ion_device_add_heap(struct ion_heap *heap);
+ void ion_device_remove_heap(struct ion_heap *heap);
+ /**
+  * some helpers for common operations on buffers using the sg_table
+diff --git a/drivers/staging/android/ion/ion_chunk_heap.c b/drivers/staging/android/ion/ion_chunk_heap.c
+index 9a744e2..dd838fc 100644
+--- a/drivers/staging/android/ion/ion_chunk_heap.c
++++ b/drivers/staging/android/ion/ion_chunk_heap.c
+@@ -272,10 +272,17 @@ void *ion_chunk_heap_setup(struct list_head *mem_regions_list,
+ 			   const char *heap_name)
+ {
+ 	struct ion_heap *heap;
++	int rc;
+ 
+ 	heap = ion_chunk_heap_create(heap_name, mem_regions_list);
+-	if (!IS_ERR(heap))
+-		ion_device_add_heap(heap);
++	if (IS_ERR(heap))
++		return heap;
++
++	rc = ion_device_add_heap(heap);
++	if (rc) {
++		heap = ERR_PTR(rc);
++		kfree(heap);
++	}
+ 
+ 	return heap;
+ }
+-- 
+2.7.4
+

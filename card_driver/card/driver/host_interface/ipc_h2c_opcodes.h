@@ -54,6 +54,11 @@ H2C_OPCODE(HWTRACE_STATE,		18, union h2c_HwTraceState)
 H2C_OPCODE(INF_NETWORK_RESOURCE_RESERVATION, 19, union h2c_InferenceNetworkResourceReservation)
 H2C_OPCODE(P2P_DEV,			20, union h2c_P2PDev)
 H2C_OPCODE(PEER_BUF,			21, union h2c_PeerBuf)
+H2C_OPCODE(CHANNEL_OP,			22, union h2c_ChannelOp)
+H2C_OPCODE(CHANNEL_RB_OP,		23, union h2c_ChannelDataRingbufOp)
+H2C_OPCODE(GET_CR_FIFO,			24, union h2c_GetCrFIFO)
+H2C_OPCODE(INF_CMDLIST,			25, union h2c_InferenceCmdListOp)
+H2C_OPCODE(CHANNEL_HOSTRES_OP,		26, union h2c_ChannelHostresOp)
 
 
 

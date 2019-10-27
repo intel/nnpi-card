@@ -64,6 +64,7 @@ struct cve_os_device *idc_os_device = NULL;
 u32 g_icemask;
 u32 disable_embcb;
 u32 core_mask;
+u32 disable_clk_gating;
 bool print_debug;
 static u32 icemask;
 u32 block_mmu;
@@ -1203,6 +1204,22 @@ uint32_t cve_os_read_idc_mmio_bar_nr(struct cve_device *cve_dev, uint32_t bar_nr
 	return value;
 }
 
+uint64_t idc_mmio_read64_bar_x(struct cve_device *dev,
+		uint32_t bar_nr, uint32_t offset_bytes, bool force_print)
+{
+	ASSERT((offset_bytes & ~0x3UL) == offset_bytes );
+	uint64_t value;
+
+	coral_mmio_read_multi_offset(offset_bytes, &value, bar_nr, 0);
+	cve_os_log(force_print ? CVE_LOGLEVEL_ERROR : CVE_LOGLEVEL_DEBUG,
+		"[MMIO] reading reg:%s offset:0x%x value:0x%x\n",
+		get_idc_regs_str(offset_bytes),
+		offset_bytes,
+		value);
+	return value;
+}
+
+
 uint32_t cve_os_read_mmio_32_bar_nr(struct cve_device *cve_dev, uint32_t bar_nr, uint32_t offset_bytes, bool force_print)
 {
 	ASSERT((offset_bytes & ~0x3UL) == offset_bytes );
@@ -1226,6 +1243,19 @@ uint32_t cve_os_read_mmio_32_bar_nr(struct cve_device *cve_dev, uint32_t bar_nr,
 	/* This function will always return lower 32 bit values */
 	return (uint32_t)value;
 }
+
+void idc_mmio_write64_bar_x(struct cve_device *dev, uint32_t bar, uint32_t offset, uint64_t value)
+{
+	ASSERT((offset & ~0x3UL) == offset);
+
+	char status = coral_mmio_write_multi_offset(offset, value, bar, 0);
+	ASSERT(status == 0);
+	cve_os_log(CVE_LOGLEVEL_DEBUG,
+		"[MMIO] writing reg:%s offset:0x%x value:%x\n",
+		get_idc_regs_str(offset), offset, value);
+}
+
+
 
 void cve_os_write_idc_mmio_bar_nr(struct cve_device *cve_dev, uint32_t bar_nr, uint32_t offset_bytes, uint64_t value)
 {

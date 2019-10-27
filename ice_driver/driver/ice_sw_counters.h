@@ -145,6 +145,7 @@ enum ICEDRV_SWC_INFER_DEVICE_GROUP {
 
 /* Counters in ICEDRV_SWC_CLASS_INFER_DEVICE */
 enum ICEDRV_SWC_INFER_DEVICE_COUNTER {
+	ICEDRV_SWC_INFER_DEVICE_COUNTER_ID,
 	ICEDRV_SWC_INFER_DEVICE_COUNTER_ECC_SERRCOUNT,
 	ICEDRV_SWC_INFER_DEVICE_COUNTER_ECC_DERRCOUNT,
 	ICEDRV_SWC_INFER_DEVICE_COUNTER_PARITY_ERRCOUNT,
@@ -157,7 +158,7 @@ enum ICEDRV_SWC_INFER_DEVICE_COUNTER {
 
 #if DISBALE_SWC
 
-#define ice_swc_init() _swc_no_op
+#define ice_swc_init() _swc_no_op_return_val
 #define ice_swc_fini() _swc_no_op
 
 #define ice_swc_check_node(class, node_id, parent, out) _swc_no_op_return_val

@@ -28,7 +28,7 @@ enum ultOpcodes {
 	SPH_IPC_ULT_OP_RSYSLOG,
 	SPH_IPC_ULT_NUM_OPCODES
 };
-SPH_STATIC_ASSERT(SPH_IPC_ULT_NUM_OPCODES <= 64, "Opcode ID overflow for ULT opcodes");
+SPH_STATIC_ASSERT(SPH_IPC_ULT_NUM_OPCODES <= 16, "Opcode ID overflow for ULT opcodes");
 
 struct ult_dma_single_packet_header {
 	u64 clientHandle;
@@ -76,8 +76,8 @@ static inline bool is_scattered_non_continuous_chunks(enum dma_ult_mode dma_ult_
 
 union h2c_ULTDMASingleMsg {
 	struct {
-		u64 opcode : 5;
-		u64 ultOpcode : 5;
+		u64 opcode : 6;
+		u64 ultOpcode : 4;
 		u64 size : 5; /* size in units defined by ULT_DMA_SIZE_UNIT */
 		u64 dma_ult_mode : 4;
 		u64 dma_pfn : SPH_IPC_DMA_PFN_BITS;
@@ -89,8 +89,8 @@ CHECK_MESSAGE_SIZE(union h2c_ULTDMASingleMsg, 1);
 
 union c2h_ULTDMASingleMsgReply {
 	struct {
-		u64 opcode         :  5;
-		u64 ultOpcode      :  5;
+		u64 opcode         :  6;
+		u64 ultOpcode      :  4;
 		u64 c2hDmaTime     : 32;
 		u64 reserved       : 14;
 		u64 hostPageHandle : PAGE_HANDLE_BITS;
@@ -102,8 +102,8 @@ CHECK_MESSAGE_SIZE(union c2h_ULTDMASingleMsgReply, 1);
 
 union ULTHwQMsg {
 	struct {
-		u64 opcode       :  5;
-		u64 ultOpcode    :  5;
+		u64 opcode       :  6;
+		u64 ultOpcode    :  4;
 		u64 ultMsgId     :  5;
 		u64 ultMsgsNum   : 16;
 		u64 ultMsgSeqNum : 16;
@@ -156,9 +156,9 @@ union ult_dma_bandwidth_request_info {
 
 union h2c_ULTDMABandwidthMsg {
 	struct {
-		u64 opcode : 5;
-		u64 ultOpcode : 6;
-		u64 size : 8;
+		u64 opcode : 6;
+		u64 ultOpcode : 4;
+		u64 size : 9;
 		u64 dma_pfn : SPH_IPC_DMA_PFN_BITS;
 	};
 
@@ -168,8 +168,8 @@ CHECK_MESSAGE_SIZE(union h2c_ULTDMABandwidthMsg, 1);
 
 union ULTDoorbell {
 	struct {
-		u64 opcode       :  5;
-		u64 ultOpcode    :  5;  // SPH_IPC_ULT_OP_DOORBELL
+		u64 opcode       :  6;
+		u64 ultOpcode    :  4;  // SPH_IPC_ULT_OP_DOORBELL
 		u64 reserved     : 22;
 		u64 db_val       : 32;
 	};
@@ -182,8 +182,8 @@ CHECK_MESSAGE_SIZE(union ULTDoorbell, 1);
 
 union ULTBootOverPCIReplay {
 	struct {
-		u64 opcode       :  5;
-		u64 ultOpcode    :  5;  // SPH_IPC_ULT_OP_BOOT_OVER_PCI
+		u64 opcode       :  6;
+		u64 ultOpcode    :  4;  // SPH_IPC_ULT_OP_BOOT_OVER_PCI
 		u32 descriptor_addr : 32; //32 low address bits
 		u32 image_size      : 16; //64K units
 		u64 reserved        : 6;

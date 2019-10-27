@@ -48,7 +48,7 @@
 #include "sph_device_regs.h"
 
 #define CVE_DUMP_BLOB_NR 1
-
+#define LLC_PMON_RESET 0x100
 #ifdef DEBUG_TENSILICA_ENABLE
 
 /* In CVE2.0 debug module reset (DReset)can be
@@ -70,6 +70,24 @@ inline void cve_decouple_debugger_reset(struct cve_device *cve_dev)
 #ifndef RING3_VALIDATION
 static struct kobject *hwconfig_kobj;
 static struct kobject *llcfreq_kobj;
+
+
+struct llcpmoninfo_details {
+	u32 index;
+	const u32 config_val0;
+	const u32 config_val1;
+	const char *name;
+	const char *desc;
+
+};
+
+#define __LLCPMONINFO(_index, _config_val0, _config_val1, _pmon_name, _desc) { \
+	.index = _index, \
+	.config_val0 = _config_val0, \
+	.config_val1 = _config_val1, \
+	.name = __stringify(_pmon_name), \
+	.desc = _desc, \
+}
 
 static ssize_t show_ice_freqinfo(struct kobject *kobj,
 		struct kobj_attribute *attr,
@@ -95,6 +113,22 @@ static ssize_t store_llc_freq(struct kobject *kobj,
 		struct kobj_attribute *attr,
 		const char *buf, size_t count);
 
+static ssize_t show_llcpmoninfo(struct kobject *kobj,
+		struct kobj_attribute *attr,
+		char *buf);
+
+static ssize_t show_llcpmon(struct kobject *kobj,
+		struct kobj_attribute *attr,
+		char *buf);
+
+static ssize_t show_llcpmonconfig(struct kobject *kobj,
+		struct kobj_attribute *attr,
+		char *buf);
+
+static ssize_t store_llcpmon(struct kobject *kobj,
+		struct kobj_attribute *attr,
+		const char *buf, size_t count);
+
 static struct kobj_attribute icefreqinfo_attr =
 __ATTR(freqinfo, 0444, show_ice_freqinfo, NULL);
 
@@ -109,6 +143,15 @@ __ATTR(min, 0664, show_llc_freq, store_llc_freq);
 
 static struct kobj_attribute llcfreq_max_attr =
 __ATTR(max, 0664, show_llc_freq, store_llc_freq);
+
+static struct kobj_attribute llcpmoninfo_attr =
+__ATTR(llcpmon_info, 0444, show_llcpmoninfo, NULL);
+
+static struct kobj_attribute llcpmon_config_attr =
+__ATTR(llcpmon_config, 0664, show_llcpmonconfig, store_llcpmon);
+
+static struct kobj_attribute llcpmon_read_attr =
+__ATTR(llcpmon_counters, 0444, show_llcpmon, NULL);
 
 static struct attribute *ice_freq_attrs[] = {
 	&icefreqinfo_attr.attr,
@@ -130,6 +173,45 @@ static struct attribute_group freq_attr_group = {
 static struct attribute_group llc_attr_group = {
 		.name = "freq",
 		.attrs = llc_freq_attrs,
+};
+
+static struct attribute *llcpmon_attrs[] = {
+	&llcpmoninfo_attr.attr,
+	NULL,   /* need to NULL terminate the list of attributes */
+};
+
+static struct attribute *llcpmon_control_attrs[] = {
+	&llcpmon_config_attr.attr,
+	&llcpmon_read_attr.attr,
+	NULL,   /* need to NULL terminate the list of attributes */
+};
+
+static struct attribute_group llcpmon_attr_group = {
+	.attrs = llcpmon_attrs,
+};
+
+static struct attribute_group llcpmon_control_attr_group = {
+	.attrs = llcpmon_control_attrs,
+};
+
+static int llc_pmon_config_sysfs(u32 pmonindex, struct icebo_desc *bo,
+						bool pmon_0_1);
+
+
+const u64 pre_defined_llc_pmon_cfg0[MAX_LLCPMON_PREDEF_CONFIG] = {
+		0x0, /*To disable LLC PMON */
+		0x17663B88, /*LLC PMON HIT of ICE0 in BO */
+		0x27663B88, /*LLC PMON MISS of ICE0 in BO */
+		0x37663B88, /*LLC PMON HIT + MISS of ICE0 in BO */
+		0x17663B98, /*LLC PMON ICEBO HIT */
+};
+
+const u64 pre_defined_llc_pmon_cfg1[MAX_LLCPMON_PREDEF_CONFIG] = {
+		0x0, /*To disable LLC PMON */
+		0x17663B90, /*LLC PMON HIT of ICE0 in BO */
+		0x27663B90, /*LLC PMON MISS of ICE0 in BO */
+		0x37663B90, /*LLC PMON HIT + MISS of ICE0 in BO */
+		0x27663B98, /*LLC PMON ICEBO MISS */
 };
 
 #endif
@@ -919,7 +1001,8 @@ static ssize_t show_ice_freqinfo(struct kobject *kobj,
 	int ret = 0;
 
 	ret = sprintf((buf + ret),
-		"freq value has to be in the range of 200-800 MHz, multiple of 25\n");
+		"freq value has to be in the range of %d-%d MHz, multiple of 25\n",
+		MIN_ICE_FREQ_PARAM, MAX_ICE_FREQ_PARAM);
 	return ret;
 }
 
@@ -967,7 +1050,8 @@ static ssize_t store_ice_freq(struct kobject *kobj,
 			freq_to_set > MAX_ICE_FREQ_PARAM ||
 				freq_to_set % ICE_FREQ_DIVIDER_FACTOR != 0) {
 		cve_os_log_default(CVE_LOGLEVEL_ERROR,
-			"ice freq required has to be in range of 200-800, multiple of 25\n");
+			"ice freq required has to be in range of %d-%d, multiple of 25\n",
+			MIN_ICE_FREQ_PARAM, MAX_ICE_FREQ_PARAM);
 		return -EINVAL;
 	}
 	if (ret < 0)
@@ -991,7 +1075,8 @@ static ssize_t show_llc_freqinfo(struct kobject *kobj,
 	int ret = 0;
 
 	ret = sprintf((buf + ret),
-		"freq value has to be in the range of 400-2600 MHz, multiple of 100\n");
+		"freq value has to be in the range of %d-%d MHz, multiple of 100\n",
+		MIN_LLC_FREQ_PARAM, MAX_LLC_FREQ_PARAM);
 	return ret;
 }
 
@@ -1045,7 +1130,8 @@ static ssize_t store_llc_freq(struct kobject *kobj,
 				freq_to_set % LLC_FREQ_DIVIDER_FACTOR != 0) {
 
 		cve_os_log_default(CVE_LOGLEVEL_ERROR,
-			"llc freq required has to be in range of 400-2600, multiple of 100\n");
+			"llc freq required has to be in range of %d-%d, multiple of 100\n",
+			MIN_LLC_FREQ_PARAM, MAX_LLC_FREQ_PARAM);
 		return -EINVAL;
 	}
 
@@ -1090,6 +1176,43 @@ static int ice_hw_config_llc_sysfs_init(void)
 
 	return ret;
 }
+static int icebo_hw_config_llc_pmoninfo_sysfs_init(void)
+{
+	int ret;
+	/*Create the pmoninfo file in hwconfig kobject */
+	ret = sysfs_create_group(hwconfig_kobj, &llcpmon_attr_group);
+	if (ret) {
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+			"llc pmon info sysfs group creation failed\n");
+	}
+
+	return ret;
+}
+
+static void icebo_hw_config_llc_pmoninfo_sysfs_term(void)
+{
+	/*Remove the pmoninfo file in hwconfig kobject */
+	sysfs_remove_group(hwconfig_kobj, &llcpmon_attr_group);
+}
+
+static int icebo_hw_config_llc_pmon_sysfs_init(struct icebo_desc *bo)
+{
+	int ret;
+	/*Create the icebo pmon file in hwconfig kobject */
+	ret = sysfs_create_group(bo->icebo_kobj, &llcpmon_control_attr_group);
+	if (ret) {
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+			"llc pmon info sysfs group creation failed\n");
+	}
+
+	return ret;
+}
+
+static void icebo_hw_config_llc_pmon_sysfs_term(struct icebo_desc *bo)
+{
+	/*Remove the pmoninfo file in hwconfig kobject */
+	sysfs_remove_group(bo->icebo_kobj, &llcpmon_control_attr_group);
+}
 
 static void ice_hw_config_freq_sysfs_term(struct cve_device *ice_dev)
 {
@@ -1097,6 +1220,11 @@ static void ice_hw_config_freq_sysfs_term(struct cve_device *ice_dev)
 	sysfs_remove_group(ice_dev->ice_config_kobj, &freq_attr_group);
 }
 
+static void ice_hw_config_llc_sysfs_term(void)
+{
+	/* Remove the filter files associated with ice<n> config kobject */
+	sysfs_remove_group(llcfreq_kobj, &llc_attr_group);
+}
 void icedrv_sysfs_term(void)
 {
 
@@ -1137,6 +1265,9 @@ int hw_config_sysfs_init(struct cve_device *ice_dev)
 
 	int ret = 0;
 	struct cve_os_device *os_dev;
+	struct cve_device_group *dg = g_cve_dev_group_list;
+	struct icebo_desc *bo =
+		&dg->dev_info.icebo_list[ice_dev->dev_index / 2];
 	char name[10]
 
 	FUNC_ENTER();
@@ -1150,7 +1281,7 @@ int hw_config_sysfs_init(struct cve_device *ice_dev)
 	}
 
 	if (hwconfig_kobj)
-		goto ice_sysfs;
+		goto icebo_sysfs;
 
 	hwconfig_kobj = kobject_create_and_add("hwconfig", icedrv_kobj);
 	if (!hwconfig_kobj) {
@@ -1158,6 +1289,27 @@ int hw_config_sysfs_init(struct cve_device *ice_dev)
 					"hwconfig kobj creation failed\n");
 		ret = -ENOMEM;
 		goto out;
+	}
+icebo_sysfs:
+	if (bo->icebo_kobj)
+		goto ice_sysfs;
+	snprintf(name, sizeof(name), "icebo%d", bo->bo_id);
+	bo->icebo_kobj = kobject_create_and_add(name, hwconfig_kobj);
+	if (!bo->icebo_kobj) {
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+				"icebo%d kobj creation failed\n",
+				bo->bo_id);
+		ret = -ENOMEM;
+		goto hwconfig_kobj_free;
+
+	}
+	ret = icebo_hw_config_llc_pmon_sysfs_init(bo);
+	if (ret) {
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+				"icebo_hw_config_llc_pmon_sysfs_init failed\n");
+		ret = -ENOMEM;
+		goto icebo_kobj_free;
+
 	}
 ice_sysfs:
 	ice_dev->ice_config_kobj = NULL;
@@ -1168,13 +1320,13 @@ ice_sysfs:
 				"ice%d kobj creation failed\n",
 				ice_dev->dev_index);
 		ret = -ENOMEM;
-		goto hwconfig_kobj_free;
+		goto icebo_sysfs_free;
 	}
 	ret = ice_hw_config_freq_sysfs_init(ice_dev);
 	if (ret) {
 		cve_os_dev_log(CVE_LOGLEVEL_ERROR, ice_dev->dev_index,
-				"ice_trace_dso_sysfs_init failed\n");
-		goto freq_sysfs_free;
+				"ice_hw_config_freq_sysfs_init failed\n");
+		goto freq_kobj_free;
 	} else {
 		if (llcfreq_kobj)
 			goto out;
@@ -1186,13 +1338,37 @@ ice_sysfs:
 			goto freq_sysfs_free;
 		}
 		ret = ice_hw_config_llc_sysfs_init();
+		if (ret) {
+		cve_os_dev_log(CVE_LOGLEVEL_ERROR, ice_dev->dev_index,
+				"ice_hw_config_llc_sysfs_init failed\n");
+			goto llcfreq_kobj_free;
+		}
+		ret = icebo_hw_config_llc_pmoninfo_sysfs_init();
+		if (ret) {
+			cve_os_log(CVE_LOGLEVEL_ERROR,
+					"icebo_hw_config_llc_pmoninfo_sysfs_init failed\n");
+			ret = -ENOMEM;
+			goto llcfreq_sysfs_free;
+		}
 		goto out;
 	}
 
+	icebo_hw_config_llc_pmoninfo_sysfs_term();
+llcfreq_sysfs_free:
+	ice_hw_config_llc_sysfs_term();
+llcfreq_kobj_free:
+	kobject_put(llcfreq_kobj);
+	llcfreq_kobj = NULL;
 freq_sysfs_free:
 	ice_hw_config_freq_sysfs_term(ice_dev);
+freq_kobj_free:
 	kobject_put(ice_dev->ice_config_kobj);
 	ice_dev->ice_config_kobj = NULL;
+icebo_sysfs_free:
+	icebo_hw_config_llc_pmon_sysfs_term(bo);
+icebo_kobj_free:
+	kobject_put(bo->icebo_kobj);
+	bo->icebo_kobj = NULL;
 hwconfig_kobj_free:
 	kobject_put(hwconfig_kobj);
 	hwconfig_kobj = NULL;
@@ -1203,6 +1379,10 @@ out:
 
 void hw_config_sysfs_term(struct cve_device *ice_dev)
 {
+	struct cve_device_group *dg = g_cve_dev_group_list;
+	struct icebo_desc *bo =
+		&dg->dev_info.icebo_list[ice_dev->dev_index / 2];
+
 	FUNC_ENTER();
 
 	if (ice_dev->ice_config_kobj) {
@@ -1219,6 +1399,15 @@ void hw_config_sysfs_term(struct cve_device *ice_dev)
 					"llc freq kobj deleted\n");
 	}
 
+	if (bo->icebo_kobj) {
+		/*Resetting PMON registers before removing sysfs entries*/
+		llc_pmon_config_sysfs(0, bo, true);
+		kobject_put(bo->icebo_kobj);
+		bo->icebo_kobj = NULL;
+		cve_os_log(CVE_LOGLEVEL_DEBUG,
+				"icebo%d kobj deleted\n", bo->bo_id);
+	}
+
 	if (hwconfig_kobj) {
 		kobject_put(hwconfig_kobj);
 		hwconfig_kobj = NULL;
@@ -1229,4 +1418,497 @@ void hw_config_sysfs_term(struct cve_device *ice_dev)
 	FUNC_LEAVE();
 }
 
+static ssize_t show_llcpmoninfo(struct kobject *kobj,
+			struct kobj_attribute *attr, char *buf)
+{
+	int ret = 0;
+	u32 i;
+	u32 size;
+	struct llcpmoninfo_details llcpmon_arr[] = {
+	__LLCPMONINFO(0, pre_defined_llc_pmon_cfg0[1],
+		pre_defined_llc_pmon_cfg1[1], LLC_PMON_HIT_PER_ICE,
+		"LLC HIT count of ICE0 in counter0 and ICE1 in counter1"),
+	__LLCPMONINFO(1, pre_defined_llc_pmon_cfg0[2],
+		pre_defined_llc_pmon_cfg1[2], LLC_PMON_MISS_PER_ICE,
+		"LLC MISS count of ICE0 in counter0 and ICE1 in counter1"),
+	__LLCPMONINFO(2, pre_defined_llc_pmon_cfg0[3],
+		pre_defined_llc_pmon_cfg1[3], LLC_PMON_TRAFFIC_PER_ICE,
+		"LLC HIT+MISS count of ICE0 in counter0 and ICE1 in counter1"),
+	__LLCPMONINFO(3, pre_defined_llc_pmon_cfg0[4],
+		pre_defined_llc_pmon_cfg1[4], LLC_PMON_HIT_MISS_OF_BO,
+		"LLC HIT count of BO in counter0 and MISS count in counter1"),
+	};
+
+	size = sizeof(llcpmon_arr) / sizeof(struct llcpmoninfo_details);
+
+	ret = sprintf((buf + ret),
+		"-1, LLC_PMON_DISABLE_CONFIG, \"Disable LLC PMON configuration\"\n");
+	for (i = 0; i < size; i++) {
+		ret += sprintf((buf + ret), "%d, 0x%x, 0x%x, %s, \"%s\"\n",
+		llcpmon_arr[i].index,
+		llcpmon_arr[i].config_val0,
+		llcpmon_arr[i].config_val1,
+		llcpmon_arr[i].name,
+		llcpmon_arr[i].desc);
+	}
+	ret += sprintf((buf + ret),
+		"4, PMON_0_USER_CONFIG, PMON_1_USER_CONFIG, USER_DEFINED_CONFIG, \"User defined configiuration values of PMON 0,1\"\n");
+	ret += sprintf((buf + ret),
+		"5, PMON_2_USER_CONFIG, PMON_3_USER_CONFIG, USER_DEFINED_CONFIG, \"User defined configiuration values of PMON 2,3\"\n");
+
+	return ret;
+}
+
+static ssize_t show_llcpmonconfig(struct kobject *kobj,
+		struct kobj_attribute *attr, char *buf)
+{
+	int ret = 0;
+	u8 bo_id;
+	struct cve_device_group *dg = cve_dg_get();
+	struct icebo_desc *bo;
+	struct cve_device *dev;
+
+	ret = sscanf(kobj->name, "icebo%hhd", &bo_id);
+	if (ret < 1) {
+		cve_os_log(CVE_LOGLEVEL_ERROR, "failed getting ice bo id %s\n",
+				kobj->name);
+		return -EFAULT;
+	}
+
+	if (bo_id > MAX_NUM_ICEBO) {
+		cve_os_log(CVE_LOGLEVEL_ERROR, "wrong ice bo id %d\n", bo_id);
+		return -EFAULT;
+	}
+
+	bo = &dg->dev_info.icebo_list[bo_id];
+	if (bo == NULL) {
+		cve_os_log(CVE_LOGLEVEL_ERROR, "ICEBO%d doesn't exist\n",
+							bo_id);
+		return -EFAULT;
+	}
+
+	dev = bo->dev_list;
+	if (dev == NULL) {
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+				"No device exists in the ICEBO%d\n",
+							bo_id);
+		return -EFAULT;
+	}
+
+	ret += sprintf((buf + ret),
+		"BO:%hhd LLC PMON Config\nPMON0:0x%llx PMON1:0x%llx PMON2:0x%llx PMON3:0x%llx\n",
+		bo_id,
+		bo->llc_pmon_cfg.pmon0_cfg,
+		bo->llc_pmon_cfg.pmon1_cfg,
+		bo->llc_pmon_cfg.pmon2_cfg,
+		bo->llc_pmon_cfg.pmon3_cfg);
+
+	return ret;
+}
+
+static ssize_t show_llcpmon(struct kobject *kobj,
+		struct kobj_attribute *attr, char *buf)
+{
+	int ret = 0;
+	u8 bo_id;
+	u32 offset;
+	u64 cntr_value[4];
+	struct cve_device_group *dg = cve_dg_get();
+	struct icebo_desc *bo;
+	struct cve_device *dev;
+
+	ret = sscanf(kobj->name, "icebo%hhd", &bo_id);
+	if (ret < 1) {
+		cve_os_log(CVE_LOGLEVEL_ERROR, "failed getting ice bo id %s\n",
+				kobj->name);
+		return -EFAULT;
+	}
+
+	if (bo_id > MAX_NUM_ICEBO) {
+		cve_os_log(CVE_LOGLEVEL_ERROR, "wrong ice BO id %d\n", bo_id);
+		return -EFAULT;
+	}
+
+	bo = &dg->dev_info.icebo_list[bo_id];
+	if (bo == NULL) {
+		cve_os_log(CVE_LOGLEVEL_ERROR, "ICEBO%d doesn't exist\n",
+							bo_id);
+		return -EFAULT;
+	}
+
+	dev = bo->dev_list;
+	if (dev == NULL) {
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+				"No device exists in the ICEBO%d\n",
+							bo_id);
+		return -EFAULT;
+	}
+
+	offset = ICEDC_ICEBO_OFFSET(bo_id) +
+		cfg_default.a2i_icebo_pmon_counter_0_offset;
+	cntr_value[0] = cve_os_read_idc_mmio(dev, offset);
+
+	offset = ICEDC_ICEBO_OFFSET(bo_id) +
+		cfg_default.a2i_icebo_pmon_counter_1_offset;
+	cntr_value[1] = cve_os_read_idc_mmio(dev, offset);
+
+	offset = ICEDC_ICEBO_OFFSET(bo_id) +
+		cfg_default.a2i_icebo_pmon_counter_2_offset;
+	cntr_value[2] = cve_os_read_idc_mmio(dev, offset);
+
+	offset = ICEDC_ICEBO_OFFSET(bo_id) +
+		cfg_default.a2i_icebo_pmon_counter_3_offset;
+	cntr_value[3] = cve_os_read_idc_mmio(dev, offset);
+
+	ret += sprintf((buf + ret),
+		"BO:%hhd LLC PMON Counters\nCOUNTER0:0x%llx COUNTER1:0x%llx COUNTER2:0x%llx COUNTER3:0x%llx\n",
+		bo_id,
+		cntr_value[0],
+		cntr_value[1],
+		cntr_value[2],
+		cntr_value[3]);
+
+	return ret;
+}
+
+
+static ssize_t store_llcpmon(struct kobject *kobj,
+		struct kobj_attribute *attr,
+		const char *buf, size_t count)
+{
+	u8 bo_id;
+	int ret = 0;
+	char *llcpmon_s, *pmonindex_s;
+	int tmp_pmonindex;
+	u32 pmonindex;
+	char *user_config;
+	char *user_cfg0_s, *user_cfg1_s;
+	u64 user_cfg0 = 0, user_cfg1 = 0;
+	struct cve_device_group *dg = cve_dg_get();
+	struct icebo_desc *bo;
+	struct cve_device *dev;
+	bool pmon_0_1 = true;
+
+	FUNC_ENTER();
+	ret = sscanf(kobj->name, "icebo%hhd", &bo_id);
+	if (ret < 1) {
+		cve_os_log(CVE_LOGLEVEL_ERROR, "failed getting ice bo id %s\n",
+				kobj->name);
+		return -EFAULT;
+	}
+
+	if (bo_id > MAX_NUM_ICEBO) {
+		cve_os_log(CVE_LOGLEVEL_ERROR, "wrong ice bo id %d\n", bo_id);
+		return -EFAULT;
+	}
+
+	bo = &dg->dev_info.icebo_list[bo_id];
+	if (bo == NULL) {
+		cve_os_log(CVE_LOGLEVEL_ERROR, "ICEBO%d doesn't exist\n",
+					bo_id);
+		return -EFAULT;
+	}
+
+	llcpmon_s = (char *)buf;
+	llcpmon_s = strim(llcpmon_s);
+
+	if (llcpmon_s == NULL)
+		return -EFAULT;
+
+	user_config = strchr(buf, ':');
+
+	if (user_config == NULL) {
+		ret = kstrtoint(llcpmon_s, 10, &tmp_pmonindex);
+		if (ret < 0)
+			return ret;
+		if (tmp_pmonindex == MAX_LLCPMON_CONFIG - 3 ||
+				tmp_pmonindex == MAX_LLCPMON_CONFIG - 2) {
+			cve_os_log(CVE_LOGLEVEL_ERROR,
+				"Need to configure pmon user config hex values\n");
+			return -EINVAL;
+		}
+	} else {
+		pmonindex_s = strsep((char **)&llcpmon_s, ":");
+		if (pmonindex_s == NULL)
+			return -EINVAL;
+
+		pmonindex_s = strim(pmonindex_s);
+		ret = kstrtoint(pmonindex_s, 0, &tmp_pmonindex);
+		if (ret < 0)
+			return ret;
+
+		if (tmp_pmonindex > MAX_LLCPMON_CONFIG - 2)
+			return -EINVAL;
+
+		if (tmp_pmonindex < MAX_LLCPMON_CONFIG - 3) {
+			cve_os_log(CVE_LOGLEVEL_ERROR,
+				"Providing the config index is sufficient\n");
+			return -EINVAL;
+		}
+		pmonindex = tmp_pmonindex + 1;
+		user_cfg0_s = strsep((char **)&llcpmon_s, ",");
+
+		if (user_cfg0_s == NULL)
+			return -EINVAL;
+
+		user_cfg0_s = strim(user_cfg0_s);
+
+		user_cfg1_s = strsep((char **)&llcpmon_s, ",");
+
+		if (user_cfg1_s == NULL)
+			return -EINVAL;
+
+		user_cfg1_s = strim(user_cfg1_s);
+
+		ret = kstrtoull(user_cfg0_s, 16, &user_cfg0);
+		if (ret < 0)
+			return ret;
+
+		ret = kstrtoull(user_cfg1_s, 16, &user_cfg1);
+		if (ret < 0)
+			return ret;
+	}
+
+	cve_os_log(CVE_LOGLEVEL_DEBUG, "index:%d\n", tmp_pmonindex);
+	ret = cve_os_lock(&g_cve_driver_biglock, CVE_INTERRUPTIBLE);
+	if (ret != 0)
+		return -ERESTARTSYS;
+	bo->llc_pmon_cfg.disable_llc_pmon = false;
+	if (tmp_pmonindex < 0) {
+		/*for PMON disable*/
+		pmonindex = 0;
+		ret = llc_pmon_config_sysfs(pmonindex, bo, pmon_0_1);
+	} else if (tmp_pmonindex < MAX_LLCPMON_CONFIG - 3) {
+		/* for all pre-define PMON config*/
+		pmonindex = tmp_pmonindex + 1;
+		ret = llc_pmon_config_sysfs(pmonindex, bo, pmon_0_1);
+	} else {
+		pmonindex = tmp_pmonindex + 1;
+		dev = bo->dev_list;
+		if (tmp_pmonindex == MAX_LLCPMON_CONFIG - 2) {
+			pmon_0_1 = false;
+			bo->llc_pmon_cfg.pmon2_cfg = user_cfg0;
+			bo->llc_pmon_cfg.pmon3_cfg = user_cfg1;
+			cve_os_log_default(CVE_LOGLEVEL_INFO,
+				"llc pmon user config request icebo%d pmon2:0x%llx pmon3:0x%llx\n",
+				bo->bo_id, bo->llc_pmon_cfg.pmon2_cfg,
+						bo->llc_pmon_cfg.pmon3_cfg);
+		} else {
+			bo->llc_pmon_cfg.pmon0_cfg = user_cfg0;
+			bo->llc_pmon_cfg.pmon1_cfg = user_cfg1;
+			cve_os_log_default(CVE_LOGLEVEL_INFO,
+				"llc pmon user config request icebo%d pmon0:0x%llx pmon1:0x%llx\n",
+				bo->bo_id, bo->llc_pmon_cfg.pmon0_cfg,
+						bo->llc_pmon_cfg.pmon1_cfg);
+		}
+		ice_di_start_llc_pmon(dev, pmon_0_1);
+	}
+	cve_os_unlock(&g_cve_driver_biglock);
+
+	if (ret < 0) {
+		cve_os_log(CVE_LOGLEVEL_ERROR, "llc pmon config failed\n");
+		return ret;
+	}
+
+	FUNC_LEAVE();
+	return count;
+}
+
+static int llc_pmon_config_sysfs(u32 pmonindex, struct icebo_desc *bo,
+							bool pmon_0_1)
+{
+	int ret = 0;
+	u32 offset;
+	struct cve_device *dev;
+
+	FUNC_ENTER();
+	switch (pmonindex) {
+	/*Disable LLC PMON */
+	case 0:
+		bo->llc_pmon_cfg.pmon0_cfg = 0x0;
+		bo->llc_pmon_cfg.pmon1_cfg = 0x0;
+		bo->llc_pmon_cfg.pmon2_cfg = 0x0;
+		bo->llc_pmon_cfg.pmon3_cfg = 0x0;
+		bo->llc_pmon_cfg.disable_llc_pmon = true;
+		dev = bo->dev_list;
+		offset = ICEDC_ICEBO_OFFSET(bo->bo_id) +
+				cfg_default.a2i_icebo_pmon_global_offset;
+		cve_os_write_idc_mmio(dev, offset, 0x0);
+		cve_os_write_idc_mmio(dev, offset, LLC_PMON_RESET);
+		cve_os_log_default(CVE_LOGLEVEL_INFO,
+				"disbaling llc pmon for icebo%d\n", bo->bo_id);
+		break;
+	/*Pre Defined configurations of PMON0 and PMON1*/
+	case 1 ... (MAX_LLCPMON_CONFIG - 2):
+		bo->llc_pmon_cfg.pmon0_cfg =
+				pre_defined_llc_pmon_cfg0[pmonindex];
+		bo->llc_pmon_cfg.pmon1_cfg =
+				pre_defined_llc_pmon_cfg1[pmonindex];
+		dev = bo->dev_list;
+		ice_di_start_llc_pmon(dev, pmon_0_1);
+		cve_os_log(CVE_LOGLEVEL_DEBUG,
+		"llc pmon config request icebo%d pmon0:0x%llx pmon1:0x%llx\n",
+			bo->bo_id, bo->llc_pmon_cfg.pmon0_cfg,
+					bo->llc_pmon_cfg.pmon1_cfg);
+		break;
+	default:
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+				"unsupported llc pmon index\n");
+		ret = -EINVAL;
+		goto out;
+	}
+out:
+	FUNC_LEAVE();
+	return ret;
+}
+
+/* TODO: These cdyn values are to be confirmed */
+#define RESET_CDYN_VAL 0
+#define BLOCKED_CDYN_VAL 0
+
+/* 0x400 i.e 1.0 pF as per the init table i.e iccp_tbl */
+#define INITIAL_CDYN_VAL 0x400
+
+int __init_ice_iccp(struct cve_device *dev)
+{
+	struct cve_device_group *p = g_cve_dev_group_list;
+	struct icebo_desc *bo = &p->dev_info.icebo_list[dev->dev_index / 2];
+	u8 bo_id = (dev->dev_index / 2);
+	u32 config2_offset, config3_offset;
+	union mem_iccp_config2_t config2;
+	union mem_iccp_config3_t config3;
+
+	if (bo->iccp_init_done == true)
+		goto out;
+
+	config2_offset = (ICEDC_ICEBO_OFFSET(bo_id) + ICEBO_GPSB_OFFSET
+			+ cfg_default.gpsb_x1_regs_iccp_config2_offset);
+	config3_offset = (ICEDC_ICEBO_OFFSET(bo_id) + ICEBO_GPSB_OFFSET
+			+ cfg_default.gpsb_x1_regs_iccp_config3_offset);
+	config2.val = cve_os_read_idc_mmio(dev, config2_offset);
+	config2.field.RESET_CDYN = RESET_CDYN_VAL;
+	config2.field.INITIAL_CDYN = INITIAL_CDYN_VAL;
+	cve_os_write_idc_mmio(dev, config2_offset, config2.val);
+	config3.val = cve_os_read_idc_mmio(dev, config3_offset);
+	config3.field.BLOCKED_CDYN = BLOCKED_CDYN_VAL;
+	cve_os_write_idc_mmio(dev, config3_offset, config3.val);
+	bo->iccp_init_done = true;
+out:
+	return 0;
+}
+
+void __term_ice_iccp(struct cve_device *dev)
+{
+	/* place holder */
+}
+
 #endif
+
+void ice_di_start_llc_pmon(struct cve_device *dev, bool pmon_0_1)
+{
+	u32 offset;
+	u32 bo_id = (dev->dev_index >> 1);
+	struct cve_device_group *dg = g_cve_dev_group_list;
+	ICEBO_PMON_GLOBAL_T reg;
+	u32 cfg0_value, cfg1_value;
+
+	reg.val = 0;
+	/* MEM_A2I_ICEBAR_ICEBO_PMON_GLOBAL_MMOFFSET */
+	/* Stops all counters but doesnot reset them */
+	offset = ICEDC_ICEBO_OFFSET(bo_id) +
+			cfg_default.a2i_icebo_pmon_global_offset;
+	reg.val = cve_os_read_idc_mmio(dev, offset);
+	cve_os_write_idc_mmio(dev, offset, 0x0);
+
+	/*Read LLC PMON counters before re-configuring*/
+	ice_di_read_llc_pmon(dev);
+
+	if (pmon_0_1) {
+		cfg0_value =
+			dg->dev_info.icebo_list[bo_id].llc_pmon_cfg.pmon0_cfg;
+		cfg1_value =
+			dg->dev_info.icebo_list[bo_id].llc_pmon_cfg.pmon1_cfg;
+		/* MEM_A2I_ICEBAR_ICEBO_PMON_EVENT_0_MMOFFSET */
+		offset = ICEDC_ICEBO_OFFSET(bo_id) +
+			cfg_default.a2i_icebo_pmon_event_0_offset;
+		cve_os_write_idc_mmio(dev, offset, cfg0_value);
+
+		/* MEM_A2I_ICEBAR_ICEBO_PMON_EVENT_1_MMOFFSET */
+		offset = ICEDC_ICEBO_OFFSET(bo_id) +
+			cfg_default.a2i_icebo_pmon_event_1_offset;
+
+		cve_os_write_idc_mmio(dev, offset, cfg1_value);
+
+		reg.field.enable_counter_0 = 1;
+		reg.field.enable_counter_1 = 1;
+	} else {
+		cfg0_value =
+			dg->dev_info.icebo_list[bo_id].llc_pmon_cfg.pmon2_cfg;
+		cfg1_value =
+			dg->dev_info.icebo_list[bo_id].llc_pmon_cfg.pmon3_cfg;
+		/* MEM_A2I_ICEBAR_ICEBO_PMON_EVENT_2_MMOFFSET */
+		offset = ICEDC_ICEBO_OFFSET(bo_id) +
+			cfg_default.a2i_icebo_pmon_event_2_offset;
+		cve_os_write_idc_mmio(dev, offset, cfg0_value);
+
+		/* MEM_A2I_ICEBAR_ICEBO_PMON_EVENT_3_MMOFFSET */
+		offset = ICEDC_ICEBO_OFFSET(bo_id) +
+			cfg_default.a2i_icebo_pmon_event_3_offset;
+
+		cve_os_write_idc_mmio(dev, offset, cfg1_value);
+
+
+		reg.field.enable_counter_2 = 1;
+		reg.field.enable_counter_3 = 1;
+	}
+	reg.field.reset_pmon = 0;
+	/* MEM_A2I_ICEBAR_ICEBO_PMON_STATUS_MMOFFSET */
+	/* Cleans up any sticky overflow bits */
+	offset = ICEDC_ICEBO_OFFSET(bo_id) +
+			cfg_default.a2i_icebo_pmon_status_offset;
+	cve_os_write_idc_mmio(dev, offset, 0x0);
+
+	/* MEM_A2I_ICEBAR_ICEBO_PMON_GLOBAL_MMOFFSET */
+	/* Reset all counter and start required counters*/
+	offset = ICEDC_ICEBO_OFFSET(bo_id) +
+			cfg_default.a2i_icebo_pmon_global_offset;
+	cve_os_write_idc_mmio(dev, offset, LLC_PMON_RESET);
+	cve_os_write_idc_mmio(dev, offset, reg.val);
+
+	cve_os_dev_log(CVE_LOGLEVEL_DEBUG,
+		dev->dev_index,
+		"LLC PMON reset done for ICE_BO:%u", bo_id);
+}
+
+void ice_di_read_llc_pmon(struct cve_device *dev)
+{
+	u32 offset;
+	u64 __maybe_unused pmon_cntr[4];
+	u32 bo_id = (dev->dev_index >> 1);
+
+	/* MEM_A2I_ICEBAR_ICEBO_PMON_COUNTER_0_MMOFFSET */
+	offset = ICEDC_ICEBO_OFFSET(bo_id) +
+			cfg_default.a2i_icebo_pmon_counter_0_offset;
+	pmon_cntr[0] = cve_os_read_idc_mmio(dev, offset);
+
+	/* MEM_A2I_ICEBAR_ICEBO_PMON_COUNTER_1_MMOFFSET */
+	offset = ICEDC_ICEBO_OFFSET(bo_id) +
+			cfg_default.a2i_icebo_pmon_counter_1_offset;
+	pmon_cntr[1] = cve_os_read_idc_mmio(dev, offset);
+
+	/* MEM_A2I_ICEBAR_ICEBO_PMON_COUNTER_2_MMOFFSET */
+	offset = ICEDC_ICEBO_OFFSET(bo_id) +
+			cfg_default.a2i_icebo_pmon_counter_2_offset;
+	pmon_cntr[2] = cve_os_read_idc_mmio(dev, offset);
+
+	/* MEM_A2I_ICEBAR_ICEBO_PMON_COUNTER_3_MMOFFSET */
+	offset = ICEDC_ICEBO_OFFSET(bo_id) +
+			cfg_default.a2i_icebo_pmon_counter_3_offset;
+	pmon_cntr[3] = cve_os_read_idc_mmio(dev, offset);
+
+	cve_os_dev_log(CVE_LOGLEVEL_DEBUG, dev->dev_index,
+			"llc pmon counter values of BO:%u Counter0:0x%llx Counter1:0x%llx Counter2:0x%llx Counter3:0x%llx",
+				bo_id, pmon_cntr[0], pmon_cntr[1],
+				pmon_cntr[2], pmon_cntr[3]);
+}
+

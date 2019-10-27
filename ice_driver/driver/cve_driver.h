@@ -27,7 +27,7 @@
 #define MAX_ICE_DEVICES 12
 #define MAX_ICE_FREQ_PARAM 800
 #define MIN_ICE_FREQ_PARAM 200
-#define MAX_LLC_FREQ_PARAM 2400
+#define MAX_LLC_FREQ_PARAM 2600
 #define MIN_LLC_FREQ_PARAM 400
 #define ICE_FREQ_DIVIDER_FACTOR 25
 #define LLC_FREQ_DIVIDER_FACTOR 100
@@ -275,6 +275,14 @@ struct cve_job {
 	/* should contain valid ICE ID when CB to ICE mapping is required */
 	/* and -1 in case mapping is not necessary */
 	__s8 graph_ice_id;
+	/* ddr BW in mbps*/
+	__u32 ddr_bw_in_mbps;
+	/* Ring to ICE clock frequency ratio*/
+	__u16 ring_to_ice_ratio;
+	/* ICE to ICE clock frequency ratio*/
+	__u32 ice_to_ice_ratio;
+	/* cdyn budget value required for the job */
+	__u16 cdyn_val;
 };
 
 struct cve_job_group {

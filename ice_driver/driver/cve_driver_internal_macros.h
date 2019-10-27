@@ -200,10 +200,7 @@ enum cve_memory_protection {
 #define ICE_VA_RANGE_LOW_IDC_BAR1_START 0xFFFF0000
 #define ICE_VA_RANGE_LOW_IDC_BAR1_END 0xFFFF7FFF
 
-#define IDC_BAR1_COUNTERS_ADDRESS_START 0xFFFF0000
-#define IDC_BAR1_COUNTERS_NOTI_ADDR 0xFFFF0800
-#define BAR1_ICE_SPACE 16384 /*16KB*/
-#define BAR1_ICE_PERMISSION 3 /*rw-*/
+
 
 /* For each ICE IDC reserves 16KB area in BAR1
  * within which first 2KB is for counters and immediately following that
@@ -211,7 +208,7 @@ enum cve_memory_protection {
  */
 #if ICE_ENABLE_EXTENDED_VA_MODE
 /* In 35 bit mode both odd and even ICE share same MMU mapping w.r.t BAR1 */
-#define IDC_BAR1_ICE_REGION_SPILL_SZ 0x4000 /* 16KB */
+#define IDC_BAR1_ICE_REGION_SPILL_SZ __BAR1_ICE_REGION_SPILL_SZ
 #else
 /* Unlike 35 bit mode, in 32 bit mode there is no spilling of ICE's mapping
  * in MMU. Default page for 32 bit mode is 4KB and driver maps 4 pages in MMU

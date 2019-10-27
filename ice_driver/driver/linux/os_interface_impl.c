@@ -52,6 +52,7 @@
 #include "ice_debug.h"
 #include "project_device_interface.h"
 #include "cve_firmware.h"
+#include "sph_iccp.h"
 
 #ifdef IDC_ENABLE
 /* For ssleep() */
@@ -64,6 +65,9 @@
 
 #include "ice_trace.h"
 #include "ice_debug_event.h"
+#include "intel_sphpb.h"
+#include "sph_mailbox.h"
+#include "sph_dvfs.h"
 /* CONSTANTS */
 
 #define CVE_DEVICE_INDEX_BASE 0
@@ -89,6 +93,24 @@ struct cve_dma_handle_private_data {
 	struct cve_dma_alloc_pages_desc *desc_list;
 };
 
+struct sphpb_icedrv_callbacks icedrv_pbcbs = {
+	.ices_per_icebo = MAX_CVE_DEVICES_NR / MAX_NUM_ICEBO,
+	.set_icebo_to_ring_ratio = icedrv_set_icebo_to_ring_ratio,
+	.get_icebo_to_ring_ratio = icedrv_get_icebo_to_ring_ratio,
+	.set_icebo_to_icebo_ratio = icedrv_set_ice_to_ice_ratio,
+	.get_icebo_to_icebo_ratio = icedrv_get_ice_to_ice_ratio,
+};
+
+/* MACROS*/
+#ifdef NULL_DEVICE_RING0
+#define __iowrite64(val, addr) dummy_iowrite64(val, addr)
+#define __ioread64(addr) dummy_ioread64(addr)
+#else
+#define __iowrite64(val, addr) iowrite64(val, addr)
+#define __ioread64(addr) ioread64(addr)
+#endif
+
+
 /* STATIC FUNCTIONS PROTOTYPES */
 
 static int cve_open_misc(struct inode *inode, struct file *file);
@@ -110,6 +132,7 @@ u32 core_mask;
 u32 ice_fw_select;
 u32 block_mmu;
 u32 enable_b_step;
+u32 disable_clk_gating;
 struct config cfg_default;
 
 static u32 icemask_user;
@@ -156,7 +179,8 @@ MODULE_PARM_DESC(enable_b_step, "Enable B step flow in driver. Default 0 i.e dis
 module_param(ice_sch_preemption, int, 0);
 MODULE_PARM_DESC(enable_b_step, "Enable kernel premeption during inference scheduling");
 
-
+module_param(disable_clk_gating, int, 0);
+MODULE_PARM_DESC(disable_clk_gating, "Disable DSP clock gating");
 /* UITILITY FUNCTIONS */
 
 /* MODULE LEVEL VARIABLES */
@@ -188,6 +212,7 @@ static const struct file_operations fops_cve_dump = {
 		.read = cve_dump_read,
 		.release =  cve_dump_close,
 };
+
 
 static int cve_dump_close(struct inode *inode, struct file *filp)
 {
@@ -1250,6 +1275,42 @@ void cve_os_write_mmio_32_bar_nr(struct cve_device *cve_dev,
 #endif
 }
 
+u64 idc_mmio_read64_bar_x(struct cve_device *dev,
+		u32 bar, u32 offset, bool force_print)
+{
+	struct cve_os_device *os_dev;
+	u64 *mmio_addr;
+	u64 val;
+
+	os_dev = to_cve_os_device(dev);
+	mmio_addr = os_dev->cached_mmio_base.iobase[bar] + offset;
+
+	val = readq(mmio_addr);
+
+	cve_os_log(force_print ? CVE_LOGLEVEL_INFO : CVE_LOGLEVEL_DEBUG,
+		"[MMIO] reading from BAR%d reg:%s offset:0x%x value:0x%llx mmio_addr=%p\n",
+		bar, get_idc_regs_str(offset), offset, val, mmio_addr);
+
+	return val;
+}
+
+void idc_mmio_write64_bar_x(struct cve_device *dev, u32 bar, u32 offset,
+		u64 val)
+{
+	struct cve_os_device *os_dev;
+	u64 *mmio_addr;
+
+	os_dev = to_cve_os_device(dev);
+	mmio_addr = os_dev->cached_mmio_base.iobase[bar] + offset;
+
+	cve_os_log(CVE_LOGLEVEL_DEBUG,
+		"[MMIO] writing to BAR%d reg:%s offset:0x%x value:0x%llx mmio_addr=%p\n",
+		bar, get_idc_regs_str(offset), offset, val, mmio_addr);
+
+	writeq(val, mmio_addr);
+}
+
+
 /* atomics */
 
 u64 cve_os_atomic_increment_64(atomic64_t *n)
@@ -1404,6 +1465,7 @@ int cve_probe_common(struct cve_os_device *linux_device, int dev_ind)
 	char dev_name[8];
 	char file_name[30];
 	u32 icemask_reg, active_ice;
+	struct cve_device_group *dg;
 
 	FUNC_ENTER();
 
@@ -1467,6 +1529,42 @@ int cve_probe_common(struct cve_os_device *linux_device, int dev_ind)
 		}
 	}
 
+	/* initialize iccp specific fops*/
+	retval = init_iccp_sysfs();
+	if (retval != 0) {
+		cve_os_log(CVE_LOGLEVEL_WARNING,
+				"init_iccp_sysfs failed %d\n", retval);
+	}
+
+	/* register with power balancer */
+	dg = cve_dg_get();
+	if (!dg) {
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+			"Could not find valid device group pointer\n");
+		goto out;
+	}
+	dg->sphmb.idc_mailbox_base = NULL;
+	retval = sphpb_map_idc_mailbox_base_registers(&dg->sphmb);
+	if (retval) {
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+			"sphpb_map_idc_mailbox_base_registers() failed: %d\n",
+			retval);
+		retval = 0;
+		goto create_idc;
+	}
+	dg->sphpb.sphpb_cbs = sph_power_balancer_register_driver(&icedrv_pbcbs);
+	if (!dg->sphpb.sphpb_cbs) {
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+				"Unable to register sph power balancer\n");
+	}
+
+	retval = ice_iccp_levels_init(dg);
+	if (retval) {
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+			"ice_iccp_levels_init() failed: %d\n", retval);
+		retval = 0;
+	}
+create_idc:
 	/* create cve_x directory */
 	snprintf(dev_name,
 			sizeof(dev_name),
@@ -1540,8 +1638,27 @@ void cve_remove_common(struct cve_os_device *linux_device)
 {
 	int i;
 	u32 active_ice;
+	struct cve_device_group *dg = cve_dg_get();
 
-FUNC_ENTER();
+	FUNC_ENTER();
+
+	dg = cve_dg_get();
+	if (!dg) {
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+			"Could not find valid device group pointer\n");
+		goto term_iccp;
+	}
+	ice_iccp_levels_term(dg);
+
+	if (dg->sphpb.sphpb_cbs) {
+		if (dg->sphpb.sphpb_cbs->unregister_driver)
+			dg->sphpb.sphpb_cbs->unregister_driver();
+	}
+	sphpb_unmap_idc_mailbox_base_registers(&dg->sphmb);
+
+term_iccp:
+	/*remove iccp specific fops*/
+	term_iccp_sysfs();
 
 	active_ice = (~g_icemask) & VALID_ICE_MASK;
 	while (active_ice) {
@@ -2011,13 +2128,8 @@ static int __init cve_init(void)
 			boot_cpu_data.x86_stepping);
 
 	param.enable_sph_b_step = false;
-	if (ice_is_soc()) { /* if silicon */
-		if (boot_cpu_data.x86_stepping == 1)
-			param.enable_sph_b_step = true;
-	} else { /* simulation*/
-		if (enable_b_step)
-			param.enable_sph_b_step = true;
-	}
+	if (boot_cpu_data.x86_stepping == 1)
+		param.enable_sph_b_step = true;
 	/* Configure the driver params*/
 	param.sph_soc = sph_soc;
 	param.enable_llc_config_via_axi_reg = enable_llc_config_via_axi_reg;

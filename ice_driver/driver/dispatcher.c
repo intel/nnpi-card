@@ -32,7 +32,6 @@
 #include "memory_manager.h"
 #include "device_interface.h"
 #include "dev_context.h"
-#include "project_device_interface.h"
 #include "doubly_linked_list.h"
 #include "cve_firmware.h"
 #include "cve_linux_internal.h"
@@ -44,6 +43,7 @@
 #include "scheduler.h"
 #include "device_interface_internal.h"
 #include "ice_debug.h"
+#include "ice_trace.h"
 #include "icedrv_internal_sw_counter_funcs.h"
 
 
@@ -977,6 +977,9 @@ static int __dispatch_single_job(
 		cve_os_dev_log(CVE_LOGLEVEL_DEBUG,
 				cve_dev->dev_index,
 				"Performing Hard Reset\n");
+
+		ice_di_set_cold_run(job->di_hjob);
+
 		do_reset(cve_dev, hdom, next_ctx, RESET_TYPE_HARD);
 
 		cve_dev_context_get_by_cve_idx(
@@ -991,6 +994,8 @@ static int __dispatch_single_job(
 		cve_os_dev_log(CVE_LOGLEVEL_DEBUG,
 				cve_dev->dev_index,
 				"No Reset\n");
+		if (cve_dev->daemon.restore_needed_from_suspend)
+			ice_trace_restore_daemon_config(cve_dev, true);
 
 		/* invalidate the page table if needed */
 		cve_mm_invalidate_tlb(hdom, cve_dev);
@@ -1550,7 +1555,7 @@ static int __process_job(struct cve_job *job_desc,
 
 	/* copy the user provided CB to the device interface */
 	ret = cve_di_handle_submit_job(context->buf_list, cur_job,
-				job_desc->cb_nr, cb_desc, &cur_job->di_hjob);
+				job_desc, cb_desc, &cur_job->di_hjob);
 	if (ret != 0) {
 		cve_os_log(CVE_LOGLEVEL_ERROR,
 			"ERROR:%d handle_submit_job failed\n", ret);
@@ -2714,9 +2719,9 @@ int cve_ds_handle_create_network(
 
 
 	ntw_resources[0] = network->clos[ICE_CLOS_0];
-	ntw_resources[1] = network->clos[ICE_CLOS_0];
-	ntw_resources[2] = network->clos[ICE_CLOS_0];
-	ntw_resources[3] = network->clos[ICE_CLOS_0];
+	ntw_resources[1] = network->clos[ICE_CLOS_1];
+	ntw_resources[2] = network->clos[ICE_CLOS_2];
+	ntw_resources[3] = network->clos[ICE_CLOS_3];
 	ntw_resources[4] = network->num_ice;
 	__local_builtin_popcount(network->cntr_bitmap, ntw_resources[5]);
 
@@ -3300,6 +3305,9 @@ void cve_ds_handle_job_completion(struct cve_device *dev,
 
 	/* Mark the device as idle */
 	dev->state = CVE_DEVICE_IDLE;
+	/* Perform pmon reset to avoid huge cnc traces in DTF */
+	if (dev->daemon.daemon_config_status != TRACE_STATUS_DEFAULT)
+		perform_daemon_suspend(dev);
 
 	if (inf->hswc)
 		ice_swc_counter_inc(inf->hswc,
@@ -3655,16 +3663,126 @@ out:
 	return retval;
 }
 
+static int __handle_infer_completion_via_ctx(
+		cve_context_process_id_t context_pid,
+		struct cve_context_process *context_process,
+		struct cve_get_event *event)
+{
+	u8 continue_wait = 0;
+	enum cve_wait_event_status *wait_status = &event->wait_status;
+	u32 timeout_msec = event->timeout_msec;
+	int retval = 0, lock_ret = 0;
+
+	do {
+		retval = cve_os_block_interruptible_timeout(
+				&context_process->events_wait_queue,
+				context_process->alloc_events, timeout_msec);
+		if (retval > 0) {
+			lock_ret = cve_os_lock(&g_cve_driver_biglock,
+					CVE_INTERRUPTIBLE);
+			if (lock_ret != 0) {
+				retval = -ERESTARTSYS;
+				goto out;
+			}
+
+			continue_wait = 0;
+			if (context_process->alloc_events)
+				copy_event_data_and_remove(context_pid,
+						context_process,
+						event->contextid, NULL,
+						event);
+			else
+				continue_wait = 1;
+
+			cve_os_unlock(&g_cve_driver_biglock);
+		}
+	} while (continue_wait);
+
+	if (retval == 0) {
+		cve_os_log_default(CVE_LOGLEVEL_ERROR, "Timeout\n");
+		*wait_status = CVE_WAIT_EVENT_TIMEOUT;
+		goto out;
+	} else if (retval == -ERESTARTSYS) {
+		*wait_status = CVE_WAIT_EVENT_ERROR;
+		goto out;
+	} else {
+		*wait_status = CVE_WAIT_EVENT_COMPLETE;
+		retval = 0;
+	}
+
+	if (retval < 0)
+		DO_TRACE(trace_icedrvEventGeneration(
+					SPH_TRACE_OP_STATE_COMPLETE,
+					event->contextid, 0, 0,
+					event->networkid,
+					event->infer_id,
+					SPH_TRACE_OP_STATUS_FAIL, retval));
+
+out:
+	return retval;
+}
+
+static int __handle_infer_completion_via_infer(
+		cve_context_process_id_t context_pid,
+		struct cve_context_process *context_process,
+		struct cve_get_event *event,
+		 struct ice_infer *inf)
+{
+	enum cve_wait_event_status *wait_status = &event->wait_status;
+	u32 timeout_msec = event->timeout_msec;
+	int retval = 0;
+
+	retval = cve_os_block_interruptible_timeout(
+			&inf->events_wait_queue,
+			inf->infer_events, timeout_msec);
+	if (retval > 0) {
+		int ret = 0;
+
+		ret = cve_os_lock(&g_cve_driver_biglock,
+				CVE_INTERRUPTIBLE);
+		if (ret != 0) {
+			retval = -ERESTARTSYS;
+			goto out;
+		}
+
+		copy_event_data_and_remove(context_pid, context_process,
+				event->contextid, inf, event);
+
+		cve_os_unlock(&g_cve_driver_biglock);
+	}
+
+	if (retval == 0) {
+		cve_os_log_default(CVE_LOGLEVEL_ERROR, "Timeout\n");
+		*wait_status = CVE_WAIT_EVENT_TIMEOUT;
+	} else if (retval == -ERESTARTSYS) {
+		*wait_status = CVE_WAIT_EVENT_ERROR;
+	} else {
+		*wait_status = CVE_WAIT_EVENT_COMPLETE;
+		retval = 0;
+	}
+
+out:
+	if (retval < 0)
+		DO_TRACE(trace_icedrvEventGeneration(
+					SPH_TRACE_OP_STATE_COMPLETE,
+					event->contextid, 0, 0,
+					event->networkid,
+					event->infer_id,
+					SPH_TRACE_OP_STATUS_FAIL, retval));
+	return retval;
+}
+
+
 int cve_ds_wait_for_event(cve_context_process_id_t context_pid,
 		struct cve_get_event *event)
 {
-	u32 timeout_msec = event->timeout_msec;
-	enum cve_wait_event_status *wait_status = &event->wait_status;
+	u32 __maybe_unused timeout_msec = event->timeout_msec;
 	struct cve_context_process *context_process = NULL;
 	struct ds_context *context = NULL;
 	struct ice_infer *inf = NULL;
 	struct ice_network *ntw = NULL;
 	u64 __maybe_unused ctx_sw_id = 0xFFFFFF;
+
 	int retval = cve_os_lock(&g_cve_driver_biglock, CVE_INTERRUPTIBLE);
 
 	if (retval != 0) {
@@ -3687,15 +3805,17 @@ int cve_ds_wait_for_event(cve_context_process_id_t context_pid,
 		timeout_msec = 0xFFFFFFFF;
 
 	if (!event->infer_id) {
-		cve_os_unlock(&g_cve_driver_biglock);
 		DO_TRACE(trace_icedrvEventGeneration(SPH_TRACE_OP_STATE_START,
 					ctx_sw_id, 0, 0, event->networkid, 0,
 					SPH_TRACE_OP_STATUS_LOCATION,
 					__LINE__));
 
-		retval = cve_os_block_interruptible_timeout(
-			&context_process->events_wait_queue,
-			context_process->alloc_events, timeout_msec);
+		cve_os_unlock(&g_cve_driver_biglock);
+
+		retval = __handle_infer_completion_via_ctx(context_pid,
+				context_process, event);
+		goto out;
+
 	} else {
 		/* get the ice_network based on the network id */
 		ntw = __get_network_from_id(context_pid, event->contextid,
@@ -3729,28 +3849,10 @@ int cve_ds_wait_for_event(cve_context_process_id_t context_pid,
 					__LINE__));
 
 		cve_os_unlock(&g_cve_driver_biglock);
-		retval = cve_os_block_interruptible_timeout(
-			&inf->events_wait_queue,
-			inf->infer_events, timeout_msec);
-	}
-
-	if (retval == 0) {
-		cve_os_log_default(CVE_LOGLEVEL_ERROR, "Timeout\n");
-		*wait_status = CVE_WAIT_EVENT_TIMEOUT;
+		retval = __handle_infer_completion_via_infer(context_pid,
+				context_process, event, inf);
 		goto out;
-	} else if (retval == -ERESTARTSYS) {
-		*wait_status = CVE_WAIT_EVENT_ERROR;
-		goto out;
-	} else {
-		*wait_status = CVE_WAIT_EVENT_COMPLETE;
-		retval = 0;
 	}
-
-	cve_os_lock(&g_cve_driver_biglock,
-			CVE_NON_INTERRUPTIBLE);
-
-	copy_event_data_and_remove(context_pid, context_process,
-			event->contextid, inf, event);
 unlock:
 	if (retval < 0)
 		DO_TRACE(trace_icedrvEventGeneration(
@@ -3967,24 +4069,37 @@ static void __delink_resource_and_pool(struct ice_network *ntw)
 static inline void __add_ice_to_ntw_list(struct ice_network *ntw,
 		struct cve_device *dev, bool lazy)
 {
+	struct cve_device_group *dg = cve_dg_get();
+
 	dev->dev_ntw_id = ntw->network_id;
 	cve_os_log(CVE_LOGLEVEL_INFO,
 			"NtwID:0x%llx Reserved ICE%d power_status:%d\n",
 			ntw->network_id, dev->dev_index,
-			dev->power_state);
+			ice_dev_get_power_state(dev));
 
 	if (!lazy)
 		cve_di_set_device_reset_flag(dev, CVE_DI_RESET_DUE_NTW_SWITCH);
 
 	cve_dle_add_to_list_before(ntw->ice_list, owner_list, dev);
 	dev->in_free_pool = false;
+
 	if (dev->power_state == ICE_POWER_OFF_INITIATED) {
-		dev->power_state = ICE_POWER_ON;
+
+		ice_dev_set_power_state(dev, ICE_POWER_ON);
+
+		cve_dle_remove_from_list(dg->poweroff_dev_list,
+			poweroff_list, dev);
 
 		ice_swc_counter_set(dev->hswc,
 			ICEDRV_SWC_DEVICE_COUNTER_POWER_STATE,
-			dev->power_state);
+			ice_dev_get_power_state(dev));
 	}
+
+	dev->hswc_infer = ntw->dev_hswc[ntw->used_hswc_count++];
+	ice_swc_counter_set(dev->hswc_infer,
+				ICEDRV_SWC_INFER_DEVICE_COUNTER_ID,
+				dev->dev_index);
+
 }
 
 static void __lazy_capture_ices(struct ice_network *ntw)
@@ -4207,8 +4322,6 @@ out:
 			ntw->pjob_info.sicebo[i], i, ntw->pjob_info.dicebo[i]);
 	}
 
-	ice_swc_create_infer_device_node(ntw);
-
 	return ret;
 }
 
@@ -4219,7 +4332,6 @@ static void __ntw_release_ice(struct ice_network *ntw)
 	int bo_id;
 	struct icebo_desc *bo;
 
-	ice_swc_destroy_infer_device_node(ntw);
 	while (ntw->ice_list) {
 		head = ntw->ice_list;
 		bo_id = head->dev_index / 2;
@@ -4229,6 +4341,13 @@ static void __ntw_release_ice(struct ice_network *ntw)
 		head->state = CVE_DEVICE_IDLE;
 
 		cve_dle_remove_from_list(ntw->ice_list, owner_list, head);
+
+		/*Invalidate the ICE ID */
+		ice_swc_counter_set(head->hswc_infer,
+				ICEDRV_SWC_INFER_DEVICE_COUNTER_ID,
+				0xFFFF);
+		head->hswc_infer = NULL;
+		ntw->used_hswc_count--;
 		cve_os_log(CVE_LOGLEVEL_INFO,
 				"NtwID:0x%llx ICEBO:%d released ICE%d\n",
 				ntw->network_id, bo_id, head->dev_index);
@@ -4773,6 +4892,7 @@ static void __power_off_ntw_devices(struct ice_network *ntw)
 	struct cve_device *next = head;
 	struct timespec curr_ts;
 	struct cve_device_group *dg = g_cve_dev_group_list;
+	bool wakeup_po_thread = false;
 
 	getnstimeofday(&curr_ts);
 
@@ -4782,16 +4902,24 @@ static void __power_off_ntw_devices(struct ice_network *ntw)
 		return;
 	}
 
+	/*
+	 * When PowerOff thread has nothing to do, it wakes up every 60 sec.
+	 * This is the only function that assigns work to PO thread.
+	 * Wake up this thread if currently its queue is empty, else, anyways
+	 * it will wake-up in sometime to turn off the already queued ices.
+	 */
+	wakeup_po_thread = (dg->poweroff_dev_list == NULL);
+
 	do {
 		if (next->power_state == ICE_POWER_ON) {
 
 			/* Write current timestamp to Device */
 			next->poweroff_ts = curr_ts;
 
-			next->power_state = ICE_POWER_OFF_INITIATED;
+			ice_dev_set_power_state(next, ICE_POWER_OFF_INITIATED);
 			ice_swc_counter_set(next->hswc,
 				ICEDRV_SWC_DEVICE_COUNTER_POWER_STATE,
-				next->power_state);
+				ice_dev_get_power_state(next));
 			cve_os_log(CVE_LOGLEVEL_INFO,
 					"NtwID:0x%lx Adding ICE%d to LPM Task\n",
 					(uintptr_t)ntw, next->dev_index);
@@ -4802,9 +4930,12 @@ static void __power_off_ntw_devices(struct ice_network *ntw)
 		next = cve_dle_next(next, owner_list);
 	} while (next != head);
 
-	dg->start_poweroff_thread = 1;
+	if (wakeup_po_thread) {
+		dg->start_poweroff_thread = 1;
+		cve_os_wakeup(&dg->power_off_wait_queue);
+	}
+
 	cve_os_unlock(&dg->poweroff_dev_list_lock);
-	cve_os_wakeup(&dg->power_off_wait_queue);
 }
 
 void ice_ds_ntw_release_resource(struct ice_network *ntw)
@@ -4902,6 +5033,9 @@ void ice_ds_ntw_return_resource(struct ice_network *ntw)
 		return;
 	}
 
+	/* Once workload is over, placing ICEs in Power-off queue */
+	__power_off_ntw_devices(ntw);
+
 	/* If reservation not required then release all resources*/
 	if (!ntw->res_resource && __is_pool_required(ntw))
 		__delink_resource_and_pool(ntw);
@@ -4911,8 +5045,6 @@ void ice_ds_ntw_return_resource(struct ice_network *ntw)
 		cve_os_log(CVE_LOGLEVEL_DEBUG,
 			"Releasing resources. NtwID=0x%lx\n",
 			(uintptr_t)ntw);
-
-		__power_off_ntw_devices(ntw);
 
 		__ntw_release_ice(ntw);
 		ntw->ntw_icemask = 0;
@@ -5234,4 +5366,3 @@ u64 __get_sw_id_from_context_pid(cve_context_process_id_t context_pid,
 out:
 	return context_sw_id;
 }
-

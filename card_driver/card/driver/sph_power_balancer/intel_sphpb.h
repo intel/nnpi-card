@@ -70,7 +70,7 @@ struct sphpb_callbacks {
 	int (*set_power_state)(uint32_t ice_index, bool bOn);
 
 	/* unregister power balancer driver */
-	void  (*undergister_driver)(void);
+	void  (*unregister_driver)(void);
 };
 
 const struct sphpb_callbacks *sph_power_balancer_register_driver(const struct sphpb_icedrv_callbacks *drv_data);

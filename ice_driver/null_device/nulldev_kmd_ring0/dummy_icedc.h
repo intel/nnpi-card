@@ -20,13 +20,20 @@
 #include <linux/slab.h>
 #define MAX_BARS_PCI_DEV 6
 #define INTERRUPT_VAL 123
+
+#define ioread64(addr) dummy_ioread64(addr)
+
 typedef irqreturn_t (*dummy_irq_handler) (int, void*);
 
 extern dummy_irq_handler interrupt_top_half;
 
 uint32_t dummy_ioread32(uint32_t *mmio_address);
 
-uint32_t dummy_iowrite32(uint64_t value,uint32_t *mmio_address);
+uint32_t dummy_iowrite32(uint64_t value, uint32_t *mmio_address);
+
+uint64_t dummy_ioread64(uint64_t *mmio_address);
+
+void dummy_iowrite64(uint64_t val, uint32_t *addr);
 
 extern uint64_t ioaddr_bar[MAX_BARS_PCI_DEV];
 

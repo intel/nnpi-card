@@ -230,6 +230,9 @@ static const struct sph_sw_counters_group_info
 };
 
 static const struct sph_sw_counter_info g_swc_infer_device_info[] = {
+	/* ICEDRV_SWC_INFER_DEVICE_COUNTER_ID */
+	{ICEDRV_SWC_INFER_DEVICE_GROUP_GEN, "IceId",
+	 "Actual HW ICE ID, ID=0xFFFF(65535) means invalid value"},
 	/* ICEDRV_SWC_INFER_DEVICE_COUNTER_ECC_SERRCOUNT */
 	{ICEDRV_SWC_INFER_DEVICE_GROUP_GEN, "eccSerrCount",
 	 "Count of Deep SRAM ECC single errors"},

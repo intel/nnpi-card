@@ -103,6 +103,7 @@ static int cve_pci_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	void __iomem * const *ioaddr;
 #endif
 	struct cve_os_device *linux_device;
+	struct idc_device *idc_dev;
 
 	FUNC_ENTER();
 
@@ -148,19 +149,20 @@ static int cve_pci_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 		goto out;
 	}
 
+	idc_dev = &linux_device->idc_dev;
 #ifdef SIMICS
 #ifdef NULL_DEVICE_RING0
 	ioaddr[0] = pci_iomap_null(pdev, 0, 0);
 
 	/* Get physical address of Bar-1 and point to ICE Access Window*/
-	linux_device->idc_dev.bar1_base_address =
-				pci_resource_start_null(pdev, 2) + (1 << 16);
+	idc_dev->bar1_base_address = pci_resource_start_null(pdev, 2) +
+					IDC_ICE_ACCESS_WINDOW_OFFSET;
 #else
 	ioaddr[0] = pci_iomap(pdev, 0, 0);
 
 	/* Get physical address of Bar-1 and point to ICE Access Window*/
-	linux_device->idc_dev.bar1_base_address =
-				pci_resource_start(pdev, 2) + (1 << 16);
+	idc_dev->bar1_base_address = pci_resource_start(pdev, 2) +
+					IDC_ICE_ACCESS_WINDOW_OFFSET;
 #endif
 #else /* FPGA */
 	ioaddr = pcim_iomap_table(pdev);

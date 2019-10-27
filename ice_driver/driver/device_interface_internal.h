@@ -30,6 +30,8 @@
  * GP #13 register should back to his default value
  */
 #define ICE_MMIO_GP_RESET_REG_ADDR_OFFSET (4 * 13)
+#define ICE_MMIO_GP_14_REG_ADDR_OFFSET (4 * 14)
+#define ICE_MMIO_GP_15_REG_ADDR_OFFSET (4 * 15)
 
 #define ICE_MMIO_GP_RESET_REG_TEST_VAL     0xCAFED00D
 #define ICE_INTR_STS_SINGLE_ECC_ERR \

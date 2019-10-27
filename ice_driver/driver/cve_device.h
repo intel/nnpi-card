@@ -46,8 +46,8 @@ enum ICE_POWER_STATE {
 	ICE_POWER_ON,
 	/* ICE is in power off queue */
 	ICE_POWER_OFF_INITIATED,
-	/* When driver starts then power state is unknown */
-	ICE_POWER_UNKNOWN
+	/* Invalid value */
+	ICE_POWER_MAX
 };
 
 enum ICEDC_DEVICE_STATE {
@@ -175,8 +175,10 @@ struct ice_dso_regs_data {
 
 struct ice_read_daemon_config {
 	struct ice_register_reader_daemon conf;
+	struct ice_register_reader_daemon reset_conf;
 	bool is_default_config;
 	enum ICE_TRACE_HW_CONFIG_STATUS daemon_config_status;
+	bool restore_needed_from_suspend;
 };
 
 struct ice_perf_counter_config {
@@ -212,7 +214,11 @@ struct cve_device {
 	struct cve_device_group *dg;
 	/* device state */
 	enum CVE_DEVICE_STATE state;
-	/* power state of device */
+	/* Power state of device. Use following functions to
+	 * read/write this value:
+	 *	a. ice_dev_set_power_state
+	 *	b. ice_dev_get_power_state
+	 */
 	enum ICE_POWER_STATE power_state;
 	/* last network id that ran on this device */
 	cve_network_id_t dev_ntw_id;
@@ -254,6 +260,18 @@ struct cve_device {
 	/* Is ICE in free pool */
 	bool in_free_pool;
 };
+struct llc_pmon_config {
+	/*LLC PMON config reg 0 value */
+	u64 pmon0_cfg;
+	/*LLC PMON config reg 1 value */
+	u64 pmon1_cfg;
+	/*LLC PMON config reg 2 value */
+	u64 pmon2_cfg;
+	/*LLC PMON config reg 3 value */
+	u64 pmon3_cfg;
+	/*LLC PMON disable flag */
+	bool disable_llc_pmon;
+};
 
 struct icebo_desc {
 	/* icebo id */
@@ -266,6 +284,14 @@ struct icebo_desc {
 	struct cve_dle_t owner_list;
 	/* List of devices - static list */
 	struct cve_device *dev_list;
+	/*LLC PMON config struct */
+	struct llc_pmon_config llc_pmon_cfg;
+#ifndef RING3_VALIDATION
+	/* LLC PMON sysfs related field */
+	struct kobject *icebo_kobj;
+#endif
+	/* ICCP init settings per ICE-BO done */
+	bool iccp_init_done;
 };
 
 struct dg_dev_info {
@@ -326,6 +352,27 @@ struct clos_manager {
 	u64 pqr_default;
 	/* -------------- */
 };
+#ifndef RING3_VALIDATION
+/*sph mailbox related structure*/
+struct ice_sphmbox {
+	/* Mailbox registers' base address */
+	void __iomem *idc_mailbox_base;
+	/* lock to protect concurrent access */
+	spinlock_t lock;
+};
+
+/* sph power balancer related structure*/
+struct ice_sphpb {
+	/* Callback functions of power balancer module */
+	const struct sphpb_callbacks *sphpb_cbs;
+};
+#else
+/* Dummy sph power balancer related structure for ring3 */
+struct ice_sphpb {
+	/* Callback functions of power balancer module */
+	const struct sphpb_callbacks *sphpb_cbs;
+};
+#endif
 
 /* TODO: In future DG can be rebranded as ResourcePool.
  * It contains ICEs, Counters, LLC and Pools info.
@@ -377,6 +424,7 @@ struct cve_device_group {
 	u8 terminate_thread;
 #else
 	struct task_struct *thread;
+	struct ice_sphmbox sphmb;
 #endif
 	/* List of devices that are to be turned off */
 	struct cve_device *poweroff_dev_list;
@@ -388,6 +436,7 @@ struct cve_device_group {
 	/* Book keeping for Order of ExecuteInfer call */
 	u64 dg_exe_order;
 #endif
+	struct ice_sphpb sphpb;
 };
 
 /* Holds all the relevant IDs required for maintaining a map between
@@ -702,6 +751,11 @@ struct ice_network {
 	/* SW counter object */
 	struct ice_swc_node swc_node;
 	struct ice_user_full_ntw *user_full_ntw;
+
+	/* ICE specific swc node array */
+	void *dev_hswc[MAX_CVE_DEVICES_NR];
+	void *dev_hswc_parent;
+	u8 used_hswc_count;
 	/************************/
 
 	/* IceDc error status*/
@@ -958,5 +1012,11 @@ struct ice_debug_event_bp {
 
 int cve_device_init(struct cve_device *dev, int index, u64 pe_value);
 void cve_device_clean(struct cve_device *dev);
+
+enum ICE_POWER_STATE ice_dev_get_power_state(
+	struct cve_device *dev);
+
+void ice_dev_set_power_state(struct cve_device *dev,
+	enum ICE_POWER_STATE pstate);
 
 #endif /* CVE_DEVICE_H_ */

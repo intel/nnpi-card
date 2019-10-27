@@ -22,6 +22,7 @@
 #else
 #include <linux/types.h>
 #endif
+#include "project_device_interface.h"
 #include "cve_driver_internal_types.h"
 #include "memory_manager.h"
 #include "dispatcher.h"
@@ -189,7 +190,7 @@ void remove_di_job(cve_di_job_handle_t hjob);
 int cve_di_handle_submit_job(
 		struct cve_ntw_buffer *buf_list,
 		cve_ds_job_handle_t ds_hjob,
-		u32 command_buffers_nr,
+		struct cve_job *job_desc,
 		struct cve_command_buffer_descriptor *kcb_descriptor,
 		cve_di_job_handle_t *out_hjob);
 

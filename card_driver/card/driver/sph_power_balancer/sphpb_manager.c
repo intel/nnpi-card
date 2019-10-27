@@ -192,7 +192,71 @@ int sphpb_mng_get_efficient_ice_list(struct sphpb_pb *sphpb,
 }
 
 
+static int update_ring_divisor(struct sphpb_pb *sphpb,
+			       uint32_t         ice_index,
+			       uint16_t         ring_divisor)
+{
+	uint32_t icebo_number = (ice_index / SPHPB_MAX_ICE_PER_ICEBO);
+	uint32_t ice_in_icebo = (ice_index % SPHPB_MAX_ICE_PER_ICEBO);
+	int ret = 0;
+	uint32_t icebo, ice;
+	bool set_new_val;
 
+	if (ring_divisor == sphpb->icebo[icebo_number].ice[ice_in_icebo].ring_divisor)
+		return 0;
+
+	sphpb->icebo[icebo_number].ice[ice_in_icebo].ring_divisor = ring_divisor;
+	sphpb->icebo[icebo_number].ring_divisor = 0;
+	sphpb->icebo[icebo_number].ring_divisor_idx = -1;
+	for (ice = 0; ice < SPHPB_MAX_ICE_PER_ICEBO; ice++)
+		if ((sphpb->icebo[icebo_number].enabled_ices_mask & (1 << ice)) != 0 &&
+		    fx_U1F15_compare(sphpb->icebo[icebo_number].ice[ice].ring_divisor, sphpb->icebo[icebo_number].ring_divisor) > 0) {
+			sphpb->icebo[icebo_number].ring_divisor = sphpb->icebo[icebo_number].ice[ice].ring_divisor;
+			sphpb->icebo[icebo_number].ring_divisor_idx = ice;
+		}
+
+	set_new_val = (sphpb->max_ring_divisor_ice_num < 0) ||
+		      (fx_U1F15_compare(ring_divisor, sphpb->icebo_ring_divisor) > 0);
+
+	if (!set_new_val &&
+	    ice_index == sphpb->max_ring_divisor_ice_num) {
+		/* global ring divisor need to be recalculated */
+		uint16_t new_max = 0;
+		int new_idx = -1;
+
+		for (icebo = 0; icebo < SPHPB_MAX_ICEBO_COUNT; icebo++) {
+			if (!sphpb->icebo[icebo].enabled_ices_mask)
+				continue;
+
+			if (fx_U1F15_compare(sphpb->icebo[icebo].ring_divisor, new_max) > 0) {
+				new_max = sphpb->icebo[icebo].ring_divisor;
+				new_idx = icebo * SPHPB_MAX_ICE_PER_ICEBO + sphpb->icebo[icebo].ring_divisor_idx;
+			}
+		}
+
+		if (new_idx >= 0) {
+			ice_index = new_idx;
+			ring_divisor = new_max;
+			set_new_val = true;
+		} else {
+			sphpb->max_ring_divisor_ice_num = -1;
+		}
+	}
+
+	if (set_new_val) {
+		if (sphpb->icedrv_cb->set_icebo_to_ring_ratio) {
+			ret = sphpb->icedrv_cb->set_icebo_to_ring_ratio(ring_divisor);
+			if (ret == 0) {
+				sphpb->icebo_ring_divisor = ring_divisor;
+				sphpb->max_ring_divisor_ice_num = ice_index;
+			} else {
+				sph_log_err(POWER_BALANCER_LOG, "Error: Failed to set new ring ratio, ret=%d\n", ret);
+			}
+		}
+	}
+
+	return ret;
+}
 
 /* set icebo active state */
 int sphpb_mng_set_icebo_enable(struct sphpb_pb *sphpb,
@@ -202,10 +266,8 @@ int sphpb_mng_set_icebo_enable(struct sphpb_pb *sphpb,
 	uint32_t icebo_number = (ice_index / SPHPB_MAX_ICE_PER_ICEBO);
 	uint32_t ice_in_icebo = (ice_index % SPHPB_MAX_ICE_PER_ICEBO);
 	uint32_t new_enable_mask = (1 << ice_in_icebo);
-	uint32_t current_active_mask;
-	uint16_t max_icebo_ring_divisor = 0;
 	uint32_t index = 0;
-	int ret = 0;
+	int ret;
 
 	if (sphpb->icebo[icebo_number].ice[index].bEnable == bEnable)
 		return 0;
@@ -216,7 +278,6 @@ int sphpb_mng_set_icebo_enable(struct sphpb_pb *sphpb,
 	sphpb->icebo[icebo_number].ice[index].ring_divisor = 0x0;
 	sphpb->icebo[icebo_number].ice[index].ratio = 0x0;
 
-
 	/*
 	 * if busy is set bit of current ice will be added to enabled_ices_mask
 	 * else it will unset bit in this mask
@@ -226,81 +287,9 @@ int sphpb_mng_set_icebo_enable(struct sphpb_pb *sphpb,
 	else
 		sphpb->icebo[icebo_number].enabled_ices_mask &= ~new_enable_mask;
 
-	/*
-	 * check how man active ices, and modify icebo requested ring ratio.
-	 */
-	current_active_mask = sphpb->icebo[icebo_number].enabled_ices_mask;
+	ret = update_ring_divisor(sphpb, ice_index, 0);
 
-	/*
-	 * check active ices in icebo
-	 * for every active ice check what is higher frequency ratio request
-	 */
-	while (current_active_mask) {
-
-		if ((current_active_mask&0x1) &&
-		    fx_U1F15_compare(sphpb->icebo[icebo_number].ice[index].ring_divisor, max_icebo_ring_divisor) > 0)
-			max_icebo_ring_divisor = sphpb->icebo[icebo_number].ice[index].ring_divisor;
-
-		current_active_mask = current_active_mask >> 1;
-	}
-
-	/*
-	 * if icebo ring ratio has changed, driver will update icebo ratio
-	 * internal data structure. and if required - driver will update new
-	 * ring ratio request
-	 */
-	if (fx_U1F15_compare(sphpb->icebo[icebo_number].ring_divisor, max_icebo_ring_divisor) > 0) {
-
-		int compare_to_global_ring_divisor;
-
-		/*
-		 * check if higher then global ratio
-		 */
-		compare_to_global_ring_divisor = fx_U1F15_compare(sphpb->icebo[icebo_number].ring_divisor, sphpb->icebo_ring_divisor);
-
-		sphpb->icebo[icebo_number].ring_divisor = max_icebo_ring_divisor;
-
-		if (!compare_to_global_ring_divisor) {
-			int i;
-
-			sphpb->icebo[icebo_number].ring_divisor = max_icebo_ring_divisor;
-
-			/*
-			 * reset max_icebo_ring_divisor - and find a new max value
-			 */
-			max_icebo_ring_divisor = 0x0;
-
-			/*
-			 * find new higher ring ratio requested
-			 */
-			for (i = 0; i < SPHPB_MAX_ICEBO_COUNT; i++) {
-				if (fx_U1F15_compare(max_icebo_ring_divisor, sphpb->icebo[icebo_number].ring_divisor) > 0)
-					max_icebo_ring_divisor = sphpb->icebo[icebo_number].ring_divisor;
-			}
-
-			/*
-			 * modify global structure
-			 */
-			sphpb->icebo_ring_divisor = max_icebo_ring_divisor;
-
-			/*
-			 * request new ratio
-			 */
-
-			if (sphpb->icedrv_cb->set_icebo_to_ring_ratio)
-				ret = sphpb->icedrv_cb->set_icebo_to_ring_ratio(sphpb->icebo_ring_divisor);
-
-			if (!ret) {
-				sph_log_err(POWER_BALANCER_LOG, "Error: failed to set ring divisor value - ice #%d, value 0x%04x\n",
-					    ice_index, sphpb->icebo_ring_divisor);
-				return ret;
-			}
-
-		}
-
-	}
-
-	return 0;
+	return ret;
 }
 
 
@@ -313,41 +302,14 @@ int sphpb_mng_request_ice_dvfs_values(struct sphpb_pb *sphpb,
 	uint32_t icebo_number = (ice_index / SPHPB_MAX_ICE_PER_ICEBO);
 	uint32_t ice_in_icebo = (ice_index % SPHPB_MAX_ICE_PER_ICEBO);
 	uint32_t ice_busy_mask = (1 << ice_in_icebo);
-	int ret = 0;
+	int ret;
 
 	if (!(sphpb->icebo[icebo_number].enabled_ices_mask & ice_busy_mask)) {
 		sph_log_err(POWER_BALANCER_LOG, "Error: Bad FSM - request ICE ratio while ICE is not set to busy state - ice #%d\n", ice_index);
 		return -EINVAL;
 	}
 
-	/*
-	 * store requested ring ratio in ice data structure
-	 */
-	sphpb->icebo[icebo_number].ice[ice_in_icebo].ring_divisor = sphpb->icebo_ring_divisor;
-
-	/*
-	 * check if requested ratio is higher then current icebo ratio
-	 * if so, driver will check if requested ratio is higher then current
-	 * global ratio, if that is true - driver will update request.
-	 */
-	if (fx_U1F15_compare(ring_divisor, sphpb->icebo[icebo_number].ring_divisor) > 0) {
-		sphpb->icebo[icebo_number].ring_divisor = ring_divisor;
-
-		if (fx_U1F15_compare(ring_divisor, sphpb->icebo_ring_divisor) > 0) {
-			sphpb->icebo_ring_divisor = ring_divisor;
-
-			/* request to update frequency */
-			if (sphpb->icedrv_cb->set_icebo_to_ring_ratio)
-				ret = sphpb->icedrv_cb->set_icebo_to_ring_ratio(ring_divisor);
-
-			if (!ret) {
-				sph_log_err(POWER_BALANCER_LOG, "Error: failed to set ring divisor value - ice #%d, value 0x%04x\n", ice_index, ring_divisor);
-				return ret;
-			}
-		}
-	}
+	ret = update_ring_divisor(sphpb, ice_index, ring_divisor);
 
 	return ret;
 }
-
-

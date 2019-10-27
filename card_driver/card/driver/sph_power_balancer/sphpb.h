@@ -52,6 +52,8 @@ struct sphpb_icebo_info {
 	uint16_t	ratio;
 	/* icebo ring divisor selected */
 	uint16_t	ring_divisor;
+	/* index of ice in icebo with highest ring divisor value, -1 if not set */
+	int             ring_divisor_idx;
 	/* per ice meta date in icebo */
 	struct sphpb_ice_info ice[SPHPB_MAX_ICE_PER_ICEBO];
 };
@@ -72,6 +74,8 @@ struct sphpb_pb {
 
 	/* global icebo ring divisor */
 	uint16_t icebo_ring_divisor;
+	/* ice number with highest ring divisor value, -1 if not set */
+	int      max_ring_divisor_ice_num;
 
 	struct kobject *kobj;
 	struct kobject *ia_kobj_root;

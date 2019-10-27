@@ -39,6 +39,8 @@ int ice_trace_configure_one_perf_counter(struct cve_device *ice_dev,
 bool ice_trace_hw_debug_check(struct cve_device *ice_dev);
 int ice_trace_init_bios_sr_page(struct cve_device *ice_dev);
 int ice_trace_restore_hw_dso_regs(struct cve_device *ice_dev);
+int ice_trace_restore_daemon_config(struct cve_device *ice_dev,
+					bool is_restore_from_suspend);
 int ice_trace_sysfs_init(struct cve_device *ice_dev);
 void ice_trace_sysfs_term(struct cve_device *ice_dev);
 int ice_trace_init_dso(struct cve_device *ice_dev);

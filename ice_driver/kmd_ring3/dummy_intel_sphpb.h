@@ -1,0 +1,73 @@
+/********************************************
+ * Copyright (C) 2019 Intel Corporation
+ *
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ ********************************************/
+
+/*
+ * @file dummy_intel_sphpb.h
+ *
+ * @brief Dummy Header file defining sph power balancer driver api for ring3
+ *
+ * This header file defines dummy interface for ring3 used in kernel for accessing power balancer engine.
+ *
+ */
+
+#ifndef _DUMMY_INTEL_SPH_POWER_BALANCER_H_
+#define _DUMMY_INTEL_SPH_POWER_BALANCER_H_
+
+
+enum SPHPB_DDR_REQUEST {
+	SPHPB_DDR_REQ_LOW = 1,
+	SPHPB_DDR_REQ_MID,
+	SPHPB_DDR_REQ_HIGH
+};
+
+struct sphpb_icedrv_callbacks {
+	/* ices per icebo */
+	uint32_t ices_per_icebo;
+
+	/* callback to set ice 2 ring ratio */
+	int (*set_icebo_to_ring_ratio)(uint16_t value);
+	/* callback to get ice 2 ring ratio */
+	int (*get_icebo_to_ring_ratio)(uint16_t *value);
+	/* callback to set icebo ratio value */
+	int (*set_icebo_to_icebo_ratio)(uint32_t icebo, uint32_t value);
+	/* callback to get icebo ratio value */
+	int (*get_icebo_to_icebo_ratio)(uint32_t icebo, uint32_t *value);
+};
+
+
+
+struct sphpb_callbacks {
+	/* request to get a list of recommended ices to use when job starts */
+	/*
+	 * ring_divisor_fx - 1U15 - fixed point value between 0.0 to 1.99999 ratio between ice to ring
+	 * ratio_fx - currently undefined value - TBD
+	 *            value between 0.0 - 1.0 define relative ratio from current frequency of ice in system.
+	 *            ICE_FREQUENCY = (ratio_fx * MAX_FREQUENCY)
+	 */
+
+	int (*get_efficient_ice_list)(uint64_t ice_mask,
+				      enum SPHPB_DDR_REQUEST ddr,
+				      uint16_t ring_divisor_fx,
+				      uint16_t ratio_fx,
+				      uint8_t *o_ice_array,
+				      ssize_t array_size);
+
+	/* request from sphpb to set ice to ring and ice ratio */
+	int (*request_ice_dvfs_values)(uint32_t ice_index,
+				       enum SPHPB_DDR_REQUEST ddr,
+				       uint16_t ring_divisor_fx,
+				       uint16_t ratio_fx);
+
+	/* set ice active state */
+	int (*set_power_state)(uint32_t ice_index, bool bOn);
+
+	/* unregister power balancer driver */
+	void  (*unregister_driver)(void);
+};
+
+const struct sphpb_callbacks *sph_power_balancer_register_driver(const struct sphpb_icedrv_callbacks *drv_data);
+
+#endif //_DUMMY_INTEL_SPH_POWER_BALANCER_H_

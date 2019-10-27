@@ -72,6 +72,10 @@
 /* all logs related to sph power balancer collection */
 #define POWER_BALANCER_LOG "SPHLOG_POWER_BALANCER"
 
+/* all logs related to runtime operations */
+#define RUNTIME_LOG "SPHLOG_RUNTIME"
 
+/* all logs related to blob deserialize */
+#define BLOB_LOG "SPHLOG_BLOB"
 
 

@@ -1,0 +1,43 @@
+#! /bin/sh
+
+#This script is invoked at system shutdown (from /etc/init.d/S99-sph)
+
+KVER=`uname -r`
+
+
+
+echo "**********************************************************************"
+echo "** Running /usr/local/bin/sph_platform_stop (kernel $KVER)... **"
+echo "**********************************************************************"
+
+
+error_check () {
+    ret=$?
+    if [ $ret != 0 ]; then
+        echo "$1 failed, return value $ret"
+        exit $ret
+    fi
+}
+
+#set paths to that daemons can use it
+source /usr/local/bin/set-global-sph-paths
+if [ ! -f /etc/version ]; then
+	echo "*****************************************************************"
+	echo "** /usr/local/bin/sph_platform_stop: This is a VANILLA OS     **"
+        echo "** No SPH HW/SW initializations                                **"
+	echo "*****************************************************************"
+	exit 0
+fi
+
+echo "stopping daemon..."
+killall sph_daemon
+error_check "kill sph_daemon"
+
+sleep 1
+
+echo "removing sphcs..."
+rmmod sphcs
+error_check "rmmod sphcs"
+
+sleep 1
+

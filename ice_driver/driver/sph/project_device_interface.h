@@ -28,6 +28,8 @@
 #define LLC_MASK 0xFFFF8080
 #define max_llc_ratio(a) ((a) & 0x7F)
 #define min_llc_ratio(a) (((a) >> 8) & 0x7F)
+#define MAX_LLCPMON_CONFIG 7
+#define MAX_LLCPMON_PREDEF_CONFIG 6
 
 struct hw_revision_t {
 	u16	major_rev;
@@ -39,6 +41,8 @@ int is_wd_error(u32 status);
 void get_hw_revision(struct cve_device *cve_dev,
 				struct hw_revision_t *hw_rev);
 int do_reset_device(struct cve_device *cve_dev, uint8_t idc_reset);
+void ice_di_start_llc_pmon(struct cve_device *dev, bool pmon_0_1);
+void ice_di_read_llc_pmon(struct cve_device *dev);
 void cve_print_mmio_regs(struct cve_device *cve_dev);
 void store_ecc_err_count(struct cve_device *cve_dev);
 int init_platform_data(struct cve_device *cve_dev);
@@ -48,6 +52,8 @@ int icedrv_sysfs_init(void);
 int hw_config_sysfs_init(struct cve_device *ice_dev);
 void hw_config_sysfs_term(struct cve_device *ice_dev);
 void icedrv_sysfs_term(void);
+void perform_daemon_suspend(struct cve_device *ice_dev);
+void perform_daemon_reset(struct cve_device *ice_dev);
 
 /* Init cve_dump register in the device
  * inputs: os_dev - os device handle;
@@ -59,6 +65,8 @@ int project_hook_init_cve_dump_buffer(struct cve_device *dev);
  * inputs: os_dev - os device handle;
  */
 void project_hook_free_cve_dump_buffer(struct cve_device *dev);
+
+struct kobject *get_icedrv_kobj(void);
 
 #ifdef DEBUG_TENSILICA_ENABLE
 inline void cve_decouple_debugger_reset(void);
@@ -91,6 +99,8 @@ int set_ice_freq(void *ice_freq_config);
 
 int configure_ice_frequency(struct cve_device *dev);
 
+int __init_ice_iccp(struct cve_device *dev);
+void __term_ice_iccp(struct cve_device *dev);
 #define __no_op_return_success 0
 
 #ifdef RING3_VALIDATION
@@ -98,11 +108,15 @@ int configure_ice_frequency(struct cve_device *dev);
 #define term_icedrv_sysfs() __no_op_stub
 #define init_icedrv_hw_config(dev) __no_op_return_success
 #define term_icedrv_hw_config(dev) __no_op_stub
+#define init_ice_iccp(x) __no_op_return_success
+#define term_ice_iccp(x) __no_op_stub
 #else
 #define init_icedrv_sysfs() icedrv_sysfs_init()
 #define term_icedrv_sysfs() icedrv_sysfs_term()
 #define init_icedrv_hw_config(dev) hw_config_sysfs_init(dev)
 #define term_icedrv_hw_config(dev) hw_config_sysfs_term(dev)
+#define init_ice_iccp(x) __init_ice_iccp(x)
+#define term_ice_iccp(x) __term_ice_iccp(x)
 #endif
 
 int ice_di_get_core_blob_sz(void);
@@ -129,5 +143,37 @@ do {\
 	} \
 } while (0)
 
+#define __select_val_for_correct_version(bstep_val, astep_val) \
+	((ice_get_b_step_enable_flag()) ? bstep_val : astep_val)
+
+#define __BSTEP_BAR1_ICE_REGION_SPILL_SZ 0x0
+#define __ASTEP_BAR1_ICE_REGION_SPILL_SZ (0x4000) /*16K*/
+#define __BAR1_ICE_REGION_SPILL_SZ \
+	__select_val_for_correct_version(\
+			__BSTEP_BAR1_ICE_REGION_SPILL_SZ,\
+			__ASTEP_BAR1_ICE_REGION_SPILL_SZ)
+
+#define __BSTEP_BAR1_IDC_ICE_ACCESS_WINDOW (0x20000) /*128K*/
+#define __ASTEP_BAR1_IDC_ICE_ACCESS_WINDOW (0x10000) /*64K*/
+#define __BAR1_IDC_ICE_ACCESS_WINDOW \
+	__select_val_for_correct_version(\
+			__BSTEP_BAR1_IDC_ICE_ACCESS_WINDOW,\
+			__ASTEP_BAR1_IDC_ICE_ACCESS_WINDOW)
+
+#define __BSTEP_BAR1_ICE_SZ (0x8000) /*32K*/
+#define __ASTEP_BAR1_ICE_SZ (0x4000) /*16K*/
+#define __BAR1_ICE_SZ \
+	__select_val_for_correct_version(\
+			__BSTEP_BAR1_ICE_SZ, __ASTEP_BAR1_ICE_SZ)
+
+
+#define IDC_BAR1_COUNTERS_ADDRESS_START 0xFFFF0000
+#define IDC_BAR1_COUNTERS_NOTI_ADDR 0xFFFF0800
+#define BAR1_ICE_SPACE __BAR1_ICE_SZ
+#define BAR1_ICE_PERMISSION 3 /*rw-*/
+
+#define ICE_OFFSET(i) (0x100000 + (i * 0x40000)) /* 1 MB + 0.25MB per ICE */
+#define ICE_BAR1_OFFSET(ice_id) (ice_id * BAR1_ICE_SPACE)
+#define IDC_ICE_ACCESS_WINDOW_OFFSET __BAR1_IDC_ICE_ACCESS_WINDOW
 
 #endif /* _DEVICE_INTERFACE_INTERNAL_H_ */

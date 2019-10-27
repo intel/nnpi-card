@@ -43,6 +43,8 @@ int __init_icedrv_trace(struct cve_device *ice_dev)
 	/* Set registers reader daemon  configuration status to default */
 	ice_dev->daemon.daemon_config_status = TRACE_STATUS_DEFAULT;
 	ice_dev->daemon.conf.daemon_table_len = 0;
+	ice_dev->daemon.reset_conf.daemon_table_len = 0;
+	ice_dev->daemon.restore_needed_from_suspend = false;
 
 	/*Initalize perf Counter config length to 0 */
 	ice_dev->perf_counter.perf_counter_config_len = 0;
@@ -144,8 +146,24 @@ int ice_restore_trace_hw_regs(struct cve_device *ice_dev)
 		break;
 	}
 
+	ret = ice_trace_restore_daemon_config(ice_dev, false);
+
+out:
+	FUNC_LEAVE();
+
+	return ret;
+}
+
+int ice_trace_restore_daemon_config(struct cve_device *ice_dev,
+					bool is_restore_from_suspend)
+{
+	int ret = 0;
+
+	FUNC_ENTER();
+
 	cve_os_dev_log(CVE_LOGLEVEL_DEBUG, ice_dev->dev_index,
 	     "Daemon config status %d\n", ice_dev->daemon.daemon_config_status);
+
 	switch (ice_dev->daemon.daemon_config_status) {
 	case TRACE_STATUS_USER_CONFIG_WRITE_PENDING:
 	case TRACE_STATUS_DEFAULT_CONFIG_WRITE_PENDING:
@@ -155,9 +173,12 @@ int ice_restore_trace_hw_regs(struct cve_device *ice_dev)
 		ret = ice_trace_configure_registers_reader_demon(ice_dev);
 		if (ret) {
 			cve_os_dev_log(CVE_LOGLEVEL_ERROR, ice_dev->dev_index,
-					"Probelm in reader daemon write\n");
+					"Problem in reader daemon write\n");
 			goto out;
 		} else {
+			if (is_restore_from_suspend)
+				ice_dev->daemon.restore_needed_from_suspend =
+									false;
 			cve_os_dev_log(CVE_LOGLEVEL_INFO, ice_dev->dev_index,
 					"Reader daemon registers restored\n");
 		}
