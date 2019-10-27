@@ -45,7 +45,7 @@
 #define IOCTL_INF_INFREQ_EXEC_DONE        _IOW('I', 6, struct inf_infreq_exec_done)
 #define IOCTL_INF_ALLOC_RESOURCE_REPLY    _IOW('I', 7, struct inf_alloc_resource_reply)
 #define IOCTL_INF_DEVNET_RESOURCES_RESERVATION_REPLY _IOW('I', 8, struct inf_devnet_resource_reserve_reply)
-
+#define IOCTL_INF_GET_ALLOC_PGT          _IOWR('I', 10, struct inf_get_alloc_pgt)
 #ifdef ULT
 #define IOCTL_INF_SWITCH_DAEMON            _IO('I', 9)
 #endif
@@ -223,4 +223,16 @@ struct inf_devnet_resource_reserve_reply {
 	uint8_t reserve_resource; //1 = reserve, 0 = release
 	IoctlSphcsError i_sphcs_err;
 };
+
+struct inf_alloc_pgt_entry {
+	uint64_t phys;
+	uint64_t size;
+};
+
+struct inf_get_alloc_pgt {
+	int                         buf_fd;
+	struct inf_alloc_pgt_entry *entries;
+	uint32_t                    num_entries;
+};
+
 #endif

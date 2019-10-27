@@ -42,15 +42,23 @@
 
 #include "ice_sw_counters.h"
 #include "ice_debug_event.h"
+#ifndef RING3_VALIDATION
+#include "intel_sphpb.h"
+#else
+#include "dummy_intel_sphpb.h"
+#endif
 
 
+
+#define CNC_CONTROL_MSG_TIMEOUT 200
+#define ICCP_THROTLLING_OPCODE 0x3
+#define ICCP_NO_THROTLLING_OPCODE 0x4
 
 #define PART_SUBMISSION_STEP (CVE_FIFO_ENTRIES_NR/2)
 
 #define ENABLE_CARD_RESET_FEATURE 0
 /* We expect 5 because the same value has been programmed in ECB */
 #define ECB_SUCCESS_STATUS 5
-
 /* Use: To avoid spurious interrupt */
 int is_driver_active;
 
@@ -113,6 +121,14 @@ struct di_job {
 	u8 cold_run;
 	/* Does this Job has SCB */
 	u8 has_scb;
+	/* ddr BW in mbps*/
+	__u32 ddr_bw;
+	/* Ring to ICE clock frequency ratio*/
+	__u16 ring_to_ice_ratio;
+	/* ICE to ICE clock frequency ratio*/
+	__u32 ice_to_ice_ratio;
+	/* cdyn budget value required for the job */
+	__u16 cdyn_val;
 };
 
 /* MODULE LEVEL VARIABLES */
@@ -434,6 +450,9 @@ static void dispatch_next_subjobs(struct di_job *job,
 	cve_virtual_address_t iceva;
 	struct ice_network *ntw = (struct ice_network *) dev->dev_ntw_id;
 	struct ice_infer *inf = ntw->curr_exe;
+	struct cve_device_group *dg = cve_dg_get();
+	const struct sphpb_callbacks *sphpb_cbs;
+	int ret;
 
 	if (job->cold_run)
 		__prepare_cbdt(job, dev);
@@ -441,8 +460,44 @@ static void dispatch_next_subjobs(struct di_job *job,
 	job->first_cb_desc = 0;
 	iceva = dev->fifo_desc->fifo_alloc.ice_vaddr;
 	db = job->last_cb_desc;
-
 	if (job->cold_run) {
+		if (!dg) {
+			cve_os_log(CVE_LOGLEVEL_ERROR,
+				"null dg pointer (%d) !!\n", -EINVAL);
+			sphpb_cbs = NULL;
+		} else {
+			sphpb_cbs = dg->sphpb.sphpb_cbs;
+		}
+		if (sphpb_cbs && sphpb_cbs->request_ice_dvfs_values &&
+			(job->ring_to_ice_ratio || job->ice_to_ice_ratio)) {
+			cve_os_dev_log(CVE_LOGLEVEL_DEBUG,
+				dev->dev_index,
+			"ddr_bw %d, ring2ice_ratio 0x%x, ice2ice_ratio 0x%x\n",
+					job->ddr_bw, job->ring_to_ice_ratio,
+					job->ice_to_ice_ratio);
+
+			ret = sphpb_cbs->request_ice_dvfs_values(dev->dev_index,
+					job->ddr_bw,
+					job->ring_to_ice_ratio,
+					job->ice_to_ice_ratio);
+			if (ret) {
+				cve_os_dev_log(CVE_LOGLEVEL_ERROR,
+					dev->dev_index,
+					"failed in setting dvfs values (%d)\n",
+					ret);
+			}
+		}
+		if (job->cdyn_val) {
+			/* For A step Throttling is disabled */
+			ret = ice_iccp_license_request(dev, false,
+								job->cdyn_val);
+			if (ret) {
+				cve_os_dev_log(CVE_LOGLEVEL_ERROR,
+					dev->dev_index,
+					" failed in iccp license request (%d)\n",
+					ret);
+			}
+		}
 		/* Cold Run */
 		if (disable_embcb) {
 			job->first_cb_desc = 1;
@@ -653,11 +708,12 @@ void ice_di_set_shared_read_reg(struct cve_device *dev, struct ice_network *ntw,
 #ifdef IDC_ENABLE
 int set_idc_registers(struct cve_device *dev, uint8_t lock)
 {
-	uint64_t value, mask;
+	uint64_t value, mask, val64, ice_pe_val;
 	int ret = 0;
 	struct hw_revision_t hw_rev;
 	struct idc_device *idc = ice_to_idc(dev);
 	struct cve_device_group *dg = dev->dg;
+	const struct sphpb_callbacks *sphpb_cbs;
 
 	if (lock) {
 		ret = cve_os_lock(&dg->poweroff_dev_list_lock,
@@ -693,7 +749,7 @@ int set_idc_registers(struct cve_device *dev, uint8_t lock)
 			dev->dev_index);
 
 		/* In case Power state was unknown */
-		dev->power_state = ICE_POWER_ON;
+		ice_dev_set_power_state(dev, ICE_POWER_ON);
 
 		goto out;
 	}
@@ -724,38 +780,39 @@ int set_idc_registers(struct cve_device *dev, uint8_t lock)
 		ret = -ICEDRV_KERROR_ICE_DOWN;
 		goto out;
 	}
+	ice_pe_val = value;
 
-	dev->power_state = ICE_POWER_ON;
+	ice_dev_set_power_state(dev, ICE_POWER_ON);
+	sphpb_cbs = dg->sphpb.sphpb_cbs;
 
+	if (sphpb_cbs && sphpb_cbs->set_power_state) {
+		ret = sphpb_cbs->set_power_state(dev->dev_index, true);
+		if (ret) {
+			cve_os_dev_log(CVE_LOGLEVEL_ERROR,
+				dev->dev_index,
+				"failed in setting power state as ON with power balancer (%d)\n",
+				ret);
+		}
+		ret = 0;
+	}
 	cve_di_set_device_reset_flag(dev,
 		CVE_DI_RESET_DUE_POWER_ON);
 
-	/* Enable interrupts from ICE */
-	value = cve_os_read_idc_mmio(dev,
-		cfg_default.bar0_mem_iceinten_offset);
-	cve_os_write_idc_mmio(dev,
-		cfg_default.bar0_mem_iceinten_offset,
-		value | mask);
 
-	/* Enable error interrupts from ICE */
-	value = cve_os_read_idc_mmio(dev,
-		cfg_default.bar0_mem_iceinten_offset + 4);
-	cve_os_write_idc_mmio(dev,
-		cfg_default.bar0_mem_iceinten_offset + 4,
-		value | mask);
+	/* based on the Power Enabled ICE mask, prepare an equivalent ICE
+	 * normal/error interrupt mask. This avoid reading those MMIOs
+	 */
+	val64 = (((ice_pe_val) << 32) | (ice_pe_val));
+	idc_mmio_write64(dev, cfg_default.bar0_mem_iceinten_offset, val64);
 
 	value = atomic64_read(&idc->idc_err_intr_enable);
 	if (value != __icedc_err_intr_enable_all()) {
 		value = __icedc_err_intr_enable_all();
 		atomic64_set(&idc->idc_err_intr_enable, value);
 
-		/* Enable lower 32 bits of IDC interrupt */
-		cve_os_write_idc_mmio(dev, cfg_default.bar0_mem_idcinten_offset,
-		get_low_dword(value));
-
-		/* Enable upper 32 bits of IDC interrupt */
-		cve_os_write_idc_mmio(dev, cfg_default.bar0_mem_idcinten_offset
-		+ 4, get_high_dword(value));
+		/* Enable IDC interrupt */
+		idc_mmio_write64(dev, cfg_default.bar0_mem_idcinten_offset,
+				value);
 	}
 
 	/* Verify if this is the best place to keep because */
@@ -766,7 +823,7 @@ int set_idc_registers(struct cve_device *dev, uint8_t lock)
 
 out:
 	ice_swc_counter_set(dev->hswc, ICEDRV_SWC_DEVICE_COUNTER_POWER_STATE,
-			dev->power_state);
+			ice_dev_get_power_state(dev));
 	if (lock)
 		cve_os_unlock(&dg->poweroff_dev_list_lock);
 
@@ -793,7 +850,7 @@ int unset_idc_registers_multi(u32 icemask, uint8_t lock)
 	int ret = 0;
 	/* 1 if all ICEs are off */
 	uint8_t all_powered_off = 0;
-	uint64_t value, mask;
+	uint64_t value, mask, val64, ice_pe_val;
 	struct idc_device *idc;
 	struct cve_device *dev;
 	struct cve_device_group *dg;
@@ -837,34 +894,23 @@ int unset_idc_registers_multi(u32 icemask, uint8_t lock)
 				cfg_default.bar0_mem_icepe_offset,
 				value);
 
-	/* Disable interrupts from ICE */
-	value = cve_os_read_idc_mmio(dev,
-		cfg_default.bar0_mem_iceinten_offset);
-	cve_os_write_idc_mmio(dev,
-		cfg_default.bar0_mem_iceinten_offset,
-		value & (~mask));
-
-	/* Disable error interrupts from ICE */
-	value = cve_os_read_idc_mmio(dev,
-		cfg_default.bar0_mem_iceinten_offset + 4);
-	cve_os_write_idc_mmio(dev,
-		cfg_default.bar0_mem_iceinten_offset + 4,
-		value & (~mask));
+	/* based on the Power Enabled ICE mask, prepare an equivalent ICE
+	 * normal/error interrupt mask. This avoid reading those MMIOs
+	 */
+	ice_pe_val = value;
+	val64 = (((ice_pe_val) << 32) | (ice_pe_val));
+	idc_mmio_write64(dev, cfg_default.bar0_mem_iceinten_offset, val64);
 
 	/* ICENOTE is automatically cleared with 0 write to PE */
-
 	if (all_powered_off) {
 		mask = atomic64_xchg(&idc->idc_err_intr_enable, 0);
 		/* Disable lower 32 bits of IDC interrupt */
-		value = cve_os_read_idc_mmio(dev,
+
+		value = idc_mmio_read64(dev,
 				cfg_default.bar0_mem_idcinten_offset);
-		cve_os_write_idc_mmio(dev, cfg_default.bar0_mem_idcinten_offset,
-			value & (~mask));
-		/* Disable higher 32 bits of IDC interrupt */
-		value = cve_os_read_idc_mmio(dev,
-				cfg_default.bar0_mem_idcinten_offset + 4);
-		cve_os_write_idc_mmio(dev, cfg_default.bar0_mem_idcinten_offset
-			+ 4, value & (~mask));
+		val64 = (value & (~mask));
+		idc_mmio_write64(dev,
+				cfg_default.bar0_mem_idcinten_offset, val64);
 	}
 
 	if (lock)
@@ -932,7 +978,26 @@ static inline void di_enable_interrupts(struct cve_device *cve_dev)
 	cve_os_write_mmio_32(cve_dev, cfg_default.mmio_intr_mask_offset,
 			mask.val);
 }
+static inline void enable_dsp_clock_gating(struct cve_device *cve_dev)
+{
+	if (ice_get_b_step_enable_flag()) {
+		union mmio_hub_mem_cve_dpcg_control_reg_t reg;
 
+		reg.val = 0;
+		/*Need to set DPCG_CTRL_SW_DISABLE bit to 0
+		 *to enable clk gating from sw
+		 */
+		reg.field.DPCG_CTRL_SW_DISABLE = 0;
+		/*DPCG_CTRL_MSB_COUNTER_BITS are 2 MSBits
+		 *of 5 bits counters , LSB are 3'b111
+		 *This controls the extra time given before CG
+		 */
+		reg.field.DPCG_CTRL_MSB_COUNTER_BITS = 0x3;
+
+		cve_os_write_mmio_32(cve_dev,
+				cfg_default.mmio_dpcg_control, reg.val);
+	}
+}
 void cve_di_start_running(struct cve_device *cve_dev)
 {
 	/* Enable the IDLE clock gating logic */
@@ -945,6 +1010,10 @@ void cve_di_start_running(struct cve_device *cve_dev)
 			2000);
 	cve_os_write_mmio_32(cve_dev, cfg_default.mmio_cve_config_offset,
 		cfg_default.mmio_cfg_idle_enable_mask);
+
+	/*Enable dsp clock gating */
+	if (!disable_clk_gating)
+		enable_dsp_clock_gating(cve_dev);
 
 	/* enable ICE interrupts including errors */
 	di_enable_interrupts(cve_dev);
@@ -1218,7 +1287,8 @@ int cve_di_interrupt_handler(struct idc_device *idc_dev)
 	int index;
 	int need_dpc = 0;
 	u32 status_32 = 0;
-	u32 status_lo, status_hi, status_hl;
+	u64 status64;
+	u32 status_lo = 0, status_hi = 0, status_hl = 0;
 	struct cve_device *cve_dev = NULL;
 
 	u32 head = atomic_read(&idc_dev->status_q_head);
@@ -1243,48 +1313,36 @@ int cve_di_interrupt_handler(struct idc_device *idc_dev)
 		cve_os_log_default(CVE_LOGLEVEL_ERROR, "BH ISR Q FULL\n");
 	}
 
-
 	isr_status_node = &idc_dev->isr_status[head];
 	/* Set the valid to 0 as not data is yet processed
 	 * Set to one if some relevant data is filled
 	 */
 	isr_status_node->valid = 0;
 
-	status_lo = cve_os_read_idc_mmio(idc_dev->cve_dev,
+	status64 = idc_mmio_read64(idc_dev->cve_dev,
 			cfg_default.bar0_mem_idcintst_offset);
-	status_hi = cve_os_read_idc_mmio(idc_dev->cve_dev,
-			cfg_default.bar0_mem_idcintst_offset + 4);
-	isr_status_node->idc_status = (((u64)status_hi << 32) | status_lo);
+	isr_status_node->idc_status = status64;
+	idc_mmio_write64(idc_dev->cve_dev,
+			cfg_default.bar0_mem_idcintst_offset, status64);
 
-	cve_os_write_idc_mmio(idc_dev->cve_dev,
-		cfg_default.bar0_mem_idcintst_offset, status_lo);
-	cve_os_write_idc_mmio(idc_dev->cve_dev,
-		cfg_default.bar0_mem_idcintst_offset + 4, status_hi);
-
-	if (status_lo || status_hi) {
-		cve_os_log(CVE_LOGLEVEL_ERROR,
+	if (status64) {
+		cve_os_log(CVE_LOGLEVEL_DEBUG,
 			"Received IceDC error interrupt\n");
 		need_dpc = 1;
 		isr_status_node->valid = 1;
 	}
 
-	status_lo = cve_os_read_idc_mmio(idc_dev->cve_dev,
+	status64 = idc_mmio_read64(idc_dev->cve_dev,
 			cfg_default.bar0_mem_iceintst_offset);
-	status_hi = cve_os_read_idc_mmio(idc_dev->cve_dev,
-			cfg_default.bar0_mem_iceintst_offset + 4);
+	isr_status_node->ice_status = status64;
 
-	isr_status_node->ice_status = (((u64)status_hi << 32) | status_lo);
 	cve_os_log(CVE_LOGLEVEL_INFO,
-			"IsrQNode[%d]:0x%p Current ICE Status=0x%llx IntrStatus:0x%x ErrorStatus:0x%x\n",
-			head, isr_status_node, isr_status_node->ice_status,
-			status_lo, status_hi);
+			"IsrQNode[%d]:0x%p Current ICE Status=0x%llx\n",
+			head, isr_status_node, isr_status_node->ice_status);
 
-	cve_os_write_idc_mmio(idc_dev->cve_dev,
+	idc_mmio_write64(idc_dev->cve_dev,
 			cfg_default.bar0_mem_iceintst_offset,
-			status_lo & 0x0000FFF0);
-	cve_os_write_idc_mmio(idc_dev->cve_dev,
-			cfg_default.bar0_mem_iceintst_offset + 4,
-			status_hi & 0x0000FFF0);
+			(status64 & 0x0000FFF00000FFF0));
 
 	/* Spurious Interrupt */
 	if (!isr_status_node->ice_status && !need_dpc) {
@@ -1299,6 +1357,8 @@ int cve_di_interrupt_handler(struct idc_device *idc_dev)
 	getnstimeofday(&cur_ts);
 
 	/* Currently only serving ICE Int Request, not Ice Error request */
+	status_lo = (status64 & 0xFFFFFFFF);
+	status_hi = ((status64 >> 32) & 0xFFFFFFFF);
 	status_hl = status_lo | status_hi;
 	while (1) {
 		index = identify_ice_and_clear(&status_hl);
@@ -1332,8 +1392,10 @@ int cve_di_interrupt_handler(struct idc_device *idc_dev)
 		need_dpc |= (status_32 != 0);
 		isr_status_node->valid = need_dpc;
 
-		project_hook_interrupt_handler_exit(cve_dev,
-				status_32);
+		/* Do not disable WDT as its only enabled once during cold run
+		 *
+		 * project_hook_interrupt_handler_exit(cve_dev, status_32);
+		 */
 	}
 
 	head = ((head + 1) % IDC_ISR_BH_QUEUE_SZ);
@@ -1521,6 +1583,15 @@ void cve_di_interrupt_handler_deferred_proc(struct idc_device *dev)
 		}
 
 		cve_dev = &dev->cve_dev[index];
+
+		/*Can enable read to get LLC PMON counter values after
+		 * job completion. Commented code can be removed after
+		 * LLC PMON sysfs implementation is matured enough.
+		 *
+		 *if (!dg->dev_info.icebo_list[cve_dev->dev_index
+		 *				/ 2].disable_llc_pmon)
+		 *ice_di_read_llc_pmon(cve_dev);
+		 */
 
 		status = cve_dev->interrupts_status;
 		cve_os_dev_log(CVE_LOGLEVEL_INFO,
@@ -1758,7 +1829,7 @@ void cve_di_invalidate_page_table_base_address(struct cve_device *cve_dev)
 int cve_di_handle_submit_job(
 	struct cve_ntw_buffer *buf_list,
 	cve_ds_job_handle_t ds_hjob,
-	u32 command_buffers_nr,
+	struct cve_job *job_desc,
 	struct cve_command_buffer_descriptor *kcb_descriptor,
 	cve_di_job_handle_t *out_hjob)
 {
@@ -1770,6 +1841,7 @@ int cve_di_handle_submit_job(
 	ice_va_t cve_vaddr;
 	u32 offset;
 	struct cve_ntw_buffer *buffer;
+	u32 command_buffers_nr = job_desc->cb_nr;
 
 	/* create a new job object */
 	retval = OS_ALLOC_ZERO(sizeof(*job), (void **)&job);
@@ -1783,6 +1855,10 @@ int cve_di_handle_submit_job(
 	job->allocated_subjobs_nr = command_buffers_nr + 1;
 	job->subjobs_nr = command_buffers_nr;
 	job->has_scb = 0;
+	job->ddr_bw = job_desc->ddr_bw_in_mbps;
+	job->ring_to_ice_ratio = job_desc->ring_to_ice_ratio;
+	job->ice_to_ice_ratio = job_desc->ice_to_ice_ratio;
+	job->cdyn_val = job_desc->cdyn_val;
 
 	/* allocate "sub_jobs": one per CB plus one more for embedded CB*/
 	retval = OS_ALLOC_ZERO(sizeof(struct sub_job)*job->allocated_subjobs_nr,
@@ -2029,5 +2105,93 @@ void ice_di_set_cold_run(cve_di_job_handle_t hjob)
 	struct di_job *job = (struct di_job *)hjob;
 
 	job->cold_run = 1;
+}
+
+static int ice_trigger_cnc_control_msg(struct cve_device *dev, u32 destCbbid,
+				u32 opcode, u32 isPosted, u32 controlPayload)
+{
+	/*triggering cnc control message using mmio of ice*/
+	u32 TLC_GENERATE_CONTROL_UCMD_REG_data;
+	u32 gp_reg_14_init_val, gp_reg_14_current_val;
+	u32 gp_reg_15_val;
+	u16 timeout = CNC_CONTROL_MSG_TIMEOUT;
+	int ret = 1;
+
+	/*write 0x0 to GENERAL_PURPOSE_REG_15*/
+	cve_os_write_mmio_32(dev,
+		cfg_default.mmio_gp_regs_offset +
+			ICE_MMIO_GP_15_REG_ADDR_OFFSET, 0x0);
+
+	/*read GENERAL_PURPOSE_REG_14*/
+	gp_reg_14_init_val = cve_os_read_mmio_32(dev,
+		cfg_default.mmio_gp_regs_offset +
+			ICE_MMIO_GP_14_REG_ADDR_OFFSET);
+
+	/*write control payload data */
+	cve_os_write_mmio_32(dev,
+		cfg_default.ice_tlc_hi_base +
+		cfg_default.ice_tlc_hi_tlc_debug_reg_offset,
+		controlPayload);
+
+	/*Write the TLC_GENERATE_CONTROL_UCMD_REG,
+	 *specifying the desired DstCbbid, Opcode,
+	 *and isPosted values of the CnC
+	 */
+	TLC_GENERATE_CONTROL_UCMD_REG_data = (destCbbid & 0xFF) |
+					((opcode & 0xF) << 8) |
+					((isPosted & 0x1) << 12);
+	cve_os_write_mmio_32(dev,
+		cfg_default.ice_tlc_hi_base +
+		cfg_default.ice_tlc_hi_tlc_control_ucmd_reg_offset,
+		TLC_GENERATE_CONTROL_UCMD_REG_data);
+
+	/*wait for completion:
+	 *READ GP 15 until its value reflect value written to
+	 *TLC_GENERATE_CONTROL_UCMD_REG,
+	 *READ GP 14 until its value differs from initial GP 14 val
+	 */
+
+	cve_os_log(CVE_LOGLEVEL_DEBUG,
+			"Writing cdyn  @offset 0x%x  = 0x%x\n",
+			cfg_default.ice_tlc_hi_tlc_debug_reg_offset,
+			controlPayload);
+	gp_reg_15_val = cve_os_read_mmio_32(dev,
+			cfg_default.mmio_gp_regs_offset +
+			ICE_MMIO_GP_15_REG_ADDR_OFFSET);
+
+	while ((gp_reg_14_init_val == gp_reg_14_current_val) &&
+		(gp_reg_15_val != TLC_GENERATE_CONTROL_UCMD_REG_data) &&
+		(timeout)) {
+		usleep_range(10, 12);
+		timeout--;
+
+		gp_reg_15_val = cve_os_read_mmio_32(dev,
+			cfg_default.mmio_gp_regs_offset +
+			ICE_MMIO_GP_15_REG_ADDR_OFFSET);
+
+		gp_reg_14_current_val = cve_os_read_mmio_32(dev,
+			cfg_default.mmio_gp_regs_offset +
+			ICE_MMIO_GP_14_REG_ADDR_OFFSET);
+	}
+
+	if (timeout)
+		ret = 0;
+	else
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+				"trigger_cnc_control_message timeout\n");
+	return ret;
+}
+int ice_iccp_license_request(struct cve_device *dev, bool throttling,
+				uint16_t license_value)
+{
+	int ret;
+
+	if (throttling)
+		ret = ice_trigger_cnc_control_msg(dev, 0,
+				ICCP_THROTLLING_OPCODE, 0, license_value);
+	else
+		ret = ice_trigger_cnc_control_msg(dev, 0,
+				ICCP_NO_THROTLLING_OPCODE, 0, license_value);
+	return ret;
 }
 

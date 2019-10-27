@@ -55,19 +55,19 @@ check_ices() {
 #                       echo "-------           *       *       *   Ice# = $i     Mask = $mask   Run = $j       *       *       *"
 
                         # Can put multiple tests here:
-                        /opt/intel_nnpi/tests/driver/${STEP}/driver_test --gtest_filter="*1_ctxt_1_createIR_1_exeIR/0" --scenarios_path /opt/intel_nnpi/tests/driver/scenarios/${STEP} --scenario ivp_complement_dl --num_ice 1 > /dev/null
+                        /opt/intel_nnpi/tests/driver/driver_test --gtest_filter="*1_ctxt_1_createIR_1_exeIR/0" --scenarios_path /opt/intel_nnpi/tests/driver/scenarios/${STEP} --scenario ivp_complement_dl --num_ice 1 > /dev/null
                         pass_test1=$?
 #                       echo "Ice# = $i Run# = $j test #1 = $pass_test1" >>/tmp/Test_all_ICEs.log
 
-                        /opt/intel_nnpi/tests/driver/${STEP}/driver_test --gtest_filter="*1_ctxt_1_createIR_1_exeIR/0" --scenarios_path /opt/intel_nnpi/tests/driver/scenarios/${STEP} --scenario conv1 --num_ice 1 > /dev/null
+                        /opt/intel_nnpi/tests/driver/driver_test --gtest_filter="*1_ctxt_1_createIR_1_exeIR/0" --scenarios_path /opt/intel_nnpi/tests/driver/scenarios/${STEP} --scenario conv1 --num_ice 1 > /dev/null
                         pass_test2=$?
 #                       echo "Ice# = $i Run# = $j test #2 = $pass_test2" >>/tmp/Test_all_ICEs.log
 
-                        /opt/intel_nnpi/tests/driver/${STEP}/driver_test --gtest_filter="*1_ctxt_1_createIR_multi_exeIR/0" --scenarios_path /opt/intel_nnpi/tests/driver/scenarios/${STEP} --scenario resnet50_5layers --num_ice 1 > /dev/null
+                        /opt/intel_nnpi/tests/driver/driver_test --gtest_filter="*1_ctxt_1_createIR_multi_exeIR/0" --scenarios_path /opt/intel_nnpi/tests/driver/scenarios/${STEP} --scenario resnet50_5layers --num_ice 1 > /dev/null
                         pass_test3=$?
 #                       echo "Ice# = $i Run# = $j test #3 = $pass_test3" >>/tmp/Test_all_ICEs.log
 
-                        /opt/intel_nnpi/tests/driver/${STEP}/driver_test --gtest_filter="*1_ctxt_1_createIR_multi_exeIR/0" --scenarios_path /opt/intel_nnpi/tests/driver/scenarios/${STEP} --scenario ivp_add_b0_dl --num_ice 1 > /dev/null
+                        /opt/intel_nnpi/tests/driver/driver_test --gtest_filter="*1_ctxt_1_createIR_multi_exeIR/0" --scenarios_path /opt/intel_nnpi/tests/driver/scenarios/${STEP} --scenario ivp_add_b0_dl --num_ice 1 > /dev/null
                         pass_test4=$?
 #                       echo "Ice# = $i Run# = $j test #4 = $pass_test4" >>/tmp/Test_all_ICEs.log
 

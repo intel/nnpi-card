@@ -45,13 +45,13 @@
  * request until it is reset.
  */
 #define EVENT_NON_ERR_START             0
-#define EVENT_NON_ERR_DRV_START        32
-#define EVENT_ERR_START                64
-#define EVENT_ERR_DRV_START            96
-#define EVENT_CONTEXT_FATAL_START     128
-#define EVENT_CONTEXT_FATAL_DRV_START 160
-#define EVENT_CARD_FATAL_START        192
-#define EVENT_CARD_FATAL_DRV_START    224
+#define EVENT_NON_ERR_DRV_START        16
+#define EVENT_ERR_START                48
+#define EVENT_ERR_DRV_START            64
+#define EVENT_CONTEXT_FATAL_START      96
+#define EVENT_CONTEXT_FATAL_DRV_START 104
+#define EVENT_CARD_FATAL_START        112
+#define EVENT_CARD_FATAL_DRV_START    120
 
 #define is_context_fatal_event(e)  ((e) >= EVENT_CONTEXT_FATAL_START && e < EVENT_CARD_FATAL_START)
 #define is_card_fatal_event(e)     ((e) >= EVENT_CARD_FATAL_START)
@@ -74,6 +74,14 @@
 #define SPH_IPC_DEVICE_STATE_CHANGED     (EVENT_NON_ERR_DRV_START + 14)
 #define SPH_IPC_DEVNET_RESOURCES_RESERVATION_SUCCESS  (EVENT_NON_ERR_DRV_START + 15)
 #define SPH_IPC_DEVNET_RESOURCES_RELEASE_SUCCESS  (EVENT_NON_ERR_DRV_START + 16)
+#define SPH_IPC_CREATE_CHANNEL_SUCCESS   (EVENT_NON_ERR_DRV_START + 17)
+#define SPH_IPC_CHANNEL_DESTROYED        (EVENT_NON_ERR_DRV_START + 18)
+#define SPH_IPC_CHANNEL_SET_RB_SUCCESS   (EVENT_NON_ERR_DRV_START + 19)
+#define SPH_IPC_GET_FIFO                 (EVENT_NON_ERR_DRV_START + 20)
+#define SPH_IPC_CREATE_CMD_SUCCESS       (EVENT_NON_ERR_DRV_START + 21)
+#define SPH_IPC_CMD_DESTROYED            (EVENT_NON_ERR_DRV_START + 22)
+#define SPH_IPC_CHANNEL_MAP_HOSTRES_SUCCESS   (EVENT_NON_ERR_DRV_START + 23)
+#define SPH_IPC_CHANNEL_UNMAP_HOSTRES_SUCCESS (EVENT_NON_ERR_DRV_START + 24)
 
 /* non-critical error event codes */
 #define SPH_IPC_CREATE_CONTEXT_FAILED    (EVENT_ERR_DRV_START + 0)
@@ -83,7 +91,7 @@
 #define SPH_IPC_DESTROY_DEVRES_FAILED    (EVENT_ERR_DRV_START + 4)
 #define SPH_IPC_DESTROY_COPY_FAILED      (EVENT_ERR_DRV_START + 5)
 #define SPH_IPC_CREATE_SYNC_FAILED       (EVENT_ERR_DRV_START + 6)
-#define SPH_IPC_ERROR_SUB_RESOURCE_LOAD_FAILED (EVENT_ERR_DRV_START + 7)
+#define SPH_IPC_ERROR_SUB_RESOURCE_LOAD_FAILED      (EVENT_ERR_DRV_START + 7)
 #define SPH_IPC_CREATE_DEVNET_FAILED     (EVENT_ERR_DRV_START + 8)
 #define SPH_IPC_DESTROY_DEVNET_FAILED    (EVENT_ERR_DRV_START + 9)
 #define SPH_IPC_CREATE_INFREQ_FAILED     (EVENT_ERR_DRV_START + 10)
@@ -92,8 +100,15 @@
 #define SPH_IPC_ERROR_MCE_CORRECTABLE    (EVENT_ERR_DRV_START + 13)
 #define SPH_IPC_ERROR_MCE_UNCORRECTABLE  (EVENT_ERR_DRV_START + 14)
 #define SPH_IPC_DEVNET_ADD_RES_FAILED    (EVENT_ERR_DRV_START + 15)
-#define SPH_IPC_DEVNET_RESOURCES_RESERVATION_FAILED   (EVENT_ERR_DRV_START + 16)
-#define SPH_IPC_DEVNET_RESOURCES_RELEASE_FAILED   (EVENT_ERR_DRV_START + 17)
+#define SPH_IPC_DEVNET_RESOURCES_RESERVATION_FAILED (EVENT_ERR_DRV_START + 16)
+#define SPH_IPC_DEVNET_RESOURCES_RELEASE_FAILED     (EVENT_ERR_DRV_START + 17)
+#define SPH_IPC_CREATE_CHANNEL_FAILED    (EVENT_ERR_DRV_START + 18)
+#define SPH_IPC_DESTROY_CHANNEL_FAILED   (EVENT_ERR_DRV_START + 19)
+#define SPH_IPC_CHANNEL_SET_RB_FAILED    (EVENT_ERR_DRV_START + 20)
+#define SPH_IPC_CREATE_CMD_FAILED        (EVENT_ERR_DRV_START + 21)
+#define SPH_IPC_DESTROY_CMD_FAILED       (EVENT_ERR_DRV_START + 22)
+#define SPH_IPC_CHANNEL_MAP_HOSTRES_FAILED   (EVENT_ERR_DRV_START + 23)
+#define SPH_IPC_CHANNEL_UNMAP_HOSTRES_FAILED (EVENT_ERR_DRV_START + 24)
 
 /* context critical error event codes */
 #define SPH_IPC_ERROR_RUNTIME_LAUNCH     (EVENT_CONTEXT_FATAL_START + 0)
@@ -127,8 +142,11 @@ enum event_val {
 	SPH_IPC_RUNTIME_INFER_SCHEDULE_ERROR	= 16,
 	SPH_IPC_CONTEXT_BROKEN                  = 17,
 	SPH_IPC_DEVNET_RESERVE_INSUFFICIENT_RESOURCES = 18,
-	SPH_IPC_TIMEOUT_EXCEEDED = 19,
-	SPH_IPC_ECC_ALLOC_FAILED = 20,
+	SPH_IPC_TIMEOUT_EXCEEDED        = 19,
+	SPH_IPC_ECC_ALLOC_FAILED        = 20,
+	SPH_IPC_NO_SUCH_CHANNEL         = 21,
+	SPH_IPC_NO_SUCH_CMD		= 22,
+	SPH_IPC_NO_SUCH_HOSTRES		= 23,
 };
 
 int eventValToSphErrno(enum event_val eventVal);
@@ -143,11 +161,19 @@ int eventValToSphErrno(enum event_val eventVal);
  * SPH_IPC_CREATE_DEVNET_SUCCESS    0                Valid       Device network protocolID     Not-Valid
  * SPH_IPC_CREATE_INFREQ_SUCCESS    devnetID         Valid       inf req protocolID            Not-Valid
  * SPH_IPC_EXECUTE_COPY_SUCCESS     0                Valid       Copy handle protocolID        Not-Valid
+ * SPH_IPC_CREATE_CHANNEL_SUCCESS   0                Not-Valid   Channel protocolID            Not-Valid
+ * SPH_IPC_CHANNEL_SET_RB_SUCCESS   0                Not-Valid   Channel protocolID            rb_id
+ * SPH_IPC_CHANNEL_MAP_HOSTRES_SUCCESS   0           Not-Valid   Channel protocolID            Hostres id
+ * SPH_IPC_CHANNEL_UNMAP_HOSTRES_SUCCESS 0           Not-Valid   Channel protocolID            Hostres id
  * SPH_IPC_DEVRES_DESTROYED         0                Valid       Device resource protocolID    Not-Valid
  * SPH_IPC_COPY_DESTROYED           0                Valid       Copy handle protocolID        Not-Valid
  * SPH_IPC_CONTEXT_DESTROYED        0                Valid       Not-Valid                     Not-Valid
  * SPH_IPC_DEVNET_DESTROYED         0                Valid       Device network protocolID     Not-Valid
  * SPH_IPC_INFREQ_DESTROYED         0                Valid       inf req protocolID            devnetID
+ * SPH_IPC_CHANNEL_DESTROYED        0                Not-valid   channel protocolID            Not-Valid
+ * SPH_IPC_CHANNEL_SET_RB_FAILED    0                Not-valid   channel protocolID            rb_id
+ * SPH_IPC_CREATE_CMD_SUCCESS       0                Valid       Cmd list protocolID           Not-Valid
+ * SPH_IPC_CMD_DESTROYED            0                Valid       Cmd list protocolID           Not-Valid
  *
  * SPH_IPC_CREATE_CONTEXT_FAILED    enum event_val   Valid       Not-Valid                     Not-Valid
  * SPH_IPC_CREATE_DEVRES_FAILED     enum event_val   Valid       Device resource protocolID    Not-Valid
@@ -162,14 +188,20 @@ int eventValToSphErrno(enum event_val eventVal);
  * SPH_IPC_EXECUTE_COPY_FAILED      enum event_val   Valid       Copy handle protocolID        Not-Valid
  * SPH_IPC_SCHEDULE_INFREQ_FAILED   enum event_val   Valid       inf req protocolID            devnetID
  * SPH_IPC_CREATE_SYNC_FAILED       enum event_val   Valid       syncSeq value                 Not-Valid
+ * SPH_IPC_CREATE_CHANNEL_FAILED    enum event_val   Not-Valid   Channel protocolID            Not-Valid
+ * SPH_IPC_DESTROY_CHANNEL_FAILED   enum event_val   Not-Valid   Channel protocolID            Not-Valid
+ * SPH_IPC_CHANNEL_MAP_HOSTRES_FAILED   enum         Not-Valid   Channel protocolID            Hostres id
+ * SPH_IPC_CHANNEL_UNMAP_HOSTRES_FAILED enum         Not-Valid   Channel protocolID            Hostres id
  * SPH_IPC_ERROR_RUNTIME_LAUNCH     0                Valid       Not-Valid                     Not-Valid
  * SPH_IPC_ERROR_RUNTIME_DIED       0                Valid       Not-Valid                     Not-Valid
  * SPH_IPC_ERROR_OS_CRASHED         0                Not-Valid   dump_size (low 16bits)        dump_size (high 16bits)
  * SPH_IPC_ERROR_PCI_ERROR          error_type (1)   Not-Valid   Not-Valid                     Not-Valid
  * SPH_IPC_ERROR_CARD_RESET         0 (2)            Not-Valid   Not-Valid                     Not-Valid
  * SPH_IPC_THERMAL_TRIP_EVENT       trip_point_num   Not-Valid   trip temperature              event temperature
- * SPH_IPC_DEVICE_STATE_CHANGED     0 (3)            DevState[0-15] DevState[16-31]
- * Not-Valid
+ * SPH_IPC_DEVICE_STATE_CHANGED     0 (3)            DevState[0-15] DevState[16-31]            Not-Valid
+ * SPH_IPC_GET_FIFO                 tr_id            NotValid    base address offset in pages  Not-Valid
+ * SPH_IPC_CREATE_CMD_FAILED        enum event_val   Valid       Cmd list protocolID           Not-Valid
+ * SPH_IPC_DESTROY_CMD_FAILED       enum event_val   Valid       Cmd list protocolID           Not-Valid
  *
  * Comments:
  *    (1) - this event is generated by the host. error_type is value passed to

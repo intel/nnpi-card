@@ -69,6 +69,7 @@ subdir-ccflags-y += -DGIT_HASH=$(GIT_HASH)
 
 subdir-ccflags-$(CONFIG_SPH) += -I$(src)/../external/hw_interface/ice2.9
 subdir-ccflags-$(CONFIG_SPH) += -I$(src)/sph
+subdir-ccflags-y += -I$(src)/../../release_artifacts/platform_sw/include/
 
 ifdef NULL_DEVICE_RING0
 subdir-ccflags-y += -DNULL_DEVICE_RING0
@@ -115,6 +116,9 @@ $(MODULE_NAME)-$(CONFIG_SPH) += sph/sph_os_interface_impl.o
 $(MODULE_NAME)-$(CONFIG_SPH) += sph/project_settings.o
 $(MODULE_NAME)-$(CONFIG_SPH) += sph/sph_trace_device_interface.o
 $(MODULE_NAME)-$(CONFIG_SPH) += sph/icedrv_uncore.o
+$(MODULE_NAME)-$(CONFIG_SPH) += sph/sph_mailbox.o
+$(MODULE_NAME)-$(CONFIG_SPH) += sph/sph_dvfs.o
+$(MODULE_NAME)-$(CONFIG_SPH) += sph/sph_iccp.o
 
 # feature specified based on project settings
 subdir-ccflags-$(CVE_PCI_SUPPORT) += -I$(src)/linux/pci

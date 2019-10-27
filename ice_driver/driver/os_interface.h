@@ -56,6 +56,7 @@ extern int enable_llc;
 extern u32 ice_fw_select;
 extern u32 block_mmu;
 extern u32 enable_b_step;
+extern u32 disable_clk_gating;
 
 typedef u32 cve_virtual_address_t;
 typedef u32 pt_entry_t;
@@ -138,6 +139,10 @@ struct idc_device;
 			2, \
 			register_offset, \
 			value)
+#define idc_mmio_read64(dev, offset_bytes) \
+	idc_mmio_read64_bar_x(dev, 0, offset_bytes, false)
+#define idc_mmio_write64(dev, offset, val) \
+	idc_mmio_write64_bar_x(dev, 0, offset, val)
 
 /* logging facility */
 enum cve_log_level {
@@ -609,6 +614,11 @@ u32 cve_os_read_idc_mmio_bar_nr(struct cve_device *cve_dev,
 u32 cve_os_read_icemask_bar0(struct idc_device *idc_dev,
 		bool force_print);
 
+u64 idc_mmio_read64_bar_x(struct cve_device *dev,
+		u32 bar_nr,
+		u32 offset_bytes,
+		bool force_print);
+
 /*
  * write a 32 bit value into the given address in the MMIO space
  * based on given bar number
@@ -626,6 +636,9 @@ void cve_os_write_idc_mmio_bar_nr(struct cve_device *cve_dev,
 		u32 bar_nr,
 		u32 offset_bytes,
 		u64 value);
+
+void idc_mmio_write64_bar_x(struct cve_device *dev, u32 bar, u32 offset,
+		u64 val);
 
 /*
  * read-modify-write a 32 bit value into the given address in the MMIO space
@@ -835,6 +848,52 @@ uint64_t get_llc_freq(void);
 #endif /* #ifdef _DEBUG */
 
 #endif /*RING3_VALIDATION*/
+
+#ifndef RING3_VALIDATION
+
+#ifdef DEBUG_SPINLOCKS
+
+#define ICEDRV_SPIN_LOCK(x) {                            \
+	unsigned long max_jiffies = jiffies + 1*HZ;   \
+	while (!spin_trylock(x)) {                    \
+		if (time_after(jiffies, max_jiffies)) { \
+			BUG();                        \
+			max_jiffies = jiffies + 1*HZ; \
+		}                                     \
+	}                                             \
+}
+
+#define ICEDRV_SPIN_LOCK_BH(x) {                         \
+	unsigned long max_jiffies = jiffies + 1*HZ;   \
+	while (!spin_trylock_bh(x)) {                 \
+		if (time_after(jiffies, max_jiffies)) {\
+			BUG();                        \
+			max_jiffies = jiffies + 1*HZ; \
+		}                                     \
+	}                                             \
+}
+
+#define ICEDRV_SPIN_LOCK_IRQSAVE(x, f) {                 \
+	unsigned long max_jiffies = jiffies + 1*HZ;   \
+	while (!spin_trylock_irqsave(x, f)) {         \
+		if (time_after(jiffies, max_jiffies)) {\
+			BUG();                        \
+			max_jiffies = jiffies + 1*HZ; \
+		}                                     \
+	}                                             \
+}
+
+#else
+#define ICEDRV_SPIN_LOCK(x)            spin_lock(x)
+#define ICEDRV_SPIN_LOCK_BH(x)         spin_lock_bh(x)
+#define ICEDRV_SPIN_LOCK_IRQSAVE(x, f) spin_lock_irqsave(x, f)
+#endif
+
+#define ICEDRV_SPIN_UNLOCK(x)               spin_unlock(x)
+#define ICEDRV_SPIN_UNLOCK_BH(x)            spin_unlock_bh(x)
+#define ICEDRV_SPIN_UNLOCK_IRQRESTORE(x, f) spin_unlock_irqrestore(x, f)
+
+#endif /* #ifndef RING3_VALIDATION*/
 
 #endif /* _OS_INTERFACE_H_ */
 

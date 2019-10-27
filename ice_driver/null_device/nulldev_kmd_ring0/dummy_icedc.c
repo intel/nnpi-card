@@ -81,6 +81,27 @@ uint32_t dummy_iowrite32(uint64_t value, uint32_t *mmio_address)
 	return ret;
 }
 
+uint64_t dummy_ioread64(uint64_t *mmio_address)
+{
+	uint64_t val;
+	int ret;
+	uint64_t addr = (uint64_t)  mmio_address - ioaddr_bar[0];
+
+	ret = read_mmio(addr, &val);
+
+	return val;
+}
+
+void dummy_iowrite64(uint64_t value, uint64_t *mmio_address)
+{
+	int ret;
+	uint64_t addr = (uint64_t) mmio_address - ioaddr_bar[0];
+
+	ret = write_mmio(addr);
+}
+
+
+
 int null_dev_irq(int ice_val)
 {
 	up(&thread_sem);

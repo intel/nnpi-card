@@ -90,6 +90,8 @@ struct config {
 	uint32_t ice_tlc_base;
 	uint32_t ice_tlc_hi_dump_control_offset;
 	uint32_t ice_tlc_hi_dump_buf_offset;
+	uint32_t ice_tlc_hi_tlc_control_ucmd_reg_offset;
+	uint32_t ice_tlc_hi_tlc_debug_reg_offset;
 	uint32_t ice_tlc_hi_mailbox_doorbell_offset;
 	uint32_t ice_tlc_barrier_watch_cfg_offset;
 	uint32_t ice_dump_never;
@@ -232,6 +234,8 @@ struct config {
 	uint32_t mmu_chicken_bits_offset;
 	uint32_t mmu_page_sizes_offset;
 	uint32_t gpsb_x1_regs_clk_gate_ctl_offset;
+	uint32_t gpsb_x1_regs_iccp_config2_offset;
+	uint32_t gpsb_x1_regs_iccp_config3_offset;
 	uint32_t mem_clk_gate_ctl_dont_squash_iceclk_lsb;
 	uint32_t cbbid_tlc_offset;
 	uint32_t axi_shared_read_status_offset;
@@ -261,6 +265,17 @@ struct config {
 	uint32_t mmio_hw_revision_major_rev_mask;
 	uint32_t mmio_hw_revision_minor_rev_mask;
 	uint32_t cbbid_gecoe_offset;
+	uint32_t mmio_dpcg_control;
+	uint32_t a2i_icebo_pmon_global_offset;
+	uint32_t a2i_icebo_pmon_event_0_offset;
+	uint32_t a2i_icebo_pmon_event_1_offset;
+	uint32_t a2i_icebo_pmon_event_2_offset;
+	uint32_t a2i_icebo_pmon_event_3_offset;
+	uint32_t a2i_icebo_pmon_counter_0_offset;
+	uint32_t a2i_icebo_pmon_counter_1_offset;
+	uint32_t a2i_icebo_pmon_counter_2_offset;
+	uint32_t a2i_icebo_pmon_counter_3_offset;
+	uint32_t a2i_icebo_pmon_status_offset;
 };
 
 typedef union {
@@ -284,6 +299,14 @@ uint32_t  RSVD_0               :   8;
 uint32_t                         val;
 };
 
+union mmio_hub_mem_cve_dpcg_control_reg_t {
+	struct {
+uint32_t DPCG_CTRL_SW_DISABLE		:   1;
+uint32_t DPCG_CTRL_MSB_COUNTER_BITS	:   2;
+uint32_t RSVD_0				:   29;
+}				field;
+uint32_t		val;
+};
 
 union cvg_mmu_1_system_map_mem_page_table_base_address_t {
         struct {
@@ -442,6 +465,21 @@ union CVE_SHARED_CB_DESCRIPTOR {
 		uint32_t fixed_size[(64 / sizeof(uint32_t))];
 	};
 };
+
+
+typedef union {
+    struct {
+        uint32_t  enable_counter_0     :   1;
+        uint32_t  enable_counter_1     :   1;
+        uint32_t  enable_counter_2     :   1;
+        uint32_t  enable_counter_3     :   1;
+        uint32_t  RSVD_0               :   4;
+        uint32_t  reset_pmon           :   1;
+        uint32_t  RSVD_1               :  23;
+
+    }                                field;
+    uint32_t                         val;
+} ICEBO_PMON_GLOBAL_T;
 typedef union {
     struct {
         uint32_t  shared_read_enable   :   1;
@@ -546,6 +584,42 @@ uint32_t  data                 :  32;
 	}                                field;
 uint32_t                         val;
 };
+
+/* ICCP_CONFIG2 desc:  ICCP configuration */
+union mem_iccp_config2_t {
+	struct {
+	/* Cdyn of single ICE, when ICE reset is active */
+	uint32_t  RESET_CDYN           :  15;
+	/* RESERVED */
+	uint32_t  RESERVED             :   1;
+	/* Cdyn of single ICE, after ICE reset de-assertion,
+	* before first request was sent */
+	uint32_t  INITIAL_CDYN         :  15;
+	/* RESERVED */
+	uint32_t  RESERVED2            :   1;
+	}                                field;
+	uint32_t                         val;
+};
+
+/* ICCP_CONFIG3 desc:  ICCP configuration */
+union mem_iccp_config3_t {
+    struct {
+	/*  Cdyn of single ICE, when there's a
+	 *  pending ICCP request in no throttling mode */
+	uint32_t  BLOCKED_CDYN         :  15;
+	/*  RESERVED */
+	uint32_t  RESERVED             :   1;
+	/*  Assumed Cdyn of a single ICE, when USE_DEFAULT_CDYN
+	 *  is set. */
+	uint32_t  DEFAULT_CDYN         :  15;
+	 /*  Chicken bit to disable ICE ICCP request. Overrides
+	  *  reset/init/requested/blocked Cdyn, but use only
+	  *  DEFAULT_CDYN */
+	uint32_t  USE_DEFAULT_CDYN     :   1;
+	}                                field;
+	uint32_t                         val;
+};
+
 typedef struct __attribute__((aligned(64))){
 	uint8_t		tlcRawDram[TLC_DRAM_SIZE] __attribute__((aligned(64)));
 	uint8_t 	scratchPad[COMPUTECLUSTER_SP_SIZE_IN_KB*1024] __attribute__((aligned(64)));

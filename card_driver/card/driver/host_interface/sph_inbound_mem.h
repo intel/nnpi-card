@@ -4,6 +4,9 @@
  * SPDX-License-Identifier: GPL-2.0-or-later
  ********************************************/
 
+#ifndef _SPH_INBOUND_MEM_H
+#define _SPH_INBOUND_MEM_H
+
 #include "ipc_protocol.h"
 
 #define SPH_INBOUND_MEM_MAGIC  0x4d687073  /* value of 'sphM' */
@@ -21,3 +24,5 @@ union sph_inbound_mem {
 };
 
 #pragma pack(pop)
+
+#endif

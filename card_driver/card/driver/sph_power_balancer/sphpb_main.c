@@ -136,6 +136,7 @@ EXPORT_SYMBOL(sph_power_balancer_register_driver);
 int create_sphbp(void)
 {
 	struct sphpb_pb *sphpb;
+	int icebo;
 	int ret = 0;
 
 	g_the_sphpb = NULL;
@@ -148,7 +149,11 @@ int create_sphbp(void)
 	sphpb->callbacks.get_efficient_ice_list		= sphpb_get_efficient_ice_list;
 	sphpb->callbacks.request_ice_dvfs_values	= sphpb_request_ice_dvfs_values;
 	sphpb->callbacks.set_power_state		= sphpb_set_power_state;
-	sphpb->callbacks.undergister_driver		= sphpb_unregister_driver;
+	sphpb->callbacks.unregister_driver		= sphpb_unregister_driver;
+
+	sphpb->max_ring_divisor_ice_num = -1;
+	for (icebo = 0; icebo < SPHPB_MAX_ICEBO_COUNT; icebo++)
+		sphpb->icebo[icebo].ring_divisor_idx = -1;
 
 	sphpb->kobj = kobject_create_and_add("sphpb", kernel_kobj);
 	if (unlikely(sphpb->kobj == NULL)) {

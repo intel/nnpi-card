@@ -17,7 +17,6 @@
 #include "cve_driver_internal_macros.h"
 #include "os_interface.h"
 #include "memory_manager.h"
-#include "project_device_interface.h"
 #include "device_interface.h"
 #include "cve_firmware.h"
 #include "ice_trace.h"
@@ -25,6 +24,8 @@
 #include "ice_sw_counters.h"
 #include "icedrv_internal_sw_counter_funcs.h"
 #include "ice_debug_event.h"
+
+
 
 int cve_device_init(struct cve_device *dev, int index, u64 pe_value)
 {
@@ -64,9 +65,9 @@ int cve_device_init(struct cve_device *dev, int index, u64 pe_value)
 	pe_mask = BIT_ULL(dev->dev_index) << 4;
 	/*If device is ON*/
 	if ((pe_value & pe_mask) != pe_mask)
-		dev->power_state = ICE_POWER_OFF;
+		ice_dev_set_power_state(dev, ICE_POWER_OFF);
 	else
-		dev->power_state = ICE_POWER_ON;
+		ice_dev_set_power_state(dev, ICE_POWER_ON);
 
 	/*set default value for ice freq due to issue in P-Code (ICE-14643)*/
 	dev->frequency = ICE_FREQ_DEFAULT;
@@ -124,10 +125,12 @@ int cve_device_init(struct cve_device *dev, int index, u64 pe_value)
 	/*Add to list of devices in the device group */
 	cve_dg_add_device(dev);
 
+	ice_di_start_llc_pmon(dev, true);
+
 	ice_swc_create_dev_node(dev);
 
 	ice_swc_counter_set(dev->hswc, ICEDRV_SWC_DEVICE_COUNTER_POWER_STATE,
-			dev->power_state);
+		ice_dev_get_power_state(dev));
 
 	getnstimeofday(&dev->idle_start_time);
 	ice_swc_counter_set(dev->hswc,
@@ -137,6 +140,12 @@ int cve_device_init(struct cve_device *dev, int index, u64 pe_value)
 	cve_os_log(CVE_LOGLEVEL_DEBUG,
 		"idle_start_time.tv_sec=%ld idle_start_time.tv_nsec=%ld\n",
 		dev->idle_start_time.tv_sec, dev->idle_start_time.tv_nsec);
+
+	retval = init_ice_iccp(dev);
+	if (retval) {
+		cve_os_log(CVE_LOGLEVEL_ERROR, "() failed: in iccp init %d\n",
+									retval);
+	}
 	/* success */
 	return 0;
 
@@ -149,12 +158,14 @@ out:
 
 void cve_device_clean(struct cve_device *dev)
 {
-	cve_dg_remove_device(dev);
-
-	ice_swc_destroy_dev_node(dev);
+	term_ice_iccp(dev);
 
 	/*remove hw_config specific fops*/
 	term_icedrv_hw_config(dev);
+
+	cve_dg_remove_device(dev);
+
+	ice_swc_destroy_dev_node(dev);
 
 	/* Remove ice debug event flow*/
 	term_icedrv_debug_event();
@@ -175,5 +186,28 @@ void cve_device_clean(struct cve_device *dev)
 
 	project_hook_free_cve_dump_buffer(dev);
 
+}
+
+enum ICE_POWER_STATE ice_dev_get_power_state(struct cve_device *dev)
+{
+	return dev->power_state;
+}
+
+void ice_dev_set_power_state(struct cve_device *dev,
+	enum ICE_POWER_STATE pstate)
+{
+	if ((pstate == ICE_POWER_OFF_INITIATED) &&
+		(ice_get_power_off_delay_param() < 0)) {
+
+		/* Donot initiate Power-off because it is disabled. Device
+		 * will continue to be in POWER_ON state.
+		 */
+		goto out;
+	}
+
+	dev->power_state = pstate;
+
+out:
+	return;
 }
 

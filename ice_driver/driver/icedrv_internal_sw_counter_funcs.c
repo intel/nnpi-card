@@ -15,7 +15,7 @@
 
 #include "icedrv_internal_sw_counter_funcs.h"
 
-#if _ENABLE_ICE_SWC
+#if (DISBALE_SWC == 0)
 
 static int __create_sub_ntw_node(struct ice_network *ntw);
 static int __destroy_sub_ntw_node(struct ice_network *ntw);
@@ -335,6 +335,7 @@ static int __create_sub_ntw_node(struct ice_network *ntw)
 				ntw->network_id);
 		swc_node->parent = parent;
 
+		_create_infer_device_node(ntw);
 	}
 out:
 	return ret;
@@ -346,6 +347,8 @@ static int __destroy_sub_ntw_node(struct ice_network *ntw)
 	struct ice_swc_node *swc_node = &ntw->swc_node;
 
 	if (ntw->hswc) {
+		_destroy_infer_device_node(ntw);
+
 		ret = ice_swc_destroy_node(ICEDRV_SWC_CLASS_SUB_NETWORK,
 				swc_node->parent, swc_node->sw_id);
 		if (ret < 0)
@@ -463,64 +466,60 @@ int _destroy_infer_node(struct ice_infer *infer)
 	return ret;
 }
 
-#endif /* _ENABLE_ICE_SWC */
 
 /* Create software counter nodes for all the ICEs allocated to the given NTW */
-void ice_swc_create_infer_device_node(struct ice_network *ntw)
+void _create_infer_device_node(struct ice_network *ntw)
 {
-#ifndef RING3_VALIDATION
-	struct cve_device *dev_head, *dev_next;
 	void *parent;
 	int ret = 0;
+	u8 count = 0;
 
-	dev_head = ntw->ice_list;
-	dev_next = dev_head;
+	ret = __get_sub_ntw_swc(ntw, &parent);
+	if (ret < 0) {
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+				"NtwID:0x%llx No sw entry for context\n",
+				ntw->network_id);
+		return;
+	}
+
+	ntw->dev_hswc_parent = parent;
+
 	do {
-		ret = __get_sub_ntw_swc(ntw, &parent);
-		if (ret < 0) {
-			cve_os_log(CVE_LOGLEVEL_ERROR,
-					"NtwID:0x%llx No sw entry for context\n",
-					ntw->network_id);
-			return;
-		}
-
 		ret = ice_swc_create_node(ICEDRV_SWC_CLASS_INFER_DEVICE,
-				dev_next->dev_index, parent,
-				&dev_next->hswc_infer);
+				count, parent, &ntw->dev_hswc[count]);
 		if (ret < 0) {
 			cve_os_log(CVE_LOGLEVEL_ERROR,
 					"NtwID:0x%llx Unable to create SW Counter's Infer Device node:%d\n",
-					ntw->network_id, dev_next->dev_index);
+					ntw->network_id, count);
 		}
-		dev_next->infer_parent = parent;
-		dev_next = cve_dle_next(dev_next, owner_list);
-	} while (dev_head != dev_next);
-#endif
+
+		ice_swc_counter_set(ntw->dev_hswc[count],
+				ICEDRV_SWC_INFER_DEVICE_COUNTER_ID,
+				0xFFFF);
+		count++;
+	} while (count < ntw->num_ice);
 }
 
 /* Destroy software counter nodes for all the ICEs allocated to the given NTW */
-void ice_swc_destroy_infer_device_node(struct ice_network *ntw)
+void _destroy_infer_device_node(struct ice_network *ntw)
 {
-#ifndef RING3_VALIDATION
-	struct cve_device *dev_head, *dev_next;
 	int ret = 0;
+	u8 count = 0;
 
-	dev_head = ntw->ice_list;
-	dev_next = dev_head;
 	do {
-		if (dev_next->hswc_infer) {
+		if (ntw->dev_hswc[count]) {
 			ret = ice_swc_destroy_node(
 					ICEDRV_SWC_CLASS_INFER_DEVICE,
-					dev_next->infer_parent,
-					dev_next->dev_index);
+					ntw->dev_hswc_parent, count);
 			if (ret < 0) {
 				cve_os_log(CVE_LOGLEVEL_ERROR,
-				"NtwID:0x%llx Unable to destroy SW Counter's Infer Device node:%d\n",
-				ntw->network_id, dev_next->dev_index);
+						"NtwID:0x%llx Unable to destroy SW Counter's Infer Device node:%d\n",
+						ntw->network_id, count);
 			}
 		}
-		dev_next->hswc_infer = NULL;
-		dev_next = cve_dle_next(dev_next, owner_list);
-	} while (dev_head != dev_next);
-#endif
+		ntw->dev_hswc[count] = NULL;
+		count++;
+	} while (count < ntw->num_ice);
 }
+
+#endif /* DISBALE_SWC */

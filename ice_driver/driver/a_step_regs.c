@@ -31,6 +31,9 @@
 #include "a_step/debugCbbId_regs.h"
 #include "a_step/mmio_hub_regs.h"
 
+/* TODO: These macros to be taken from coral once available */
+#define ICE_TLC_HI_TLC_DEBUG_REG_MMOFFSET 0x13C
+#define ICE_TLC_HI_TLC_GENERATE_CONTROL_UCMD_REG_MMOFFSET 0x138
 
 const struct config cfg_a = {
 	.ice_gecoe_dec_partial_access_count_offset	= CVE_GECOE_GECOE_DEC_PARTIAL_ACCESS_COUNT_MMOFFSET,
@@ -69,6 +72,8 @@ const struct config cfg_a = {
 	.ice_dse_base					= CVE_DSE_BASE,
 	.ice_axi_max_inflight_offset			= CVE_DSE_AXI_MAX_INFLIGHT_MMOFFSET,
 	.ice_tlc_hi_base				= CVE_TLC_HI_BASE,
+	.ice_tlc_hi_tlc_debug_reg_offset		= ICE_TLC_HI_TLC_DEBUG_REG_MMOFFSET,
+	.ice_tlc_hi_tlc_control_ucmd_reg_offset		= ICE_TLC_HI_TLC_GENERATE_CONTROL_UCMD_REG_MMOFFSET,
 	.ice_tlc_base					= CVE_TLC_BASE,
 	.ice_tlc_hi_dump_control_offset			= CVE_TLC_HI_TLC_DUMP_CONTROL_REG_MMOFFSET,
 	.ice_tlc_hi_dump_buf_offset			= CVE_TLC_HI_TLC_DUMP_BUFFER_CONFIG_REG_MMOFFSET,
@@ -214,6 +219,8 @@ const struct config cfg_a = {
 	.mmu_chicken_bits_offset			= ICE_MMU_MMU_CHICKEN_BITS_MMOFFSET,
 	.mmu_page_sizes_offset				= ICE_MMU_PAGE_SIZES_MMOFFSET,
 	.gpsb_x1_regs_clk_gate_ctl_offset		= GPSB_X1_REGS_CLK_GATE_CTL_MMOFFSET,
+	.gpsb_x1_regs_iccp_config2_offset		= GPSB_X1_REGS_ICCP_CONFIG2_MMOFFSET,
+	.gpsb_x1_regs_iccp_config3_offset		= GPSB_X1_REGS_ICCP_CONFIG3_MMOFFSET,
 	.mem_clk_gate_ctl_dont_squash_iceclk_lsb	= MEM_CLK_GATE_CTL_DONT_SQUASH_ICECLK_LSB,
 	.cbbid_tlc_offset				= CBBID_TLC_OFFSET,
 	.axi_shared_read_status_offset			= AXI_SHARED_READ_STATUS_OFFSET,
@@ -243,4 +250,15 @@ const struct config cfg_a = {
 	.mmio_hw_revision_major_rev_mask		= MMIO_HUB_MEM_HW_REVISION_MAJOR_REV_MASK,
 	.mmio_hw_revision_minor_rev_mask		= MMIO_HUB_MEM_HW_REVISION_MINOR_REV_MASK,
 	.cbbid_gecoe_offset				= CBBID_GECOE_OFFSET,
+	.a2i_icebo_pmon_global_offset			= MEM_A2I_ICEBAR_ICEBO_PMON_GLOBAL_MMOFFSET,
+	.a2i_icebo_pmon_event_0_offset			= MEM_A2I_ICEBAR_ICEBO_PMON_EVENT_0_MMOFFSET,
+	.a2i_icebo_pmon_event_1_offset			= MEM_A2I_ICEBAR_ICEBO_PMON_EVENT_1_MMOFFSET,
+	.a2i_icebo_pmon_event_2_offset			= MEM_A2I_ICEBAR_ICEBO_PMON_EVENT_2_MMOFFSET,
+	.a2i_icebo_pmon_event_3_offset			= MEM_A2I_ICEBAR_ICEBO_PMON_EVENT_3_MMOFFSET,
+	.a2i_icebo_pmon_counter_0_offset		= MEM_A2I_ICEBAR_ICEBO_PMON_COUNTER_0_MMOFFSET,
+	.a2i_icebo_pmon_counter_1_offset		= MEM_A2I_ICEBAR_ICEBO_PMON_COUNTER_1_MMOFFSET,
+	.a2i_icebo_pmon_counter_2_offset		= MEM_A2I_ICEBAR_ICEBO_PMON_COUNTER_2_MMOFFSET,
+	.a2i_icebo_pmon_counter_3_offset		= MEM_A2I_ICEBAR_ICEBO_PMON_COUNTER_3_MMOFFSET,
+	.a2i_icebo_pmon_status_offset			= MEM_A2I_ICEBAR_ICEBO_PMON_STATUS_MMOFFSET,
+
 };

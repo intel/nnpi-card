@@ -263,6 +263,8 @@ const char *get_regs_str(uint32_t offset)
 		return "ICE_CONFIG_REG";
 	if (offset == cfg_default.ice_prog_cores_ctrl_offset)
 		return "PROG_CORES_CONTROL_REG";
+	if (offset == cfg_default.mmio_dpcg_control)
+		return "DPCG_CONTROL_REG";
 #ifdef _DEBUG
 	if (offset == cfg_default.ice_dbg_cbbid_base +
 			cfg_default.ice_dbg_cbbid_cfg_offset + (1 * 4))
@@ -302,9 +304,15 @@ const char *get_regs_str(uint32_t offset)
 		return "MMU_ATU3_PT_BASE_ADDR_REG";
 	if (offset == cfg_default.ice_tlc_hi_base +
 				cfg_default.ice_tlc_hi_dump_buf_offset)
-		return "TLC_DUMP_CONFIG_REG";
+		return "TLC_DUMP_CONFIG";
 	if (offset == cfg_default.ice_tlc_hi_base +
-				cfg_default.ice_tlc_hi_dump_control_offset)
+			cfg_default.ice_tlc_hi_tlc_control_ucmd_reg_offset)
+		return "TLC_HI_GENERATE_CONTROL_UCMD_REG";
+	if (offset == cfg_default.ice_tlc_hi_base +
+			cfg_default.ice_tlc_hi_tlc_debug_reg_offset)
+		return "TLC_HI_DEBUG_REG";
+	if (offset == cfg_default.ice_tlc_hi_base +
+			cfg_default.ice_tlc_hi_dump_control_offset)
 		return "TLC_DUMP_CONTROL_REG";
 	if (offset == cfg_default.mmio_cbd_base_addr_offset)
 		return "CB_DESC_BASE_ADDR_REG";

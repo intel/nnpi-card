@@ -224,5 +224,6 @@ int ice_set_hw_config(struct ice_set_hw_config_params *set_hw_config);
 
 int ice_ds_raise_event(struct ice_network *ntw, bool reschedule);
 
-
+int ice_iccp_license_request(struct cve_device *dev, bool throttling,
+				uint16_t license_value);
 #endif /* _DISPATCHER_H_ */

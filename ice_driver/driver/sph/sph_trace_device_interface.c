@@ -41,6 +41,21 @@
 #define MAX_PMON_DAEMON 19
 
 #ifndef RING3_VALIDATION
+
+struct kobject *get_icedrv_kobj(void)
+{
+	struct kobject *kobj = NULL;
+
+	if (!icedrv_kobj) {
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+					"icedrv kobj doesn't exist\n");
+		goto out;
+	}
+	kobj = icedrv_kobj;
+out:
+	return kobj;
+}
+
 static u32 __get_pmon_config_regoffset(u32 index)
 {
 	u32 pmon_config_regoffset_array[MAX_PMON_DAEMON] = {
@@ -245,7 +260,7 @@ static int ice_trace_set_ice_observer_sysfs(u8 dso_reg_index, u32 dso_reg_val,
 
 
 static int ice_trace_pmon_config_sysfs(u32 daemonfreq, u32 pmonindex,
-							u32 dev_index);
+						struct cve_device *ice_dev);
 static int  ice_trace_configure_pmonregs_sysfs(u32 dev_index);
 #endif
 
@@ -1246,6 +1261,7 @@ ssize_t store_pmon(struct kobject *kobj,
 	int tmp_daemonfreq;
 	u32 dev_index;
 	int ret = 0;
+	struct cve_device *ice_dev;
 
 
 	ret = sscanf(kobj->name, "ice%d", &dev_index);
@@ -1259,6 +1275,13 @@ ssize_t store_pmon(struct kobject *kobj,
 		return -EFAULT;
 	}
 
+	ice_dev = cve_device_get(dev_index);
+	if (!ice_dev) {
+		cve_os_log(CVE_LOGLEVEL_ERROR, "NULL ice_dev pointer\n");
+		return -ENODEV;
+	}
+
+	ice_dev->daemon.conf.daemon_table_len = 0; /* a new deamon table */
 	/* TODO: Check for any side effect of const buf ptr given to strsep() */
 	while ((pmonset_s = strsep((char **)&buf, ":")) != NULL) {
 		pmonset_s = strim(pmonset_s);
@@ -1294,7 +1317,7 @@ ssize_t store_pmon(struct kobject *kobj,
 			daemonfreq = tmp_daemonfreq;
 		}
 		ret = ice_trace_pmon_config_sysfs(daemonfreq, pmonindex,
-								dev_index);
+								ice_dev);
 		cve_os_unlock(&g_cve_driver_biglock);
 		if (ret < 0) {
 			cve_os_log(CVE_LOGLEVEL_ERROR, "pmon config failed\n");
@@ -1335,9 +1358,16 @@ static int  ice_trace_configure_pmonregs_sysfs(u32 dev_index)
 
 	/* If Device is ON */
 	if ((value & pe_mask) != pe_mask) {
-		cve_os_log(CVE_LOGLEVEL_INFO,
+		if (ice_dev->daemon.is_default_config) {
+			ice_dev->daemon.daemon_config_status =
+				TRACE_STATUS_DEFAULT;
+			cve_os_log(CVE_LOGLEVEL_INFO,
+				"Ice is already powered off, no need of expilict Reg write for reset\n");
+		} else {
+			cve_os_log(CVE_LOGLEVEL_INFO,
 				"ICE-%d not Powered ON, Reg write not done\n",
-				ice_dev->dev_index);
+					ice_dev->dev_index);
+		}
 		goto out;
 	}
 	/* config pmons */
@@ -1376,9 +1406,12 @@ static int  ice_trace_configure_pmonregs_sysfs(u32 dev_index)
 	cve_os_write_mmio_32(ice_dev,
 				reg_offset,
 				ice_dev->daemon.conf.daemon_enable);
-
-	ice_dev->daemon.daemon_config_status =
-				TRACE_STATUS_SYSFS_USER_CONFIG_WRITE_DONE;
+	if (ice_dev->daemon.is_default_config)
+		ice_dev->daemon.daemon_config_status =
+			TRACE_STATUS_DEFAULT;
+	else
+		ice_dev->daemon.daemon_config_status =
+			TRACE_STATUS_SYSFS_USER_CONFIG_WRITE_DONE;
 
 out:
 	FUNC_LEAVE();
@@ -1386,10 +1419,73 @@ out:
 	return ret;
 }
 
-static int ice_trace_pmon_config_sysfs(u32 daemonfreq, u32 pmonindex,
-							u32 dev_index)
+static int  ice_trace_configure_reset_daemon_regs(u32 dev_index)
 {
+	unsigned int i;
+	u32 reg_offset, reg_offset_table;
+	u64 pe_mask, value;
 	struct cve_device *ice_dev;
+	int ret = 0;
+
+	FUNC_ENTER();
+	ice_dev = cve_device_get(dev_index);
+	if (!ice_dev) {
+		cve_os_log(CVE_LOGLEVEL_ERROR, "NULL ice_dev pointer\n");
+		ret = -ENODEV;
+		goto out;
+	}
+	pe_mask = (1 << ice_dev->dev_index) << 4;
+	value = cve_os_read_idc_mmio(ice_dev,
+				cfg_default.bar0_mem_icepe_offset);
+
+	/* If Device is ON */
+	if ((value & pe_mask) != pe_mask) {
+		cve_os_log(CVE_LOGLEVEL_INFO,
+				"ICE-%d not Powered ON, Reg write not done\n",
+				ice_dev->dev_index);
+		goto out;
+	}
+
+	cve_os_dev_log(CVE_LOGLEVEL_DEBUG, ice_dev->dev_index,
+				"daemon control = 0x%x\n",
+				ice_dev->daemon.reset_conf.daemon_control);
+	reg_offset = cfg_default.ice_sem_base +
+			cfg_default.ice_sem_mmio_demon_control_offset;
+	cve_os_write_mmio_32(ice_dev,
+				reg_offset,
+				ice_dev->daemon.reset_conf.daemon_control);
+
+	reg_offset_table = cfg_default.ice_sem_base +
+			cfg_default.ice_sem_mmio_demon_table_offset;
+	for (i = 0; i < ice_dev->daemon.reset_conf.daemon_table_len; i++) {
+		cve_os_dev_log(CVE_LOGLEVEL_DEBUG, ice_dev->dev_index,
+					"daemon table[%d] = 0x%x\n", i,
+				    ice_dev->daemon.reset_conf.daemon_table[i]);
+		cve_os_write_mmio_32(ice_dev,
+					(reg_offset_table + i * 4),
+				    ice_dev->daemon.reset_conf.daemon_table[i]);
+	}
+
+	cve_os_dev_log(CVE_LOGLEVEL_DEBUG, ice_dev->dev_index,
+					"daemon enable = 0x%x\n",
+				      ice_dev->daemon.reset_conf.daemon_enable);
+
+	reg_offset = cfg_default.ice_sem_base +
+			cfg_default.ice_sem_mmio_demon_enable_offset;
+	cve_os_write_mmio_32(ice_dev,
+				reg_offset,
+				ice_dev->daemon.reset_conf.daemon_enable);
+	ice_dev->daemon.daemon_config_status =
+				TRACE_STATUS_SYSFS_USER_CONFIG_WRITE_DONE;
+out:
+	FUNC_LEAVE();
+
+	return ret;
+}
+
+static int ice_trace_pmon_config_sysfs(u32 daemonfreq, u32 pmonindex,
+						struct cve_device *ice_dev)
+{
 	int ret = 0;
 	struct ice_register_reader_daemon *daemon_conf;
 	u8 consecutive = 0;
@@ -1404,12 +1500,6 @@ static int ice_trace_pmon_config_sysfs(u32 daemonfreq, u32 pmonindex,
 	bool perform_reset = false;
 
 	FUNC_ENTER();
-	ice_dev = cve_device_get(dev_index);
-	if (!ice_dev) {
-		cve_os_log(CVE_LOGLEVEL_ERROR, "NULL ice_dev pointer\n");
-		ret = -ENODEV;
-		goto out;
-	}
 	switch (pmonindex) {
 	/*reset PMON configuration */
 	case 0:
@@ -1484,19 +1574,8 @@ static int ice_trace_pmon_config_sysfs(u32 daemonfreq, u32 pmonindex,
 	}
 	if (perform_reset) {
 		int i;
-		/*Daemon reset to default values */
-		ice_dev->daemon.conf.daemon_enable = 0; /* Disable */
-		ice_dev->daemon.conf.daemon_control = 0;
-		ice_dev->daemon.conf.daemon_table_len =
-					ICE_MAX_DAEMON_TABLE_LEN;
 
-		memset(ice_dev->daemon.conf.daemon_table, 0,
-				 ICE_MAX_DAEMON_TABLE_LEN * sizeof(u32));
-		ice_dev->daemon.daemon_config_status =
-				TRACE_STATUS_SYSFS_USER_CONFIG_WRITE_PENDING;
-		cve_os_dev_log(CVE_LOGLEVEL_INFO,
-					ice_dev->dev_index,
-					"Daemon reset configuration\n");
+		perform_daemon_reset(ice_dev);
 
 		/*Perf Counters to default values*/
 		/*reset perf counter reg values that are set */
@@ -1517,9 +1596,10 @@ static int ice_trace_pmon_config_sysfs(u32 daemonfreq, u32 pmonindex,
 		daemon_conf->daemon_enable = 0x1;
 		/*Immediate read disabled bit 2:2 */
 
-		if (daemon_conf->daemon_table_len > ICE_MAX_DAEMON_TABLE_LEN) {
-			cve_os_dev_log(CVE_LOGLEVEL_WARNING, ice_dev->dev_index,
+		if (daemon_conf->daemon_table_len >= ICE_MAX_DAEMON_TABLE_LEN) {
+			cve_os_dev_log(CVE_LOGLEVEL_ERROR, ice_dev->dev_index,
 				"Daemon table index exceeded max limit\n");
+			goto out;
 
 		}
 		/* Driver currently doesn't support immediate read */
@@ -1530,6 +1610,7 @@ static int ice_trace_pmon_config_sysfs(u32 daemonfreq, u32 pmonindex,
 		daemon_conf->daemon_table_len++;
 		ice_dev->daemon.daemon_config_status =
 				TRACE_STATUS_SYSFS_USER_CONFIG_WRITE_PENDING;
+		ice_dev->daemon.is_default_config = false;
 		/* PMON CONFIG*/
 		if (configure_pmon) {
 			curr_cfg =
@@ -1551,11 +1632,51 @@ static int ice_trace_pmon_config_sysfs(u32 daemonfreq, u32 pmonindex,
 							pmon_config_mask;
 			ice_dev->perf_counter.perf_counter_config_status =
 				TRACE_STATUS_SYSFS_USER_CONFIG_WRITE_PENDING;
+			ice_dev->perf_counter.is_default_config = false;
 		}
 	}
 out:
 	FUNC_LEAVE();
 	return ret;
+}
+
+void perform_daemon_reset(struct cve_device *ice_dev)
+{
+	/*Daemon reset to default values */
+	ice_dev->daemon.conf.daemon_enable = 0; /* Disable */
+	ice_dev->daemon.conf.daemon_control = 0;
+	ice_dev->daemon.conf.daemon_table_len =
+				ICE_MAX_DAEMON_TABLE_LEN;
+
+	memset(ice_dev->daemon.conf.daemon_table, 0,
+			 ICE_MAX_DAEMON_TABLE_LEN * sizeof(u32));
+	ice_dev->daemon.daemon_config_status =
+			TRACE_STATUS_SYSFS_USER_CONFIG_WRITE_PENDING;
+	ice_dev->daemon.restore_needed_from_suspend = false;
+	ice_dev->daemon.is_default_config = true;
+	cve_os_dev_log(CVE_LOGLEVEL_INFO,
+				ice_dev->dev_index,
+				"Daemon reset configuration\n");
+}
+
+void perform_daemon_suspend(struct cve_device *ice_dev)
+{
+	/*Daemon reset to default values */
+	ice_dev->daemon.reset_conf.daemon_enable = 0; /* Disable */
+	ice_dev->daemon.reset_conf.daemon_control = 0;
+	ice_dev->daemon.reset_conf.daemon_table_len =
+				ICE_MAX_DAEMON_TABLE_LEN;
+
+	memset(ice_dev->daemon.reset_conf.daemon_table, 0,
+			 ICE_MAX_DAEMON_TABLE_LEN * sizeof(u32));
+	ice_dev->daemon.daemon_config_status =
+			TRACE_STATUS_SYSFS_USER_CONFIG_WRITE_PENDING;
+	cve_os_dev_log(CVE_LOGLEVEL_INFO,
+				ice_dev->dev_index,
+				"Daemon reset configuration\n");
+	ice_trace_configure_reset_daemon_regs(ice_dev->dev_index);
+
+	ice_dev->daemon.restore_needed_from_suspend = true;
 }
 
 static int ice_trace_dso_sysfs_init(struct cve_device *ice_dev)
@@ -1887,3 +2008,4 @@ out:
 	FUNC_LEAVE();
 	return ret;
 }
+

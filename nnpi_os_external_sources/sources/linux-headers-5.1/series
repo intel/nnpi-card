@@ -1,7 +1,13 @@
+0001-EDAC-Add-three-new-memory-types.patch
 0001-staging-android-ion-Change-allocation-ioctl-and-chun.patch
+0002-EDAC-igen6-Add-EDAC-driver-for-Intel-client-SoC-plat.patch
+0003-EDAC-igen6-Add-debugfs-interface-for-Intel-client-So.patch
 0003-thermal_sysfs.patch
+0004-EDAC-igen6-Add-registration-APIs-for-In-Band-ECC-err.patch
 0004-mei-me-4.15-add-ice-lake-point-device-ids.patch
 0005-intel_th_support.patch
 0006-uart8250_force_polling.patch
 0008-Added-INTEL_FAM6_ICELAKE_NNPI-to-intel-family.h-and-intel_rapl.c.patch
 0009-Temporary-fix-for-buggy-IFWI-that-keeps-using-boot-m.patch
+0010-staging-android-ion-Add-kernel-level-API-to-allocate.patch
+0011-staging-android-ion-Use-ida-to-manage-heaps-id.patch

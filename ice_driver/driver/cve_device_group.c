@@ -21,6 +21,14 @@
 #include "device_interface.h"
 
 #include "ice_sw_counters.h"
+#ifndef RING3_VALIDATION
+#include "intel_sphpb.h"
+#else
+#include "dummy_intel_sphpb.h"
+#endif
+
+#define LLC_PMON_HIT_ICE_0 0x17663B88
+#define LLC_PMON_HIT_ICE_1 0x17663B90
 
 static struct cve_device_groups_config config_param_single_dg_all_dev =
 		DG_CONFIG_SINGLE_GROUP_ALL_DEVICES;
@@ -286,6 +294,7 @@ static int ice_pm_monitor_task(void *data)
 	struct timespec curr_ts, out_ts;
 	struct cve_device *head;
 	struct cve_device_group *device_group = (struct cve_device_group *)data;
+	const struct sphpb_callbacks *sphpb_cbs;
 #ifdef RING3_VALIDATION
 	void *retval = NULL;
 	u32 factor = 1;
@@ -298,6 +307,7 @@ static int ice_pm_monitor_task(void *data)
 
 	cve_os_log(CVE_LOGLEVEL_DEBUG,
 		"Power Off thread started\n");
+	sphpb_cbs = device_group->sphpb.sphpb_cbs;
 
 	while (1) {
 
@@ -333,11 +343,25 @@ static int ice_pm_monitor_task(void *data)
 
 		while (timeout_msec >= configured_timeout_ms) {
 			if (head->power_state == ICE_POWER_OFF_INITIATED) {
+
 				icemask |= (1 << head->dev_index);
-				head->power_state = ICE_POWER_OFF;
+				ice_dev_set_power_state(head, ICE_POWER_OFF);
 				ice_swc_counter_set(head->hswc,
 					ICEDRV_SWC_DEVICE_COUNTER_POWER_STATE,
-					head->power_state);
+					ice_dev_get_power_state(head));
+
+				if (sphpb_cbs && sphpb_cbs->set_power_state) {
+					ret = sphpb_cbs->set_power_state(
+							head->dev_index, false);
+					if (ret) {
+						cve_os_dev_log(
+							CVE_LOGLEVEL_ERROR,
+							head->dev_index,
+							"failed setting OFF power state OFF with power balancer (%d)\n",
+							ret);
+					}
+				}
+
 			} else {
 				cve_os_log(CVE_LOGLEVEL_DEBUG,
 					"ICE-%d allocated to Ntw. Power Off aborted.\n",
@@ -464,6 +488,7 @@ int ice_kmd_create_dg(void)
 			"Added device group %d\n",
 			device_group->dg_id);
 
+	device_group->sphpb.sphpb_cbs = NULL;
 	/* Add the device_group to the global list */
 	cve_dle_add_to_list_before(g_cve_dev_group_list,
 			list, device_group);
@@ -544,6 +569,10 @@ int cve_dg_add_device(struct cve_device *cve_dev)
 				p->dev_info.num_avl_dicebo++;
 				bo->bo_init_state = ONE_ICE;
 				bo->bo_curr_state = ONE_ICE;
+				bo->llc_pmon_cfg.disable_llc_pmon = false;
+				bo->iccp_init_done = false;
+				bo->llc_pmon_cfg.pmon0_cfg = LLC_PMON_HIT_ICE_0;
+				bo->llc_pmon_cfg.pmon1_cfg = LLC_PMON_HIT_ICE_1;
 
 			} else if (bo->bo_init_state == ONE_ICE) {
 
@@ -695,7 +724,7 @@ int cve_dg_start_poweroff_thread(void)
 				NULL, ice_pm_monitor_task, device_group);
 #else
 	device_group->thread = kthread_run(ice_pm_monitor_task,
-				device_group, "Power Off Thread");
+				device_group, "icedrv_LPM");
 #endif
 
 out:

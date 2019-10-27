@@ -16,7 +16,7 @@
 #ifndef _CVE_PLATFORM_INTERNAL_H_
 #define _CVE_PLATFORM_INTERNAL_H_
 
-#define ICEDRV_ENABLE_CACHING_IN_HW 0
+#define ICEDRV_ENABLE_CACHING_IN_HW 1
 
 #define CVE_DMA_BIT_MASK DMA_BIT_MASK(35)
 #ifdef DISABLE_LLC
@@ -42,10 +42,10 @@
 #define AXI_ATTRIBUTE_TABLE_2 0
 #define AXI_ATTRIBUTE_TABLE_3 0
 
-#define CVE_FW_LLC_CONFIG 0xFF /*R=0xF W=0xF */
+#define CVE_FW_LLC_CONFIG 0x8
 
-#define CVE_FIFO_LLC_CONFIG 0xFF /* 0x00 ==> cache bypass */
-#define CVE_DUMP_LLC_CONFIG 0xF /* TLC to access this buffer for write op */
+#define CVE_FIFO_LLC_CONFIG 0x8
+#define CVE_DUMP_LLC_CONFIG 0x2 /*uncached read, cached, allocate on write*/
 #define ICE_BAR1_LLC_CONFIG 0
 #define CVE_TLC_LLC_CONFIG 0xFF	/* Write back RW allocate */
 #define CVE_DSP_LLC_CONFIG 0xFF	 /* TODO is LLC valid for IVP? */
@@ -100,11 +100,6 @@
 
 #define DUMMY_CHACHLINE_SZ 10
 #define PLAFTORM_CACHELINE_SZ DUMMY_CHACHLINE_SZ
-
-#ifdef IDC_ENABLE
-#define ICE_OFFSET(i) (1048576 + (i * 262144)) /* 1 MB + 0.25MB per ICE */
-#define ICE_BAR1_OFFSET(i) (i * 16384)
-#endif
 
 /* timeout counter threshold bits [19:10]. Counted in Uclks */
 /* Set to max possible value */
