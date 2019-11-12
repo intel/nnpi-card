@@ -31,6 +31,7 @@
 
 /* uncore clock ticks msr's */
 #define RING_FREQ_MSR 0x620
+#define MSR_UNC_PERF_UNCORE_CLOCK_TICKS 0x395
 
 
 struct UNC_PERF_GLOBAL_CTRL_MSR {

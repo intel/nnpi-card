@@ -121,11 +121,17 @@ ice_va_t cve_osmm_alloc_get_iova(os_allocation_handle halloc);
 
 /*
  * get a iommu domain
- * inputs :
+ * configure the ICE VA partitions dynamically based on the requested size per
+ * page alignment
+ * inputs : sz_per_page_alignment - an array with total size requirement
+ *          per page alignment
+ *          infer_buf_page_config - page config used by the infer buffers
  * outputs: out_hdomain - a handle to the domain
  * returns: 0 on success, a negative error code on failure
  */
 int cve_osmm_get_domain(struct cve_device *cve_dev,
+		u64 *sz_per_page_alignment,
+		u8 infer_buf_page_config,
 		os_domain_handle *out_hdomain);
 
 /* free a iommu domain

@@ -41,7 +41,11 @@ static struct ice_drv_config drv_config_param = {
 	.sph_soc = 0,
 	.ice_power_off_delay_ms = 1000,
 	.enable_sph_b_step = false,
-	.ice_sch_preemption = 1
+	.ice_sch_preemption = 1,
+	.iccp_throttling = 1,
+	.initial_iccp_config[0] = INITIAL_CDYN_VAL,
+	.initial_iccp_config[1] = RESET_CDYN_VAL,
+	.initial_iccp_config[2] = BLOCKED_CDYN_VAL
 };
 
 
@@ -478,7 +482,7 @@ int ice_kmd_create_dg(void)
 	device_group->ntw_with_resources = NULL;
 	device_group->num_running_ntw = 0;
 
-	device_group->dg_clos_manager.size = CLOS_MAX_SIZE;
+	device_group->dg_clos_manager.size = MAX_CLOS_SIZE_MB;
 	ice_os_read_clos((void *)&device_group->dg_clos_manager);
 
 	for (i = 0; i < MAX_CVE_DEVICES_NR; i++)
@@ -766,14 +770,22 @@ void ice_set_driver_config_param(struct ice_drv_config *param)
 	drv_config_param.ice_power_off_delay_ms = param->ice_power_off_delay_ms;
 	drv_config_param.enable_sph_b_step = param->enable_sph_b_step;
 	drv_config_param.ice_sch_preemption = param->ice_sch_preemption;
+	drv_config_param.iccp_throttling = param->iccp_throttling;
+	drv_config_param.initial_iccp_config[0] = param->initial_iccp_config[0];
+	drv_config_param.initial_iccp_config[1] = param->initial_iccp_config[1];
+	drv_config_param.initial_iccp_config[2] = param->initial_iccp_config[2];
 
 	cve_os_log(CVE_LOGLEVEL_INFO,
-			"DriverConfig: enable_llc_config_via_axi_reg:%d sph_soc:%d ice_power_off_delay_ms:%d, is_b_step_enabled: %d Preemption:%d\n",
+			"DriverConfig: enable_llc_config_via_axi_reg:%d sph_soc:%d ice_power_off_delay_ms:%d, is_b_step_enabled: %d Preemption:%d is_iccp_throttling_enabled:%d initial_cdyn:0x%x reset_cdyn:0x%x blocked_cdyn:0x%x\n",
 			drv_config_param.enable_llc_config_via_axi_reg,
 			drv_config_param.sph_soc,
 			drv_config_param.ice_power_off_delay_ms,
 			drv_config_param.enable_sph_b_step,
-			drv_config_param.ice_sch_preemption);
+			drv_config_param.ice_sch_preemption,
+			drv_config_param.iccp_throttling,
+			drv_config_param.initial_iccp_config[0],
+			drv_config_param.initial_iccp_config[1],
+			drv_config_param.initial_iccp_config[2]);
 }
 
 struct ice_drv_config *ice_get_driver_config_param(void)
@@ -794,6 +806,26 @@ int ice_get_power_off_delay_param(void)
 int ice_get_b_step_enable_flag(void)
 {
 	return drv_config_param.enable_sph_b_step;
+}
+
+int ice_get_iccp_throttling_flag(void)
+{
+	return drv_config_param.iccp_throttling;
+}
+
+u32 ice_get_initial_cdyn_val(void)
+{
+	return drv_config_param.initial_iccp_config[0];
+}
+
+u32 ice_get_reset_cdyn_val(void)
+{
+	return drv_config_param.initial_iccp_config[1];
+}
+
+u32 ice_get_blocked_cdyn_val(void)
+{
+	return drv_config_param.initial_iccp_config[2];
 }
 
 struct cve_device *ice_get_first_dev(void)

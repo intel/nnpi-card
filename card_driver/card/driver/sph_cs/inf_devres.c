@@ -237,22 +237,22 @@ void inf_devres_migrate_priority_to_req_queue(struct inf_devres *devres, struct 
 		if (pos->read && read)
 			continue;
 		if (req->is_copy) {
-			if (req->sched_params.priority != exec_infreq->sched_params.priority) {
+			if (req->priority != exec_infreq->sched_params.priority) {
 				SPH_SPIN_LOCK_IRQSAVE(&req->lock_irq, flags);
 				if (!req->in_progress) {
 					//Request didn't reached HW yet , just update priority here
-					req->sched_params.priority = exec_infreq->sched_params.priority;
+					req->priority = exec_infreq->sched_params.priority;
 				} else {
 					//Call Dma scheduler for update
 					ret = sphcs_dma_sched_update_priority(g_the_sphcs->dmaSched,
 										req->copy->card2Host ? 0 : 1,
-										req->sched_params.priority,
+										req->priority,
 										exec_infreq->sched_params.priority,
 										req->copy->lli_addr);
 					if (ret)
 						sph_log_debug(CREATE_COMMAND_LOG, "Copy request %u priority not updated\n", req->copy->protocolID);
 					else
-						req->sched_params.priority = exec_infreq->sched_params.priority;
+						req->priority = exec_infreq->sched_params.priority;
 				}
 				SPH_SPIN_UNLOCK_IRQRESTORE(&req->lock_irq, flags);
 			}

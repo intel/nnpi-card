@@ -29,9 +29,18 @@ enum iova_partition_list {
 	ICE_MEM_BASE_PARTITION = 0,
 	MEM_PARTITION_LOW_4KB = ICE_MEM_BASE_PARTITION,
 	MEM_PARTITION_LOW_32KB = ICE_MEM_BASE_PARTITION,
+	MEM_PARTITION_LOW_32KB_HW,
 	MEM_PARTITION_HIGH_32KB,
 	MEM_PARTITION_HIGH_16MB,
 	MEM_PARTITION_HIGH_32MB
+};
+
+enum iova_page_sz_type {
+	IOVA_PAGE_ALIGNMENT_LOW_32K = 0,
+	IOVA_PAGE_ALIGNMENT_32K = 1,
+	IOVA_PAGE_ALIGNMENT_16M = 2,
+	IOVA_PAGE_ALIGNMENT_32M = 3,
+	IOVA_PAGE_ALIGNMENT_MAX = 4
 };
 
 
@@ -99,6 +108,8 @@ struct cve_lin_mm_domain {
  * returns: 0 on success, a negative error code on failure
  */
 int lin_mm_domain_init(struct cve_device *cve_dev,
+		u64 *sz_per_page_alignment,
+		u8 infer_buf_page_config,
 		struct cve_lin_mm_domain **out_cve_domain);
 
 /*

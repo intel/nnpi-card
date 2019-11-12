@@ -45,6 +45,7 @@ struct sphcs_cmd_chan {
 	int               destroyed;
 	struct workqueue_struct *wq;
 	struct msg_scheduler_queue *respq;
+	struct work_struct work;
 
 	struct sphcs_dma_desc c2h_dma_desc;
 	struct sphcs_dma_desc h2c_dma_desc;

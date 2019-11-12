@@ -45,6 +45,7 @@ struct inf_devnet {
 	void               *create_dma_data_ptr;
 
 	struct sph_sw_counters *sw_counters;
+	bool serial_infreq_exec;
 };
 
 int inf_devnet_create(uint16_t protocolID,

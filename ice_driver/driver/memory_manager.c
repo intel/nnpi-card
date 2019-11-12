@@ -68,7 +68,7 @@ static int __get_patch_point_addr_and_val(
 		u64 **patch_address, u64 *ks_value);
 
 static void __map_page_sz_to_partition(struct ice_iova_desc *iova_desc,
-		u32 page_sz);
+		struct cve_surface_descriptor *surf);
 
 /* create a new allocation object for the given surface and map it to
  * the device's memory
@@ -123,7 +123,7 @@ static int create_new_allocation(
 	iova_desc = &alloc->iova_desc;
 	iova_desc->llc_policy = llc_policy;
 	iova_desc->alloc_higher_va = surf->alloc_higher_va;
-	__map_page_sz_to_partition(iova_desc, surf->page_sz);
+	__map_page_sz_to_partition(iova_desc, surf);
 
 	retval = cve_osmm_dma_buf_map(
 			hdom,
@@ -271,8 +271,9 @@ void cve_mm_reset_page_table_flags(os_domain_handle hdom)
 
 /* returns the partition_id to be used for VA mapping. Default is lower 4GB */
 static void __map_page_sz_to_partition(struct ice_iova_desc *iova_desc,
-		u32 page_sz)
+		struct cve_surface_descriptor *surf)
 {
+	u32 page_sz = surf->page_sz;
 
 	/* Only 1 partition for 32bit VA mode */
 	if (ICE_DEFAULT_VA_WIDTH != ICE_VA_WIDTH_EXTENDED) {
@@ -297,10 +298,17 @@ static void __map_page_sz_to_partition(struct ice_iova_desc *iova_desc,
 		iova_desc->partition_id = MEM_PARTITION_HIGH_16MB;
 		iova_desc->page_shift = ICE_PAGE_SHIFT_16M;
 	} else if (iova_desc->page_sz == ICE_PAGE_SZ_32K) {
-		if (iova_desc->alloc_higher_va)
+		if (iova_desc->alloc_higher_va) {
 			iova_desc->partition_id = MEM_PARTITION_HIGH_32KB;
-		else
-			iova_desc->partition_id = MEM_PARTITION_LOW_32KB;
+		} else {
+			if (surf->map_in_hw_region) {
+				iova_desc->partition_id =
+					MEM_PARTITION_LOW_32KB_HW;
+			} else {
+				iova_desc->partition_id =
+					MEM_PARTITION_LOW_32KB;
+			}
+		}
 		iova_desc->page_shift = ICE_PAGE_SHIFT_32K;
 	}
 }

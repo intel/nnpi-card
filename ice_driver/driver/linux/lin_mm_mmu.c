@@ -92,6 +92,20 @@ do { \
 	((ICE_VA_RANGE_LOW_32KB_END - 1)/ICE_PAGE_SZ_32M); \
 } while (0)
 
+#define __mmu_config_35bit_va_page_32K_hw(config) \
+do { \
+	config->l2_width = ICE_VA_L2_WIDTH(ICE_PAGE_SHIFT_32K);\
+	config->page_shift = ICE_PAGE_SHIFT_32K; \
+	config->va_start = ICE_VA_RANGE_LOW_32KB_HW_START; \
+	config->va_end = ICE_VA_RANGE_LOW_32KB_HW_END; \
+	config->page_sz = ICE_PAGE_SZ(ICE_PAGE_SHIFT_32K); \
+	config->pde_start_idx = \
+	(ICE_VA_RANGE_LOW_32KB_HW_START/ICE_PAGE_SZ_32M); \
+	config->pde_end_idx = \
+	((ICE_VA_RANGE_LOW_32KB_HW_END - 1)/ICE_PAGE_SZ_32M); \
+} while (0)
+
+
 #define __mmu_config_32bit_va_page_4K(config) \
 do { \
 	config->l2_width = ICE_VA_L2_WIDTH(ICE_PAGE_SHIFT_4K);\
@@ -156,7 +170,9 @@ do { \
 } while (0)
 
 
-static void __do_mmu_config(struct cve_lin_mm_domain *domain);
+static void __do_mmu_config(struct cve_lin_mm_domain *domain,
+		 u64 *sz_per_page_alignment,
+		u8 infer_buf_page_config);
 static void __config_page_sz_reg_array(struct cve_lin_mm_domain *domain);
 static void __config_page_sz_for_partition(struct cve_lin_mm_domain *domain,
 		u8 partition_id);
@@ -639,10 +655,28 @@ rollback:
 	goto out;
 }
 
-static void __do_mmu_config(struct cve_lin_mm_domain *domain)
+static void __do_mmu_config(struct cve_lin_mm_domain *domain,
+		u64 *sz_per_page_alignment,
+		u8 infer_buf_page_config)
 {
-	u8 partition = ICE_MEM_BASE_PARTITION;
+	u8 partition = ICE_MEM_BASE_PARTITION, i = IOVA_PAGE_ALIGNMENT_32K;
 	struct ice_mmu_config *mmu_config;
+	u64 start = 0, end = 0, size = 0, unused_sz = 0;
+	u64 _sz_per_page_alignment[IOVA_PAGE_ALIGNMENT_MAX];
+
+
+	for (; i < IOVA_PAGE_ALIGNMENT_MAX; i++) {
+		_sz_per_page_alignment[i] = round_up_cve_pagesize(
+						sz_per_page_alignment[i],
+						ICE_PAGE_SZ_256M);
+		if (_sz_per_page_alignment[i] == 0)
+			_sz_per_page_alignment[i] = ICE_PAGE_SZ_256M;
+
+		size += _sz_per_page_alignment[i];
+	}
+	unused_sz = ICE_VA_HIGH_TOTAL_SZ - size;
+	/* add unused range to the partition used by the infer buffers*/
+	_sz_per_page_alignment[infer_buf_page_config] += unused_sz;
 
 	for (; partition < ICE_MEM_MAX_PARTITION; partition++) {
 		mmu_config = &domain->mmu_config[partition];
@@ -653,14 +687,31 @@ static void __do_mmu_config(struct cve_lin_mm_domain *domain)
 			else
 				__mmu_config_32bit_va_page_4K(mmu_config);
 			break;
+		case MEM_PARTITION_LOW_32KB_HW:
+			__mmu_config_35bit_va_page_32K_hw(mmu_config);
+			break;
 		case MEM_PARTITION_HIGH_32KB:
 			__mmu_config_35bit_va_page_32K_high(mmu_config);
+			start = ICE_VA_RANGE_HIGH_32KB_START;
+			end = start +
+				_sz_per_page_alignment[IOVA_PAGE_ALIGNMENT_32K];
+			mmu_config->va_end = end;
 			break;
 		case MEM_PARTITION_HIGH_16MB:
 			__mmu_config_35bit_va_page_16M(mmu_config);
+			start = end;
+			end = start +
+				_sz_per_page_alignment[IOVA_PAGE_ALIGNMENT_16M];
+			mmu_config->va_end = end;
+			mmu_config->va_start = start;
 			break;
 		case MEM_PARTITION_HIGH_32MB:
 			__mmu_config_35bit_va_page_32M(mmu_config);
+			mmu_config->va_start = end;
+			end = mmu_config->va_start +
+				_sz_per_page_alignment[IOVA_PAGE_ALIGNMENT_32M];
+			end = round_up_cve_pagesize(end, ICE_PAGE_SZ_256M);
+			mmu_config->va_end = end;
 		}
 
 		cve_os_log(CVE_LOGLEVEL_DEBUG,
@@ -675,6 +726,8 @@ static void __do_mmu_config(struct cve_lin_mm_domain *domain)
 }
 
 int lin_mm_domain_init(struct cve_device *cve_dev,
+		u64 *sz_per_page_alignment,
+		u8 infer_buf_page_config,
 		struct cve_lin_mm_domain **out_cve_domain)
 {
 	struct cve_lin_mm_domain *cve_domain = NULL;
@@ -695,7 +748,8 @@ int lin_mm_domain_init(struct cve_device *cve_dev,
 	ASSERT(os_lock_init(&cve_domain->lock) == 0);
 #endif
 	mmu_config = &cve_domain->mmu_config[ICE_MEM_BASE_PARTITION];
-	__do_mmu_config(cve_domain);
+	__do_mmu_config(cve_domain, sz_per_page_alignment,
+			infer_buf_page_config);
 	cve_domain->cve_dev = cve_dev;
 
 	__config_page_sz_reg_array(cve_domain);
@@ -832,6 +886,8 @@ void lin_mm_domain_destroy(struct cve_lin_mm_domain *cve_domain)
 }
 
 int cve_osmm_get_domain(struct cve_device *cve_dev,
+		u64 *va_partition_config,
+		u8 infer_buf_page_config,
 		os_domain_handle *out_hdomain)
 {
 	int retval = -ENOMEM;
@@ -839,7 +895,8 @@ int cve_osmm_get_domain(struct cve_device *cve_dev,
 
 	FUNC_ENTER();
 
-	retval = lin_mm_domain_init(cve_dev, &cve_domain);
+	retval = lin_mm_domain_init(cve_dev, va_partition_config,
+			infer_buf_page_config, &cve_domain);
 	if (retval != 0) {
 		cve_os_log(CVE_LOGLEVEL_ERROR,
 			"lin_mm_domain_init failed %d\n", retval);

@@ -254,14 +254,14 @@ void IPC_OPCODE_HANDLER(P2P_DEV)(struct sphcs *sphcs, union h2c_P2PDev *cmd)
 	} else {
 		if (cmd->is_producer) {
 			p2p_producers[cmd->dev_id].peer_db.dma_addr = cmd->db_addr;
-			p2p_producers[cmd->dev_id].peer_cr_fifo.dma_addr = ((dma_addr_t)cmd->cr_fifo_addr << PAGE_SHIFT);
+			p2p_producers[cmd->dev_id].peer_cr_fifo.dma_addr = SPH_IPC_DMA_PFN_TO_ADDR(cmd->cr_fifo_addr);
 			sph_log_debug(GENERAL_LOG, "New producer registered (id - %u, db - %pad, cr fifo - %pad)\n",
 									     cmd->dev_id,
 									     &p2p_producers[cmd->dev_id].peer_db.dma_addr,
 									     &p2p_producers[cmd->dev_id].peer_cr_fifo.dma_addr);
 		} else {
 			p2p_consumers[cmd->dev_id].peer_db.dma_addr = cmd->db_addr;
-			p2p_consumers[cmd->dev_id].peer_cr_fifo.dma_addr = ((dma_addr_t)cmd->cr_fifo_addr << PAGE_SHIFT);
+			p2p_consumers[cmd->dev_id].peer_cr_fifo.dma_addr = SPH_IPC_DMA_PFN_TO_ADDR(cmd->cr_fifo_addr);
 			sph_log_debug(GENERAL_LOG, "New consumer registered (id - %u, db - %pad, cr fifo - %pad)\n",
 									     cmd->dev_id,
 									     &p2p_consumers[cmd->dev_id].peer_db.dma_addr,

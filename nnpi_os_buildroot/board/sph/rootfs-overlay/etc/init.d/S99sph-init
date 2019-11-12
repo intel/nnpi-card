@@ -7,6 +7,7 @@ PATH=/sbin:/usr/sbin:/bin:/usr/bin:/usr/local/bin
 case "$1" in
     start)
 	/usr/local/bin/sph_platform_start
+	/usr/sbin/crond
         ;;
     stop)
 	/usr/local/bin/sph_platform_stop

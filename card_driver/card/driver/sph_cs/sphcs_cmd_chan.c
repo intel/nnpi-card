@@ -98,12 +98,12 @@ int sphcs_cmd_chan_create(uint16_t                protocolID,
 	return 0;
 }
 
-static void cmd_chan_release(struct kref *kref)
+static void cmd_chan_release(struct work_struct *work)
 {
 	struct sphcs_cmd_chan *cmd_chan;
 	int i;
 
-	cmd_chan = container_of(kref, struct sphcs_cmd_chan, ref);
+	cmd_chan = container_of(work, struct sphcs_cmd_chan, work);
 
 	drain_workqueue(cmd_chan->wq);
 	destroy_workqueue(cmd_chan->wq);
@@ -123,6 +123,15 @@ static void cmd_chan_release(struct kref *kref)
 	kfree(cmd_chan);
 }
 
+static void sched_cmd_chan_release(struct kref *kref)
+{
+	struct sphcs_cmd_chan *cmd_chan;
+
+	cmd_chan = container_of(kref, struct sphcs_cmd_chan, ref);
+	INIT_WORK(&cmd_chan->work, cmd_chan_release);
+	queue_work(system_wq, &cmd_chan->work);
+}
+
 int is_cmd_chan_ptr(void *ptr)
 {
 	struct sphcs_cmd_chan *cmd_chan = (struct sphcs_cmd_chan *)ptr;
@@ -140,7 +149,7 @@ void sphcs_cmd_chan_get(struct sphcs_cmd_chan *cmd_chan)
 
 int sphcs_cmd_chan_put(struct sphcs_cmd_chan *cmd_chan)
 {
-	return kref_put(&cmd_chan->ref, cmd_chan_release);
+	return kref_put(&cmd_chan->ref, sched_cmd_chan_release);
 }
 
 void sphcs_cmd_chan_update_cmd_head(struct sphcs_cmd_chan *chan, uint16_t rbID, uint32_t size)

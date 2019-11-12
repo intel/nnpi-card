@@ -180,6 +180,68 @@ union h2c_ChanInferenceNetworkOp {
 };
 CHECK_MESSAGE_SIZE(union h2c_ChanInferenceNetworkOp, 2);
 
+union h2c_ChanInferenceReqOp {
+	struct {
+		u64 opcode            :  6; /* SPH_IPC_H2C_OP_CHAN_INF_REQ_OP */
+		u64 chanID            : SPH_IPC_CHANNEL_BITS;
+		u64 netID             : SPH_IPC_INF_DEVNET_BITS;
+		u64 infreqID          : SPH_IPC_INF_REQ_BITS;
+		u64 size              : 12;
+		u64 rbID              :  1;
+		u64 destroy           :  1;
+		u64 reserved1         :  2;
+	};
+
+	u64 value;
+};
+CHECK_MESSAGE_SIZE(union h2c_ChanInferenceReqOp, 1);
+
+union h2c_ChanInferenceReqSchedule {
+	struct {
+		u64 opcode            :  6; /* SPH_IPC_H2C_OP_CHAN_SCHEDULE_INF_REQ */
+		u64 chanID            : SPH_IPC_CHANNEL_BITS;
+		u64 netID             : SPH_IPC_INF_DEVNET_BITS;
+		u64 infreqID          : SPH_IPC_INF_REQ_BITS;
+		u64 reserved          : 16;
+
+		//schedParams
+		u64 batchSize         : 16;
+		u64 priority          :  8; /* 0 == normal, 1 == high */
+		u64 debugOn           :  1;
+		u64 collectInfo       :  1;
+		u64 schedParamsIsNull :  1;
+		u64 reserve           : 37;
+	};
+
+	u64 value[2];
+};
+CHECK_MESSAGE_SIZE(union h2c_ChanInferenceReqSchedule, 2);
+
+union h2c_ChanSync {
+	struct {
+		u64 opcode      : 6; /* SPH_IPC_H2C_OP_CHAN_SYNC */
+		u64 chanID      : SPH_IPC_CHANNEL_BITS;
+		u32 syncSeq     : 16;
+		u64 reserved    : 32;
+	};
+
+	u64 value;
+};
+CHECK_MESSAGE_SIZE(union h2c_Sync, 1);
+
+union h2c_ChanInferenceNetworkResourceReservation {
+	struct {
+		u64 opcode        : 6; /* SPH_IPC_H2C_OP_CHAN_INF_NETWORK_RESOURCE_RESERVATION */
+		u64 chanID        : SPH_IPC_CHANNEL_BITS;
+		u64 netID         : SPH_IPC_INF_DEVNET_BITS;
+		u64 reserve       : 1; //reserve or release
+		u64 timeout       : 31;
+	};
+
+	u64 value[1];
+};
+CHECK_MESSAGE_SIZE(union h2c_ChanInferenceNetworkResourceReservation, 1);
+
 union c2h_ChanMsgHeader {
 	struct {
 		u64 opcode		: 6;
@@ -233,6 +295,18 @@ union c2h_ChanServiceListMsg {
 	u64 value;
 };
 CHECK_MESSAGE_SIZE(union c2h_ChanServiceListMsg, 1);
+
+union c2h_ChanSyncDone {
+	struct {
+		u64 opcode      : 6; /* SPH_IPC_C2H_OP_CHAN_SYNC_DONE */
+		u64 chanID      : SPH_IPC_CHANNEL_BITS;
+		u32 syncSeq     : 16;
+		u64 reserved    : 32;
+	};
+
+	u64 value;
+};
+CHECK_MESSAGE_SIZE(union c2h_ChanSyncDone, 1);
 
 #ifdef ULT
 union ult2_message {

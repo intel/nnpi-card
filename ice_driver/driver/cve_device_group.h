@@ -30,6 +30,8 @@ struct ice_drv_config {
 	int ice_power_off_delay_ms;
 	bool enable_sph_b_step;
 	u8 ice_sch_preemption;
+	u8 iccp_throttling;
+	u32 initial_iccp_config[3];
 };
 
 /*
@@ -144,4 +146,16 @@ int ice_get_b_step_enable_flag(void);
 
 /* check if user has requested to disable preemption*/
 u8 ice_sch_allow_preemption(void);
+
+/*check if user has requested to do non throttling for B step*/
+int ice_get_iccp_throttling_flag(void);
+
+/*retrive initial cdyn requested value */
+u32 ice_get_initial_cdyn_val(void);
+
+/*retrive reset cdyn requested value */
+u32 ice_get_reset_cdyn_val(void);
+
+/*retrive blocked cdyn requested value */
+u32 ice_get_blocked_cdyn_val(void);
 #endif /* CVE_DEVICE_GROUP_H_ */

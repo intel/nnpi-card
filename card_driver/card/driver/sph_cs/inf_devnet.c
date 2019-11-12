@@ -66,7 +66,6 @@ void inf_devnet_delete_devres(struct inf_devnet *devnet,
 				SPH_SPIN_UNLOCK(&devnet->lock);
 				found = true;
 				ret = inf_devres_put(n->devres);
-				SPH_ASSERT(ret == 0);
 				kfree(n);
 				SPH_SPIN_LOCK(&devnet->lock);
 				break;
@@ -194,7 +193,6 @@ static void release_devnet(struct kref *kref)
 	SPH_SW_COUNTER_ATOMIC_DEC(devnet->context->sw_counters, CTX_SPHCS_SW_COUNTERS_INFERENCE_NUM_NETWORKS);
 
 	ret = inf_context_put(devnet->context);
-	SPH_ASSERT(ret == 0);
 
 	if (likely(devnet->destroyed == 1))
 		sphcs_send_event_report(g_the_sphcs,
@@ -253,6 +251,11 @@ static int inf_req_create_dma_complete_callback(struct sphcs *sphcs,
 	int ret, i;
 	unsigned long flags;
 	enum event_val val;
+
+	if (infreq->devnet->context->chan != NULL)
+		sphcs_cmd_chan_update_cmd_head(infreq->devnet->context->chan,
+					       0,  /* TODO: change to real rbID */
+					       SPH_PAGE_SIZE);
 
 	if (unlikely(status == SPHCS_DMA_STATUS_FAILED)) {
 		val = SPH_IPC_DMA_ERROR;

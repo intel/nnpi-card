@@ -19,11 +19,14 @@
 #include <linux/anon_inodes.h>
 #include <linux/uaccess.h>
 #include <linux/fcntl.h>
+#include <asm/msr.h>
+#include <linux/sched/clock.h>
 #include "sph_log.h"
 #include "sph_version.h"
 #include "sphpb.h"
 #include "sphpb_punit.h"
 #include "sphpb_icedriver.h"
+#include "sphpb_bios_mailbox.h"
 
 struct sphpb_pb *g_the_sphpb;
 
@@ -94,21 +97,64 @@ int sphpb_set_power_state(uint32_t ice_index, bool bOn)
 	return ret;
 }
 
+static void sphpb_throttle_init(struct sphpb_pb *sphpb)
+{
+	sphpb->throttle_data.curr_state = 0x0;
 
-void sphpb_unregister_driver(void)
+	sphpb->throttle_data.cpu_stat = kmalloc_array(num_possible_cpus(), sizeof(struct cpu_perfstat), GFP_KERNEL);
+	if (unlikely(sphpb->throttle_data.cpu_stat == NULL))
+		sph_log_err(POWER_BALANCER_LOG, "Throttling init failure: Out of memory.\n");
+}
+
+static void sphpb_throttle_prepare(void)
+{
+	uint32_t cpu;
+	int ret;
+
+	mutex_lock(&g_the_sphpb->mutex_lock);
+	if (unlikely(g_the_sphpb->icedrv_cb == NULL ||
+	    g_the_sphpb->icedrv_cb->set_clock_squash == NULL)) {
+		mutex_unlock(&g_the_sphpb->mutex_lock);
+		return;
+	}
+
+	ret = g_the_sphpb->icedrv_cb->set_clock_squash(0, g_the_sphpb->throttle_data.curr_state,
+						       g_the_sphpb->throttle_data.curr_state != 0x0);
+	mutex_unlock(&g_the_sphpb->mutex_lock);
+	if (unlikely(ret < 0))
+		sph_log_err(POWER_BALANCER_LOG, "Throttling failure: Unable to disable ice throttling. Err(%d)\n", ret);
+
+	if (g_the_sphpb->throttle_data.curr_state != 0x0)
+		ret = set_sagv_freq(SAGV_POLICY_FIXED_LOW, SAGV_POLICY_DYNAMIC);
+	else
+		ret = set_sagv_freq(SAGV_POLICY_DYNAMIC, SAGV_POLICY_DYNAMIC);
+	if (unlikely(ret < 0))
+		sph_log_err(POWER_BALANCER_LOG, "Throttling failure: Unable to set Dynamic DRAM frequency. Err(%d)\n", ret);
+
+	g_the_sphpb->throttle_data.time_us = local_clock() / 1000u; //ns -> us
+	rdmsrl(MSR_UNC_PERF_UNCORE_CLOCK_TICKS, g_the_sphpb->throttle_data.ring_clock_ticks);
+	if (unlikely(g_the_sphpb->throttle_data.cpu_stat == NULL))
+		return;
+	for (cpu = 0; cpu < num_possible_cpus(); ++cpu)
+		smp_call_function_single(cpu, aperfmperf_snapshot_khz, &g_the_sphpb->throttle_data.cpu_stat[cpu], true);
+}
+
+static void sphpb_unregister_driver(void)
 {
 	if (!g_the_sphpb) {
 		sph_log_err(POWER_BALANCER_LOG, "sph_power_balancer was failed to register");
 		return;
 	}
 
-	SPH_SPIN_LOCK(&g_the_sphpb->lock);
+	mutex_lock(&g_the_sphpb->mutex_lock);
 
 	g_the_sphpb->icedrv_cb = NULL;
 
 	memset(&g_the_sphpb->icebo, 0x0, sizeof(*g_the_sphpb->icebo));
 
-	SPH_SPIN_UNLOCK(&g_the_sphpb->lock);
+	mutex_unlock(&g_the_sphpb->mutex_lock);
+
+	sph_log_err(POWER_BALANCER_LOG, "Throttling disabled: callback functions are not inited.\n");
 }
 
 const struct sphpb_callbacks *sph_power_balancer_register_driver(const struct sphpb_icedrv_callbacks *drv_data)
@@ -118,22 +164,25 @@ const struct sphpb_callbacks *sph_power_balancer_register_driver(const struct sp
 		return NULL;
 	}
 
-	SPH_SPIN_LOCK(&g_the_sphpb->lock);
+	mutex_lock(&g_the_sphpb->mutex_lock);
 
 	if (g_the_sphpb->icedrv_cb) {
 		sph_log_err(POWER_BALANCER_LOG, "sph_power_balancer already registered");
-		SPH_SPIN_UNLOCK(&g_the_sphpb->lock);
+		mutex_unlock(&g_the_sphpb->mutex_lock);
 		return NULL;
 	}
+
 	g_the_sphpb->icedrv_cb = drv_data;
 
-	SPH_SPIN_UNLOCK(&g_the_sphpb->lock);
+	mutex_unlock(&g_the_sphpb->mutex_lock);
+
+	sphpb_throttle_prepare();
 
 	return &g_the_sphpb->callbacks;
 }
 EXPORT_SYMBOL(sph_power_balancer_register_driver);
 
-int create_sphbp(void)
+int create_sphpb(void)
 {
 	struct sphpb_pb *sphpb;
 	int icebo;
@@ -183,9 +232,15 @@ int create_sphbp(void)
 
 	sphpb_map_idc_mailbox_base_registers(sphpb);
 
+	ret = sphpb_map_bios_mailbox(sphpb);
+	if (unlikely(ret < 0))
+		sph_log_err(POWER_BALANCER_LOG, "sphpb_map_bios_mailbox failed with err: %d.\n", ret);
+
+	sphpb_throttle_init(sphpb);
+
 	g_the_sphpb = sphpb;
 
-	return ret;
+	return 0;
 
 cleanup_ia_table:
 	sphpb_ia_cycles_sysfs_deinit(sphpb);
@@ -204,8 +259,10 @@ err:
 
 void destroy_sphpb(void)
 {
-	if (!g_the_sphpb)
+	if (unlikely(g_the_sphpb == NULL))
 		return;
+
+	kfree(g_the_sphpb->throttle_data.cpu_stat);
 
 	sphpb_icebo_sysfs_deinit(g_the_sphpb);
 
@@ -217,21 +274,18 @@ void destroy_sphpb(void)
 
 	sphpb_unmap_idc_mailbox_base_registers(g_the_sphpb);
 
+	sphpb_unmap_bios_mailbox(g_the_sphpb);
+
 	kobject_put(g_the_sphpb->kobj);
 
 	kfree(g_the_sphpb);
 
+	g_the_sphpb = NULL;
 }
 
 int sph_power_balancer_init_module(void)
 {
-	int ret = 0;
-
-	ret = create_sphbp();
-	if (ret)
-		return ret;
-
-	return 0;
+	return create_sphpb();
 }
 
 void sph_power_balancer_cleanup(void)

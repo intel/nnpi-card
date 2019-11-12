@@ -13,6 +13,7 @@
 #include <linux/dma-buf.h>
 #include <linux/list.h>
 #include "inf_devres.h"
+#include "inf_cmd_list.h"
 #include "sphcs_sw_counters.h"
 
 struct inf_copy {
@@ -68,7 +69,11 @@ int inf_copy_create(uint16_t            protocolCopyID,
 void inf_copy_get(struct inf_copy *copy);
 int inf_copy_put(struct inf_copy *copy);
 
-void inf_copy_req_init(struct inf_exec_req *req, struct inf_copy *copy, size_t size, uint8_t priority);
+void inf_copy_req_init(struct inf_exec_req *req,
+			struct inf_copy *copy,
+			struct inf_cmd_list *cmd,
+			size_t size,
+			uint8_t priority);
 int inf_copy_req_init_subres_copy(struct inf_exec_req *req,
 				  struct inf_copy *copy,
 				  uint16_t hostres_map_id,

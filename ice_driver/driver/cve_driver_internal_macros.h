@@ -84,8 +84,9 @@ enum cve_memory_protection {
 #define ASSERT(_e) assert(_e)
 #else
 #define ASSERT(_e) \
-	{ if (!(_e)) \
-	cve_os_log(CVE_LOGLEVEL_ERROR, "ASSERTION FAILED! '%s'\n", #_e); }
+	{ if (!(_e)) { \
+	cve_os_log(CVE_LOGLEVEL_ERROR, "ASSERTION FAILED! '%s'\n", #_e); \
+	BUG(); } }
 #endif
 
 /* a generaic error code that is returned
@@ -126,7 +127,7 @@ enum cve_memory_protection {
 #define ICE_DEFAULT_VA_WIDTH 35
 #define ICE_DEFAULT_PAGE_SHIFT 15
 #define ICE_MIN_PAGE_SIZE_SHIFT 15
-#define ICE_MEM_MAX_PARTITION 4
+#define ICE_MEM_MAX_PARTITION 5
 #define ICE_DEFAULT_PDE_VA_SPAN (BIT_ULL(ICE_PAGE_SHIFT_32M))
 #else
 #define ICE_DEFAULT_PA_SHIFT 12
@@ -155,10 +156,12 @@ enum cve_memory_protection {
 #define ICE_PAGE_SZ_4M (BIT_ULL(ICE_PAGE_SHIFT_4M))
 #define ICE_PAGE_SZ_16M (BIT_ULL(ICE_PAGE_SHIFT_16M))
 #define ICE_PAGE_SZ_32M (BIT_ULL(ICE_PAGE_SHIFT_32M))
-
+#define ICE_PAGE_SZ_256M (BIT_ULL(ICE_PAGE_SHIFT_256M))
 
 #define ICE_PHY_ADDR_WIDTH 36
 #define ICE_PHY_ADDR_WIDTH_EXTENDED 39
+
+#define ICE_VA_HIGH_TOTAL_SZ 0x700000000
 
 #define ICE_VA_HIGH_4GB_START  0x100000000
 
@@ -176,17 +179,22 @@ enum cve_memory_protection {
 
 #define ICE_VA_HIGH_31GB_32MB_END  0x800000000
 
-#define ICE_VA_LOW_START 0
+#define ICE_VA_LOW_HW_START 0x0
+#define ICE_VA_LOW_SW_START 0x10000000
 /* NOTE: Was 0xC0000000 which would result in corruption of upto page size
  *  * into 3-4 GB memory space which belongs to the HW area
 */
-#define ICE_VA_LOW_END 0xC0000000
+#define ICE_VA_LOW_HW_END 0x10000000
+#define ICE_VA_LOW_SW_END 0xC0000000
 
-#define ICE_VA_RANGE_LOW_4KB_START ICE_VA_LOW_START
-#define ICE_VA_RANGE_LOW_4KB_END ICE_VA_LOW_END
+#define ICE_VA_RANGE_LOW_4KB_START ICE_VA_LOW_SW_START
+#define ICE_VA_RANGE_LOW_4KB_END ICE_VA_LOW_SW_END
 
-#define ICE_VA_RANGE_LOW_32KB_START ICE_VA_LOW_START
-#define ICE_VA_RANGE_LOW_32KB_END ICE_VA_LOW_END
+#define ICE_VA_RANGE_LOW_32KB_HW_START ICE_VA_LOW_HW_START
+#define ICE_VA_RANGE_LOW_32KB_HW_END ICE_VA_LOW_HW_END
+
+#define ICE_VA_RANGE_LOW_32KB_START ICE_VA_LOW_SW_START
+#define ICE_VA_RANGE_LOW_32KB_END ICE_VA_LOW_SW_END
 
 #define ICE_VA_RANGE_HIGH_32KB_START ICE_VA_HIGH_4GB_START
 #define ICE_VA_RANGE_HIGH_32KB_END ICE_VA_HIGH_18GB_32KB_END

@@ -109,6 +109,92 @@ TRACE_EVENT(SPH_TRACE_ICEDRV_CREATE_NETWORK,
 		__entry->reason)
 );
 
+/*	========CreateInfer ============*/
+
+TRACE_EVENT(SPH_TRACE_ICEDRV_CREATE_INFER,
+	TP_PROTO(u8 state, u64 ctxID,
+		u64 netID, u64 subNetId, u64 internalNetId,
+		u64 inferID, u8 status, int reason),
+	TP_ARGS(state, ctxID, netID, subNetId, internalNetId,
+		inferID, status, reason),
+	SPH_TP_STRUCT__entry(
+			__field(u8, state)
+			__field(u64, ctxID)
+			__field(u64, netID)
+			__field(u64, subNetId)
+			__field(u64, internalNetId)
+			__field(u64, inferID)
+			__field(u8, status)
+			__field(int, reason)
+	),
+	SPH_TP_fast_assign(
+			__entry->state = state;
+			__entry->ctxID = ctxID;
+			__entry->netID = netID;
+			__entry->subNetId = subNetId;
+			__entry->internalNetId = internalNetId;
+			__entry->inferID = inferID;
+			__entry->status = status;
+			__entry->reason = reason;
+	),
+	SPH_TP_printk(
+		"state=%s ctxID=%llu netID=0x%llx subNetId=0x%llx(0x%llx) inferID=0x%llx status=%s reason=%d",
+		sph_trace_op_state_to_str[__entry->state],
+		__entry->ctxID,
+		__entry->netID,
+		__entry->subNetId,
+		__entry->internalNetId,
+		__entry->inferID,
+		sph_trace_op_status_to_str[__entry->status],
+		__entry->reason)
+);
+
+/*	======== ResourceRelease ============*/
+
+TRACE_EVENT(SPH_TRACE_ICEDRV_RESOURCE_RELEASE,
+	TP_PROTO(u8 state, u64 ctxID, u64 netID,
+		u64 subNetId, u64 internalNetId, u8 resResource,
+		u64 icesReserved, u64 countersReserved, u32 *llcReserved),
+	TP_ARGS(state, ctxID, netID, subNetId, internalNetId, resResource,
+		icesReserved, countersReserved, llcReserved),
+	SPH_TP_STRUCT__entry(
+		__field(u8, state)
+		__field(u64, ctxID)
+		__field(u64, netID)
+		__field(u64, subNetId)
+		__field(u64, internalNetId)
+		__field(u8, resResource)
+		__field(u64, icesReserved)
+		__field(u64, countersReserved)
+		__array(u32, llcReserved, 4)
+	),
+	SPH_TP_fast_assign(
+		__entry->state = state;
+		__entry->ctxID = ctxID;
+		__entry->netID = netID;
+		__entry->subNetId = subNetId;
+		__entry->internalNetId = internalNetId;
+		__entry->resResource = resResource;
+		__entry->icesReserved = icesReserved;
+		__entry->countersReserved = countersReserved;
+		memcpy(__entry->llcReserved, llcReserved, sizeof(u32)*4);
+	),
+	SPH_TP_printk(
+		"state=%s ctxID=%llu netID=0x%llx subNetId=0x%llx(0x%llx) resResourceFlag=%d Released (ICEMask=0x%llx, CounterMask=0x%llx, clos{C0=%u C1=%u C2=%u C3=%u})",
+		sph_trace_op_state_to_str[__entry->state],
+		__entry->ctxID,
+		__entry->netID,
+		__entry->subNetId,
+		__entry->internalNetId,
+		__entry->resResource,
+		__entry->icesReserved,
+		__entry->countersReserved,
+		__entry->llcReserved[0],
+		__entry->llcReserved[1],
+		__entry->llcReserved[2],
+		__entry->llcReserved[3])
+);
+
 
 TRACE_EVENT(SPH_TRACE_ICEDRV_EXECUTE_NETWORK,
 	TP_PROTO(u8 state, u64 ctxID, u64 netID,

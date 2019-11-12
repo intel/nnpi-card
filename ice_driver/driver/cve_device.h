@@ -320,9 +320,7 @@ struct dg_dev_info {
 struct cve_workqueue;
 struct ds_dev_data;
 
-#define CLOS_0_SIZE 3
-#define CLOS_MAX_SIZE 24
-#define CLOS_INVALID_SIZE (CLOS_MAX_SIZE + 1)
+#define CLOS_INVALID_SIZE (MAX_CLOS_SIZE_MB + 1)
 
 /*
  * ------------------------------------
@@ -437,6 +435,18 @@ struct cve_device_group {
 	u64 dg_exe_order;
 #endif
 	struct ice_sphpb sphpb;
+	/*The max llc freq is read from MSR_RING_RATIO_LIMIT
+	 *(620H) [6:0] bits during driver module load after the
+	 *power cycle and will be stored in llc_max_freq.
+	 *
+	 * This value varies depending on QDF of the SoC
+	 * QDF/SSPEC	Max_freq_obtained
+	 * Q3JN		1500 MHz
+	 * Q3UP		1600 MHz
+	 * QS9S		2600 MHz
+	 *
+	 */
+	u32 llc_max_freq;
 };
 
 /* Holds all the relevant IDs required for maintaining a map between
@@ -778,16 +788,20 @@ struct ice_network {
 
 	/* paired ICE from ICEBO requirement */
 	u8 num_picebo_req;
+	u8 cached_num_picebo_req;
 	/* single ICE from ICEBO requirement, but the other ICE
 	 * cannot be allocated to some other NTW
 	 */
 	u8 num_sicebo_req;
+	u8 cached_num_sicebo_req;
 	/* single ICE from ICEBO requirement, the other ICE is free
 	 * to be allocated to other NTW
 	 */
 	u8 num_dicebo_req;
+	u8 cached_num_dicebo_req;
 	/* icebo requirement type */
 	enum icebo_req_type icebo_req;
+	enum icebo_req_type cached_icebo_req;
 	/* Network type deepsram/normal */
 	enum ice_network_type network_type;
 	u8 max_shared_distance;
@@ -835,6 +849,9 @@ struct ice_network {
 
 	/* Is Counter patching required? */
 	bool patch_cntr;
+
+	/*Device specific domain data */
+	cve_dev_context_handle_t dev_hctx_list;
 };
 
 struct ice_infer {

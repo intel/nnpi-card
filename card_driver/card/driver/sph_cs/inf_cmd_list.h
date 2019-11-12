@@ -20,10 +20,11 @@ struct inf_cmd_list {
 	uint16_t            protocolID;
 	struct inf_context *context;
 	struct hlist_node   hash_node;
-	spinlock_t          lock;
+	spinlock_t          lock_irq;
 	struct list_head    req_list;
 	enum create_status  status;
 	int                 destroyed;
+	u32                 reqs_left;
 };
 
 int inf_cmd_create(uint16_t              protocolID,

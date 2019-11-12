@@ -88,6 +88,7 @@ int cve_bar1_map(struct cve_device *cve_dev,
 
 	memset(&surf, 0, sizeof(struct cve_surface_descriptor));
 	surf.llc_policy = ICE_BAR1_LLC_CONFIG;
+	surf.map_in_hw_region = 1;
 	va = cve_addr;
 
 	cve_os_dev_log(CVE_LOGLEVEL_DEBUG,
@@ -145,16 +146,10 @@ static int cve_dev_init_per_cve_ctx(struct dev_context *dev_ctx,
 		struct cve_device *cve_dev)
 {
 	struct dev_context *nc = dev_ctx;
-	int retval = cve_osmm_get_domain(cve_dev, &nc->hdom);
+	int retval = 0;
 	cve_mm_allocation_t alloc_handle = NULL;
 	struct cve_surface_descriptor surf;
 	ice_va_t ice_vaddr = CVE_INVALID_VIRTUAL_ADDR;
-
-	if (retval < 0) {
-		cve_os_log(CVE_LOGLEVEL_ERROR,
-				"osmm_get_domain failed %d\n", retval);
-		goto out;
-	}
 
 	/* assign a device to device interface context */
 	nc->cve_dev = cve_dev;
@@ -208,7 +203,7 @@ failed_to_map_dump:
 	cve_dev_fw_unload_and_unmap(nc);
 failed_to_map_fw:
 	cve_osmm_put_domain(nc->hdom);
-out:
+
 	return retval;
 }
 
@@ -428,7 +423,9 @@ void cve_dev_restore_fws(struct cve_device *cve_dev,
 	cve_fw_restore(cve_dev, context->mapped_fw_sections);
 }
 
-int cve_dev_open_all_contexts(cve_dev_context_handle_t *out_hctx_list)
+int cve_dev_open_all_contexts(u64 *va_partition_config,
+		u8 infer_buf_page_config,
+		cve_dev_context_handle_t *out_hctx_list)
 {
 	struct cve_device_group *cve_dg = g_cve_dev_group_list;
 	struct dev_context *dev_context_list = NULL;
@@ -450,6 +447,19 @@ int cve_dev_open_all_contexts(cve_dev_context_handle_t *out_hctx_list)
 				cve_os_log(CVE_LOGLEVEL_ERROR,
 						"os_malloc_failed %d\n",
 						retval);
+				goto out;
+			}
+
+
+			retval = cve_osmm_get_domain(dev,
+					va_partition_config,
+					infer_buf_page_config,
+					&nc->hdom);
+			if (retval < 0) {
+				cve_os_log(CVE_LOGLEVEL_ERROR,
+						"osmm_get_domain failed %d\n",
+						retval);
+				OS_FREE(nc, sizeof(*nc));
 				goto out;
 			}
 

@@ -305,6 +305,55 @@ static ssize_t sph_store_flr_mode(struct device *dev,
 
 static DEVICE_ATTR(flr_mode, 0644, sph_show_flr_mode, sph_store_flr_mode);
 
+static ssize_t sph_show_link_width(struct device *dev,
+				   struct device_attribute *attr, char *buf)
+{
+	struct pci_dev *pdev = to_pci_dev(dev);
+	struct sph_pci_device *sph_pci;
+	uint16_t link_status;
+	ssize_t ret = 0;
+	u8 pos;
+	u16 ent;
+	u8 ext;
+	bool found = false;
+	int loops = 0;
+
+	sph_pci = pci_get_drvdata(pdev);
+	if (!sph_pci)
+		return -EINVAL;
+
+	/*
+	 * card config space as seen from host is mapped to offset 0 of BAR0
+	 * walk the config to find pci express capability
+	 */
+	pos = ioread8(sph_pci->mmio.va + PCI_CAPABILITY_LIST);
+	do {
+		pos &= ~3;
+		if (pos < 0x40)
+			break;
+		ent = ioread16(sph_pci->mmio.va + pos);
+		ext = ent & 0xff;
+		if (ext == PCI_CAP_ID_EXP) {
+			found = true;
+			break;
+		} else if (ext == 0xff)
+			break;
+
+		pos = (ent >> 8) & 0xff;
+	} while (loops++ < 20);
+
+	if (!found) {
+		ret += snprintf(&buf[ret], PAGE_SIZE - ret, "Could not find EXP cap\n");
+	} else {
+		link_status = ioread16(sph_pci->mmio.va + pos + PCI_EXP_LNKSTA);
+		ret += snprintf(&buf[ret], PAGE_SIZE - ret, "%d\n", (link_status >> 4) & 0x3f);
+	}
+
+	return ret;
+}
+
+static DEVICE_ATTR(link_width, 0444, sph_show_link_width, NULL);
+
 static void sph_process_commands(struct sph_pci_device *sph_pci)
 {
 	u32 command_iosf_control;
@@ -1638,6 +1687,13 @@ static int sph_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 		goto free_interrupts;
 	}
 
+	rc = device_create_file(sph_pci->dev, &dev_attr_link_width);
+	if (rc) {
+		sph_log_err(START_UP_LOG, "Failed to create attr rc=%d", rc);
+		device_remove_file(sph_pci->dev, &dev_attr_flr_mode);
+		goto free_interrupts;
+	}
+
 	/* update bus master state - enable DMA if bus master is set */
 	set_bus_master_state(sph_pci);
 
@@ -1694,6 +1750,7 @@ static void sph_remove(struct pci_dev *pdev)
 		return;
 
 	device_remove_file(sph_pci->dev, &dev_attr_flr_mode);
+	device_remove_file(sph_pci->dev, &dev_attr_link_width);
 
 #ifdef ULT
 	debugfs_remove_recursive(s_debugfs_dir);

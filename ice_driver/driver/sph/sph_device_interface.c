@@ -1076,7 +1076,7 @@ static ssize_t show_llc_freqinfo(struct kobject *kobj,
 
 	ret = sprintf((buf + ret),
 		"freq value has to be in the range of %d-%d MHz, multiple of 100\n",
-		MIN_LLC_FREQ_PARAM, MAX_LLC_FREQ_PARAM);
+		MIN_LLC_FREQ_PARAM, get_llc_max_freq());
 	return ret;
 }
 
@@ -1114,7 +1114,9 @@ static ssize_t store_llc_freq(struct kobject *kobj,
 	u32 freq_to_set;
 	struct ice_hw_config_llc_freq freq_conf;
 	int ret = 0;
+	u32 max_freq_allowed;
 
+	max_freq_allowed = get_llc_max_freq();
 	freqset_s = (char *)buf;
 	freqset_s = strim(freqset_s);
 
@@ -1126,12 +1128,12 @@ static ssize_t store_llc_freq(struct kobject *kobj,
 		return ret;
 
 	if (freq_to_set < MIN_LLC_FREQ_PARAM ||
-			freq_to_set > MAX_LLC_FREQ_PARAM ||
+			freq_to_set > max_freq_allowed ||
 				freq_to_set % LLC_FREQ_DIVIDER_FACTOR != 0) {
 
 		cve_os_log_default(CVE_LOGLEVEL_ERROR,
 			"llc freq required has to be in range of %d-%d, multiple of 100\n",
-			MIN_LLC_FREQ_PARAM, MAX_LLC_FREQ_PARAM);
+			MIN_LLC_FREQ_PARAM, max_freq_allowed);
 		return -EINVAL;
 	}
 
@@ -1762,13 +1764,6 @@ out:
 	return ret;
 }
 
-/* TODO: These cdyn values are to be confirmed */
-#define RESET_CDYN_VAL 0
-#define BLOCKED_CDYN_VAL 0
-
-/* 0x400 i.e 1.0 pF as per the init table i.e iccp_tbl */
-#define INITIAL_CDYN_VAL 0x400
-
 int __init_ice_iccp(struct cve_device *dev)
 {
 	struct cve_device_group *p = g_cve_dev_group_list;
@@ -1786,11 +1781,11 @@ int __init_ice_iccp(struct cve_device *dev)
 	config3_offset = (ICEDC_ICEBO_OFFSET(bo_id) + ICEBO_GPSB_OFFSET
 			+ cfg_default.gpsb_x1_regs_iccp_config3_offset);
 	config2.val = cve_os_read_idc_mmio(dev, config2_offset);
-	config2.field.RESET_CDYN = RESET_CDYN_VAL;
-	config2.field.INITIAL_CDYN = INITIAL_CDYN_VAL;
+	config2.field.RESET_CDYN = ice_get_reset_cdyn_val();
+	config2.field.INITIAL_CDYN = ice_get_initial_cdyn_val();
 	cve_os_write_idc_mmio(dev, config2_offset, config2.val);
 	config3.val = cve_os_read_idc_mmio(dev, config3_offset);
-	config3.field.BLOCKED_CDYN = BLOCKED_CDYN_VAL;
+	config3.field.BLOCKED_CDYN = ice_get_blocked_cdyn_val();
 	cve_os_write_idc_mmio(dev, config3_offset, config3.val);
 	bo->iccp_init_done = true;
 out:
@@ -1911,4 +1906,40 @@ void ice_di_read_llc_pmon(struct cve_device *dev)
 				bo_id, pmon_cntr[0], pmon_cntr[1],
 				pmon_cntr[2], pmon_cntr[3]);
 }
+u32 __get_llc_max_freq(void)
+{
+	struct cve_device_group *dg;
 
+	dg = cve_dg_get();
+
+	return dg->llc_max_freq;
+}
+
+void __store_llc_max_freq(void)
+{
+	struct cve_device_group *dg;
+	u64 freq;
+	u32 val_low;
+
+	freq = get_llc_freq();
+	val_low = freq & 0xFFFFFFFF;
+	dg = cve_dg_get();
+	dg->llc_max_freq = (max_llc_ratio(val_low) * 100);
+}
+
+int __restore_llc_max_freq(void)
+{
+	struct ice_hw_config_llc_freq freq_conf;
+	struct cve_device_group *dg;
+	int ret = 0;
+
+	dg = cve_dg_get();
+	freq_conf.llc_freq_min = 0;
+	freq_conf.llc_freq_max = dg->llc_max_freq;
+	cve_os_log(CVE_LOGLEVEL_INFO,
+		"Setting Max LLC freq to:%u\n", freq_conf.llc_freq_max);
+
+	ret = set_llc_freq((void *)&freq_conf);
+
+	return ret;
+}

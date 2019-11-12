@@ -30,9 +30,11 @@ int inf_cmd_create(uint16_t              protocolID,
 	inf_context_get(context);
 	cmd->context = context;
 
-	spin_lock_init(&cmd->lock);
+	spin_lock_init(&cmd->lock_irq);
 	cmd->status = CREATE_STARTED;
 	cmd->destroyed = 0;
+	// not ready to schedule until create completes
+	cmd->reqs_left = 1;
 
 	*out_cmd = cmd;
 	return 0;
@@ -51,8 +53,9 @@ int is_inf_cmd_ptr(void *ptr)
 void destroy_cmd_on_create_failed(struct inf_cmd_list *cmd)
 {
 	bool dma_completed, should_destroy;
+	unsigned long flags;
 
-	SPH_SPIN_LOCK(&cmd->lock);
+	SPH_SPIN_LOCK_IRQSAVE(&cmd->lock_irq, flags);
 
 	dma_completed = (cmd->status == DMA_COMPLETED);
 	// roll back status, to put kref once
@@ -63,7 +66,7 @@ void destroy_cmd_on_create_failed(struct inf_cmd_list *cmd)
 	if (likely(should_destroy))
 		cmd->destroyed = -1;
 
-	SPH_SPIN_UNLOCK(&cmd->lock);
+	SPH_SPIN_UNLOCK_IRQRESTORE(&cmd->lock_irq, flags);
 
 
 	if (likely(should_destroy))

@@ -865,6 +865,7 @@ int cve_fw_map_sections(
 
 		/* map the memory in cve address space */
 		surf.llc_policy = CVE_FW_LLC_CONFIG;
+		surf.map_in_hw_region = 1;
 		va = s->cve_addr;
 		retval = cve_mm_create_kernel_mem_allocation(hdom,
 				NULL,
