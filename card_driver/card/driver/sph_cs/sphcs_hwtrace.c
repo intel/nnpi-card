@@ -415,9 +415,6 @@ void sphcs_hwtrace_update_state(void)
 			if (host)
 				sphcs_hwtrace_cleanup_host_resource(host);
 
-			//try to clean resources container
-			kfree(clean_r);
-
 			//in case need to bind npk resource
 			if (r  &&
 			    r->state & HWTRACE_STATE_NO_CLEANUP_RESOURCE) {
@@ -432,6 +429,9 @@ void sphcs_hwtrace_update_state(void)
 					SPH_SPIN_UNLOCK_IRQRESTORE(&hw_tracing->lock_irq, flags);
 				}
 			}
+
+			//try to clean resources container
+			kfree(clean_r);
 		}
 
 	}

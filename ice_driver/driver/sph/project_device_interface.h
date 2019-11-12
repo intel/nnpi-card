@@ -31,6 +31,13 @@
 #define MAX_LLCPMON_CONFIG 7
 #define MAX_LLCPMON_PREDEF_CONFIG 6
 
+/* TODO: These cdyn values are to be confirmed */
+#define RESET_CDYN_VAL 0
+#define BLOCKED_CDYN_VAL 0
+
+/* 0x400 i.e 1.0 pF as per the init table i.e iccp_tbl */
+#define INITIAL_CDYN_VAL 0x400
+
 struct hw_revision_t {
 	u16	major_rev;
 	u16	minor_rev;
@@ -101,6 +108,9 @@ int configure_ice_frequency(struct cve_device *dev);
 
 int __init_ice_iccp(struct cve_device *dev);
 void __term_ice_iccp(struct cve_device *dev);
+void __store_llc_max_freq(void);
+int __restore_llc_max_freq(void);
+u32 __get_llc_max_freq(void);
 #define __no_op_return_success 0
 
 #ifdef RING3_VALIDATION
@@ -110,6 +120,9 @@ void __term_ice_iccp(struct cve_device *dev);
 #define term_icedrv_hw_config(dev) __no_op_stub
 #define init_ice_iccp(x) __no_op_return_success
 #define term_ice_iccp(x) __no_op_stub
+#define get_llc_max_freq() MAX_LLC_FREQ_PARAM
+#define store_llc_max_freq() __no_op_stub
+#define restore_llc_max_freq() __no_op_return_success
 #else
 #define init_icedrv_sysfs() icedrv_sysfs_init()
 #define term_icedrv_sysfs() icedrv_sysfs_term()
@@ -117,6 +130,9 @@ void __term_ice_iccp(struct cve_device *dev);
 #define term_icedrv_hw_config(dev) hw_config_sysfs_term(dev)
 #define init_ice_iccp(x) __init_ice_iccp(x)
 #define term_ice_iccp(x) __term_ice_iccp(x)
+#define get_llc_max_freq() __get_llc_max_freq()
+#define store_llc_max_freq() __store_llc_max_freq()
+#define restore_llc_max_freq() __restore_llc_max_freq()
 #endif
 
 int ice_di_get_core_blob_sz(void);

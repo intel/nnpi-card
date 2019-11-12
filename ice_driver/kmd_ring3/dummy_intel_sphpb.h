@@ -35,6 +35,11 @@ struct sphpb_icedrv_callbacks {
 	int (*set_icebo_to_icebo_ratio)(uint32_t icebo, uint32_t value);
 	/* callback to get icebo ratio value */
 	int (*get_icebo_to_icebo_ratio)(uint32_t icebo, uint32_t *value);
+	/* callback to get icebo frequency */
+        int (*get_icebo_frequency)(uint32_t icebo, uint32_t *freq);
+        /* callback to set clock squash value */
+        int (*set_clock_squash)(uint32_t icebo_mask, uint8_t t_state_req, bool enable);
+
 };
 
 

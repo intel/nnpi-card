@@ -18,9 +18,9 @@
 #include "sph_error.h"
 
 struct inf_sync_point {
-	u32              host_sync_id;
-	u32              seq_id;
 	struct list_head node;
+	u32              seq_id;
+	u16              host_sync_id;
 };
 
 static void update_sw_counters(void *ctx)
@@ -190,7 +190,6 @@ static void release_context(struct kref *kref)
 		drain_workqueue(context->wq);
 		destroy_workqueue(context->wq);
 	} else {
-		drain_workqueue(context->chan->wq);
 		context->chan->destroy_cb = NULL;
 	}
 
@@ -234,7 +233,7 @@ static void release_context(struct kref *kref)
 	kfree(context);
 }
 
-void  inf_context_destroy_objects(struct inf_context *context)
+void inf_context_destroy_objects(struct inf_context *context)
 {
 	struct inf_devres *devres;
 	struct inf_copy *copy;
@@ -249,11 +248,11 @@ void  inf_context_destroy_objects(struct inf_context *context)
 		found = false;
 		SPH_SPIN_LOCK(&context->lock);
 		hash_for_each(context->cmd_hash, i, cmd, hash_node) {
-			SPH_SPIN_LOCK(&cmd->lock);
+			SPH_SPIN_LOCK_IRQSAVE(&cmd->lock_irq, flags);
 			if (cmd->destroyed == 0)
 				found = true;
 			cmd->destroyed = -1;
-			SPH_SPIN_UNLOCK(&cmd->lock);
+			SPH_SPIN_UNLOCK_IRQRESTORE(&cmd->lock_irq, flags);
 
 			if (found) {
 				SPH_SPIN_UNLOCK(&context->lock);
@@ -356,13 +355,12 @@ inline int inf_context_put(struct inf_context *context)
  * from the list.
  * the function must be called while the context lock is held!
  */
-static void evaluate_sync_points(struct inf_context  *context)
+static void evaluate_sync_points(struct inf_context *context)
 {
 	struct inf_sync_point *sync_point;
-	struct inf_req_sequence *oldest = NULL;
+	struct inf_req_sequence *oldest;
 
-	if (!list_empty(&context->active_seq_list))
-		oldest = list_first_entry(&context->active_seq_list,
+	oldest = list_first_entry_or_null(&context->active_seq_list,
 					  struct inf_req_sequence,
 					  node);
 
@@ -371,7 +369,10 @@ static void evaluate_sync_points(struct inf_context  *context)
 					      struct inf_sync_point,
 					      node);
 
-		if (oldest == NULL || sync_point->seq_id < oldest->seq_id) {
+		if (oldest != NULL && sync_point->seq_id >= oldest->seq_id)
+			break; /* no need to test rest of sync points */
+
+		if (context->chan == NULL) {
 			union c2h_SyncDone msg;
 
 			msg.value = 0;
@@ -380,25 +381,33 @@ static void evaluate_sync_points(struct inf_context  *context)
 			msg.syncSeq = sync_point->host_sync_id;
 
 			sphcs_msg_scheduler_queue_add_msg(g_the_sphcs->public_respq,
-						    &msg.value, 1);
+							  &msg.value, 1);
+		} else {
+			union c2h_ChanSyncDone msg;
 
-			list_del(&sync_point->node);
-			kfree(sync_point);
-		} else
-			break; /* no need to test rest of sync points */
+			msg.value = 0;
+			msg.opcode = SPH_IPC_C2H_OP_CHAN_SYNC_DONE;
+			msg.chanID = context->chan->protocolID;
+			msg.syncSeq = sync_point->host_sync_id;
+
+			sphcs_msg_scheduler_queue_add_msg(context->chan->respq,
+							  &msg.value, 1);
+		}
+
+		list_del(&sync_point->node);
+		kfree(sync_point);
 	}
 }
 
 static void handle_seq_id_wrap(struct inf_context    *context)
 {
-	struct inf_req_sequence *oldest = NULL;
+	struct inf_req_sequence *oldest;
 
 	/* report back completed sync points */
 	if (!list_empty(&context->sync_points))
 		evaluate_sync_points(context);
 
-	if (!list_empty(&context->active_seq_list))
-		oldest = list_first_entry(&context->active_seq_list,
+	oldest = list_first_entry_or_null(&context->active_seq_list,
 					  struct inf_req_sequence,
 					  node);
 
@@ -406,12 +415,11 @@ static void handle_seq_id_wrap(struct inf_context    *context)
 		struct inf_req_sequence *req = NULL;
 		struct inf_sync_point *sync_point;
 		u16 min_seq_id = oldest->seq_id;
-		u16 max_seq_id = 0;
+		u16 max_seq_id;
 
 		list_for_each_entry(req, &context->active_seq_list, node) {
 			SPH_ASSERT(req->seq_id >= min_seq_id);
 			req->seq_id -= min_seq_id;
-			max_seq_id = req->seq_id;
 		}
 
 		list_for_each_entry(sync_point, &context->sync_points, node) {
@@ -419,6 +427,9 @@ static void handle_seq_id_wrap(struct inf_context    *context)
 			sync_point->seq_id -= min_seq_id;
 		}
 
+		max_seq_id = list_last_entry(&context->active_seq_list,
+					     struct inf_req_sequence,
+					     node)->seq_id;
 		SPH_ASSERT(max_seq_id + 2 > max_seq_id + 1);
 		context->next_seq_id = max_seq_id + 1;
 	} else {
@@ -600,8 +611,8 @@ void inf_context_add_sync_point(struct inf_context *context,
 		return;
 	}
 
-	SPH_SPIN_LOCK_IRQSAVE(&context->sync_lock_irq, flags);
 	sync_point->host_sync_id = host_sync_id;
+	SPH_SPIN_LOCK_IRQSAVE(&context->sync_lock_irq, flags);
 	sync_point->seq_id = context->next_seq_id > 0 ? context->next_seq_id - 1 : 0;
 	list_add_tail(&sync_point->node, &context->sync_points);
 	evaluate_sync_points(context);
@@ -737,6 +748,7 @@ int inf_context_find_and_destroy_cmd(struct inf_context *context,
 				     uint16_t            cmdID)
 {
 	struct inf_cmd_list *iter, *cmd = NULL;
+	unsigned long flags;
 
 	SPH_SPIN_LOCK(&context->lock);
 	hash_for_each_possible(context->cmd_hash, iter, hash_node, cmdID)
@@ -750,15 +762,15 @@ int inf_context_find_and_destroy_cmd(struct inf_context *context,
 		return -ENXIO;
 	}
 
-	SPH_SPIN_LOCK(&cmd->lock);
+	SPH_SPIN_LOCK_IRQSAVE(&cmd->lock_irq, flags);
 	if (unlikely(cmd->destroyed != 0)) {
-		SPH_SPIN_UNLOCK(&cmd->lock);
+		SPH_SPIN_UNLOCK_IRQRESTORE(&cmd->lock_irq, flags);
 		SPH_SPIN_UNLOCK(&context->lock);
 		return -ENXIO;
 	}
 
 	cmd->destroyed = 1;
-	SPH_SPIN_UNLOCK(&cmd->lock);
+	SPH_SPIN_UNLOCK_IRQRESTORE(&cmd->lock_irq, flags);
 	SPH_SPIN_UNLOCK(&context->lock);
 
 	// kref for host

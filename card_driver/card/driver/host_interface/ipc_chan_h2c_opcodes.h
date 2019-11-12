@@ -41,6 +41,10 @@ H2C_OPCODE(CHAN_SCHEDULE_COPY, 37, union h2c_ChanInferenceSchedCopy)
 H2C_OPCODE(CHAN_SCHEDULE_COPY_LARGE, 38, union h2c_ChanInferenceSchedCopyLarge)
 H2C_OPCODE(CHAN_SCHEDULE_COPY_SUBRES, 39, union h2c_ChanInferenceSchedCopySubres)
 H2C_OPCODE(CHAN_INF_NETWORK, 40, union h2c_ChanInferenceNetworkOp)
+H2C_OPCODE(CHAN_INF_REQ_OP, 41, union h2c_ChanInferenceReqOp)
+H2C_OPCODE(CHAN_SCHEDULE_INF_REQ, 42, union h2c_ChanInferenceReqSchedule)
+H2C_OPCODE(CHAN_SYNC, 43, union h2c_ChanSync)
+H2C_OPCODE(CHAN_INF_NETWORK_RESOURCE_RESERVATION, 44, union h2c_ChanInferenceNetworkResourceReservation)
 
 #ifdef ULT
 H2C_OPCODE(ULT2_OP,              63, union ult2_message)

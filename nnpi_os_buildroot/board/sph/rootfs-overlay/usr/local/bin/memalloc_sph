@@ -1,0 +1,9 @@
+
+echo "memalloc_sph Enter"
+echo "initializing sph_memory_allocator"
+mem_map=`/opt/intel_nnpi/bin/sph_stolen_mem`
+echo "Using sph_mem=$mem_map"
+insmod /opt/intel_nnpi/modules/sph_memory_allocator.ko sph_mem=$mem_map test=1
+error_check "insmod sph_memory_allocator.ko"
+echo "memalloc_sph Exit"
+

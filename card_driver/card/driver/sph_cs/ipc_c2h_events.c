@@ -18,6 +18,8 @@ const char *event_code_name(u32 eventCode)
 		return "CREATE_COPY_SUCCESS";
 	case SPH_IPC_EXECUTE_COPY_SUCCESS:
 		return "EXECUTE_COPY_SUCCESS";
+	case SPH_IPC_EXECUTE_CMD_COMPLETE:
+		return "EXECUTE_CMD_COMPLETE";
 	case SPH_IPC_DEVRES_DESTROYED:
 		return "DEVRES_DESTROYED";
 	case SPH_IPC_CMD_DESTROYED:

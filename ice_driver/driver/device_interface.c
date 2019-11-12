@@ -51,8 +51,8 @@
 
 
 #define CNC_CONTROL_MSG_TIMEOUT 200
-#define ICCP_THROTLLING_OPCODE 0x3
-#define ICCP_NO_THROTLLING_OPCODE 0x4
+#define ICCP_THROTTLING_OPCODE 0x3
+#define ICCP_NO_THROTTLING_OPCODE 0x4
 
 #define PART_SUBMISSION_STEP (CVE_FIFO_ENTRIES_NR/2)
 
@@ -134,6 +134,11 @@ struct di_job {
 /* MODULE LEVEL VARIABLES */
 /* hold offsets to ATU's MMIO registers */
 #define MAX_ATU_COUNT 4
+/* ATU to CBB mapping */
+#define DELPHI_ATU_MAPPING 0
+#define DSE_ATU_MAPPING 1
+#define IVP_ATU_MAPPING 2
+#define TLC_ATU_MAPPING 3
 
 /* INTERNAL FUNCTIONS */
 /*
@@ -453,6 +458,7 @@ static void dispatch_next_subjobs(struct di_job *job,
 	struct cve_device_group *dg = cve_dg_get();
 	const struct sphpb_callbacks *sphpb_cbs;
 	int ret;
+	bool throttling;
 
 	if (job->cold_run)
 		__prepare_cbdt(job, dev);
@@ -489,7 +495,10 @@ static void dispatch_next_subjobs(struct di_job *job,
 		}
 		if (job->cdyn_val) {
 			/* For A step Throttling is disabled */
-			ret = ice_iccp_license_request(dev, false,
+			throttling = false;
+			if (ice_get_iccp_throttling_flag())
+				throttling = true;
+			ret = ice_iccp_license_request(dev, throttling,
 								job->cdyn_val);
 			if (ret) {
 				cve_os_dev_log(CVE_LOGLEVEL_ERROR,
@@ -1223,21 +1232,22 @@ static void cve_executed_cbs_time_log(struct cve_device *dev,
 	struct di_job *job, u64 *exec_time)
 {
 	u32 i;
+	u32 first_cb_start_time, last_cb_end_time;
 	union CVE_SHARED_CB_DESCRIPTOR *cb_descriptor = NULL;
 
 	*exec_time = 0;
-
 	cve_os_log(CVE_LOGLEVEL_DEBUG,
 		"idle_start_time.tv_sec=%ld idle_start_time.tv_nsec=%ld\n",
 		dev->idle_start_time.tv_sec, dev->idle_start_time.tv_nsec);
+	cb_descriptor =
+		&dev->fifo_desc->fifo.cb_desc_vaddr[job->first_cb_desc];
+	first_cb_start_time = cb_descriptor->start_time;
+	cb_descriptor =
+		&dev->fifo_desc->fifo.cb_desc_vaddr[job->last_cb_desc];
+	last_cb_end_time = cb_descriptor->completion_time;
 	for (i = job->first_cb_desc; i <= job->last_cb_desc; i++) {
 
 		cb_descriptor = &dev->fifo_desc->fifo.cb_desc_vaddr[i];
-
-		ice_swc_counter_add(dev->hswc,
-			ICEDRV_SWC_DEVICE_COUNTER_RUNTIME,
-			(cb_descriptor->completion_time -
-			cb_descriptor->start_time));
 
 		cve_os_dev_log(CVE_LOGLEVEL_DEBUG, dev->dev_index,
 			"CBD_ID[%d]=0x%lx, StartTime=%u, EndTime=%u\n",
@@ -1245,13 +1255,17 @@ static void cve_executed_cbs_time_log(struct cve_device *dev,
 			cb_descriptor->start_time,
 			cb_descriptor->completion_time);
 
-		*exec_time += (cb_descriptor->completion_time -
-				cb_descriptor->start_time);
 
 		/*reset the time stamp variable for next reuse */
 		cb_descriptor->completion_time = 0;
 		cb_descriptor->start_time = 0;
 	}
+	ice_swc_counter_add(dev->hswc,
+		ICEDRV_SWC_DEVICE_COUNTER_RUNTIME,
+		(last_cb_end_time -
+		 first_cb_start_time));
+
+	*exec_time = last_cb_end_time - first_cb_start_time;
 }
 
 /* Return ntw if counter has overflowed */
@@ -1485,7 +1499,7 @@ void cve_di_interrupt_handler_deferred_proc(struct idc_device *dev)
 
 	if (tail == head) {
 		/* Q Empty*/
-		cve_os_log_default(CVE_LOGLEVEL_ERROR, "ISR-BH Q IS EMPTY\n");
+		cve_os_log_default(CVE_LOGLEVEL_INFO, "ISR-BH Q IS EMPTY\n");
 		goto end;
 	}
 
@@ -2093,6 +2107,85 @@ void ice_di_set_mmu_address_mode(struct cve_device *ice)
 	cve_os_write_mmio_32(ice, offset_bytes, reg.val);
 }
 
+static void __configure_atu_dse_mapping(struct cve_device *ice,
+		u32 offset_bytes)
+{
+	union ice_mmu_inner_stream_mapping_config_t reg;
+
+	reg.val = cve_os_read_mmio_32(ice, offset_bytes);
+	reg.dse_stream_mapping.ATU0 = DSE_ATU_MAPPING;
+	/*Disable address based ATU selection */
+	reg.dse_stream_mapping.READ_IS_ADDRESS_BASED0 = 0;
+	reg.dse_stream_mapping.ATU_AND_STREAM_ARE_ADDRESS_BASED0 = 0;
+
+	reg.dse_stream_mapping.ATU1 = DSE_ATU_MAPPING;
+	/*Disable address based ATU selection */
+	reg.dse_stream_mapping.READ_IS_ADDRESS_BASED1 = 0;
+	reg.dse_stream_mapping.ATU_AND_STREAM_ARE_ADDRESS_BASED1 = 0;
+
+	reg.dse_stream_mapping.ATU2 = DSE_ATU_MAPPING;
+	/*Disable address based ATU selection */
+	reg.dse_stream_mapping.READ_IS_ADDRESS_BASED2 = 0;
+	reg.dse_stream_mapping.ATU_AND_STREAM_ARE_ADDRESS_BASED2 = 0;
+
+	reg.dse_stream_mapping.ATU3 = DSE_ATU_MAPPING;
+	/*Disable address based ATU selection */
+	reg.dse_stream_mapping.READ_IS_ADDRESS_BASED3 = 0;
+	reg.dse_stream_mapping.ATU_AND_STREAM_ARE_ADDRESS_BASED3 = 0;
+	cve_os_write_mmio_32(ice, offset_bytes, reg.val);
+}
+
+void ice_di_configure_atu_cbb_mapping(struct cve_device *ice)
+{
+	union ice_mmu_inner_stream_mapping_config_t reg;
+	u32 offset_bytes;
+
+	offset_bytes = cfg_default.mmu_base +
+		cfg_default.mmu_tlc_ivp_stream_mapping_offset;
+
+	/* read current register value */
+	reg.val = cve_os_read_mmio_32(ice, offset_bytes);
+	reg.tlc_ivp_stream_mapping.TLC_ATU = TLC_ATU_MAPPING;
+	reg.tlc_ivp_stream_mapping.DSP_ATU = IVP_ATU_MAPPING;
+	cve_os_write_mmio_32(ice, offset_bytes, reg.val);
+
+	offset_bytes = cfg_default.mmu_base +
+		cfg_default.mmu_dse_surf_0_3_stream_mapping_offset;
+	__configure_atu_dse_mapping(ice, offset_bytes);
+
+	offset_bytes = cfg_default.mmu_base +
+		cfg_default.mmu_dse_surf_4_7_stream_mapping_offset;
+	__configure_atu_dse_mapping(ice, offset_bytes);
+
+	offset_bytes = cfg_default.mmu_base +
+		cfg_default.mmu_dse_surf_8_11_stream_mapping_offset;
+	__configure_atu_dse_mapping(ice, offset_bytes);
+
+	offset_bytes = cfg_default.mmu_base +
+		cfg_default.mmu_dse_surf_12_15_stream_mapping_offset;
+	__configure_atu_dse_mapping(ice, offset_bytes);
+
+	offset_bytes = cfg_default.mmu_base +
+		cfg_default.mmu_dse_surf_16_19_stream_mapping_offset;
+	__configure_atu_dse_mapping(ice, offset_bytes);
+
+	offset_bytes = cfg_default.mmu_base +
+		cfg_default.mmu_dse_surf_20_23_stream_mapping_offset;
+	__configure_atu_dse_mapping(ice, offset_bytes);
+
+	offset_bytes = cfg_default.mmu_base +
+		cfg_default.mmu_dse_surf_24_27_stream_mapping_offset;
+	__configure_atu_dse_mapping(ice, offset_bytes);
+
+	offset_bytes = cfg_default.mmu_base +
+		cfg_default.mmu_delphi_stream_mapping_offset;
+	reg.delphi_stream_mapping.ATU = DELPHI_ATU_MAPPING;
+	/*Disable address based ATU selection */
+	reg.delphi_stream_mapping.READ_IS_ADDRESS_BASED = 0;
+	reg.delphi_stream_mapping.ATU_AND_STREAM_ARE_ADDRESS_BASED = 0;
+	cve_os_write_mmio_32(ice, offset_bytes, reg.val);
+}
+
 u8 ice_di_is_cold_run(cve_di_job_handle_t hjob)
 {
 	struct di_job *job = (struct di_job *)hjob;
@@ -2186,12 +2279,25 @@ int ice_iccp_license_request(struct cve_device *dev, bool throttling,
 {
 	int ret;
 
-	if (throttling)
+	if (throttling) {
+		cve_os_dev_log(CVE_LOGLEVEL_DEBUG,
+			dev->dev_index,
+			" icp_license_request sent with throttling mode enabled\n");
 		ret = ice_trigger_cnc_control_msg(dev, 0,
-				ICCP_THROTLLING_OPCODE, 0, license_value);
-	else
+				ICCP_THROTTLING_OPCODE, 0, license_value);
+	} else {
+		cve_os_dev_log(CVE_LOGLEVEL_DEBUG,
+			dev->dev_index,
+			" icp_license_request sent with throttling mode disabled\n");
 		ret = ice_trigger_cnc_control_msg(dev, 0,
-				ICCP_NO_THROTLLING_OPCODE, 0, license_value);
+				ICCP_NO_THROTTLING_OPCODE, 0, license_value);
+	}
 	return ret;
 }
 
+uint16_t cve_di_get_cdyn_val(cve_di_job_handle_t hjob)
+{
+	struct di_job *job = (struct di_job *) hjob;
+
+	return job->cdyn_val;
+}

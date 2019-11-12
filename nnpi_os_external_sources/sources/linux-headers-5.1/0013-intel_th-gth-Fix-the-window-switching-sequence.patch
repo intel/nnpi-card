@@ -1,0 +1,27 @@
+From 1be3c6d956e578cd29618b13a7bd1fa3708279ac Mon Sep 17 00:00:00 2001
+From: Alexander Shishkin <alexander.shishkin@linux.intel.com>
+Date: Wed, 23 Oct 2019 17:39:51 +0300
+Subject: [PATCH] intel_th: gth: Fix the window switching sequence
+
+Signed-off-by: Alexander Shishkin <alexander.shishkin@linux.intel.com>
+---
+ drivers/hwtracing/intel_th/gth.c | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/drivers/hwtracing/intel_th/gth.c b/drivers/hwtracing/intel_th/gth.c
+index 11bc89ca63f5..28509b02a0b5 100644
+--- a/drivers/hwtracing/intel_th/gth.c
++++ b/drivers/hwtracing/intel_th/gth.c
+@@ -626,6 +626,9 @@ static void intel_th_gth_switch(struct intel_th_device *thdev,
+ 	if (!count)
+ 		dev_dbg(&thdev->dev, "timeout waiting for CTS Trigger\n");
+ 
++	/* De-assert the trigger */
++	iowrite32(0, gth->base + REG_CTS_CTL);
++
+ 	intel_th_gth_stop(gth, output, false);
+ 	intel_th_gth_start(gth, output);
+ }
+-- 
+2.23.0
+

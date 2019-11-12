@@ -63,7 +63,6 @@ struct sphcs {
 	struct sphcs_hwtrace_data	hw_tracing;
 };
 
-
 extern struct sphcs_pcie_callbacks g_sphcs_pcie_callbacks;
 
 extern struct sphcs *g_the_sphcs;   /* a  global pointer to the sphcs object - currently a singleton */

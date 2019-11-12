@@ -421,6 +421,7 @@ int msg_scheduler_invalidate_all(struct msg_scheduler *scheduler)
 			kmem_cache_free(scheduler->slab_cache_ptr, msgList_node);
 			nmsg++;
 		}
+		queue_node->msgs_num = 0;
 		SPH_SPIN_UNLOCK_IRQRESTORE(&queue_node->list_lock_irq, flags2);
 		nq++;
 	}

@@ -40,7 +40,7 @@ void trace_icedrvExecuteNetwork(uint8_t state, uint64_t ctxID,
 void trace_icedrvEventGeneration(uint8_t state, uint64_t ctxID,
 	uint64_t netID, uint64_t inferID, uint8_t status, int reason);
 
-void trace_trace_icedrvNetworkResource(uint64_t ctxID, uint64_t netID,
+void trace_icedrvNetworkResource(uint64_t ctxID, uint64_t netID,
 	uint64_t icesReserved, uint64_t countersReserved, uint64_t llcReserved);
 
 void trace_icedrvDestroyNetwork(uint8_t state, uint64_t ctxID,

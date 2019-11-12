@@ -18,15 +18,18 @@
 
 #define SPH_TRACE_ICEDRV_CREATE_CONTEXT           icedrvCreateContext
 #define SPH_TRACE_ICEDRV_CREATE_NETWORK           icedrvCreateNetwork
+#define SPH_TRACE_ICEDRV_CREATE_INFER             _icedrvCreateInfer
 #define SPH_TRACE_ICEDRV_EXECUTE_NETWORK          icedrvExecuteNetwork
 #define SPH_TRACE_ICEDRV_EVENT_GENERATION         icedrvEventGeneration
 #define SPH_TRACE_ICEDRV_NETWORK_RESOURCE         icedrvNetworkResource
+#define SPH_TRACE_ICEDRV_RESOURCE_RELEASE         _icedrvResourceRelease
 #define SPH_TRACE_ICEDRV_DESTROY_NETWORK          icedrvDestroyNetwork
 #define SPH_TRACE_ICEDRV_DESTROY_CONTEXT          icedrvDestroyContext
 #define SPH_TRACE_ICEDRV_SCHEDULE_INFER           _icedrvScheduleInfer
 #define SPH_TRACE_ICEDRV_SCHEDULE_JOB             icedrvScheduleJob
 #define SPH_TRACE_ICEDRV_TOP_HALF                 _icedrvTopHalf
 #define SPH_TRACE_ICEDRV_BOTTOM_HALF              _icedrvBottomHalf
+
 
 #define SPH_TRACE_FIELD_STATE           "state"
 
@@ -49,7 +52,7 @@
 #define SPH_TRACE_STR_Q_HEAD    "qhead"  /* state - qhead: isr q head */
 #define SPH_TRACE_STR_Q_TAIL    "qtail"  /* state - qtail: isr q tail */
 #define SPH_TRACE_STR_EXEC_TYPE "cold" /* state - type of exection cold/warm */
-#define SPH_TRACE_STR_DEV_RESET "iceReset" /* state - ice reset status */
+#define SPH_TRACE_STR_CDYN_VAL "cdyn" /* state - cdyn request value */
 /*driver commands*/
 
 #define SPH_TRACE_STR_CREATE_CTXT               "create_context"
@@ -67,4 +70,3 @@
 #define SPH_TRACE_STR_NULL                      "NULL"
 
 #endif /* _SPH_TRACE_FORMAT_H */
-

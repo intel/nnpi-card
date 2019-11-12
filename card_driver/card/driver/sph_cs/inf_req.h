@@ -12,6 +12,7 @@
 #include "ioctl_inf.h"
 #include "ipc_protocol.h"
 #include "inf_types.h"
+#include "inf_cmd_list.h"
 #include "sphcs_sw_counters.h"
 
 struct inf_devnet;
@@ -67,7 +68,9 @@ int is_inf_req_ptr(void *ptr);
 void inf_req_get(struct inf_req *infreq);
 int inf_req_put(struct inf_req *infreq);
 
-void infreq_req_init(struct inf_exec_req *req, struct inf_req *infreq,
+void infreq_req_init(struct inf_exec_req *req,
+		     struct inf_req *infreq,
+		     struct inf_cmd_list *cmd,
 		     struct inf_sched_params *params);
 int infreq_req_sched(struct inf_exec_req *req);
 
@@ -77,5 +80,8 @@ void inf_req_complete(struct inf_exec_req *req, int err);
 
 /* This function should not be called directly, use inf_exec_req_put instead */
 void inf_req_release(struct kref *kref);
+
+void infreq_send_req_fail(struct inf_exec_req *req,
+			  enum event_val       eventVal);
 
 #endif

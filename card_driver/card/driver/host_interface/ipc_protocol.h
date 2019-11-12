@@ -45,7 +45,7 @@ SPH_STATIC_ASSERT(SPH_PAGE_SHIFT <= PAGE_SHIFT, "SPH_PAGE_SIZE is bigger than PA
 					     ((minor) & 0x1f) << 5 | \
 					     ((dot) & 0x1f))
 
-#define SPH_IPC_PROTOCOL_VERSION SPH_MAKE_VERSION(2, 5, 0)
+#define SPH_IPC_PROTOCOL_VERSION SPH_MAKE_VERSION(2, 6, 0)
 
 /* Maximumum of free pages, which device can hold at any time */
 #define MAX_HOST_RESPONSE_PAGES 32
@@ -155,8 +155,8 @@ union c2h_EventReport {
 		u32 opcode     :  6;  /* SPH_IPC_C2H_OP_EVENT_REPORT */
 		u32 eventCode  :  7;
 		u32 contextID  : SPH_IPC_INF_CONTEXT_BITS;
-		u32 objID      : 16;
-		u32 objID_2    : SPH_IPC_INF_REQ_BITS;
+		u32 objID      : 16;//devres, infreq, copy
+		u32 objID_2    : 16;//devnet, cmdlist
 		u32 eventVal   :  8;
 		u32 ctxValid   :  1;
 		u32 objValid   :  1;
@@ -202,6 +202,17 @@ union c2h_SyncDone {
 	u64 value;
 };
 CHECK_MESSAGE_SIZE(union c2h_SyncDone, 1);
+
+union c2h_InfreqFailed {
+	struct {
+		union c2h_EventReport rep_msg;
+
+		u64 cmdID      : SPH_IPC_INF_CMDS_BITS;
+		u64 unused     : 48;
+	};
+	u64 value[2];
+};
+CHECK_MESSAGE_SIZE(union c2h_InfreqFailed, 2);
 
 union c2h_SubResourceLoadReply {
 	struct {
@@ -391,11 +402,11 @@ CHECK_MESSAGE_SIZE(union h2c_InferenceResourceOp, 2);
 
 union h2c_InferenceCmdListOp {
 	struct {
-		u64 opcode      :  5;  /* SPH_IPC_H2C_OP_INF_CMDLIST */
+		u64 opcode      :  6;  /* SPH_IPC_H2C_OP_INF_CMDLIST */
 		u64 ctxID       : SPH_IPC_INF_CONTEXT_BITS;
 		u64 cmdID       : SPH_IPC_INF_CMDS_BITS;
 		u64 destroy     :  1;
-		u64 unused      : 34;
+		u64 unused      : 33;
 
 		u64 host_pfn    : SPH_IPC_DMA_PFN_BITS;
 		u64 size        : (sizeof(u64) * __CHAR_BIT__ - SPH_IPC_DMA_PFN_BITS);
@@ -404,6 +415,18 @@ union h2c_InferenceCmdListOp {
 	u64 value[2];
 };
 CHECK_MESSAGE_SIZE(union h2c_InferenceCmdListOp, 2);
+
+union h2c_InferenceSchedCmdList {
+	struct {
+		u64 opcode      :  6;  /* SPH_IPC_H2C_OP_SCHEDULE_CMDLIST */
+		u64 ctxID       : SPH_IPC_INF_CONTEXT_BITS;
+		u64 cmdID       : SPH_IPC_INF_CMDS_BITS;
+		u64 unused      : 34;
+	};
+
+	u64 value;
+};
+CHECK_MESSAGE_SIZE(union h2c_InferenceSchedCmdList, 1);
 
 union h2c_InferenceNetworkOp {
 	struct {
@@ -437,6 +460,29 @@ union h2c_InferenceNetworkResourceReservation {
 	u64 value[1];
 };
 CHECK_MESSAGE_SIZE(union h2c_InferenceNetworkResourceReservation, 1);
+
+union h2c_InferenceNetworkProperty {
+	struct {
+		u64 opcode        : 6; /* SPH_IPC_H2C_OP_NETWORK_PROPERTY */
+		u64 ctxID         : SPH_IPC_INF_CONTEXT_BITS;
+		u64 netID         : SPH_IPC_INF_DEVNET_BITS;
+		u64 not_used      : 2;
+		u64 timeout       : 32;
+		u32 property	  : 32;
+		u32 property_val  : 32;
+	};
+
+	u64 value[2];
+};
+CHECK_MESSAGE_SIZE(union h2c_InferenceNetworkProperty, 2);
+
+/**
+ * @brief Network properties
+ */
+enum  netPropertiesType {
+	SPH_SERIAL_INF_EXECUTION,    /**< Serial inference execution */
+	SPH_NETWORK_RESOURCES_RESERVATION /**< Network resources reservation */
+};
 
 union h2c_setup_crash_dump_msg {
 	struct {

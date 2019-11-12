@@ -105,6 +105,7 @@ void *ecc_protected_heap_handle;
 LIST_HEAD(protected_regions);
 LIST_HEAD(unprotected_regions);
 LIST_HEAD(managed_regions);
+LIST_HEAD(protected_managed_regions);
 
 /* Number of pages to test at once -
  * the total number of bytes should be greater than cache size ( L0 + L1 + LLC)
@@ -169,13 +170,13 @@ static void print_list(const char *headline, struct list_head *head)
 {
 	struct mem_region *pos;
 
-	sph_log_debug(GENERAL_LOG, "%s\n", headline);
+	sph_log_info(GENERAL_LOG, "%s\n", headline);
 
 	if (list_empty(head))
-		sph_log_debug(GENERAL_LOG, "\tempty\n");
+		sph_log_info(GENERAL_LOG, "\tempty\n");
 	else
 		list_for_each_entry(pos, head, list)
-			sph_log_debug(GENERAL_LOG, "\t%pad\t0x%zX\n", &pos->start, pos->size);
+			sph_log_info(GENERAL_LOG, "\t%pad\t0x%zX\n", &pos->start, pos->size);
 
 }
 /*
@@ -399,11 +400,11 @@ static int create_unprotected_regions(void)
 	}
 
 	list_for_each_entry_safe(unprotected_region, tmp, &unprotected_regions, list)
-		list_for_each_entry(protected_region, &protected_regions, list) {
+		list_for_each_entry(protected_region, &protected_managed_regions, list) {
 
 			/* If two regions are the same - keep protected */
 			if (unprotected_region->start == protected_region->start &&
-					unprotected_region->size == protected_region->size) {
+				   unprotected_region->size == protected_region->size) {
 				sph_log_debug(GENERAL_LOG, "Same region\n");
 				list_del(&unprotected_region->list);
 				vfree(unprotected_region);
@@ -441,28 +442,40 @@ err:
 	return rc;
 }
 
-static void remove_unmanaged_protected_regions(void)
+static int create_protected_managed_regions(void)
 {
-	struct mem_region *managed_region, *protected_region, *temp;
-	bool found;
+	struct mem_region *managed_region, *protected_region, *reg;
+	int rc = 0;
 
-	/* protected region should be inside some managed region */
-	list_for_each_entry_safe(protected_region, temp, &protected_regions, list) {
-		found = false;
+	/* Go over all protected regions and create the list of protected managed regions */
+	list_for_each_entry(protected_region, &protected_regions, list)
 		list_for_each_entry(managed_region, &managed_regions, list) {
-			if ((protected_region->start >= managed_region->start)
-					&& (protected_region->start + protected_region->size <= managed_region->start + managed_region->size)) {
-				found = true;
-				break;
-			}
-		}
 
-		if (!found) {
-			list_del(&protected_region->list);
-			vfree(protected_region);
-		}
+			/* Two regions does not overlap - skip it */
+			if ((protected_region->start + protected_region->size - 1 < managed_region->start) ||
+				   (managed_region->start + managed_region->size - 1 < protected_region->start))
+				continue;
+
+			/* The newly created region is intersection with managed region */
+			reg = vmalloc(sizeof(struct mem_region));
+			if (reg == NULL) {
+				rc = -ENOMEM;
+				goto err;
+			}
+			list_add(&reg->list, &protected_managed_regions);
+
+			reg->start = max(protected_region->start, managed_region->start);
+			if (managed_region->start + managed_region->size >= protected_region->start + protected_region->size)
+				reg->size = (protected_region->start + protected_region->size) - reg->start;
+			else
+				reg->size = (managed_region->start + managed_region->size) - reg->start;
 
 	}
+	return 0;
+
+err:
+	release_list(&protected_managed_regions);
+	return rc;
 }
 
 static int create_protected_regions(void)
@@ -682,17 +695,17 @@ int sph_memory_allocator_init_module(void)
 	};
 	print_list("protected (ibecc protected regions)", &protected_regions);
 
-	/* remove protected memory regions that are not managed by memory allocator */
-	remove_unmanaged_protected_regions();
-	print_list("protected & managed", &protected_regions);
+	/* create protected memory regions that are managed by memory allocator */
+	create_protected_managed_regions();
+	print_list("protected & managed", &protected_managed_regions);
 
-	/* Create unprotected memory regions */
+	/* Create unprotected managed memory regions */
 	rc = create_unprotected_regions();
 	if (rc != 0) {
 		sph_log_err(START_UP_LOG, "Failed to create unprotected regions\n");
 		goto failed_to_create_unprotected;
 	}
-	print_list("unprotected", &unprotected_regions);
+	print_list("unprotected & managed", &unprotected_regions);
 
 	/* test memory regions if requested */
 	SPH_SW_COUNTER_SET(sw_counters, SW_COUNTER_BYTES_BAD_INDEX, 0);
@@ -776,6 +789,7 @@ int sph_memory_allocator_init_module(void)
 
 	release_list(&managed_regions);
 	release_list(&protected_regions);
+	release_list(&protected_managed_regions);
 	release_list(&unprotected_regions);
 
 	return 0;

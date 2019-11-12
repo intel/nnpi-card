@@ -48,8 +48,8 @@ sph_trace_op_status_to_str[SPH_TRACE_OP_STATUS_Q_HEAD] = SPH_TRACE_STR_Q_HEAD;
 sph_trace_op_status_to_str[SPH_TRACE_OP_STATUS_Q_TAIL] = SPH_TRACE_STR_Q_TAIL;
 sph_trace_op_status_to_str[SPH_TRACE_OP_STATUS_EXEC_TYPE] =
 	SPH_TRACE_STR_EXEC_TYPE;
-sph_trace_op_status_to_str[SPH_TRACE_OP_STATUS_DEV_RESET] =
-	SPH_TRACE_STR_DEV_RESET;
+sph_trace_op_status_to_str[SPH_TRACE_OP_STATUS_CDYN_VAL] =
+	SPH_TRACE_STR_CDYN_VAL;
 sph_trace_op_status_to_str[SPH_TRACE_OP_STATUS_NUM]    = SPH_TRACE_STR_UNDEF;
 
 }

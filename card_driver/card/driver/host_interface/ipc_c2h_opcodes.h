@@ -45,6 +45,7 @@ C2H_OPCODE(CLOCK_SYNC,			9, union ClockSyncMsg)
 C2H_OPCODE(ETH_CONFIG,			10, union c2h_EthernetConfig)
 C2H_OPCODE(SYS_INFO,			11, union c2h_SysInfo)
 C2H_OPCODE(HWTRACE_STATE,		12, union c2h_HwTraceState)
+C2H_OPCODE(INFREQ_FAILED,		13, union c2h_InfreqFailed)
 
 #ifdef ULT
 C2H_OPCODE(ULT_OP,              30, union ult_message)

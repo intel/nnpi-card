@@ -162,6 +162,15 @@ void cve_di_set_page_directory_base_addr(struct cve_device *cve_dev,
 void ice_di_set_mmu_address_mode(struct cve_device *ice);
 
 /*
+ * Configure ATU to CBB mapping with each CBB accessing exclusive ATU
+ * inputs :
+ *	ice - ICE device
+ * outputs:
+ * returns:
+ */
+void ice_di_configure_atu_cbb_mapping(struct cve_device *ice);
+
+/*
  * invalidate page table base address register
  * inputs : cve_dev - cve device
  * outputs:
@@ -330,4 +339,5 @@ void ice_di_set_cold_run(cve_di_job_handle_t hjob);
 
 void ice_di_tlb_invalidate_full(struct cve_device *cve_dev);
 
+uint16_t cve_di_get_cdyn_val(cve_di_job_handle_t hjob);
 #endif /* _DEVICE_INTERFACE_H_ */

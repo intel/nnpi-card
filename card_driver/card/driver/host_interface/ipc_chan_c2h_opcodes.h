@@ -35,6 +35,7 @@
 C2H_OPCODE(CHANNEL_RB_UPDATE, 32, union c2h_ChanRingBufUpdate)
 C2H_OPCODE(CHAN_GENERIC_MSG_PACKET, 33, union c2h_ChanGenericMessaging)
 C2H_OPCODE(CHAN_SERVICE_LIST, 34, union c2h_ChanServiceListMsg)
+C2H_OPCODE(CHAN_SYNC_DONE, 35, union c2h_ChanSyncDone)
 
 #ifdef ULT
 C2H_OPCODE(ULT2_OP,              63, union ult_message)

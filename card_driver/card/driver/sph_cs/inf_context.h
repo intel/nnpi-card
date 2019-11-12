@@ -95,21 +95,25 @@ struct inf_exec_req {
 	struct inf_req_sequence   seq;
 	u64                       time; // queued or start execute time
 
+	struct inf_cmd_list *cmd;
+
 	union {
-		struct inf_copy  *copy;
-		struct inf_req   *infreq;
+		struct {
+			struct inf_copy     *copy;
+			size_t               size;
+			//priority 0 == normal, 1 == high
+			uint8_t              priority;
+
+			/* following fields are used for "dynamic copy" only */
+			struct sphcs_hostres_map *hostres_map;
+			uint64_t devres_offset;
+		};
+		struct {
+			struct inf_req   *infreq;
+			bool              sched_params_is_null;
+			struct inf_sched_params   sched_params;
+		};
 	};
-
-	size_t            size;
-
-	/* following fields are used only by infer exec req */
-	/* priority field in sched_params is used for copy priority */
-	struct inf_sched_params   sched_params;
-	bool              sched_params_is_null;
-
-	/* following fields are used for "dynamic copy" only */
-	struct sphcs_hostres_map *hostres_map;
-	uint64_t devres_offset;
 };
 
 struct inf_cmd_list_entry {
@@ -127,7 +131,7 @@ void inf_context_runtime_detach(struct inf_context *context);
 
 int is_inf_context_ptr(void *ptr);
 
-void  inf_context_destroy_objects(struct inf_context *context);
+void inf_context_destroy_objects(struct inf_context *context);
 void inf_context_get(struct inf_context *context);
 int inf_context_put(struct inf_context *context);
 

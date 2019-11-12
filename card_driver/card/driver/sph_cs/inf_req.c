@@ -19,9 +19,6 @@
 #include "sphcs_trace.h"
 #include "sphcs_sw_counters.h"
 
-static bool serial_infreq_exec; //initialized to false
-module_param(serial_infreq_exec, bool, 0660);
-
 int inf_req_create(uint16_t            protocolID,
 		   struct inf_devnet  *devnet,
 		   struct inf_req    **out_infreq)
@@ -226,13 +223,16 @@ static void migrate_priority(struct inf_req *infreq, struct inf_exec_req *req)
 		inf_devres_migrate_priority_to_req_queue(infreq->outputs[j], req, false);
 }
 
-void infreq_req_init(struct inf_exec_req *req, struct inf_req *infreq,
+void infreq_req_init(struct inf_exec_req *req,
+		     struct inf_req *infreq,
+		     struct inf_cmd_list *cmd,
 		     struct inf_sched_params *params)
 {
 	kref_init(&req->in_use);
 	req->in_progress = false;
 	req->is_copy = false;
 	req->infreq = infreq;
+	req->cmd = cmd;
 	req->sched_params_is_null = (params == NULL);
 	if (!req->sched_params_is_null)
 		memcpy(&req->sched_params, params, sizeof(struct inf_sched_params));
@@ -261,7 +261,7 @@ int infreq_req_sched(struct inf_exec_req *req)
 	 */
 	err = inf_devres_add_req_to_queue(infreq->devnet->first_devres,
 					  req,
-					  !serial_infreq_exec);
+					  !infreq->devnet->serial_infreq_exec);
 	if (unlikely(err < 0))
 		goto fail_first;
 
@@ -303,6 +303,7 @@ fail:
 	inf_devres_del_req_from_queue(infreq->devnet->first_devres, req);
 fail_first:
 	inf_context_seq_id_fini(infreq->devnet->context, &req->seq);
+	inf_req_put(req->infreq);
 
 	return err;
 }
@@ -339,7 +340,7 @@ bool inf_req_ready(struct inf_exec_req *req)
 	/* cannot start execute if another infreq of the same network is running*/
 	if (!inf_devres_req_ready(infreq->devnet->first_devres,
 				  req,
-				  !serial_infreq_exec))
+				  !infreq->devnet->serial_infreq_exec))
 		return false;
 
 	/* check input resources dependency */
@@ -482,16 +483,62 @@ int inf_req_execute(struct inf_exec_req *req)
 	return ret;
 }
 
+void infreq_send_req_fail(struct inf_exec_req *req,
+			  enum event_val       eventVal)
+{
+	union c2h_InfreqFailed msg;
+
+	SPH_ASSERT(!req->is_copy);
+
+	if (req->cmd == NULL) {
+		sphcs_send_event_report_ext(g_the_sphcs,
+				SPH_IPC_SCHEDULE_INFREQ_FAILED,
+				eventVal,
+				req->infreq->devnet->context->protocolID,
+				req->infreq->protocolID,
+				req->infreq->devnet->protocolID);
+		return;
+	}
+
+	msg.rep_msg.opcode = SPH_IPC_C2H_OP_INFREQ_FAILED;
+	msg.rep_msg.eventCode = SPH_IPC_SCHEDULE_INFREQ_FAILED;
+	msg.rep_msg.eventVal = eventVal;
+	msg.rep_msg.contextID = req->infreq->devnet->context->protocolID;
+	msg.rep_msg.ctxValid = 1;
+	msg.rep_msg.objID = req->infreq->protocolID;
+	msg.rep_msg.objValid = 1;
+	msg.rep_msg.objID_2 = req->infreq->devnet->protocolID;
+	msg.rep_msg.objValid_2 = 1;
+
+	msg.cmdID = req->cmd->protocolID;
+
+	sph_log_debug(SCHEDULE_COMMAND_LOG,
+		      "Sending infreq failure(%u) val=%u ctx_id=%u (valid=%u) objID=%u (valid=%u) objID_2=%u (valid=%u) cmdID=%u.\n",
+		      msg.rep_msg.eventCode,
+		      msg.rep_msg.eventVal,
+		      msg.rep_msg.contextID, msg.rep_msg.ctxValid,
+		      msg.rep_msg.objID, msg.rep_msg.objValid,
+		      msg.rep_msg.objID_2, msg.rep_msg.objValid_2,
+		      msg.cmdID);
+	sphcs_msg_scheduler_queue_add_msg(g_the_sphcs->public_respq, &msg.value[0], sizeof(msg));
+}
+
 void inf_req_complete(struct inf_exec_req *req, int err)
 {
-	struct inf_req *infreq = req->infreq;
-	struct inf_context *context = infreq->devnet->context;
+	struct inf_req *infreq;
+	struct inf_context *context;
+	struct inf_cmd_list *cmd;
+	bool send_cmdlist_event_report = false;
 	unsigned long flags;
 	uint16_t eventVal;
 	bool last_completed;
 
 	SPH_ASSERT(!req->is_copy);
 	SPH_ASSERT(req->in_progress);
+
+	infreq = req->infreq;
+	context = infreq->devnet->context;
+	cmd = req->cmd;
 
 	SPH_SPIN_LOCK_IRQSAVE(&context->sw_counters_lock_irq, flags);
 	context->infreq_counter--;
@@ -584,16 +631,25 @@ void inf_req_complete(struct inf_exec_req *req, int err)
 			eventVal = SPH_IPC_RUNTIME_FAILED;
 		}
 		sph_log_err(EXECUTE_COMMAND_LOG, "Got Error. errno: %d, eventVal=%u\n", err, eventVal);
-		sphcs_send_event_report_ext(g_the_sphcs,
-					    SPH_IPC_SCHEDULE_INFREQ_FAILED,
-					    eventVal,
-					    infreq->devnet->context->protocolID,
-					    infreq->protocolID,
-					    infreq->devnet->protocolID);
+		infreq_send_req_fail(req, eventVal);
 
-		inf_context_set_state(req->infreq->devnet->context,
+		//TODO GLEB: decide according to error if brake the context, brake the card or do nothing
+		inf_context_set_state(infreq->devnet->context,
 				      CONTEXT_BROKEN_RECOVERABLE);
 	}
+
+	if (cmd != NULL) {
+		SPH_SPIN_LOCK_IRQSAVE(&cmd->lock_irq, flags);
+		if (--cmd->reqs_left == 0)
+			send_cmdlist_event_report = true;
+		SPH_SPIN_UNLOCK_IRQRESTORE(&cmd->lock_irq, flags);
+	}
+	if (send_cmdlist_event_report)
+		sphcs_send_event_report(g_the_sphcs,
+					SPH_IPC_EXECUTE_CMD_COMPLETE,
+					0,
+					cmd->context->protocolID,
+					cmd->protocolID);
 
 	inf_exec_req_put(req);
 }

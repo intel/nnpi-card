@@ -17,6 +17,7 @@
 #define _INTEL_SPHPB_H_
 
 #include <linux/list.h>
+#include <linux/mutex.h>
 #include "intel_sphpb.h"
 #include "sphpb_punit.h"
 
@@ -58,6 +59,13 @@ struct sphpb_icebo_info {
 	struct sphpb_ice_info ice[SPHPB_MAX_ICE_PER_ICEBO];
 };
 
+struct sphpb_throttle_info {
+	uint64_t ring_clock_ticks;
+	struct cpu_perfstat *cpu_stat;
+	uint64_t time_us;
+	uint8_t curr_state;
+};
+
 
 struct sphpb_pb {
 	/* callback from sphpb driver - set on init */
@@ -77,15 +85,25 @@ struct sphpb_pb {
 	/* ice number with highest ring divisor value, -1 if not set */
 	int      max_ring_divisor_ice_num;
 
+	struct sphpb_throttle_info throttle_data;
+
 	struct kobject *kobj;
 	struct kobject *ia_kobj_root;
 	struct kobject **ia_kobj;
 	struct kobject *icebo_kobj_root;
 	struct kobject **icebo_kobj;
 	void __iomem *idc_mailbox_base;
+	void __iomem *bios_mailbox_base;
 	spinlock_t lock;
+	struct mutex mutex_lock;
 };
 
+struct cpu_perfstat {
+	u64 aperf;
+	u64 mperf;
+};
+
+void aperfmperf_snapshot_khz(void *dummy);
 
 int sphpb_mng_get_efficient_ice_list(struct sphpb_pb *sphpb,
 				     uint32_t ice_mask,

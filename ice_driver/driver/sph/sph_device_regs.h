@@ -219,6 +219,16 @@ struct config {
 	uint32_t mmu_write_issued_offset;
 	uint32_t mmu_atu_pt_base_addr_offset;
 	uint32_t mmu_cfg_offset;
+	uint32_t mmu_tlc_ivp_stream_mapping_offset;
+	uint32_t mmu_dse_surf_0_3_stream_mapping_offset;
+	uint32_t mmu_dse_surf_4_7_stream_mapping_offset;
+	uint32_t mmu_dse_surf_8_11_stream_mapping_offset;
+	uint32_t mmu_dse_surf_12_15_stream_mapping_offset;
+	uint32_t mmu_dse_surf_16_19_stream_mapping_offset;
+	uint32_t mmu_dse_surf_20_23_stream_mapping_offset;
+	uint32_t mmu_dse_surf_24_27_stream_mapping_offset;
+	uint32_t mmu_dse_surf_28_31_stream_mapping_offset;
+	uint32_t mmu_delphi_stream_mapping_offset;
 	uint32_t mmu_pt_idx_bits_table_bit0_lsb;
 	uint32_t mmu_pt_idx_bits_table_bit1_lsb;
 	uint32_t mmu_pt_idx_bits_table_bit2_lsb;
@@ -401,6 +411,62 @@ uint32_t  RSVD_0               :  21;
 uint32_t                         val;
 };
 
+
+union ice_mmu_inner_stream_mapping_config_t {
+	struct ICE_MMU_INNER_MEM_TLC_DSP_STREAM_MAPPING {
+		uint32_t  TLC_ATU              :   2;
+		uint32_t  TLC_STREAM_ID_R      :   3;
+		uint32_t  TLC_STREAM_ID_W      :   3;
+		uint32_t  TLC_STREAM_ID_I      :   3;
+		uint32_t  RSVD_0               :   5;
+		uint32_t  DSP_ATU              :   2;
+		uint32_t  DSP_STREAM_ID_R      :   3;
+		uint32_t  DSP_STREAM_ID_W      :   3;
+		uint32_t  DSP_STREAM_ID_I      :   3;
+		uint32_t  RSVD_1               :   5;
+	} tlc_ivp_stream_mapping;
+
+	struct ICE_MMU_INNER_MEM_ASIP_STREAM_MAPPING {
+		uint32_t  ASIP0_ATU            :   2;
+		uint32_t  ASIP0_STREAM_ID_R    :   3;
+		uint32_t  ASIP0_STREAM_ID_W    :   3;
+		uint32_t  ASIP0_STREAM_ID_I    :   3;
+		uint32_t  RSVD_0               :  21;
+	} asip_stream_mapping;
+
+	struct ICE_MMU_INNER_MEM_DSE_SURFACE_STREAM_MAPPING {
+		uint32_t  ATU0                 :   2;
+		uint32_t  STREAM_ID0           :   3;
+		uint32_t  READ_IS_ADDRESS_BASED0 :   1;
+		uint32_t  ATU_AND_STREAM_ARE_ADDRESS_BASED0 :   1;
+		uint32_t  RSVD_0               :   1;
+		uint32_t  ATU1                 :   2;
+		uint32_t  STREAM_ID1           :   3;
+		uint32_t  READ_IS_ADDRESS_BASED1 :   1;
+		uint32_t  ATU_AND_STREAM_ARE_ADDRESS_BASED1 :   1;
+		uint32_t  RSVD_1               :   1;
+		uint32_t  ATU2                 :   2;
+		uint32_t  STREAM_ID2           :   3;
+		uint32_t  READ_IS_ADDRESS_BASED2 :   1;
+		uint32_t  ATU_AND_STREAM_ARE_ADDRESS_BASED2 :   1;
+		uint32_t  RSVD_2               :   1;
+		uint32_t  ATU3                 :   2;
+		uint32_t  STREAM_ID3           :   3;
+		uint32_t  READ_IS_ADDRESS_BASED3 :   1;
+		uint32_t  ATU_AND_STREAM_ARE_ADDRESS_BASED3 :   1;
+		uint32_t  RSVD_3               :   1;
+	} dse_stream_mapping;
+
+	struct ICE_MMU_INNER_MEM_DELPHI_STREAM_MAPPING {
+		uint32_t  ATU                  :   2;
+		uint32_t  STREAM_ID            :   3;
+		uint32_t  READ_IS_ADDRESS_BASED :   1;
+		uint32_t  ATU_AND_STREAM_ARE_ADDRESS_BASED :   1;
+		uint32_t  RSVD_0               :  25;
+	}  delphi_stream_mapping;
+
+	uint32_t val;
+};
 
 union mmio_hub_mem_interrupt_mask_t {
         struct {

@@ -341,6 +341,7 @@ int cve_os_interface_init(void)
 	char *icemask_user_str = NULL;
 	char *coral_config = NULL;
 	char *coral_mode = NULL;
+	char *throttling = NULL;
 	char hw_folder[20];
 	char *workspace = getenv("WORKSPACE");
 	char *env_llc_config_via_axi_reg;
@@ -349,7 +350,6 @@ int cve_os_interface_init(void)
 
 	coral_mode = getenv("CORAL_PERF_MODE");
 	coral_config = getenv("CORAL_CONFIG");
-
 
 	icemask_user_str = getenv("ICEMASK_USER");
 	if (icemask_user_str)
@@ -370,9 +370,17 @@ int cve_os_interface_init(void)
 	if(getenv("ENABLE_B_STEP") != NULL) {
 		param.enable_sph_b_step = true;
 		cve_os_log(CVE_LOGLEVEL_INFO, "B STEP ENABLED\n");
+		if(getenv("ICCP_THROTTLING")!= NULL) {
+			throttling = getenv("ICCP_THROTTLING");
+			param.iccp_throttling = atoi(throttling);
+		} else {
+			param.iccp_throttling = 1;
+		}
+
 	} else {
 		param.enable_sph_b_step = false;
 		cve_os_log(CVE_LOGLEVEL_INFO, "B STEP DISABLED\n");
+		param.iccp_throttling = 0;
 	}
 
 	ice_set_driver_config_param(&param);
@@ -915,6 +923,7 @@ int cve_ioctl_misc(int fd, int request, struct cve_ioctl_param *param)
 				param->load_firmware.fw_binmap_size_bytes);
 		retval = cve_ds_handle_fw_loading(context_pid,
 				param->load_firmware.contextid,
+				param->load_firmware.networkid,
 				param->load_firmware.fw_image,
 				param->load_firmware.fw_binmap,
 				param->load_firmware.fw_binmap_size_bytes);
@@ -931,6 +940,7 @@ int cve_ioctl_misc(int fd, int request, struct cve_ioctl_param *param)
 				"Simulation mode - CVE_IOCTL_GET_VERSION\n");
 		retval = cve_ds_get_version(context_pid,
 				param->get_version.contextid,
+				param->get_version.networkid,
 				&param->get_version.out_versions);
 		break;
 	case ICE_IOCTL_HW_TRACE_CONFIG:

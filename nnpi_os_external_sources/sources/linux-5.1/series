@@ -11,3 +11,6 @@
 0009-Temporary-fix-for-buggy-IFWI-that-keeps-using-boot-m.patch
 0010-staging-android-ion-Add-kernel-level-API-to-allocate.patch
 0011-staging-android-ion-Use-ida-to-manage-heaps-id.patch
+0012-limit-continuos-memory-allocation.patch
+0013-EDAC-igen6-Clear-PciSerr-nmi-status.patch
+0013-intel_th-gth-Fix-the-window-switching-sequence.patch

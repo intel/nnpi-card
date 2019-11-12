@@ -1,0 +1,4 @@
+0001-no-wchar.patch
+0002-fix-autoreconf.patch
+0003-glob-detection.patch
+0004-add-libiconv-to-popt.pc.patch

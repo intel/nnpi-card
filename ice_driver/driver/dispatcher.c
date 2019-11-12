@@ -475,9 +475,6 @@ static void cleanup_context(struct ds_context *context)
 			cve_di_unset_pool_registers(context->pool_id);
 			cve_ds_unmap_pool_context(context);
 		}
-
-		/* close dev_context for each cve */
-		cve_dev_close_all_contexts(context->dev_hctx_list);
 	}
 }
 
@@ -487,17 +484,15 @@ static void cleanup_context(struct ds_context *context)
  */
 static void do_reset(struct cve_device *cve_dev,
 		os_domain_handle hdom,
-		struct ds_context *context,
+		struct ice_network *ntw,
 		enum reset_type_flag reset_type)
 {
 	cve_dev_context_handle_t dev_handle = NULL;
 	u32 page_dir_base_addr;
 	u32 *page_sz_list;
 
-	ASSERT(context);
-
 	cve_dev_context_get_by_cve_idx(
-		context->dev_hctx_list,
+		ntw->dev_hctx_list,
 		cve_dev->dev_index,
 		&dev_handle);
 
@@ -527,6 +522,13 @@ static void do_reset(struct cve_device *cve_dev,
 
 	/* set the MMU addressing mode */
 	ice_di_set_mmu_address_mode(cve_dev);
+
+	/* configure CBB to ATU mapping to ensure all use a dedicated ATU
+	 * Done only if network requests shared read else default address
+	 * based ATU mapping is used
+	 */
+	if (ntw->shared_read)
+		ice_di_configure_atu_cbb_mapping(cve_dev);
 
 	/* reset the page table flags state */
 	cve_mm_reset_page_table_flags(hdom);
@@ -611,7 +613,6 @@ static int  __create_ice_dump_buffer(struct ice_network *ntw)
 		cur_buf->ice_vaddr = ALIGN((ice_vaddr +
 		(i * ice_di_get_core_blob_sz())), PLAFTORM_CACHELINE_SZ);
 	}
-
 
 	/* success */
 	return 0;
@@ -703,9 +704,7 @@ static int alloc_and_map_network_fifo(struct ice_network *network)
 			continue;
 		do {
 			cve_dev_context_get_by_cve_idx(
-			context->dev_hctx_list,
-			dev->dev_index,
-			&dev_handle);
+			network->dev_hctx_list, dev->dev_index, &dev_handle);
 
 			cve_os_log(CVE_LOGLEVEL_DEBUG,
 				COLOR_YELLOW(
@@ -742,9 +741,8 @@ out:
 		while ((dev != dev_tail) && (dev != dev_head)) {
 
 			cve_dev_context_get_by_cve_idx(
-				context->dev_hctx_list,
-				dev->dev_index,
-				&dev_handle);
+				network->dev_hctx_list,
+				dev->dev_index, &dev_handle);
 
 			cve_os_log(CVE_LOGLEVEL_DEBUG,
 				COLOR_YELLOW(
@@ -766,7 +764,6 @@ static int dealloc_and_unmap_network_fifo(struct ice_network *network)
 {
 	struct cve_device *dev, *dev_head;
 	cve_dev_context_handle_t dev_handle = NULL;
-	struct ds_context *context = network->wq->context;
 	struct cve_device_group *cve_dg = g_cve_dev_group_list;
 	int i;
 
@@ -778,7 +775,7 @@ static int dealloc_and_unmap_network_fifo(struct ice_network *network)
 			continue;
 		do {
 			cve_dev_context_get_by_cve_idx(
-				context->dev_hctx_list,
+				network->dev_hctx_list,
 				dev->dev_index,
 				&dev_handle);
 
@@ -917,7 +914,7 @@ static int __dispatch_single_job(
 		struct jobgroup_descriptor *jobgroup)
 {
 	cve_di_subjob_handle_t *embedded_cbs_subjobs = NULL;
-	struct ds_context *next_ctx =
+	struct ds_context __maybe_unused *next_ctx =
 			jobgroup->wq->context;
 	cve_dev_context_handle_t dev_next_ctx = NULL;
 	os_domain_handle hdom = NULL;
@@ -934,8 +931,8 @@ static int __dispatch_single_job(
 		ntw->swc_node.sw_id,
 		ntw->network_id,
 		ntw->curr_exe->swc_node.sw_id,
-		job, SPH_TRACE_OP_STATUS_DEV_RESET,
-		cve_di_get_device_reset_flag(cve_dev)));
+		job, SPH_TRACE_OP_STATUS_CDYN_VAL,
+		cve_di_get_cdyn_val(job->di_hjob)));
 
 	ret = set_idc_registers(cve_dev, true);
 	if (ret < 0) {
@@ -950,12 +947,6 @@ static int __dispatch_single_job(
 		return ret;
 	}
 
-	/* if shared read is requested and driver has respected the request
-	 * then set the shared read mmio
-	 * TODO: check if in all other cases shared read has to disabled or not
-	 */
-	if (ntw->shared_read && (ntw->icebo_req == ICEBO_MANDATORY))
-		ice_di_set_shared_read_reg(cve_dev, ntw, 1);
 
 	if (ntw->ice_dump &&
 	(ntw->ice_dump->allocated_buf_cnt < ntw->ice_dump->total_dump_buf)) {
@@ -980,12 +971,18 @@ static int __dispatch_single_job(
 
 		ice_di_set_cold_run(job->di_hjob);
 
-		do_reset(cve_dev, hdom, next_ctx, RESET_TYPE_HARD);
+		/* if driver has respected the request then set the shared
+		 * read mmio else disable it
+		 */
+		if (ntw->icebo_req == ICEBO_MANDATORY)
+			ice_di_set_shared_read_reg(cve_dev, ntw, 1);
+		else
+			ice_di_set_shared_read_reg(cve_dev, ntw, 0);
+
+		do_reset(cve_dev, hdom, ntw, RESET_TYPE_HARD);
 
 		cve_dev_context_get_by_cve_idx(
-			next_ctx->dev_hctx_list,
-			cve_dev->dev_index,
-			&dev_next_ctx);
+			ntw->dev_hctx_list, cve_dev->dev_index, &dev_next_ctx);
 
 		cve_dev_get_emb_cb_list(
 			dev_next_ctx,
@@ -1353,10 +1350,7 @@ int ice_ds_raise_event(struct ice_network *ntw, bool reschedule)
 					inf->swc_node.sw_id,
 					SPH_TRACE_OP_STATUS_AVG,
 					event.average_ice_cycles));
-
 	}
-
-
 	return 0;
 }
 
@@ -1950,7 +1944,7 @@ static int __process_buf_desc(struct ice_network *ntw,
 		goto out;
 	}
 
-	cve_dev_get_os_domain_arr(context->dev_hctx_list,
+	cve_dev_get_os_domain_arr(ntw->dev_hctx_list,
 		g_cve_dev_group_list->dev_info.active_device_nr,
 		cve_os_hdomain);
 
@@ -2299,6 +2293,7 @@ static int __destroy_network(struct ice_network *ntw)
 
 	__destroy_jg_list(ntw);
 	__destroy_pp_mirror_image(&ntw->ntw_surf_pp_list);
+	cve_dev_close_all_contexts(ntw->dev_hctx_list);
 	ice_swc_destroy_ntw_node(ntw);
 
 out:
@@ -2377,6 +2372,7 @@ static int __process_network_desc(
 	 */
 	ntw->max_shared_distance = (network_desc->max_shared_distance != 0) ?
 		network_desc->max_shared_distance : DEFAULT_MAX_SHARED_DISTANCE;
+
 
 	retval = cve_os_init_wait_que(&ntw->rr_wait_queue);
 	if (retval != 0) {
@@ -2462,6 +2458,17 @@ static int __process_network_desc(
 		goto error_jg_desc_process;
 	}
 
+	/* cache ICEBO params. Networks without reservation, release resource
+	 * after no more inferences are queued. In case of preferred ICEBO
+	 * policy, scheduler modifies the ICEBO requirement based on current
+	 * free pool status. Cached values are used to restore the modified
+	 * values for future inferences
+	 */
+	ntw->cached_num_picebo_req = ntw->num_picebo_req;
+	ntw->cached_num_sicebo_req = ntw->num_sicebo_req;
+	ntw->cached_num_dicebo_req = ntw->num_dicebo_req;
+	ntw->cached_icebo_req = ntw->icebo_req;
+
 	ntw->max_cbdt_entries = retval;
 	retval = alloc_and_map_network_fifo(ntw);
 	if (retval < 0) {
@@ -2530,7 +2537,6 @@ static int __process_infer_desc(
 	struct cve_infer_surface_descriptor *k_buf_desc_list;
 	u32 sz;
 	int retval = 0;
-	struct ds_context *context = inf->ntw->wq->context;
 	struct ice_pp_value *pp_arr;
 
 	if (inf->ntw->ntw_surf_pp_count != 0) {
@@ -2545,7 +2551,7 @@ static int __process_infer_desc(
 		}
 	}
 
-	cve_dev_get_os_domain_arr(context->dev_hctx_list,
+	cve_dev_get_os_domain_arr(inf->ntw->dev_hctx_list,
 		g_cve_dev_group_list->dev_info.active_device_nr,
 		inf->inf_hdom);
 
@@ -2621,7 +2627,6 @@ int cve_ds_handle_create_network(
 	struct cve_workqueue *workqueue = NULL;
 	struct cve_device_group *dg = cve_dg_get();
 	struct cve_device *dev = ice_get_first_dev();
-
 	u32 ntw_resources[6];
 
 	ntw_resources[0] = network_desc->llc_size[ICE_CLOS_0];
@@ -2686,12 +2691,27 @@ int cve_ds_handle_create_network(
 	network->rr_node = NULL;
 	network->res_resource = false;
 
+	if (!network_desc->infer_buf_page_config)
+		network_desc->infer_buf_page_config =
+			ICEDRV_PAGE_ALIGNMENT_32K;
+
+	retval = cve_dev_open_all_contexts(
+			(u64 *)network_desc->va_partition_config,
+			network_desc->infer_buf_page_config,
+			&network->dev_hctx_list);
+	if (retval != 0) {
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+			"cve_dev_open_all_contexts failed %d\n", retval);
+		goto error_domain_creation;
+	}
+
 	retval = __process_network_desc(network_desc, network);
 	if (retval < 0) {
 		cve_os_log(CVE_LOGLEVEL_ERROR,
 				"__process_network_desc() failed:%d\n", retval);
 		goto error_process_ntw;
 	}
+
 
 	retval = __check_resources(workqueue, network);
 	if (retval < 0) {
@@ -2739,6 +2759,8 @@ int cve_ds_handle_create_network(
 error_resources:
 	__destroy_network(network);
 error_process_ntw:
+	cve_dev_close_all_contexts(network->dev_hctx_list);
+error_domain_creation:
 	OS_FREE(network, sizeof(*network));
 out:
 	cve_os_unlock(&g_cve_driver_biglock);
@@ -2784,10 +2806,10 @@ int cve_ds_handle_create_infer(
 	struct cve_device_group *dg = cve_dg_get();
 	struct ice_network *ntw;
 	struct ice_infer *inf;
+	__maybe_unused u64 ctx_sw_id = 0, ntw_sw_id = 0, parent_ntw_sw_id = 0;
 
 	/* Invalid ID */
 	*inf_id = 0;
-
 	retval = cve_os_lock(&g_cve_driver_biglock, CVE_INTERRUPTIBLE);
 	if (retval != 0) {
 		retval = -ERESTARTSYS;
@@ -2804,12 +2826,25 @@ int cve_ds_handle_create_infer(
 
 	ntw = __get_network_from_id(context_pid, context_id, ntw_id);
 	if (ntw == NULL) {
+		ctx_sw_id = context_id;
+		ntw_sw_id = ntw_id;
+
 		retval = -ICEDRV_KERROR_NTW_INVAL_ID;
 		cve_os_log(CVE_LOGLEVEL_ERROR,
 				"ERROR:%d Given NtwID:0x%llx is not present in this context\n",
 				retval, ntw_id);
 		goto out;
 	}
+
+	ctx_sw_id = ntw->wq->context->swc_node.sw_id;
+	ntw_sw_id = ntw->swc_node.sw_id;
+	parent_ntw_sw_id = ntw->swc_node.parent_sw_id;
+	DO_TRACE(trace__icedrvCreateInfer(
+				SPH_TRACE_OP_STATE_START,
+				ctx_sw_id, parent_ntw_sw_id, ntw_sw_id,
+				ntw->network_id,
+				inf_desc->obj_id,
+				SPH_TRACE_OP_STATUS_LOCATION, __LINE__));
 
 	retval = OS_ALLOC_ZERO(sizeof(*inf), (void **)&inf);
 	if (retval < 0) {
@@ -2854,12 +2889,27 @@ int cve_ds_handle_create_infer(
 
 	cve_os_unlock(&g_cve_driver_biglock);
 
+	DO_TRACE(trace__icedrvCreateInfer(
+				SPH_TRACE_OP_STATE_COMPLETE,
+				ctx_sw_id, parent_ntw_sw_id, ntw_sw_id,
+				ntw->network_id,
+				inf->swc_node.sw_id,
+				SPH_TRACE_OP_STATUS_PASS, retval));
+
 	return retval;
 
 free_mem:
 	OS_FREE(inf, sizeof(*inf));
 out:
 	cve_os_unlock(&g_cve_driver_biglock);
+
+	DO_TRACE(trace__icedrvCreateInfer(
+				SPH_TRACE_OP_STATE_ABORT,
+				ctx_sw_id, parent_ntw_sw_id, ntw_sw_id,
+				0,
+				inf_desc->obj_id,
+				SPH_TRACE_OP_STATUS_FAIL,
+				retval));
 
 	return retval;
 }
@@ -3371,14 +3421,15 @@ void cve_ds_handle_job_completion(struct cve_device *dev,
 
 int cve_ds_handle_fw_loading(
 		cve_context_process_id_t context_pid,
-		cve_context_process_id_t context_id,
+		cve_context_id_t context_id,
+		cve_network_id_t network_id,
 		u64 fw_image,
 		u64 fw_binmap,
 		u32 fw_binmap_size_bytes)
 {
 	int retval = CVE_DEFAULT_ERROR_CODE;
-	struct ds_context *context = NULL;
-	struct cve_context_process *context_process = NULL;
+	struct cve_device_group *dg = cve_dg_get();
+	struct ice_network *network = NULL;
 
 	retval = cve_os_lock(&g_cve_driver_biglock, CVE_INTERRUPTIBLE);
 	if (retval != 0) {
@@ -3386,19 +3437,20 @@ int cve_ds_handle_fw_loading(
 		goto out;
 	}
 
-	/* get the process based on the id */
-	retval = cve_context_process_get(context_pid, &context_process);
-	if (retval != 0)
-		goto out;
-
-	/* Get the context from the process */
-	context = get_context_from_process(
-			context_process,
-			context_id);
-	if (!context) {
+	if (dg->icedc_state == ICEDC_STATE_CARD_RESET_REQUIRED) {
+		retval = ICEDRV_KERROR_CARD_RESET_NEEDED;
 		cve_os_log(CVE_LOGLEVEL_ERROR,
-				"get_context_from_process failed\n");
-		retval = -EINVAL;
+		"ERROR:%d Due to IceDC error, card reset is required\n",
+		retval);
+		goto out;
+	}
+
+	network = __get_network_from_id(context_pid, context_id, network_id);
+	if (network == NULL) {
+		retval = -ICEDRV_KERROR_NTW_INVAL_ID;
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+				"ERROR:%d Given NtwID:0x%llx is not present in this context\n",
+				retval, network_id);
 		goto out;
 	}
 
@@ -3409,7 +3461,7 @@ int cve_ds_handle_fw_loading(
 	 * map operation should be performed multiple times
 	 * according to number of CVEs in the system
 	 */
-	retval = cve_dev_fw_load_and_map(context->dev_hctx_list,
+	retval = cve_dev_fw_load_and_map(network->dev_hctx_list,
 			fw_image,
 			fw_binmap,
 			fw_binmap_size_bytes);
@@ -3476,12 +3528,7 @@ int cve_ds_open_context(cve_context_process_id_t context_pid,
 				"os_init_wait_que failed %d\n", retval);
 		goto out;
 	}
-	retval = cve_dev_open_all_contexts(&new_context->dev_hctx_list);
-	if (retval != 0) {
-		cve_os_log(CVE_LOGLEVEL_ERROR,
-			"cve_dev_open_all_contexts failed %d\n", retval);
-		goto out;
-	}
+
 	/* get context id */
 	new_context->context_id = get_contex_id();
 
@@ -3870,11 +3917,13 @@ out:
 
 int cve_ds_get_version(cve_context_process_id_t context_pid,
 		cve_context_id_t context_id,
+		cve_network_id_t ntw_id,
 		struct cve_components_version *out_versions)
 {
-	struct cve_context_process *context_process = NULL;
-	struct ds_context *context = NULL;
 	struct cve_components_version versions;
+	struct ice_network *network = NULL;
+	struct cve_device_group *dg = cve_dg_get();
+
 	int retval = cve_os_lock(&g_cve_driver_biglock, CVE_INTERRUPTIBLE);
 
 	if (retval != 0) {
@@ -3882,19 +3931,20 @@ int cve_ds_get_version(cve_context_process_id_t context_pid,
 		goto out;
 	}
 
-	/* get the process based on the id */
-	retval = cve_context_process_get(context_pid, &context_process);
-	if (retval != 0)
-		goto unlock;
-
-	/* get the context from the process */
-	context = get_context_from_process(
-			context_process,
-			context_id);
-	if (!context) {
+	if (dg->icedc_state == ICEDC_STATE_CARD_RESET_REQUIRED) {
+		retval = ICEDRV_KERROR_CARD_RESET_NEEDED;
 		cve_os_log(CVE_LOGLEVEL_ERROR,
-				"get_context_from_process failed\n");
-		retval = -EINVAL;
+		"ERROR:%d Due to IceDC error, card reset is required\n",
+		retval);
+		goto unlock;
+	}
+
+	network = __get_network_from_id(context_pid, context_id, ntw_id);
+	if (network == NULL) {
+		retval = -ICEDRV_KERROR_NTW_INVAL_ID;
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+				"ERROR:%d Given NtwID:0x%llx is not present in this context\n",
+				retval, ntw_id);
 		goto unlock;
 	}
 
@@ -3907,16 +3957,16 @@ int cve_ds_get_version(cve_context_process_id_t context_pid,
 	 * the first dev_context is taken since all
 	 * dev_context has the same loaded FWs.
 	 */
-	cve_dev_get_custom_fw_version_per_context(context->dev_hctx_list,
+	cve_dev_get_custom_fw_version_per_context(network->dev_hctx_list,
 			CVE_FW_IVP_BANK0_TYPE,
 			&versions.ivp_bank0_version);
-	cve_dev_get_custom_fw_version_per_context(context->dev_hctx_list,
+	cve_dev_get_custom_fw_version_per_context(network->dev_hctx_list,
 			CVE_FW_IVP_BANK1_TYPE,
 			&versions.ivp_bank1_version);
-	cve_dev_get_custom_fw_version_per_context(context->dev_hctx_list,
+	cve_dev_get_custom_fw_version_per_context(network->dev_hctx_list,
 			CVE_FW_ASIP_BANK0_TYPE,
 			&versions.asip_bank0_version);
-	cve_dev_get_custom_fw_version_per_context(context->dev_hctx_list,
+	cve_dev_get_custom_fw_version_per_context(network->dev_hctx_list,
 			CVE_FW_ASIP_BANK1_TYPE,
 			&versions.asip_bank1_version);
 
@@ -4565,7 +4615,7 @@ static int __ntw_reserve_clos(struct ice_network *ntw)
 
 	mclos->clos_size[ICE_CLOS_1] = ntw->clos[ICE_CLOS_1];
 	mclos->clos_size[ICE_CLOS_2] = ntw->clos[ICE_CLOS_2];
-	mclos->clos_size[ICE_CLOS_0] = (CLOS_MAX_SIZE -
+	mclos->clos_size[ICE_CLOS_0] = (MAX_CLOS_SIZE_MB -
 					(ntw->clos[ICE_CLOS_1] +
 					ntw->clos[ICE_CLOS_2]));
 
@@ -4593,16 +4643,24 @@ static void __update_ice_req(struct ice_network *ntw,
 			ntw->network_id, ntw->num_picebo_req,
 			ntw->num_sicebo_req,
 			ntw->num_dicebo_req);
+
+		/*ICEBO request could not be met, so disable shared read also*/
+		ntw->shared_read = 0;
 	} else {
 		/* If here then it means that requested resource is met
 		 * and ICEBO_PREFERRED can act like MANDATORY during scheduling
 		 * hence changing icebo_req
 		 */
-		ntw->icebo_req = (ntw->icebo_req == ICEBO_PREFERRED) ?
-					ICEBO_MANDATORY : ntw->icebo_req;
+		if (ntw->icebo_req) {
+			ntw->icebo_req = ICEBO_MANDATORY;
+			ntw->shared_read = 1;
+		} else {
+			ntw->shared_read = 0;
+		}
 		cve_os_log(CVE_LOGLEVEL_DEBUG,
 			"NtwID:0x%llx icebo_req:%d\n",
 			ntw->network_id, ntw->icebo_req);
+
 	}
 
 
@@ -4726,16 +4784,19 @@ enum resource_status ice_ds_ntw_reserve_resource(struct ice_network *ntw)
 		if ((bo->bo_init_state == TWO_ICE) &&
 			(bo->bo_curr_state == ONE_ICE)) {
 
+			ASSERT(dg->num_nonres_picebo);
 			dg->num_nonres_picebo--;
 			dg->num_nonres_dicebo++;
 
 		} else if ((bo->bo_init_state == TWO_ICE) &&
 			(bo->bo_curr_state == NO_ICE)) {
 
+			ASSERT(dg->num_nonres_dicebo);
 			dg->num_nonres_dicebo--;
 		} else if ((bo->bo_init_state == ONE_ICE) &&
 			(bo->bo_curr_state == NO_ICE)) {
 
+			ASSERT(dg->num_nonres_dicebo);
 			dg->num_nonres_dicebo--;
 		} else
 			ASSERT(false);
@@ -4809,6 +4870,15 @@ enum resource_status ice_ds_ntw_borrow_resource(struct ice_network *ntw)
 			(uintptr_t)ntw);
 	}
 
+	ntw->num_picebo_req = ntw->cached_num_picebo_req;
+	ntw->num_sicebo_req = ntw->cached_num_sicebo_req;
+	ntw->num_dicebo_req = ntw->cached_num_dicebo_req;
+	ntw->icebo_req = ntw->cached_icebo_req;
+
+	/* Update ICE requirement before checking for ICE availability*/
+	if (ntw->icebo_req != ICEBO_MANDATORY)
+		__update_ice_req(ntw, dg);
+
 	status = __check_resource_availability(ntw);
 	if (status != RESOURCE_OK) {
 
@@ -4820,9 +4890,6 @@ enum resource_status ice_ds_ntw_borrow_resource(struct ice_network *ntw)
 			cve_ds_unmap_pool_context(ntw->wq->context);
 		goto end;
 	}
-
-	if (ntw->icebo_req != ICEBO_MANDATORY)
-		__update_ice_req(ntw, dg);
 
 	ASSERT(__ntw_reserve_ice(ntw) == 0);
 
@@ -4986,7 +5053,7 @@ void ice_ds_ntw_release_resource(struct ice_network *ntw)
 			dg->num_nonres_picebo++;
 			dg->num_nonres_dicebo--;
 		} else if ((bo->bo_init_state == ONE_ICE) &&
-			(bo->bo_curr_state == ONE_ICE)) {
+			(bo->bo_curr_state == NO_ICE)) {
 
 			dg->num_nonres_dicebo++;
 		} else
@@ -5029,8 +5096,7 @@ void ice_ds_ntw_return_resource(struct ice_network *ntw)
 		cve_os_log(CVE_LOGLEVEL_DEBUG,
 			"No resource to return. NtwID=0x%lx\n",
 			(uintptr_t)ntw);
-
-		return;
+		goto end;
 	}
 
 	/* Once workload is over, placing ICEs in Power-off queue */
@@ -5041,6 +5107,13 @@ void ice_ds_ntw_return_resource(struct ice_network *ntw)
 		__delink_resource_and_pool(ntw);
 
 	if (!ntw->res_resource) {
+		DO_TRACE(trace__icedrvResourceRelease(
+				SPH_TRACE_OP_STATE_START,
+				ntw->wq->context->swc_node.sw_id,
+				ntw->swc_node.parent_sw_id,
+				ntw->swc_node.sw_id, ntw->network_id,
+				ntw->res_resource, ntw->ntw_icemask,
+				ntw->ntw_cntrmask, ntw->clos));
 
 		cve_os_log(CVE_LOGLEVEL_DEBUG,
 			"Releasing resources. NtwID=0x%lx\n",
@@ -5072,11 +5145,27 @@ void ice_ds_ntw_return_resource(struct ice_network *ntw)
 		cve_os_log(CVE_LOGLEVEL_INFO,
 			"Resources released. NtwID:0x%lx\n",
 			(uintptr_t)ntw);
-	} else {
-		cve_os_log(CVE_LOGLEVEL_INFO,
-			"Not releasing resources. NtwID:0x%lx\n",
-			(uintptr_t)ntw);
+
+		DO_TRACE(trace__icedrvResourceRelease(
+				SPH_TRACE_OP_STATE_COMPLETE,
+				ntw->wq->context->swc_node.sw_id,
+				ntw->swc_node.parent_sw_id,
+				ntw->swc_node.sw_id, ntw->network_id,
+				ntw->res_resource, ntw->ntw_icemask,
+				ntw->ntw_cntrmask, ntw->clos));
+		return;
 	}
+	cve_os_log(CVE_LOGLEVEL_INFO,
+		"Not releasing resources. NtwID:0x%lx\n",
+		(uintptr_t)ntw);
+end:
+	DO_TRACE(trace__icedrvResourceRelease(
+				SPH_TRACE_OP_STATE_ABORT,
+				ntw->wq->context->swc_node.sw_id,
+				ntw->swc_node.parent_sw_id,
+				ntw->swc_node.sw_id, ntw->network_id,
+				ntw->res_resource, ntw->ntw_icemask,
+				ntw->ntw_cntrmask, ntw->clos));
 }
 
 static void __flush_ntw_buffers(struct ice_network *ntw)

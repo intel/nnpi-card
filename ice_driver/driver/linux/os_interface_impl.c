@@ -99,6 +99,8 @@ struct sphpb_icedrv_callbacks icedrv_pbcbs = {
 	.get_icebo_to_ring_ratio = icedrv_get_icebo_to_ring_ratio,
 	.set_icebo_to_icebo_ratio = icedrv_set_ice_to_ice_ratio,
 	.get_icebo_to_icebo_ratio = icedrv_get_ice_to_ice_ratio,
+	.get_icebo_frequency = icedrv_get_icebo_frequency,
+	.set_clock_squash = icedrv_set_clock_squash,
 };
 
 /* MACROS*/
@@ -139,7 +141,10 @@ static u32 icemask_user;
 static u32 enable_llc_config_via_axi_reg;
 static u32 sph_soc;
 static int ice_sch_preemption = 1;
+static u32 iccp_throttling = 1;
 
+static u32 initial_iccp_config[3] = {INITIAL_CDYN_VAL, RESET_CDYN_VAL,
+							BLOCKED_CDYN_VAL};
 static int ice_power_off_delay_ms = 1000;
 static int enable_ice_drv_memleak;
 
@@ -177,10 +182,16 @@ module_param(enable_b_step, int, 0);
 MODULE_PARM_DESC(enable_b_step, "Enable B step flow in driver. Default 0 i.e disabled");
 
 module_param(ice_sch_preemption, int, 0);
-MODULE_PARM_DESC(enable_b_step, "Enable kernel premeption during inference scheduling");
+MODULE_PARM_DESC(ice_sch_preemption, "Enable kernel premeption during inference scheduling");
 
 module_param(disable_clk_gating, int, 0);
 MODULE_PARM_DESC(disable_clk_gating, "Disable DSP clock gating");
+
+module_param(iccp_throttling, int, 0);
+MODULE_PARM_DESC(iccp_throttling, "Enable/Disable throttling mode for B step. Default 1 i.e throttling enabled for B step");
+
+module_param_array(initial_iccp_config, int, NULL, 0);
+MODULE_PARM_DESC(initial_iccp_config, "Array of initial iccp config to be done {INITIAL_CDYN_VAL,RESET_CDYN_VAL,BLOCKED_CDYN_VAL}");
 /* UITILITY FUNCTIONS */
 
 /* MODULE LEVEL VARIABLES */
@@ -1628,7 +1639,7 @@ create_idc:
 #endif
 
 	}
-
+	store_llc_max_freq();
 out:
 	FUNC_LEAVE();
 	return retval;
@@ -1639,6 +1650,7 @@ void cve_remove_common(struct cve_os_device *linux_device)
 	int i;
 	u32 active_ice;
 	struct cve_device_group *dg = cve_dg_get();
+	int ret = 0;
 
 	FUNC_ENTER();
 
@@ -1647,6 +1659,12 @@ void cve_remove_common(struct cve_os_device *linux_device)
 		cve_os_log(CVE_LOGLEVEL_ERROR,
 			"Could not find valid device group pointer\n");
 		goto term_iccp;
+	}
+
+	ret = restore_llc_max_freq();
+	if (ret) {
+		cve_os_log_default(CVE_LOGLEVEL_ERROR,
+			"Failed to write llc_max freq %u\n", ret);
 	}
 	ice_iccp_levels_term(dg);
 
@@ -2007,6 +2025,7 @@ static long cve_ioctl_misc(
 			retval = cve_ds_handle_fw_loading(
 					context_pid,
 					p->contextid,
+					p->networkid,
 					p->fw_image,
 					p->fw_binmap,
 					p->fw_binmap_size_bytes);
@@ -2033,6 +2052,7 @@ static long cve_ioctl_misc(
 			retval = cve_ds_get_version(
 				context_pid,
 				p->contextid,
+				p->networkid,
 				&p->out_versions
 				);
 		}
@@ -2128,13 +2148,21 @@ static int __init cve_init(void)
 			boot_cpu_data.x86_stepping);
 
 	param.enable_sph_b_step = false;
-	if (boot_cpu_data.x86_stepping == 1)
+	if (boot_cpu_data.x86_stepping == 1) {
 		param.enable_sph_b_step = true;
+		param.iccp_throttling = iccp_throttling;
+	} else {
+		param.iccp_throttling = 0;
+	}
+
 	/* Configure the driver params*/
 	param.sph_soc = sph_soc;
 	param.enable_llc_config_via_axi_reg = enable_llc_config_via_axi_reg;
 	param.ice_power_off_delay_ms = ice_power_off_delay_ms;
 	param.ice_sch_preemption = ice_sch_preemption;
+	param.initial_iccp_config[0] = initial_iccp_config[0];
+	param.initial_iccp_config[1] = initial_iccp_config[1];
+	param.initial_iccp_config[2] = initial_iccp_config[2];
 	ice_set_driver_config_param(&param);
 
 	retval = ice_swc_init();

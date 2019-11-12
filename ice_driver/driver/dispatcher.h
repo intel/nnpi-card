@@ -126,6 +126,7 @@ int cve_ds_handle_destroy_network(
 int cve_ds_handle_fw_loading(
 		cve_context_process_id_t context_pid,
 		cve_context_id_t context_id,
+		cve_network_id_t network_id,
 		u64 fw_image,
 		u64 fw_binmap,
 		u32 fw_binmap_size_bytes);
@@ -175,11 +176,13 @@ int cve_ds_wait_for_event(cve_context_process_id_t context_pid,
  * inputs:
  *  context_pid - [in] process id
  *  context_id - [in] dispatcher context id
+ *  ntw_id - [in] network id
  *  out_versions - [out] struct of Version structs which contains
  *  the version of CVE components
  */
 int cve_ds_get_version(cve_context_process_id_t context_pid,
 		cve_context_id_t context_id,
+		cve_network_id_t ntw_id,
 		struct cve_components_version *out_versions);
 
 /**

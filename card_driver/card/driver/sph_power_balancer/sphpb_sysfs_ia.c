@@ -45,21 +45,19 @@ static struct attribute_group ia_attr_group = {
 		.attrs = ia_cycls_attrs,
 };
 
-static struct cpu_perfstat {
-	u64 aperf;
-	u64 mperf;
-} curr_cpu_stat;
+struct cpu_perfstat curr_cpu_stat;
 
-static void aperfmperf_snapshot_khz(void *dummy)
+void aperfmperf_snapshot_khz(void *ptr)
 {
+	struct cpu_perfstat *cpu_stat = (struct cpu_perfstat *)ptr;
 	unsigned long flags;
 
 	local_irq_save(flags);
-	rdmsrl(MSR_IA32_APERF, curr_cpu_stat.aperf);
-	rdmsrl(MSR_IA32_MPERF, curr_cpu_stat.mperf);
+	rdmsrl(MSR_IA32_APERF, cpu_stat->aperf);
+	rdmsrl(MSR_IA32_MPERF, cpu_stat->mperf);
 	local_irq_restore(flags);
 
-	curr_cpu_stat.aperf *= cpu_khz;
+	cpu_stat->aperf *= cpu_khz;
 
 	//Frequency calculation
 	//aperf_delta / mperf_delta = frequency in Khz
@@ -81,7 +79,7 @@ static ssize_t show_ia_entry(struct kobject *kobj,
 	if (!cpu_online(cpu))
 		memset(&curr_cpu_stat, 0, sizeof(struct cpu_perfstat));
 	else
-		smp_call_function_single(cpu, aperfmperf_snapshot_khz, NULL, false);
+		smp_call_function_single(cpu, aperfmperf_snapshot_khz, &curr_cpu_stat, true);
 
 	ret += sprintf((buf), "%llu,%llu\n", curr_cpu_stat.aperf, curr_cpu_stat.mperf);
 

@@ -24,11 +24,14 @@
 
 /* TODO - should be replaced with a valid seq num */
 #define CVE_IOCTL_SEQ_NUM 0xFF
-#define MAX_ICE_DEVICES 12
+#define MAX_ICE_NR 12
+#define MAX_HW_COUNTER_NR 32
+#define MAX_CLOS_SIZE_MB 24
 #define MAX_ICE_FREQ_PARAM 800
 #define MIN_ICE_FREQ_PARAM 200
 #define MAX_LLC_FREQ_PARAM 2600
 #define MIN_LLC_FREQ_PARAM 400
+#define CLOS_0_SIZE 3
 #define ICE_FREQ_DIVIDER_FACTOR 25
 #define LLC_FREQ_DIVIDER_FACTOR 100
 #define ICEDRV_VALID_ICE_MASK 0xFFF
@@ -195,6 +198,14 @@ enum ice_execute_infer_priority {
 	EXE_INF_PRIORITY_MAX
 };
 
+enum icedrv_page_sz_type {
+	ICEDRV_PAGE_ALIGNMENT_LOW_32K = 0,
+	ICEDRV_PAGE_ALIGNMENT_32K = 1,
+	ICEDRV_PAGE_ALIGNMENT_16M = 2,
+	ICEDRV_PAGE_ALIGNMENT_32M = 3,
+	ICEDRV_PAGE_ALIGNMENT_MAX = 4
+};
+
 struct cve_surface_descriptor {
 	/** a unique integer ID for each surface from user for debugging
 	 *  to be set to the crc32 of the surface name in the graph
@@ -228,6 +239,11 @@ struct cve_surface_descriptor {
 	__u32 low_pp_cnt;
 	/* Number of MSB patch points where this surface is referenced */
 	__u32 high_pp_cnt;
+	/* Flag to describe the memory area where surface needs to be mapped to
+	 * sw managed area or hw managed. Default value is 0 i.e. sw managed.
+	 * not filled by the user. to be managed internally.
+	 */
+	__u8 map_in_hw_region;
 };
 
 struct cve_infer_surface_descriptor {
@@ -330,6 +346,8 @@ struct ice_network_descriptor {
 	struct cve_surface_descriptor *buf_desc_list;
 	/* Number of entries in above list */
 	__u32 num_buf_desc;
+	/* list of total size requirement per page size */
+	__u64 va_partition_config[ICEDRV_PAGE_ALIGNMENT_MAX];
 	/* List of JG Descriptors */
 	struct cve_job_group *jg_desc_list;
 	/* Number of entries in above list */
@@ -344,6 +362,7 @@ struct ice_network_descriptor {
 	__u8 shared_read;
 	__u8 max_shared_distance;
 	__u32 infer_buf_count;
+	__u8 infer_buf_page_config;
 };
 
 struct ice_infer_descriptor {
@@ -490,6 +509,8 @@ struct ice_hw_config_ice_freq {
 struct cve_load_firmware_params {
 	/* context id */
 	__u64 contextid;
+	/* network id */
+	__u64 networkid;
 	/* address of the memory that holds the image */
 	__u64 fw_image;
 	/* size of the fw image */
@@ -585,6 +606,8 @@ struct cve_components_version {
 struct cve_get_version_params {
 	/* in, context id */
 	__u64 contextid;
+	/*in, id of the network */
+	__u64 networkid;
 	/* out, all components version */
 	struct cve_components_version out_versions;
 };
