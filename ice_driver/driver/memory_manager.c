@@ -1032,6 +1032,13 @@ static int __process_inf_surf_pp(struct cve_patch_point_descriptor *cur_pp_desc,
 	cb_alloc_desc = (struct allocation_desc *)ntw_buf->ntw_buf_alloc;
 	alloc_desc = (struct allocation_desc *)inf_buf->inf_buf_alloc;
 
+	ret = cve_mm_map_kva(cb_alloc_desc);
+	if (ret < 0) {
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+			"cve_mm_map_kva failed %d\n", ret);
+		goto out;
+	}
+
 	ret = __get_patch_point_addr_and_val(cb_alloc_desc,
 			cur_pp_desc, &patch_address, &ks_value);
 	if (ret < 0) {
@@ -1110,6 +1117,13 @@ static int __process_surf_pp(struct cve_patch_point_descriptor *cur_pp_desc,
 	buf_idx = cur_pp_desc->allocation_buf_index;
 	ad = &buf_list[buf_idx];
 
+	ret = cve_mm_map_kva(cb_buf_info->ntw_buf_alloc);
+	if (ret < 0) {
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+				"cve_mm_map_kva failed %d\n", ret);
+		goto out;
+	}
+
 	cb_alloc_desc =
 		(struct allocation_desc *)cb_buf_info->ntw_buf_alloc;
 	alloc_desc = (struct allocation_desc *)ad->ntw_buf_alloc;
@@ -1172,6 +1186,13 @@ static int __process_inter_cb_loop_pp(
 
 	cb_alloc_desc =
 		(struct allocation_desc *)cb_buf_info->ntw_buf_alloc;
+
+	ret = cve_mm_map_kva(cb_buf_info->ntw_buf_alloc);
+	if (ret < 0) {
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+				"cve_mm_map_kva failed %d\n", ret);
+		goto out;
+	}
 
 	ret = __get_patch_point_addr_and_val(cb_alloc_desc,
 			cur_pp_desc, &patch_address, &ks_value);
@@ -1284,6 +1305,13 @@ int ice_mm_patch_cntrs(struct cve_ntw_buffer *buf_list,
 
 		cb_alloc_desc =
 			(struct allocation_desc *)cb_buf_info->ntw_buf_alloc;
+
+		ret = cve_mm_map_kva(cb_buf_info->ntw_buf_alloc);
+		if (ret < 0) {
+			cve_os_log(CVE_LOGLEVEL_ERROR,
+					"cve_mm_map_kva failed %d\n", ret);
+			goto out;
+		}
 
 		/* Gets PP address and current Value in that address */
 		ret = __get_patch_point_addr_and_val(cb_alloc_desc,

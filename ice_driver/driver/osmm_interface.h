@@ -131,7 +131,7 @@ ice_va_t cve_osmm_alloc_get_iova(os_allocation_handle halloc);
  */
 int cve_osmm_get_domain(struct cve_device *cve_dev,
 		u64 *sz_per_page_alignment,
-		u8 infer_buf_page_config,
+		u64 *infer_buf_page_config,
 		os_domain_handle *out_hdomain);
 
 /* free a iommu domain

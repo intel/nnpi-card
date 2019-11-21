@@ -1928,7 +1928,6 @@ static int __process_buf_desc(struct ice_network *ntw,
 	struct ds_context *context = NULL;
 	struct cve_workqueue *wq = NULL;
 	os_domain_handle cve_os_hdomain[MAX_CVE_DEVICES_NR];
-	cve_context_id_t dummy_context_id = 0;
 
 	wq = ntw->wq;
 	context = wq->context;
@@ -1980,13 +1979,6 @@ static int __process_buf_desc(struct ice_network *ntw,
 			),
 		buf->buffer_id);
 
-	ret = cve_mm_map_kva(buf->ntw_buf_alloc);
-	if (ret < 0) {
-		cve_os_log(CVE_LOGLEVEL_ERROR,
-			"cve_mm_map_kva failed %d\n", ret);
-		goto error_map_kva;
-	}
-
 	/* add it to the buffer list in the context */
 	cve_dle_add_to_list_after(context->buf_list, list, buf);
 
@@ -2000,8 +1992,6 @@ static int __process_buf_desc(struct ice_network *ntw,
 
 	return ret;
 
-error_map_kva:
-	cve_mm_destroy_buffer(dummy_context_id, buf->ntw_buf_alloc);
 out:
 	return ret;
 }
@@ -2691,13 +2681,9 @@ int cve_ds_handle_create_network(
 	network->rr_node = NULL;
 	network->res_resource = false;
 
-	if (!network_desc->infer_buf_page_config)
-		network_desc->infer_buf_page_config =
-			ICEDRV_PAGE_ALIGNMENT_32K;
-
 	retval = cve_dev_open_all_contexts(
 			(u64 *)network_desc->va_partition_config,
-			network_desc->infer_buf_page_config,
+			(u64 *)network_desc->infer_buf_page_config,
 			&network->dev_hctx_list);
 	if (retval != 0) {
 		cve_os_log(CVE_LOGLEVEL_ERROR,

@@ -362,7 +362,7 @@ struct ice_network_descriptor {
 	__u8 shared_read;
 	__u8 max_shared_distance;
 	__u32 infer_buf_count;
-	__u8 infer_buf_page_config;
+	__u64 infer_buf_page_config[ICEDRV_PAGE_ALIGNMENT_MAX];
 };
 
 struct ice_infer_descriptor {

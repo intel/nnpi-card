@@ -231,7 +231,10 @@ u32 ice_get_usec_timediff(struct timespec *time1, struct timespec *time2)
 	(time1->tv_nsec <= time2->tv_nsec))) {
 		time_out.tv_sec = time_out.tv_nsec = 0;
 		ret = 0;
-		ASSERT(false);
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+				"Prev Time(Sec:%lu Nsec:%lu) cannot be smaller than Cur Time(Sec:%lu Nsec:%lu)\n",
+		time1->tv_sec, time1->tv_nsec,
+		time2->tv_sec, time2->tv_nsec);
 	} else {
 		time_out.tv_sec = time1->tv_sec - time2->tv_sec;
 		if (time1->tv_nsec < time2->tv_nsec) {
