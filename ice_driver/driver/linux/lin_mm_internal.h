@@ -109,7 +109,7 @@ struct cve_lin_mm_domain {
  */
 int lin_mm_domain_init(struct cve_device *cve_dev,
 		u64 *sz_per_page_alignment,
-		u8 infer_buf_page_config,
+		u64 *infer_buf_page_config,
 		struct cve_lin_mm_domain **out_cve_domain);
 
 /*

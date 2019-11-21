@@ -172,7 +172,7 @@ do { \
 
 static void __do_mmu_config(struct cve_lin_mm_domain *domain,
 		 u64 *sz_per_page_alignment,
-		u8 infer_buf_page_config);
+		u64 *infer_buf_page_config);
 static void __config_page_sz_reg_array(struct cve_lin_mm_domain *domain);
 static void __config_page_sz_for_partition(struct cve_lin_mm_domain *domain,
 		u8 partition_id);
@@ -655,28 +655,61 @@ rollback:
 	goto out;
 }
 
-static void __do_mmu_config(struct cve_lin_mm_domain *domain,
-		u64 *sz_per_page_alignment,
-		u8 infer_buf_page_config)
+
+static void __configure_partition_sz(u64 *sz_per_page_alignment,
+		u64 *infer_buf_page_config, u64 *partition_sz_list)
 {
-	u8 partition = ICE_MEM_BASE_PARTITION, i = IOVA_PAGE_ALIGNMENT_32K;
-	struct ice_mmu_config *mmu_config;
-	u64 start = 0, end = 0, size = 0, unused_sz = 0;
-	u64 _sz_per_page_alignment[IOVA_PAGE_ALIGNMENT_MAX];
+	u8 i = IOVA_PAGE_ALIGNMENT_32K;
+	u32 max_active_infer;
+	u64 sz, total_sz = 0, infer_sz = 1;
 
-
+	/* Calculate total size requirement for buffer in network and infer*/
 	for (; i < IOVA_PAGE_ALIGNMENT_MAX; i++) {
-		_sz_per_page_alignment[i] = round_up_cve_pagesize(
+
+		sz_per_page_alignment[i] = round_up_cve_pagesize(
 						sz_per_page_alignment[i],
 						ICE_PAGE_SZ_256M);
-		if (_sz_per_page_alignment[i] == 0)
-			_sz_per_page_alignment[i] = ICE_PAGE_SZ_256M;
+		if (sz_per_page_alignment[i] == 0)
+			sz_per_page_alignment[i] = ICE_PAGE_SZ_256M;
 
-		size += _sz_per_page_alignment[i];
+		if (infer_buf_page_config[i])
+			infer_sz += infer_buf_page_config[i];
+
+		total_sz += sz_per_page_alignment[i];
+		cve_os_log(CVE_LOGLEVEL_DEBUG,
+				"sz_per_page_alignment[%d]:%llu infer_buf_page_config[%d]:%llu TotalSz:0x%llx\n",
+				i, sz_per_page_alignment[i],
+				i, infer_buf_page_config[i], total_sz);
 	}
-	unused_sz = ICE_VA_HIGH_TOTAL_SZ - size;
-	/* add unused range to the partition used by the infer buffers*/
-	_sz_per_page_alignment[infer_buf_page_config] += unused_sz;
+
+	/* Divide the unused VA space among the partitions used for inference*/
+	max_active_infer = ((ICE_VA_HIGH_TOTAL_SZ - total_sz)/infer_sz);
+
+	for (i = IOVA_PAGE_ALIGNMENT_32K; i < IOVA_PAGE_ALIGNMENT_MAX; i++) {
+		sz = (sz_per_page_alignment[i] +
+			(infer_buf_page_config[i] * max_active_infer));
+		partition_sz_list[i] = round_up_cve_pagesize(sz,
+						ICE_PAGE_SZ_256M);
+		if (partition_sz_list[i] == 0)
+			partition_sz_list[i] = ICE_PAGE_SZ_256M;
+
+		cve_os_log(CVE_LOGLEVEL_DEBUG,
+				"partition_sz_list[%d]:%llu MaxActiveInfer:%d\n",
+				i, partition_sz_list[i], max_active_infer);
+	}
+}
+
+static void __do_mmu_config(struct cve_lin_mm_domain *domain,
+		u64 *sz_per_page_alignment,
+		u64 *infer_buf_page_config)
+{
+	u8 partition = ICE_MEM_BASE_PARTITION;
+	struct ice_mmu_config *mmu_config;
+	u64 start = 0, end = 0;
+	u64 _sz_per_page_alignment[IOVA_PAGE_ALIGNMENT_MAX] = {0};
+
+	__configure_partition_sz(sz_per_page_alignment, infer_buf_page_config,
+			_sz_per_page_alignment);
 
 	for (; partition < ICE_MEM_MAX_PARTITION; partition++) {
 		mmu_config = &domain->mmu_config[partition];
@@ -714,6 +747,10 @@ static void __do_mmu_config(struct cve_lin_mm_domain *domain,
 			mmu_config->va_end = end;
 		}
 
+		mmu_config->pde_start_idx =
+			(mmu_config->va_start/ICE_PAGE_SZ_32M);
+		mmu_config->pde_end_idx =
+			((mmu_config->va_end - 1)/ICE_PAGE_SZ_32M);
 		cve_os_log(CVE_LOGLEVEL_DEBUG,
 				"pa_width:%d pa_shift:%d page_shift:%d va_width:%d, page_sz:%u VaStart:0x%llx VaEnd:0x%llx\n",
 				ICE_DEFAULT_PA_WIDTH, ICE_DEFAULT_PA_SHIFT,
@@ -727,7 +764,7 @@ static void __do_mmu_config(struct cve_lin_mm_domain *domain,
 
 int lin_mm_domain_init(struct cve_device *cve_dev,
 		u64 *sz_per_page_alignment,
-		u8 infer_buf_page_config,
+		u64 *infer_buf_page_config,
 		struct cve_lin_mm_domain **out_cve_domain)
 {
 	struct cve_lin_mm_domain *cve_domain = NULL;
@@ -887,7 +924,7 @@ void lin_mm_domain_destroy(struct cve_lin_mm_domain *cve_domain)
 
 int cve_osmm_get_domain(struct cve_device *cve_dev,
 		u64 *va_partition_config,
-		u8 infer_buf_page_config,
+		u64 *infer_buf_page_config,
 		os_domain_handle *out_hdomain)
 {
 	int retval = -ENOMEM;

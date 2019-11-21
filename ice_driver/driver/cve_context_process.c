@@ -92,7 +92,7 @@ int cve_context_process_destroy(
 		cve_context_process_id_t context_pid)
 {
 	struct cve_context_process *context_process = NULL;
-	int retval = cve_os_lock(&g_cve_driver_biglock, CVE_INTERRUPTIBLE);
+	int retval = cve_os_lock(&g_cve_driver_biglock, CVE_NON_INTERRUPTIBLE);
 
 	if (retval != 0) {
 		retval = -ERESTARTSYS;

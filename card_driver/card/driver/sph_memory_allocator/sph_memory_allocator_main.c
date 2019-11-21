@@ -152,6 +152,15 @@ static void do_mem_cmp_work(struct work_struct *work)
 
 }
 
+static bool overlapped_region(struct mem_region *reg1, struct mem_region *reg2)
+{
+	if ((reg1->start + reg1->size - 1 < reg2->start) ||
+		   (reg2->start + reg2->size - 1 < reg1->start))
+		return false;
+
+	return true;
+}
+
 static void release_list(struct list_head *head)
 {
 	struct mem_region *pos, *tmp;
@@ -202,6 +211,8 @@ static int update_regions(struct mem_region *reg, struct mem_region **tmp, u64 b
 	/* first page */
 	if (bad_page_index == 0) {
 		new_reg = vmalloc(sizeof(struct mem_region));
+		if (new_reg == NULL)
+			return -ENOMEM;
 		new_reg->start = reg->start + PAGE_SIZE;
 		new_reg->size = reg->size - PAGE_SIZE;
 		list_add(&new_reg->list, &reg->list);
@@ -214,7 +225,7 @@ static int update_regions(struct mem_region *reg, struct mem_region **tmp, u64 b
 	} else {
 		reg->size = bad_page_index * PAGE_SIZE;
 		new_reg = vmalloc(sizeof(struct mem_region));
-		if (reg == NULL)
+		if (new_reg == NULL)
 			return -ENOMEM;
 		new_reg->start = reg->start + (bad_page_index + 1) * PAGE_SIZE;
 		new_reg->size = (num_of_pages - (bad_page_index + 1)) * PAGE_SIZE;
@@ -268,7 +279,7 @@ static bool memcmp64_mt(u64 *buf, u64 value, u64 count)
 	return ret;
 }
 
-static int test_memory(struct list_head *head, bool is_protected)
+static int test_list(struct list_head *head, bool is_protected)
 {
 	struct mem_region *reg, *tmp;
 	u64 num_of_pages, num_of_tested_pages, pages_to_test;
@@ -402,6 +413,10 @@ static int create_unprotected_regions(void)
 	list_for_each_entry_safe(unprotected_region, tmp, &unprotected_regions, list)
 		list_for_each_entry(protected_region, &protected_managed_regions, list) {
 
+			/* Two regions does not overlap - skip it */
+			if (!overlapped_region(unprotected_region, protected_region))
+				continue;
+
 			/* If two regions are the same - keep protected */
 			if (unprotected_region->start == protected_region->start &&
 				   unprotected_region->size == protected_region->size) {
@@ -452,8 +467,7 @@ static int create_protected_managed_regions(void)
 		list_for_each_entry(managed_region, &managed_regions, list) {
 
 			/* Two regions does not overlap - skip it */
-			if ((protected_region->start + protected_region->size - 1 < managed_region->start) ||
-				   (managed_region->start + managed_region->size - 1 < protected_region->start))
+			if (!overlapped_region(protected_region, managed_region))
 				continue;
 
 			/* The newly created region is intersection with managed region */
@@ -648,6 +662,56 @@ err:
 
 };
 
+static int test_memory(void)
+{
+	int rc;
+
+	num_of_mem_works = num_online_cpus();
+
+	sph_log_info(START_UP_LOG, "Number of online cpus - %d\n", num_of_mem_works);
+
+	mem_works = kmalloc_array(num_of_mem_works, sizeof(struct mem_work), GFP_KERNEL);
+	if (mem_works == NULL) {
+		rc = -ENOMEM;
+		sph_log_err(START_UP_LOG, "Failed to create works\n");
+		goto failed_to_create_works;
+	}
+
+	wq = create_workqueue("mem_set_wq");
+	if (wq == NULL) {
+		rc = -ENOMEM;
+		sph_log_err(START_UP_LOG, "Failed to create wq\n");
+		goto failed_to_create_wq;
+	}
+
+	rc = test_list(&unprotected_regions, false);
+	if (rc != 0) {
+		sph_log_err(START_UP_LOG, "Failed to test memory\n");
+		goto failed_to_test_unprotected;
+	}
+	print_list("unprotected (after test)", &unprotected_regions);
+
+	rc = test_list(&protected_managed_regions, true);
+	if (rc != 0) {
+		sph_log_err(START_UP_LOG, "Failed to test memory\n");
+		goto failed_to_test_protected;
+	}
+	print_list("protected managed (after test)", &protected_managed_regions);
+
+	destroy_workqueue(wq);
+	kfree(mem_works);
+
+	return 0;
+
+failed_to_test_protected:
+failed_to_test_unprotected:
+	destroy_workqueue(wq);
+failed_to_create_wq:
+	kfree(mem_works);
+failed_to_create_works:
+	return rc;
+}
+
 int sph_memory_allocator_init_module(void)
 {
 	int rc;
@@ -696,7 +760,11 @@ int sph_memory_allocator_init_module(void)
 	print_list("protected (ibecc protected regions)", &protected_regions);
 
 	/* create protected memory regions that are managed by memory allocator */
-	create_protected_managed_regions();
+	rc = create_protected_managed_regions();
+	if (rc != 0) {
+		sph_log_err(START_UP_LOG, "Failed to create protected managed regions\n");
+		goto failed_to_create_protected_managed;
+	}
 	print_list("protected & managed", &protected_managed_regions);
 
 	/* Create unprotected managed memory regions */
@@ -711,79 +779,42 @@ int sph_memory_allocator_init_module(void)
 	SPH_SW_COUNTER_SET(sw_counters, SW_COUNTER_BYTES_BAD_INDEX, 0);
 	SPH_SW_COUNTER_SET(sw_counters, SW_COUNTER_PROT_BYTES_BAD_INDEX, 0);
 	if (test) {
-
-		num_of_mem_works = num_online_cpus();
-
-		sph_log_info(START_UP_LOG, "Number of online cpus - %d\n", num_of_mem_works);
-
-		mem_works = kmalloc_array(num_of_mem_works, sizeof(struct mem_work), GFP_KERNEL);
-		if (mem_works == NULL) {
-			rc = -ENOMEM;
-			sph_log_err(START_UP_LOG, "Failed to create works\n");
-			goto failed_to_create_works;
-		}
-
-		wq = create_workqueue("mem_set_wq");
-		if (wq == NULL) {
-			rc = -ENOMEM;
-			sph_log_err(START_UP_LOG, "Failed to create wq\n");
-			goto failed_to_create_wq;
-		}
-
-		rc = test_memory(&unprotected_regions, false);
-		if (rc != 0) {
-			sph_log_err(START_UP_LOG, "Failed to test memory\n");
-			goto failed_to_test_unprotected;
-		}
-		print_list("unprotected (after test)", &unprotected_regions);
-
-		rc = test_memory(&protected_regions, true);
-		if (rc != 0) {
-			sph_log_err(START_UP_LOG, "Failed to test memory\n");
-			goto failed_to_test_protected;
-		}
-		print_list("protected (after test)", &protected_regions);
-
-		destroy_workqueue(wq);
-		kfree(mem_works);
-	}
-
-	if (list_empty(&unprotected_regions)) {
-		sph_log_err(START_UP_LOG, "Unprotected regions list can't be empty\n");
-		rc = -EPERM;
-		goto err;
-
+		rc = test_memory();
+		if (rc != 0)
+			goto failed_to_test_memory;
 	}
 
 	/* Create ion heap managing unprotected regions */
-	ecc_unprotected_heap_handle = ion_chunk_heap_setup(&unprotected_regions, ECC_NON_PROTECTED_HEAP_NAME);
-	if (IS_ERR(ecc_unprotected_heap_handle)) {
-		sph_log_err(START_UP_LOG, "Failed to create unprotected heap\n");
-		rc = PTR_ERR(ecc_unprotected_heap_handle);
-		ecc_unprotected_heap_handle = NULL;
-		goto err;
-	} else
-		sph_log_debug(START_UP_LOG, "unprotected heap succesfully created\n");
-
-	/* update s/w counter of total bytes in the unprotected regions */
 	SPH_SW_COUNTER_SET(sw_counters, SW_COUNTER_BYTES_TOTAL_INDEX, 0);
-	list_for_each_entry(reg, &unprotected_regions, list)
-		SPH_SW_COUNTER_ADD(sw_counters, SW_COUNTER_BYTES_TOTAL_INDEX, reg->size);
+	if (!list_empty(&unprotected_regions)) {
+		ecc_unprotected_heap_handle = ion_chunk_heap_setup(&unprotected_regions, ECC_NON_PROTECTED_HEAP_NAME);
+		if (IS_ERR(ecc_unprotected_heap_handle)) {
+			sph_log_err(START_UP_LOG, "Failed to create unprotected heap\n");
+			rc = PTR_ERR(ecc_unprotected_heap_handle);
+			ecc_unprotected_heap_handle = NULL;
+			goto failed_to_create_unprotected_heap;
+		} else
+			sph_log_debug(START_UP_LOG, "unprotected heap successfully created\n");
+
+		/* update s/w counter of total bytes in the unprotected regions */
+		list_for_each_entry(reg, &unprotected_regions, list)
+			SPH_SW_COUNTER_ADD(sw_counters, SW_COUNTER_BYTES_TOTAL_INDEX, reg->size);
+	}
 
 	/* If there are ecc protected regions, create ion heap managing them */
 	SPH_SW_COUNTER_SET(sw_counters, SW_COUNTER_PROT_BYTES_TOTAL_INDEX, 0);
-	if (!list_empty(&protected_regions)) {
-		ecc_protected_heap_handle = ion_chunk_heap_setup(&protected_regions, ECC_PROTECTED_HEAP_NAME);
+	if (!list_empty(&protected_managed_regions)) {
+		ecc_protected_heap_handle = ion_chunk_heap_setup(&protected_managed_regions, ECC_PROTECTED_HEAP_NAME);
 		if (IS_ERR(ecc_protected_heap_handle)) {
 			sph_log_err(START_UP_LOG, "Failed to create protected heap\n");
 			rc = PTR_ERR(ecc_protected_heap_handle);
 			ecc_protected_heap_handle = NULL;
-			goto err;
+			goto failed_to_create_protected_heap;
 		} else
 			sph_log_debug(START_UP_LOG, "protected heap succesfully created\n");
 
 		/* update s/w counter of total bytes in the protected regions */
-		list_for_each_entry(reg, &protected_regions, list)
+		list_for_each_entry(reg, &protected_managed_regions, list)
 			SPH_SW_COUNTER_ADD(sw_counters, SW_COUNTER_PROT_BYTES_TOTAL_INDEX, reg->size);
 	}
 
@@ -793,15 +824,15 @@ int sph_memory_allocator_init_module(void)
 	release_list(&unprotected_regions);
 
 	return 0;
-err:
-failed_to_test_protected:
-failed_to_test_unprotected:
-	destroy_workqueue(wq);
-failed_to_create_wq:
-	kfree(mem_works);
-failed_to_create_works:
+
+failed_to_create_protected_heap:
+	ion_chunk_heap_remove(ecc_unprotected_heap_handle);
+failed_to_create_unprotected_heap:
+failed_to_test_memory:
 	release_list(&unprotected_regions);
 failed_to_create_unprotected:
+	release_list(&protected_managed_regions);
+failed_to_create_protected_managed:
 	release_list(&protected_regions);
 failed_to_create_protected:
 	release_list(&managed_regions);

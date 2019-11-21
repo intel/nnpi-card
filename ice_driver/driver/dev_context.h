@@ -35,7 +35,7 @@
  * returns: 0 on success, a negative error code on failure
  */
 int cve_dev_open_all_contexts(u64 *va_partition_config,
-		u8 infer_buf_page_config,
+		u64 *infer_buf_page_config,
 		cve_dev_context_handle_t *out_hctx_list);
 
 /*
