@@ -11,6 +11,7 @@ u32 dma_calc_and_gen_lli(struct sg_table *srcSgt,
 		struct sg_table *dstSgt,
 		void *lliPtr,
 		uint64_t dst_offset,
+		uint64_t max_xfer_size,  /* zero for entire sg_table */
 		void *(*set_data_elem)(void *sgl, dma_addr_t src, dma_addr_t dst, uint32_t size),
 		uint64_t *transfer_size);
 

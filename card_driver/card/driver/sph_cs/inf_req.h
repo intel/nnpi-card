@@ -71,17 +71,10 @@ int inf_req_put(struct inf_req *infreq);
 void infreq_req_init(struct inf_exec_req *req,
 		     struct inf_req *infreq,
 		     struct inf_cmd_list *cmd,
-		     struct inf_sched_params *params);
-int infreq_req_sched(struct inf_exec_req *req);
-
-bool inf_req_ready(struct inf_exec_req *req);
-int inf_req_execute(struct inf_exec_req *req);
-void inf_req_complete(struct inf_exec_req *req, int err);
-
-/* This function should not be called directly, use inf_exec_req_put instead */
-void inf_req_release(struct kref *kref);
-
-void infreq_send_req_fail(struct inf_exec_req *req,
-			  enum event_val       eventVal);
+		     uint8_t priority,
+		     bool sched_params_are_null,
+		     uint16_t batchSize,
+		     uint8_t debugOn,
+		     uint8_t collectInfo);
 
 #endif

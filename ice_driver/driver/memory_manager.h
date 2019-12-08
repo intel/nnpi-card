@@ -273,6 +273,9 @@ int ice_mm_patch_cntrs(struct cve_ntw_buffer *buf_list,
 		struct job_descriptor *job,
 		struct cve_device *dev);
 
+/* post patch dump enable through sysfs */
+void dump_patched_surf(struct ice_network *ntw);
+
 
 /*
  * retrive the page size from domain
@@ -283,11 +286,7 @@ int ice_mm_patch_cntrs(struct cve_ntw_buffer *buf_list,
  */
 void ice_mm_get_page_sz_list(os_domain_handle hdom, u32 **page_sz_list);
 
-#ifdef _DEBUG
 void print_cur_page_table(os_domain_handle hdom);
-#else
-#define print_cur_page_table(hdom)
-#endif
 
 cve_virtual_address_t ice_mm_get_iova(struct cve_ntw_buffer *buffer);
 

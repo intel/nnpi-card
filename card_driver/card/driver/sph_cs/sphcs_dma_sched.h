@@ -59,6 +59,19 @@ typedef int (*sphcs_dma_sched_completion_callback)(struct sphcs *sphcs,
 						   int status,
 						   u32 xferTimeUS);
 
+static inline enum sphcs_dma_direction sph_dma_direction(bool card2host)
+{
+	return card2host ? SPHCS_DMA_DIRECTION_CARD_TO_HOST : SPHCS_DMA_DIRECTION_HOST_TO_CARD;
+}
+
+static inline enum sphcs_dma_priority_request sph_dma_priority(uint8_t protocol_priority)
+{
+	if (protocol_priority != 0)
+		return SPHCS_DMA_PRIORITY_HIGH;
+	else
+		return SPHCS_DMA_PRIORITY_NORMAL;
+}
+
 int sphcs_dma_sched_create(struct sphcs *sphcs,
 			   const struct sphcs_dma_hw_ops *hw_ops,
 			   void *hw_handle,

@@ -167,9 +167,10 @@ static void free_channel(struct channel_data *channel)
 	SPH_ASSERT(channel->closing == 2 && channel->hanging_up);
 
 	mutex_destroy(&channel->write_lock);
-	if (channel->cmd_chan)
+	if (channel->cmd_chan) {
+		channel->cmd_chan->destroy_cb = NULL;
 		sphcs_cmd_chan_put(channel->cmd_chan);
-	else {
+	} else {
 		msg_scheduler_queue_flush(channel->respq);
 		sphcs_destroy_response_queue(g_the_sphcs, channel->respq);
 	}
@@ -237,7 +238,7 @@ static int sphcs_genmsg_chan_release(struct inode *inode, struct file *f)
 	if (channel->write_page_vptr)
 		dma_page_pool_set_page_free(g_the_sphcs->dma_page_pool, channel->write_page_hndl);
 
-	if (channel->write_host_page_valid)
+	if (channel->write_host_page_valid && channel->cmd_chan == NULL)
 		sphcs_response_pool_put_back_response_page(0,
 						  channel->write_host_page_addr,
 						  channel->write_host_page_hndl);
@@ -452,7 +453,8 @@ static ssize_t sphcs_genmsg_chan_write(struct file       *f,
 		atomic_inc(&channel->n_write_dma_req);
 
 		ret = sphcs_dma_sched_start_xfer_single(g_the_sphcs->dmaSched,
-						&channel->c2h_dma_desc,
+						channel->cmd_chan ? &channel->cmd_chan->c2h_dma_desc :
+								    &channel->c2h_dma_desc,
 						channel->write_page_addr,
 						channel->write_host_page_addr,
 						dma_req_data.xfer_size,
@@ -529,9 +531,28 @@ static long write_response_wait(struct file *f, void __user *arg)
 	if (!channel->write_host_page_valid) {
 
 		mutex_unlock(&channel->write_lock);
-		ret = sphcs_response_pool_get_response_page_wait(SPH_MAIN_RESPONSE_POOL_INDEX,
-				&channel->write_host_page_addr,
-				&channel->write_host_page_hndl);
+		if (channel->cmd_chan != NULL) {
+			struct sphcs_host_rb *resp_data_rb = &channel->cmd_chan->c2h_rb[0];
+			uint32_t chunk_size;
+			int n;
+
+			n = host_rb_wait_free_space(resp_data_rb,
+						    SPH_PAGE_SIZE,
+						    1,
+						    &channel->write_host_page_addr,
+						    &chunk_size);
+			if (n != 1 || chunk_size != SPH_PAGE_SIZE) {
+				sph_log_err(SERVICE_LOG, "Failed to get host response page for write n=%d chunk_size=%d\n", n, chunk_size);
+				ret = -1;
+			} else {
+				host_rb_update_free_space(resp_data_rb, SPH_PAGE_SIZE);
+				ret = 0;
+			}
+		} else {
+			ret = sphcs_response_pool_get_response_page_wait(SPH_MAIN_RESPONSE_POOL_INDEX,
+									 &channel->write_host_page_addr,
+									 &channel->write_host_page_hndl);
+		}
 		mutex_lock(&channel->write_lock);
 		if (!ret)
 			channel->write_host_page_valid = 1;
@@ -1725,6 +1746,8 @@ static void sphcs_chan_genmsg_hangup(struct sphcs_cmd_chan *chan, void *cb_ctx)
 	old_msg.hangup = 1;
 	old_msg.host_client_id = chan->protocolID;
 	old_msg.card_client_id = (uint32_t)(uintptr_t)cb_ctx;
+
+	sphcs_cmd_chan_get(chan);
 
 	process_genmsg_command(g_the_sphcs, &old_msg, chan);
 }

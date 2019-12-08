@@ -11,20 +11,25 @@
 #include <linux/hashtable.h>
 #include <linux/spinlock.h>
 #include "inf_types.h"
+#include "sphcs_dma_sched.h"
 
 struct inf_context;
 
 struct inf_cmd_list {
-	void               *magic;
-	struct kref         ref;
-	uint16_t            protocolID;
-	struct inf_context *context;
-	struct hlist_node   hash_node;
-	spinlock_t          lock_irq;
-	struct list_head    req_list;
-	enum create_status  status;
-	int                 destroyed;
-	u32                 reqs_left;
+	void                *magic;
+	struct kref          ref;
+	uint16_t             protocolID;
+	struct inf_context  *context;
+	struct hlist_node    hash_node;
+	spinlock_t           lock_irq;
+	struct inf_exec_req *req_list;
+	enum create_status   status;
+	int                  destroyed;
+	uint16_t             num_reqs;
+	uint16_t             num_left;
+
+	/* used only for "UMD1" implementation - remove once moved to UMD2 */
+	struct sphcs_dma_desc h2c_dma_desc;
 };
 
 int inf_cmd_create(uint16_t              protocolID,
@@ -37,5 +42,6 @@ int is_inf_cmd_ptr(void *ptr);
 void inf_cmd_get(struct inf_cmd_list *cmd);
 int inf_cmd_put(struct inf_cmd_list *cmd);
 
+void inf_cmd_optimize_group_devres(struct inf_cmd_list *cmd);
 
 #endif

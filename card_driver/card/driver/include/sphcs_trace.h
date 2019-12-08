@@ -38,12 +38,13 @@ void sphcs_trace_init(void);
 #define SPH_TP_printk        TP_printk
 
 TRACE_EVENT(SPH_TRACE_INFREQ,
-	TP_PROTO(u8 state, u32 ctxID, u32 netID, u32 reqID),
-	TP_ARGS(state, ctxID, netID, reqID),
+	TP_PROTO(u8 state, u32 ctxID, u32 netID, u32 reqID, u32 cmdlistID),
+	TP_ARGS(state, ctxID, netID, reqID, cmdlistID),
 	SPH_TP_STRUCT__entry(
 			__field(u32, ctxID)
 			__field(u32, netID)
 			__field(u32, reqID)
+			__field(u32, cmdlistID)
 			__field(u8, state)
 	),
 	SPH_TP_fast_assign(
@@ -51,21 +52,26 @@ TRACE_EVENT(SPH_TRACE_INFREQ,
 		       __entry->ctxID = ctxID;
 		       __entry->netID = netID;
 		       __entry->reqID = reqID;
+		       __entry->cmdlistID = cmdlistID;
 	),
-	SPH_TP_printk("state=%s ctxID=%u netID=%u reqID=%u",
+	SPH_TP_printk("state=%s ctxID=%u netID=%u reqID=%u cmdlistID=%u",
 		  sph_trace_op_to_str[__entry->state],
 		  __entry->ctxID,
 		  __entry->netID,
-		  __entry->reqID)
+		  __entry->reqID,
+		  __entry->cmdlistID)
 );
 
+
 TRACE_EVENT(SPH_TRACE_COPY,
-	TP_PROTO(u8 state, u32 ctxID, u32 copyID, u8 isC2H, u64 size),
-	TP_ARGS(state, ctxID, copyID, isC2H, size),
+	TP_PROTO(u8 state, u32 ctxID, u32 copyID, int cmdlistID, u8 isC2H, u64 size, int n_copies),
+	TP_ARGS(state, ctxID, copyID, cmdlistID, isC2H, size, n_copies),
 	SPH_TP_STRUCT__entry(
 			__field(u64, size)
 			__field(u32, ctxID)
 			__field(u32, copyID)
+			__field(int, cmdlistID)
+			__field(int, n_copies)
 			__field(u8, isC2H)
 			__field(u8, state)
 	),
@@ -73,15 +79,60 @@ TRACE_EVENT(SPH_TRACE_COPY,
 			__entry->state = state;
 			__entry->ctxID = ctxID;
 			__entry->copyID = copyID;
+			__entry->cmdlistID = cmdlistID;
 			__entry->isC2H = isC2H;
 			__entry->size = size;
+			__entry->n_copies = n_copies;
 	),
-	SPH_TP_printk("state=%s ctxID=%u copyID=%u isC2H=%d size=0x%llx",
+	SPH_TP_printk("state=%s ctxID=%u copyID=%u cmdlistID=%d isC2H=%d size=0x%llx, n_copies=%d",
 		  sph_trace_op_to_str[__entry->state],
 		  __entry->ctxID,
 		  __entry->copyID,
+		  __entry->cmdlistID,
 		  __entry->isC2H,
-		  __entry->size)
+		  __entry->size,
+		  __entry->n_copies)
+);
+
+TRACE_EVENT(SPH_TRACE_CMDLIST,
+	TP_PROTO(u8 state, u32 ctxID, u32 cmdlistID),
+	TP_ARGS(state, ctxID, cmdlistID),
+	SPH_TP_STRUCT__entry(
+			__field(u64, state)
+			__field(u32, ctxID)
+			__field(u32, cmdlistID)
+	),
+	SPH_TP_fast_assign(
+			__entry->state = state;
+			__entry->ctxID = ctxID;
+			__entry->cmdlistID = cmdlistID;
+	),
+	SPH_TP_printk("state=%s ctxID=%u cmdlistID=%u",
+			sph_trace_op_to_str[__entry->state],
+			__entry->ctxID,
+			__entry->cmdlistID)
+);
+
+TRACE_EVENT(SPH_TRACE_CPYLIST_CREATE,
+	TP_PROTO(u8 state, u32 ctxID, u32 cmdlistID, u32 cpylist_idx),
+	TP_ARGS(state, ctxID, cmdlistID, cpylist_idx),
+	SPH_TP_STRUCT__entry(
+			__field(u64, state)
+			__field(u32, ctxID)
+			__field(u32, cmdlistID)
+			__field(u32, cpylist_idx)
+	),
+	SPH_TP_fast_assign(
+			__entry->state = state;
+			__entry->ctxID = ctxID;
+			__entry->cmdlistID = cmdlistID;
+			__entry->cpylist_idx = cpylist_idx;
+	),
+	SPH_TP_printk("state=%s ctxID=%u cmdlistID=%u cpylist_idx=%u",
+			sph_trace_op_to_str[__entry->state],
+			__entry->ctxID,
+			__entry->cmdlistID,
+			__entry->cpylist_idx)
 );
 
 TRACE_EVENT(SPH_TRACE_DMA,

@@ -17,13 +17,6 @@
 #define _INTEL_SPH_POWER_BALANCER_H_
 
 
-enum SPHPB_DDR_REQUEST {
-	SPHPB_DDR_REQ_LOW = 1,
-	SPHPB_DDR_REQ_MID,
-	SPHPB_DDR_REQ_HIGH
-};
-
-
 struct sphpb_icedrv_callbacks {
 	/* ices per icebo */
 	uint32_t ices_per_icebo;
@@ -54,7 +47,7 @@ struct sphpb_callbacks {
 	 */
 
 	int (*get_efficient_ice_list)(uint64_t ice_mask,
-				      enum SPHPB_DDR_REQUEST ddr,
+				      uint32_t ddr_bw,
 				      uint16_t ring_divisor_fx,
 				      uint16_t ratio_fx,
 				      uint8_t *o_ice_array,
@@ -62,7 +55,7 @@ struct sphpb_callbacks {
 
 	/* request from sphpb to set ice to ring and ice ratio */
 	int (*request_ice_dvfs_values)(uint32_t ice_index,
-				       enum SPHPB_DDR_REQUEST ddr,
+				       uint32_t ddr_bw,
 				       uint16_t ring_divisor_fx,
 				       uint16_t ratio_fx);
 

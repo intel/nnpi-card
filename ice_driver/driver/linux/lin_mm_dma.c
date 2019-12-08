@@ -108,13 +108,18 @@ static void dma_buf_sharing_disconnect_from_buffer(
 	struct lin_mm_allocation *alloc,
 	struct cve_os_allocation *cve_alloc_data);
 
-
-#ifdef _DEBUG
 void cve_osmm_print_page_table(os_domain_handle hdomain)
 {
-	cve_page_table_dump((struct cve_lin_mm_domain *)hdomain);
+	struct cve_device_group *dg = cve_dg_get();
+
+	if (!dg) {
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+			"null dg pointer (%d) !!\n", -EINVAL);
+		return;
+	}
+	if (dg->dump_conf.pt_dump)
+		cve_page_table_dump((struct cve_lin_mm_domain *)hdomain);
 }
-#endif
 
 /*
  * During CreateInfer a copy of ContextDomain is allocated to the

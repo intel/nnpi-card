@@ -14,6 +14,10 @@ struct device;
 struct sphcs;
 struct sphcs_dma_sched;
 
+typedef bool (*genlli_get_next_cb)(void             *ctx,
+				   struct sg_table **out_src,
+				   struct sg_table **out_dst,
+				   uint64_t         *out_max_size);
 struct sphcs_dma_hw_ops {
 	/* called on error recovery */
 	void (*reset_rd_dma_engine)(void *hw_handle);
@@ -23,6 +27,8 @@ struct sphcs_dma_hw_ops {
 	u32 (*calc_lli_size)(void *hw_handle, struct sg_table *src, struct sg_table *dst, uint64_t dst_offset);
 	u64 (*gen_lli)(void *hw_handle, struct sg_table *src, struct sg_table *dst, void *outLli, uint64_t dst_offset);
 	int (*edit_lli)(void *hw_handle, void *outLli, uint32_t size);
+	u32 (*calc_lli_size_vec)(void *hw_handle, uint64_t dst_offset, genlli_get_next_cb cb, void *cb_ctx);
+	u64 (*gen_lli_vec)(void *hw_handle, void *outLli, uint64_t dst_offset, genlli_get_next_cb cb, void *cb_ctx);
 	int (*start_xfer_h2c)(void *hw_handle, int channel, u32 priority, dma_addr_t lli_addr);
 	int (*start_xfer_c2h)(void *hw_handle, int channel, u32 priority, dma_addr_t lli_addr);
 	int (*start_xfer_h2c_single)(void *hw_handle, int channel, u32 priority, dma_addr_t src, dma_addr_t dst, u32 size);

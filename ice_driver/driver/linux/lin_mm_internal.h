@@ -165,8 +165,6 @@ void lin_mm_unmap(struct cve_lin_mm_domain *adom,
 		u32 cve_pages_nr,
 		u8 partition_id);
 
-#ifdef _DEBUG
 void cve_page_table_dump(struct cve_lin_mm_domain *adom);
-#endif
 
 #endif /* _LIN_MM_INTERNAL_H_ */

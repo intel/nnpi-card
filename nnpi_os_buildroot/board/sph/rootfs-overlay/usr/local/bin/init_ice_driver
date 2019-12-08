@@ -46,6 +46,11 @@ check_ices() {
 
                 INTEL_NNPI_ARGS="${INTEL_NNPI_COMMON_ARGS} icemask_user=$mask"
                 modprobe intel_nnpi $INTEL_NNPI_ARGS
+		if [ $? !=  0 ]
+		then
+			echo "Failed to insmod intel_nnpi driver - aborting!"
+			exit 1
+		fi
 #               echo "loaded intel_nnpi with args: $INTEL_NNPI_ARGS"
                 good_ICE=1
                 j=0

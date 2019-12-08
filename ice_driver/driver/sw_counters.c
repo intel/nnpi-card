@@ -1227,11 +1227,12 @@ int sph_sw_counters_release_values_node(struct sph_internal_sw_counters *sw_coun
 int sph_remove_sw_counters_values_node(struct sph_sw_counters *counters)
 {
 	struct sph_internal_sw_counters *sw_counters_values;
+    int ret;
 
 	sw_counters_values = SW_COUNTERS_TO_INTERNAL(counters);
 
-	sph_sw_counters_release_values_node(sw_counters_values);
+	ret = sph_sw_counters_release_values_node(sw_counters_values);
 
 
-	return 0;
+	return ret;
 }

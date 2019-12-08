@@ -118,7 +118,9 @@ enum ice_kerror_type {
 	/** Duplicate Request */
 	ICEDRV_KERROR_DUPLICATE_REQUEST, /* [1141] */
 	/** Invalid ICE id */
-	ICEDRV_KERROR_ICE_NODEV /*[1142]*/
+	ICEDRV_KERROR_ICE_NODEV, /*[1142]*/
+	/** trying to load fw after exIR */
+	ICEDRV_KERROR_FW_FROZEN /*[1143]*/
 };
 
 #endif /* _ICE_DRIVER_ERROR_H_ */

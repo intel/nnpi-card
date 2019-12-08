@@ -41,7 +41,7 @@
 #define SPH_TRACE_STR_FAIL      "fail" /* status - fail: operation failed */
 #define SPH_TRACE_STR_DB        "db"   /* state - db: doorbell done*/
 #define SPH_TRACE_STR_REQ       "req"  /* state - request: */
-#define SPH_TRACE_STR_AVG       "avg"  /* state - average: */
+#define SPH_TRACE_STR_MAX       "max"  /* state - maximum: */
 #define SPH_TRACE_STR_ICE       "ice"  /* state - ice number or ice mask */
 #define SPH_TRACE_STR_PRIORITY  "prioLevel" /* state - priority of inference */
 #define SPH_TRACE_STR_TIME      "time" /* state - time */

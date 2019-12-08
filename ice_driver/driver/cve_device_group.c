@@ -45,7 +45,8 @@ static struct ice_drv_config drv_config_param = {
 	.iccp_throttling = 1,
 	.initial_iccp_config[0] = INITIAL_CDYN_VAL,
 	.initial_iccp_config[1] = RESET_CDYN_VAL,
-	.initial_iccp_config[2] = BLOCKED_CDYN_VAL
+	.initial_iccp_config[2] = BLOCKED_CDYN_VAL,
+	.enable_mmu_pmon = 0
 };
 
 
@@ -314,7 +315,6 @@ static int ice_pm_monitor_task(void *data)
 
 	cve_os_log(CVE_LOGLEVEL_DEBUG,
 		"Power Off thread started\n");
-	sphpb_cbs = device_group->sphpb.sphpb_cbs;
 
 	while (1) {
 
@@ -349,30 +349,31 @@ static int ice_pm_monitor_task(void *data)
 					 &head->poweroff_ts, &out_ts);
 
 		while (timeout_msec >= configured_timeout_ms) {
-			if (head->power_state == ICE_POWER_OFF_INITIATED) {
 
-				icemask |= (1 << head->dev_index);
-				ice_dev_set_power_state(head, ICE_POWER_OFF);
-				ice_swc_counter_set(head->hswc,
-					ICEDRV_SWC_DEVICE_COUNTER_POWER_STATE,
-					ice_dev_get_power_state(head));
+			/*
+			 * power_state must be ICE_POWER_OFF_INITIATED.
+			 * If someone turns it on then it is their
+			 * responsibility to remove it from this list.
+			 */
+			ASSERT(head->power_state == ICE_POWER_OFF_INITIATED);
 
-				if (sphpb_cbs && sphpb_cbs->set_power_state) {
-					ret = sphpb_cbs->set_power_state(
-							head->dev_index, false);
-					if (ret) {
-						cve_os_dev_log(
-							CVE_LOGLEVEL_ERROR,
-							head->dev_index,
-							"failed setting OFF power state OFF with power balancer (%d)\n",
-							ret);
-					}
+			icemask |= (1 << head->dev_index);
+			ice_dev_set_power_state(head, ICE_POWER_OFF);
+			ice_swc_counter_set(head->hswc,
+				ICEDRV_SWC_DEVICE_COUNTER_POWER_STATE,
+				ice_dev_get_power_state(head));
+
+			sphpb_cbs = device_group->sphpb.sphpb_cbs;
+			if (sphpb_cbs && sphpb_cbs->set_power_state) {
+				ret = sphpb_cbs->set_power_state(
+						head->dev_index, false);
+				if (ret) {
+					cve_os_dev_log(
+						CVE_LOGLEVEL_ERROR,
+						head->dev_index,
+						"failed setting OFF power state OFF with power balancer (%d)\n",
+						ret);
 				}
-
-			} else {
-				cve_os_log(CVE_LOGLEVEL_DEBUG,
-					"ICE-%d allocated to Ntw. Power Off aborted.\n",
-					head->dev_index);
 			}
 
 			cve_dle_remove_from_list(
@@ -477,6 +478,14 @@ int ice_kmd_create_dg(void)
 			config->groups[i].devices_nr;
 	device_group->dev_info.active_device_nr = 0;
 	device_group->icedc_state = ICEDC_STATE_NO_ERROR;
+
+	device_group->dump_conf.cb_dump = 0;
+	device_group->dump_conf.pt_dump = 0;
+	device_group->dump_conf.post_patch_surf_dump = 0;
+	device_group->dump_conf.ice_reset = 0;
+	device_group->dump_conf.llc_config = 0;
+	device_group->dump_conf.page_size_config = 0;
+
 #ifdef _DEBUG
 	device_group->dg_exe_order = 0;
 #endif
@@ -484,6 +493,7 @@ int ice_kmd_create_dg(void)
 	device_group->num_nonres_pool = MAX_IDC_POOL_NR;
 	device_group->ntw_with_resources = NULL;
 	device_group->num_running_ntw = 0;
+	device_group->clos_state = CLOS_STATE_DEFAULT;
 
 	device_group->dg_clos_manager.size = MAX_CLOS_SIZE_MB;
 	ice_os_read_clos((void *)&device_group->dg_clos_manager);
@@ -777,9 +787,10 @@ void ice_set_driver_config_param(struct ice_drv_config *param)
 	drv_config_param.initial_iccp_config[0] = param->initial_iccp_config[0];
 	drv_config_param.initial_iccp_config[1] = param->initial_iccp_config[1];
 	drv_config_param.initial_iccp_config[2] = param->initial_iccp_config[2];
+	drv_config_param.enable_mmu_pmon = param->enable_mmu_pmon;
 
 	cve_os_log(CVE_LOGLEVEL_INFO,
-			"DriverConfig: enable_llc_config_via_axi_reg:%d sph_soc:%d ice_power_off_delay_ms:%d, is_b_step_enabled: %d Preemption:%d is_iccp_throttling_enabled:%d initial_cdyn:0x%x reset_cdyn:0x%x blocked_cdyn:0x%x\n",
+			"DriverConfig: enable_llc_config_via_axi_reg:%d sph_soc:%d ice_power_off_delay_ms:%d, is_b_step_enabled: %d Preemption:%d is_iccp_throttling_enabled:%d initial_cdyn:0x%x reset_cdyn:0x%x blocked_cdyn:0x%x MmuPmon:%d\n",
 			drv_config_param.enable_llc_config_via_axi_reg,
 			drv_config_param.sph_soc,
 			drv_config_param.ice_power_off_delay_ms,
@@ -788,7 +799,8 @@ void ice_set_driver_config_param(struct ice_drv_config *param)
 			drv_config_param.iccp_throttling,
 			drv_config_param.initial_iccp_config[0],
 			drv_config_param.initial_iccp_config[1],
-			drv_config_param.initial_iccp_config[2]);
+			drv_config_param.initial_iccp_config[2],
+			drv_config_param.enable_mmu_pmon);
 }
 
 struct ice_drv_config *ice_get_driver_config_param(void)
@@ -855,4 +867,9 @@ u8 ice_is_soc(void)
 u8 ice_sch_allow_preemption(void)
 {
 	return drv_config_param.ice_sch_preemption;
+}
+
+u8 ice_dump_mmu_pmon(void)
+{
+	return drv_config_param.enable_mmu_pmon;
 }

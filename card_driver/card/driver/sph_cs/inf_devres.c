@@ -195,8 +195,6 @@ static void release_devres(struct kref *kref)
 
 	SPH_SW_COUNTER_DEC_VAL(devres->context->sw_counters, CTX_SPHCS_SW_COUNTERS_INFERENCE_DEVICE_RESOURCE_SIZE, devres->size);
 
-	ret = inf_context_put(devres->context);
-	SPH_ASSERT(ret == 0);
 
 	if (likely(devres->destroyed == 1))
 		sphcs_send_event_report(g_the_sphcs,
@@ -204,6 +202,8 @@ static void release_devres(struct kref *kref)
 					0,
 					devres->context->protocolID,
 					devres->protocolID);
+
+	ret = inf_context_put(devres->context);
 
 	kfree(devres);
 }
@@ -228,6 +228,7 @@ void inf_devres_migrate_priority_to_req_queue(struct inf_devres *devres, struct 
 	unsigned long flags;
 	int ret;
 
+	//TODO Fix the migration logic
 	SPH_SPIN_LOCK_IRQSAVE(&devres->lock_irq, flags);
 	list_for_each_entry(pos, &devres->exec_queue, node) {
 		struct inf_exec_req *req = pos->req;
@@ -236,27 +237,9 @@ void inf_devres_migrate_priority_to_req_queue(struct inf_devres *devres, struct 
 			break;
 		if (pos->read && read)
 			continue;
-		if (req->is_copy) {
-			if (req->priority != exec_infreq->sched_params.priority) {
-				SPH_SPIN_LOCK_IRQSAVE(&req->lock_irq, flags);
-				if (!req->in_progress) {
-					//Request didn't reached HW yet , just update priority here
-					req->priority = exec_infreq->sched_params.priority;
-				} else {
-					//Call Dma scheduler for update
-					ret = sphcs_dma_sched_update_priority(g_the_sphcs->dmaSched,
-										req->copy->card2Host ? 0 : 1,
-										req->priority,
-										exec_infreq->sched_params.priority,
-										req->copy->lli_addr);
-					if (ret)
-						sph_log_debug(CREATE_COMMAND_LOG, "Copy request %u priority not updated\n", req->copy->protocolID);
-					else
-						req->priority = exec_infreq->sched_params.priority;
-				}
-				SPH_SPIN_UNLOCK_IRQRESTORE(&req->lock_irq, flags);
-			}
-		}
+		ret = req->f->migrate_priority(req, exec_infreq->priority);
+		if (ret < 0)
+			sph_log_debug(SCHEDULE_COMMAND_LOG, "Failed to migrate priority.\n");
 	}
 	SPH_SPIN_UNLOCK_IRQRESTORE(&devres->lock_irq, flags);
 }
@@ -314,8 +297,6 @@ void inf_devres_del_req_from_queue(struct inf_devres   *devres,
 	SPH_SPIN_UNLOCK_IRQRESTORE(&devres->lock_irq, flags);
 
 	kfree(pos);
-
-	inf_devres_try_execute(devres);
 }
 
 void inf_devres_try_execute(struct inf_devres *devres)

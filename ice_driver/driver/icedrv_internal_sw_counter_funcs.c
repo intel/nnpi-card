@@ -139,6 +139,8 @@ int _create_context_node(struct ds_context *ctx)
 	struct ice_swc_node *swc_node = &ctx->swc_node;
 	void *cur_node, *parent;
 
+	swc_node->parent = NULL;
+
 	ret = ice_swc_check_node(ICEDRV_SWC_CLASS_CONTEXT,
 			swc_node->sw_id, NULL, &cur_node);
 	if (ret > 0) {
@@ -165,12 +167,13 @@ int _create_context_node(struct ds_context *ctx)
 	}
 
 	swc_node->parent = parent;
+
+out:
 	ice_swc_counter_inc(g_sph_swc_global,
 			ICEDRV_SWC_GLOBAL_COUNTER_CTX_TOTAL);
 	ice_swc_counter_inc(g_sph_swc_global,
 			ICEDRV_SWC_GLOBAL_COUNTER_CTX_CURR);
 
-out:
 	return ret;
 }
 
@@ -180,12 +183,14 @@ int _destroy_context_node(struct ds_context *ctx)
 	int ret = 0;
 	struct ice_swc_node *swc_node = &ctx->swc_node;
 
-	ret = ice_swc_destroy_node(ICEDRV_SWC_CLASS_CONTEXT,
-			swc_node->parent, swc_node->sw_id);
-	if (ret < 0)
-		cve_os_log(CVE_LOGLEVEL_ERROR,
-				"Error:%d CTX:%p Failed to delete the ICEDRV_SWC_CLASS_CONTEXT SW Counter\n",
-				ret, ctx);
+	if (swc_node->parent) {
+		ret = ice_swc_destroy_node(ICEDRV_SWC_CLASS_CONTEXT,
+				swc_node->parent, swc_node->sw_id);
+		if (ret < 0)
+			cve_os_log(CVE_LOGLEVEL_ERROR,
+					"Error:%d CTX:%p Failed to delete the ICEDRV_SWC_CLASS_CONTEXT SW Counter\n",
+					ret, ctx);
+	}
 
 	ice_swc_counter_dec(g_sph_swc_global,
 			ICEDRV_SWC_GLOBAL_COUNTER_CTX_CURR);
@@ -215,6 +220,14 @@ static int __get_full_ntw_swc_node(struct ice_network *ntw)
 	struct ds_context *ctx = ntw->wq->context;
 	struct ice_user_full_ntw *user_full_ntw;
 	void *parent;
+
+	if (!ctx->hswc) {
+		ret = -1;
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+				"NtwID:0x%llx No sw entry for context\n",
+				ntw->network_id);
+		goto exit;
+	}
 
 	/* lookup if this full ntw node exsist*/
 	user_full_ntw = cve_dle_lookup(ctx->user_full_ntw, list,
@@ -365,6 +378,7 @@ int _create_ntw_node(struct ice_network *ntw)
 {
 	int ret = 0;
 
+	ntw->hswc = NULL;
 	ret = __get_full_ntw_swc_node(ntw);
 	if (ret < 0) {
 		cve_os_log(CVE_LOGLEVEL_ERROR,
@@ -412,6 +426,8 @@ int _create_infer_node(struct ice_infer *infer)
 	struct ice_network *ntw = infer->ntw;
 	struct ice_swc_node *swc_node = &infer->swc_node;
 	void *parent;
+
+	infer->hswc = NULL;
 
 	if (ntw->hswc) {
 		ret = __get_sub_ntw_swc(ntw, &parent);

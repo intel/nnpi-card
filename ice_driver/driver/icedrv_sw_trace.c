@@ -36,7 +36,7 @@ sph_trace_op_state_to_str[SPH_TRACE_OP_STATE_NUM]     = SPH_TRACE_STR_UNDEF;
 sph_trace_op_status_to_str[SPH_TRACE_OP_STATUS_PASS]   = SPH_TRACE_STR_PASS;
 sph_trace_op_status_to_str[SPH_TRACE_OP_STATUS_FAIL]   = SPH_TRACE_STR_FAIL;
 sph_trace_op_status_to_str[SPH_TRACE_OP_STATUS_NULL]   = SPH_TRACE_STR_NULL;
-sph_trace_op_status_to_str[SPH_TRACE_OP_STATUS_AVG] = SPH_TRACE_STR_AVG;
+sph_trace_op_status_to_str[SPH_TRACE_OP_STATUS_MAX] = SPH_TRACE_STR_MAX;
 sph_trace_op_status_to_str[SPH_TRACE_OP_STATUS_ICE] = SPH_TRACE_STR_ICE;
 sph_trace_op_status_to_str[SPH_TRACE_OP_STATUS_PRIORITY] =
 	SPH_TRACE_STR_PRIORITY;

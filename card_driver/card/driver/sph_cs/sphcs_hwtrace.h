@@ -21,6 +21,7 @@
 #include "sph_types.h"
 #include <linux/kernel.h>
 #include "ipc_protocol.h"
+#include "ipc_chan_protocol.h"
 #include <linux/wait.h>
 
 #define HWTRACING_POOL_MEMORY_SIZE ((uint32_t)(1U<<20))
@@ -37,6 +38,7 @@ struct sphcs_hwtrace_mem_pool {
 
 struct sphcs_hwtrace_data {
 	struct list_head	dma_stream_list;
+	struct sphcs_cmd_chan	*chan;
 	uint32_t		host_resource_count;
 	uint32_t		hwtrace_status;
 	uint32_t		nr_pool_pages;
@@ -61,8 +63,19 @@ void intel_th_deactivate(void *priv);
 
 int intel_th_window_ready(void *priv, struct sg_table *sgt, size_t bytes);
 
+void hwtrace_init_debugfs(struct sphcs_hwtrace_data *hw_tracing,
+				struct dentry *parent,
+				const char    *dirname);
+
+void IPC_OPCODE_HANDLER(CHAN_HWTRACE_ADD_RESOURCE)(struct sphcs *sphcs,
+						     union h2c_ChanHwTraceAddResource *msg);
+
 void IPC_OPCODE_HANDLER(HWTRACE_ADD_RESOURCE)(struct sphcs *sphcs,
 						     union h2c_HwTraceAddResource *msg);
+
+void IPC_OPCODE_HANDLER(CHAN_HWTRACE_STATE)(struct sphcs *sphcs,
+					    union h2c_ChanHwTraceState *msg);
+
 
 void IPC_OPCODE_HANDLER(HWTRACE_STATE)(struct sphcs *sphcs,
 					    union h2c_HwTraceState *msg);

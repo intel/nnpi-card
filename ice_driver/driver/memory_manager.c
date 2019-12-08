@@ -59,6 +59,7 @@ struct allocation_desc {
 	struct ice_iova_desc iova_desc;
 	/* Type of Memory i.e. Kernel/User/Shared/Infer */
 	enum osmm_memory_type mem_type;
+	u8 dump;
 };
 
 /* INTERNAL FUNCTIONS */
@@ -728,6 +729,8 @@ void cve_mm_print_user_buffer(cve_mm_allocation_t halloc,
 		const char *buf_name)
 {
 	struct allocation_desc *alloc = (struct allocation_desc *)halloc;
+	struct cve_device_group __maybe_unused *dg = cve_dg_get();
+
 #ifdef __KERNEL__
 #ifdef CONFIG_DYNAMIC_DEBUG
 	DEFINE_DYNAMIC_DEBUG_METADATA(descriptor, "enable user buffer print");
@@ -736,7 +739,7 @@ void cve_mm_print_user_buffer(cve_mm_allocation_t halloc,
 
 #endif
 #else
-	if (print_debug)
+	if ((print_debug) || (dg->dump_conf.cb_dump))
 #endif
 	{
 		cve_osmm_print_user_buffer(
@@ -747,12 +750,11 @@ void cve_mm_print_user_buffer(cve_mm_allocation_t halloc,
 	}
 }
 
-#ifdef _DEBUG
+
 void print_cur_page_table(os_domain_handle hdom)
 {
 	cve_osmm_print_page_table(hdom);
 }
-#endif
 
 
 static int __patch_inter_cb_offset(struct cve_ntw_buffer *buf_info,
@@ -944,15 +946,28 @@ static void __calc_surf_va(struct allocation_desc *alloc_desc,
 	struct cve_patch_point_descriptor *pp_desc, u64 *surf_ice_va)
 {
 	ice_va_t base_surf_va = 0;
+	ice_va_t __maybe_unused print_va;
+	struct cve_device_group *dg = cve_dg_get();
 
 	base_surf_va = cve_osmm_alloc_get_iova(alloc_desc->halloc);
 
 	__calc_pp_va(base_surf_va, 0, pp_desc, surf_ice_va);
 
-	cve_os_log(CVE_LOGLEVEL_DEBUG,
-		"New PatchValue calculated. BufferICEVA=0x%llx, IsMSB=%u, PatchValue=%llx\n",
-		base_surf_va, pp_desc->is_msb, *surf_ice_va);
+	/* PatchingBufID->Surface ID,
+	 * RefSurID ->which surface is being patched
+	*/
+	if (dg->dump_conf.post_patch_surf_dump) {
+		if (pp_desc->is_msb)
+			print_va = ((*surf_ice_va) >> 32);
+		else
+			print_va = ((*surf_ice_va) & 0xFFFFFFFF);
 
+		cve_os_log(CVE_LOGLEVEL_INFO,
+			"New PatchValue calculated. PatchingBufId:%d RefSurfaceID:%d BufferICEVA=0x%llx, IsMSB=%u, PatchValue=0x%llx\n",
+			pp_desc->patching_buf_index,
+			pp_desc->allocation_buf_index,
+			base_surf_va, pp_desc->is_msb, print_va);
+	}
 }
 
 static int  __create_pp_mirror_image(
@@ -1110,6 +1125,7 @@ static int __process_surf_pp(struct cve_patch_point_descriptor *cur_pp_desc,
 	u64  ks_value;
 	u64 *patch_address = NULL;
 	struct ice_pp_copy *surf_pp;
+	struct cve_device_group *dg = cve_dg_get();
 
 	buf_idx = cur_pp_desc->patching_buf_index;
 	cb_buf_info = &buf_list[buf_idx];
@@ -1127,6 +1143,9 @@ static int __process_surf_pp(struct cve_patch_point_descriptor *cur_pp_desc,
 	cb_alloc_desc =
 		(struct allocation_desc *)cb_buf_info->ntw_buf_alloc;
 	alloc_desc = (struct allocation_desc *)ad->ntw_buf_alloc;
+
+	if (dg->dump_conf.post_patch_surf_dump)
+		cb_buf_info->dump = 1;
 
 	ret = __get_patch_point_addr_and_val(cb_alloc_desc,
 			cur_pp_desc, &patch_address, &ks_value);
@@ -1357,4 +1376,27 @@ cve_virtual_address_t ice_mm_get_iova(struct cve_ntw_buffer *buffer)
 void ice_mm_get_page_sz_list(os_domain_handle hdom, u32 **page_sz_list)
 {
 	return ice_osmm_domain_get_page_sz_list(hdom, page_sz_list);
+}
+
+/* post patch dump enable through sysfs */
+void dump_patched_surf(struct ice_network *ntw)
+{
+	struct cve_ntw_buffer *cur_buf;
+	struct allocation_desc *desc;
+	u32 idx = 0;
+
+	for (; idx < ntw->num_buf; idx++) {
+		cur_buf = &ntw->buf_list[idx];
+		desc = (struct allocation_desc *)cur_buf->ntw_buf_alloc;
+
+		if (cur_buf->dump) {
+		/*dump the surface*/
+			uint8_t *va = (uint8_t *)(uintptr_t)(desc->vaddr);
+
+			cve_os_log(CVE_LOGLEVEL_INFO,
+				"Surface:%u\n", idx);
+			cve_os_print_kernel_buffer(va,
+				desc->size_bytes, "Patched Surface");
+		}
+	}
 }

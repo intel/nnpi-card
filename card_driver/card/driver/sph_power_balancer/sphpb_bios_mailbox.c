@@ -22,7 +22,6 @@
 #define DID_ICLI_SKU11 0x4589
 #define DID_ICLI_SKU12 0x458d
 
-#ifdef CARD_PLATFORM_BR
 static bool poll_bios_mailbox_ready(struct sphpb_pb *sphpb)
 {
 	u32 *mbx_interface;
@@ -52,7 +51,7 @@ static int write_bios_mailbox(uint8_t command, uint8_t param1, uint16_t param2,
 	union BIOS_MAILBOX_INTERFACE verify_iface0, verify_iface1;
 	int ret = 0;
 
-	mutex_lock(&g_the_sphpb->mutex_lock);
+	mutex_lock(&g_the_sphpb->bios_mutex_lock);
 
 	if (unlikely(g_the_sphpb->bios_mailbox_base == NULL)) {
 		sph_log_err(POWER_BALANCER_LOG, "Mailbox is not supported - ERR (%d) !!\n", -EINVAL);
@@ -60,6 +59,10 @@ static int write_bios_mailbox(uint8_t command, uint8_t param1, uint16_t param2,
 		goto err;
 	}
 
+	if (unlikely(g_the_sphpb->bios_mailbox_locked != 0)) {
+		ret = -EBUSY;
+		goto err;
+	}
 
 	mbx_interface = g_the_sphpb->bios_mailbox_base + BIOS_MAILBOX_INTERFACE_OFFSET;
 	mbx_data = g_the_sphpb->bios_mailbox_base + BIOS_MAILBOX_DATA_OFFSET;
@@ -69,11 +72,6 @@ static int write_bios_mailbox(uint8_t command, uint8_t param1, uint16_t param2,
 		sph_log_err(POWER_BALANCER_LOG, "Mailbox is not ready for usage - ERR (%d) !!\n", ret);
 		goto err;
 	}
-
-	sph_log_debug(POWER_BALANCER_LOG, "write to mbox iface 0x%x(%hhu(0x%hhx), %hhu(0x%x), %hu(0x%x)), data 0x%x.\n",
-		      iface.InterfaceValue, iface.Command, iface.Command,
-		      iface.Param1, iface.Param1, iface.Param2, iface.Param2,
-		      i_data);
 
 
 	iowrite32(i_data, mbx_data);
@@ -106,22 +104,14 @@ static int write_bios_mailbox(uint8_t command, uint8_t param1, uint16_t param2,
 		goto err;
 	}
 
-	sph_log_debug(POWER_BALANCER_LOG, "reply from mbox (%x, %x)\n", verify_iface0.InterfaceValue, verify_data);
 	if (o_data)
 		*o_data = verify_data;
 
 err:
-	mutex_unlock(&g_the_sphpb->mutex_lock);
+	mutex_unlock(&g_the_sphpb->bios_mutex_lock);
 
 	return ret;
 }
-#else
-static int write_bios_mailbox(uint8_t command, uint8_t param1, uint16_t param2,
-			      uint32_t i_data, uint32_t *o_data)
-{
-	return 0;
-}
-#endif
 
 int sphpb_map_bios_mailbox(struct sphpb_pb *sphpb)
 {
@@ -165,7 +155,7 @@ int sphpb_map_bios_mailbox(struct sphpb_pb *sphpb)
 		return -EIO;
 	}
 
-	mutex_init(&sphpb->mutex_lock);
+	mutex_init(&sphpb->bios_mutex_lock);
 
 	sphpb->bios_mailbox_base = io_addr;
 
@@ -177,7 +167,7 @@ void sphpb_unmap_bios_mailbox(struct sphpb_pb *sphpb)
 	if (unlikely(sphpb->bios_mailbox_base == NULL))
 		return;
 
-	mutex_destroy(&sphpb->mutex_lock);
+	mutex_destroy(&sphpb->bios_mutex_lock);
 
 	iounmap(sphpb->bios_mailbox_base);
 

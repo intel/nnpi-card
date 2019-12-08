@@ -73,6 +73,7 @@ struct maint_ioctl_sys_info {
 	char bios_version[MAINT_BIOS_VERSION_LEN];
 	char board_name[MAINT_BOARD_NAME_LEN];
 	char image_version[MAINT_IMAGE_VERSION_LEN];
+	uint8_t stepping;
 };
 
 struct maint_ioctl_fpga_update {

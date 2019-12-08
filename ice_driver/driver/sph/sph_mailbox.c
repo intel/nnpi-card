@@ -101,7 +101,7 @@ int write_icedriver_mailbox(struct ice_sphmbox *sphmb,
 		goto err;
 	}
 
-	cve_os_log(CVE_LOGLEVEL_INFO, "write to mbox (%d, %d, %d, %d, %d)\n",
+	cve_os_log(CVE_LOGLEVEL_DEBUG, "write to mbox (%d, %d, %d, %d, %d)\n",
 				iface.BitField.Command, iface.BitField.Param1,
 				iface.BitField.Param2, i_data0, i_data1);
 
@@ -145,7 +145,7 @@ int write_icedriver_mailbox(struct ice_sphmbox *sphmb,
 		goto err;
 	}
 
-	cve_os_log(CVE_LOGLEVEL_INFO, "reply from mbox (%d, %d, %d)\n",
+	cve_os_log(CVE_LOGLEVEL_DEBUG, "reply from mbox (%d, %d, %d)\n",
 		       verify_iface0.InterfaceData, verify_data0, verify_data1);
 	if (o_data0)
 		*o_data0 = verify_data0;

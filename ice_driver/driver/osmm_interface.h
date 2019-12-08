@@ -226,11 +226,7 @@ u8 ice_osmm_alloc_get_page_shift(os_allocation_handle halloc);
 void ice_osmm_domain_get_page_sz_list(os_domain_handle hdomain,
 		u32 **page_sz_list);
 
-#ifdef _DEBUG
 void cve_osmm_print_page_table(os_domain_handle hdomain);
-#else
-#define cve_osmm_print_page_table(hdomain)
-#endif
 
 int cve_osmm_domain_copy(os_domain_handle *hdom_src,
 		os_domain_handle *hdom_dst,

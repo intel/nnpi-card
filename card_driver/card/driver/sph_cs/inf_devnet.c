@@ -192,14 +192,14 @@ static void release_devnet(struct kref *kref)
 
 	SPH_SW_COUNTER_ATOMIC_DEC(devnet->context->sw_counters, CTX_SPHCS_SW_COUNTERS_INFERENCE_NUM_NETWORKS);
 
-	ret = inf_context_put(devnet->context);
-
 	if (likely(devnet->destroyed == 1))
 		sphcs_send_event_report(g_the_sphcs,
 					SPH_IPC_DEVNET_DESTROYED,
 					0,
 					devnet->context->protocolID,
 					devnet->protocolID);
+
+	ret = inf_context_put(devnet->context);
 
 	kfree(devnet);
 }
@@ -509,6 +509,8 @@ int inf_devnet_destroy_all_infreq(struct inf_devnet *devnet)
 	int i;
 	bool found = true;
 
+	inf_devnet_get(devnet);
+
 	do {
 		found = false;
 		SPH_SPIN_LOCK(&devnet->lock);
@@ -521,12 +523,14 @@ int inf_devnet_destroy_all_infreq(struct inf_devnet *devnet)
 
 			if (found) {
 				SPH_SPIN_UNLOCK(&devnet->lock);
-				inf_devnet_put(devnet);
+				inf_req_put(infreq);
 				break;
 			}
 		}
 	} while (found);
 	SPH_SPIN_UNLOCK(&devnet->lock);
+
+	inf_devnet_put(devnet);
 
 	return 0;
 }

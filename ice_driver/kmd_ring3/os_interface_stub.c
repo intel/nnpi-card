@@ -336,7 +336,7 @@ int cve_os_interface_init(void)
 	int retval;
 	u32 i,j, dev_count = 0;
 	u32 devices_nr = g_driver_settings.config->devices_nr;
-	u32 icemask_user, icemask_reg, active_ice;
+	u32 icemask_user, icemask_reg, active_ice, enable_mmu_pmon = 0;
 	u32 enable_llc_config_via_axi_reg = 0;
 	char *icemask_user_str = NULL;
 	char *coral_config = NULL;
@@ -345,6 +345,7 @@ int cve_os_interface_init(void)
 	char hw_folder[20];
 	char *workspace = getenv("WORKSPACE");
 	char *env_llc_config_via_axi_reg;
+	char *mmu_pmon_str = NULL;
 	struct ice_drv_config param;
 	u64 pe_reg_value;
 
@@ -361,6 +362,12 @@ int cve_os_interface_init(void)
 	if (env_llc_config_via_axi_reg)
 		sscanf(env_llc_config_via_axi_reg, "%x", &enable_llc_config_via_axi_reg);
 
+	mmu_pmon_str = getenv("ENABLE_MMU_PMON");
+	if (mmu_pmon_str)
+		sscanf(mmu_pmon_str, "%x", &enable_mmu_pmon);
+
+
+	param.enable_mmu_pmon = enable_mmu_pmon;
 	param.enable_llc_config_via_axi_reg = enable_llc_config_via_axi_reg;
 	/* For RING3, space is always set to 0*/
 	param.sph_soc = 0;

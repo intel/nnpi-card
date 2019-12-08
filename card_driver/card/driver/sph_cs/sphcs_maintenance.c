@@ -212,6 +212,7 @@ static long set_sys_info(void __user *arg)
 	       sys_info.image_version,
 	       SPH_IMAGE_VERSION_LEN);
 	s_sys_info_packet.fpga_rev = s_fpga_rev;
+	s_sys_info_packet.stepping = sys_info.stepping;
 	s_sys_info_packet_valid = true;
 
 	sphcs_maint_send_sys_info();

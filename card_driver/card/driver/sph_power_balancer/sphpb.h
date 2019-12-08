@@ -25,6 +25,8 @@
 #define SPHPB_MAX_ICE_COUNT 12
 #define SPHPB_MAX_ICE_PER_ICEBO 2
 
+#define SPHPB_MIN_RING_POSSIBLE_VALUE	8195
+
 struct kobject;
 
 /*
@@ -37,10 +39,10 @@ struct sphpb_ice_node {
 };
 
 struct sphpb_ice_info {
-	/* ice requested ratio */
-	uint16_t		ratio;
 	/* ice requrested ring ratio */
 	uint16_t		ring_divisor;
+	/* ddr bw request - MB/s*/
+	uint32_t		ddr_bw_req;
 	/* ice busy bit */
 	bool			bEnable;
 };
@@ -82,20 +84,26 @@ struct sphpb_pb {
 
 	/* global icebo ring divisor */
 	uint16_t icebo_ring_divisor;
-	/* ice number with highest ring divisor value, -1 if not set */
-	int      max_ring_divisor_ice_num;
+	/* orig icebo ring divisor - set on driver register*/
+	uint16_t orig_icebo_ring_divisor;
+
+	/* accumalte ddr bw request for all ices */
+	int32_t ddr_bw_req;
+
+	/* save ddr request value, in case of throttle - value will be
+	 * ignored and restored when throttle done.
+	 */
+	uint32_t request_ddr_value;
 
 	struct sphpb_throttle_info throttle_data;
-
 	struct kobject *kobj;
 	struct kobject *ia_kobj_root;
 	struct kobject **ia_kobj;
-	struct kobject *icebo_kobj_root;
-	struct kobject **icebo_kobj;
-	void __iomem *idc_mailbox_base;
 	void __iomem *bios_mailbox_base;
-	spinlock_t lock;
+	int bios_mailbox_locked;
+	struct mutex bios_mutex_lock;
 	struct mutex mutex_lock;
+	bool debug_log;
 };
 
 struct cpu_perfstat {
@@ -104,6 +112,10 @@ struct cpu_perfstat {
 };
 
 void aperfmperf_snapshot_khz(void *dummy);
+
+int do_throttle(struct sphpb_pb *sphpb,
+		uint32_t avg_power_mW,
+		uint32_t power_limit1_mW);
 
 int sphpb_mng_get_efficient_ice_list(struct sphpb_pb *sphpb,
 				     uint32_t ice_mask,
@@ -118,6 +130,7 @@ int sphpb_mng_set_icebo_enable(struct sphpb_pb *sphpb,
 
 int sphpb_mng_request_ice_dvfs_values(struct sphpb_pb *sphpb,
 				      uint32_t ice_index,
+				      uint32_t ddr_bw_req,
 				      uint16_t ring_divisor,
 				      uint32_t ice_ratio);
 
@@ -133,6 +146,9 @@ void sphpb_ia_cycles_sysfs_deinit(struct sphpb_pb *sphpb);
 
 int sphpb_icebo_sysfs_init(struct sphpb_pb *sphpb);
 void sphpb_icebo_sysfs_deinit(struct sphpb_pb *sphpb);
+
+int sphpb_power_overshoot_sysfs_init(struct sphpb_pb *sphpb);
+void sphpb_power_overshoot_sysfs_deinit(struct sphpb_pb *sphpb);
 
 
 

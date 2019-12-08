@@ -29,7 +29,7 @@ BR2_TOOLCHAIN_BUILDROOT_CXX=y
 
 # System
 BR2_TARGET_GENERIC_HOSTNAME="Intel_NNPI[Release]"
-BR2_TARGET_GENERIC_ISSUE="Welcome to NNPI OS - V0.1.03 2019_11_04"
+BR2_TARGET_GENERIC_ISSUE="Welcome to NNPI OS - V0.1.08 "
 BR2_ROOTFS_OVERLAY="board/sph/rootfs-overlay"
 
 
@@ -96,11 +96,9 @@ BR2_PACKAGE_CONNMAN=n
 BR2_PACKAGE_CONNMAN_CLIENT=n
 BR2_PACKAGE_CONNMAN_WIFI=n
 
-### NNPI- for syslog-NG and logrotate
+### NNPI- for syslog-NG
 BR2_PACKAGE_BUSYBOX_SHOW_OTHERS=y
 BR2_PACKAGE_SYSLOG_NG=y
-BR2_PACKAGE_LOGROTATE=y
-
 
 #NNPI - SSH should be embedded until customer decision 
 ###NNPI-LIB SSH for automation 

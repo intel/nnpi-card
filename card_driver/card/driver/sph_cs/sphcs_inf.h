@@ -9,6 +9,23 @@
 #include "sphcs_cs.h"
 #include "ipc_chan_protocol.h"
 
+struct inf_daemon;
+
+/**
+ * @struct inf_data
+ * structure to hold card global inference related data.
+ */
+struct inf_data {
+	spinlock_t lock_bh;
+	struct mutex io_lock;
+	DECLARE_HASHTABLE(context_hash, 4);
+	struct workqueue_struct *inf_wq;
+	struct inf_daemon *daemon;
+#ifdef ULT
+	struct inf_daemon *ult_daemon_save;
+#endif
+};
+
 int inference_init(struct sphcs *sphcs);
 int inference_fini(struct sphcs *sphcs);
 
@@ -30,9 +47,13 @@ void IPC_OPCODE_HANDLER(CHAN_INF_RESOURCE)(struct sphcs                  *sphcs,
 
 void IPC_OPCODE_HANDLER(INF_CMDLIST)(struct sphcs                  *sphcs,
 				     union h2c_InferenceCmdListOp  *cmd);
+void IPC_OPCODE_HANDLER(CHAN_INF_CMDLIST)(struct sphcs                      *sphcs,
+					  union h2c_ChanInferenceCmdListOp  *cmd);
 
 void IPC_OPCODE_HANDLER(SCHEDULE_CMDLIST)(struct sphcs                     *sphcs,
 					  union h2c_InferenceSchedCmdList  *cmd);
+void IPC_OPCODE_HANDLER(CHAN_SCHEDULE_CMDLIST)(struct sphcs                    *sphcs,
+					       union h2c_ChanInferenceSchedCmdList *cmd);
 
 void IPC_OPCODE_HANDLER(INF_NETWORK)(struct sphcs                  *sphcs,
 				      union h2c_InferenceNetworkOp *cmd);
@@ -80,4 +101,7 @@ void IPC_OPCODE_HANDLER(CHAN_INF_NETWORK_RESOURCE_RESERVATION)(struct sphcs *sph
 
 void IPC_OPCODE_HANDLER(NETWORK_PROPERTY)(struct sphcs *sphcs,
 							       union h2c_InferenceNetworkProperty *cmd);
+
+void IPC_OPCODE_HANDLER(CHAN_NETWORK_PROPERTY)(struct sphcs *sphcs,
+							       union h2c_ChanInferenceNetworkSetProperty *cmd);
 #endif
