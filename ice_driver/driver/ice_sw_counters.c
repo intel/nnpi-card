@@ -212,6 +212,18 @@ static const struct sph_sw_counter_info g_swc_device_info[] = {
 	/* ICEDRV_SWC_DEVICE_COUNTER_POWER_STATE*/
 	{ICEDRV_SWC_DEVICE_GROUP_GEN, "icePowerState",
 	 "Power state of ICE - 0=OFF 1=ON 2=OFF initiated 3=UNKNOWN"},
+	/* ICEDRV_SWC_DEVICE_COUNTER_ECC_SERRCOUNT_WRAP */
+	{ICEDRV_SWC_DEVICE_GROUP_GEN, "eccSerrWrap",
+	 "Total wrap around for Deep SRAM ECC single errors"},
+	/* ICEDRV_SWC_DEVICE_COUNTER_ECC_SERRCOUNT */
+	{ICEDRV_SWC_DEVICE_GROUP_GEN, "eccSerrCount",
+	 "Total count of Deep SRAM ECC single errors"},
+	/* ICEDRV_SWC_DEVICE_COUNTER_ECC_DERRCOUNT_WRAP */
+	{ICEDRV_SWC_DEVICE_GROUP_GEN, "eccDerrWrap",
+	 "Total wrap around for Deep SRAM ECC double errors"},
+	/* ICEDRV_SWC_DEVICE_COUNTER_ECC_DERRCOUNT */
+	{ICEDRV_SWC_DEVICE_GROUP_GEN, "eccDerrCount",
+	 "Total count of Deep SRAM ECC double errors"},
 };
 
 static const struct sph_sw_counters_set g_swc_device_set = {
@@ -299,6 +311,8 @@ int _swc_create_node(enum ICEDRV_SWC_CLASS class,
 	int ret;
 	struct swc_value *value, *parent = master;
 	void *test;
+
+	*counters = NULL;
 
 	if ((class <= ICEDRV_SWC_CLASS_GLOBAL) ||
 			(class >= ICEDRV_SWC_CLASS_MAX)) {

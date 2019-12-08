@@ -1,1 +1,1 @@
-*/1 * * * * /etc/logrotate_messages.sh
+*/1 * * * * /etc/NNPI_logrotate.sh

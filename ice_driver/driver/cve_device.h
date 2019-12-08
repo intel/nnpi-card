@@ -65,6 +65,14 @@ enum ICEBO_STATE {
 	TWO_ICE
 };
 
+enum ICEDC_CLOS_STATE {
+
+	CLOS_STATE_DEFAULT = 0,
+	CLOS_STATE_SINGLE_NTW,
+	CLOS_STATE_MULTI_NTW,
+	CLOS_STATE_MAX
+};
+
 /*
  * device info exposed to the userland.
  * the information is supposed to be static - it is
@@ -372,6 +380,18 @@ struct ice_sphpb {
 };
 #endif
 
+/* For sysfs enabled debug dump  */
+
+struct debug_dump_conf {
+	u8 cb_dump;
+	u8 pt_dump;
+	u8 post_patch_surf_dump;
+	u8 ice_reset;
+	u8 llc_config;
+	u8 page_size_config;
+};
+
+
 /* TODO: In future DG can be rebranded as ResourcePool.
  * It contains ICEs, Counters, LLC and Pools info.
  */
@@ -406,6 +426,8 @@ struct cve_device_group {
 	struct ice_network *ntw_with_resources;
 	/* number of running networks */
 	u32 num_running_ntw;
+	/* CLOS state */
+	enum ICEDC_CLOS_STATE clos_state;
 	/* dispatcher data */
 	struct ds_dev_data *ds_data;
 	/* IceDc state, whether card reset is required or not*/
@@ -447,6 +469,7 @@ struct cve_device_group {
 	 *
 	 */
 	u32 llc_max_freq;
+	struct debug_dump_conf dump_conf;
 };
 
 /* Holds all the relevant IDs required for maintaining a map between
@@ -852,6 +875,9 @@ struct ice_network {
 
 	/*Device specific domain data */
 	cve_dev_context_handle_t dev_hctx_list;
+
+	/* Flag to disallow fw loading after exIR */
+	u8 exIR_performed;
 };
 
 struct ice_infer {
@@ -913,6 +939,7 @@ struct cve_ntw_buffer {
 	cve_mm_allocation_t ntw_buf_alloc;
 	/* If positive, then this is InferBuffer. Index in Infer list. */
 	u64 index_in_inf;
+	u8 dump;
 };
 
 struct cve_inf_buffer {
@@ -1010,8 +1037,8 @@ struct cve_completion_event {
 	u64 icedc_err_status;
 	/* Total CB exec time per ICE */
 	u64 total_time[MAX_CVE_DEVICES_NR];
-	/* Store average ICE cycles*/
-	u64 average_ice_cycles;
+	/* Store max ICE cycles*/
+	u64 max_ice_cycle;
 	/* Ice error status*/
 	u64 ice_err_status;
 	/* Shared read error status */

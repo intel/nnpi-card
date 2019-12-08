@@ -27,6 +27,7 @@
 #include "sph_debug.h"
 #include "sph_log.h"
 #include "sphcs_dma_sched.h"
+#include "sphcs_cmd_chan.h"
 
 #define BIT_SET(a)	(((uint32_t)(1))<<(a))
 
@@ -64,6 +65,8 @@ struct npk_res_info {
 
 //host resource information
 struct host_res_info {
+	//TODO: remove this when old UMD removed
+	bool            chan_owned;
 	uint32_t	resource_index;
 	size_t		resource_size;
 	struct		sg_table sgt;
@@ -76,7 +79,7 @@ struct dma_res_info {
 	uint32_t		nr_pages;
 	void			*lli_buf;
 	dma_addr_t		lli_addr;
-	u32			lli_size;
+	size_t			lli_size;
 };
 
 
@@ -103,13 +106,23 @@ enum SPH_HWTRACE_WORK_CMD_TYPE {
 	SPH_HWTRACE_WORK_STATE = 1
 };
 
+struct sphcs_add_resource_cmd {
+	dma_addr_t descriptor_addr;
+	u16 mapID;
+	u32 resource_size;
+};
 
+struct sphcs_state_cmd {
+	u16 subOpcode		: 5;
+	u32 resource_index;
+};
 
 struct sphcs_hwtrace_cmd_work {
 	struct work_struct		work;
 	enum SPH_HWTRACE_WORK_CMD_TYPE	type;
-	union h2c_HwTraceAddResource	add_resource_cmd;
-	union h2c_HwTraceState		state_cmd;
+	struct sphcs_add_resource_cmd	add_resource_cmd;
+	struct sphcs_state_cmd		state_cmd;
+	struct sphcs_cmd_chan		*chan;
 };
 
 void sphcs_hwtrace_wakeup_clients(void)
@@ -203,7 +216,9 @@ void sphcs_hwtrace_cleanup_npk_resource(struct npk_res_info *npk)
 
 void sphcs_hwtrace_cleanup_host_resource(struct host_res_info *host)
 {
-	sg_free_table(&host->sgt);
+	//TODO: remove this when old UMD removed
+	if (!host->chan_owned)
+		sg_free_table(&host->sgt);
 	kfree(host);
 }
 
@@ -441,10 +456,12 @@ void sphcs_hwtrace_update_state(void)
 static int sphcs_hwtrace_dma_stream_complete_cb(struct sphcs *sphcs, void *ctx, const void *user_data, int status, u32 timeUS)
 {
 	struct sphcs_hwtrace_data *hw_tracing = &sphcs->hw_tracing;
+	struct sphcs_cmd_chan *chan = hw_tracing->chan;
 	struct sphcs_dma_res_info *r = (struct sphcs_dma_res_info *)ctx;
 	unsigned long flags;
 	union c2h_HwTraceState response_msg;
-	int hwtrace_err = SPH_HWTRACE_NO_ERR;
+	union c2h_ChanHwTraceState chan_response_msg;
+	int hwtrace_err = SPH_HWTRACE_ERR_NO_ERR;
 	bool bIsLast = true;
 	int index = -1;
 	uint32_t bytes = 0;
@@ -480,21 +497,40 @@ static int sphcs_hwtrace_dma_stream_complete_cb(struct sphcs *sphcs, void *ctx, 
 	}
 
 	//send notification to host that resource is ready for read.
-	memset(&response_msg.value, 0x0, sizeof(response_msg));
+	if (chan) {
+		memset(chan_response_msg.value, 0x0, sizeof(chan_response_msg.value));
 
-	response_msg.opcode	= SPH_IPC_C2H_OP_HWTRACE_STATE;
+		chan_response_msg.chanID	= chan->protocolID;
+		chan_response_msg.opcode	= SPH_IPC_C2H_OP_CHAN_HWTRACE_STATE;
 
-	//in case of last resource, set appropriate sub_opcode
-	if (bIsLast)
-		response_msg.subOpcode = HWTRACE_LAST_RESOURCE_READY;
-	else
-		response_msg.subOpcode = HWTRACE_RESOURCE_READY;
+		//in case of last resource, set appropriate sub_opcode
+		if (bIsLast)
+			chan_response_msg.subOpcode = HWTRACE_LAST_RESOURCE_READY;
+		else
+			chan_response_msg.subOpcode = HWTRACE_RESOURCE_READY;
 
-	response_msg.val1	= bytes;
-	response_msg.val2	= index;
-	response_msg.err	= hwtrace_err;
+		chan_response_msg.val1	= bytes;
+		chan_response_msg.val2	= index;
+		chan_response_msg.err	= hwtrace_err;
 
-	sphcs_msg_scheduler_queue_add_msg(sphcs->public_respq, &response_msg.value, 1);
+		sphcs_msg_scheduler_queue_add_msg(chan->respq, chan_response_msg.value, 2);
+	} else {
+		memset(&response_msg.value, 0x0, sizeof(response_msg));
+
+		response_msg.opcode	= SPH_IPC_C2H_OP_HWTRACE_STATE;
+
+		//in case of last resource, set appropriate sub_opcode
+		if (bIsLast)
+			response_msg.subOpcode = HWTRACE_LAST_RESOURCE_READY;
+		else
+			response_msg.subOpcode = HWTRACE_RESOURCE_READY;
+
+		response_msg.val1	= bytes;
+		response_msg.val2	= index;
+		response_msg.err	= hwtrace_err;
+
+		sphcs_msg_scheduler_queue_add_msg(sphcs->public_respq, &response_msg.value, 1);
+	}
 
 	return 0;
 }
@@ -771,7 +807,9 @@ int intel_th_window_ready(void *priv, struct sg_table *sgt, size_t bytes)
 void sphcs_hwtrace_cleanup_resources_request(struct sphcs *sphcs)
 {
 	struct sphcs_hwtrace_data *hw_tracing = &sphcs->hw_tracing;
+	struct sphcs_cmd_chan *chan = hw_tracing->chan;
 	union c2h_HwTraceState response_msg;
+	union c2h_ChanHwTraceState chan_response_msg;
 	struct sphcs_dma_res_info *r;
 	unsigned long flags;
 
@@ -786,20 +824,34 @@ void sphcs_hwtrace_cleanup_resources_request(struct sphcs *sphcs)
 
 	sphcs_hwtrace_update_state();
 
-	memset(&response_msg.value, 0x0, sizeof(response_msg));
+	if (chan) {
+		memset(chan_response_msg.value, 0x0, sizeof(chan_response_msg));
 
-	response_msg.opcode	= SPH_IPC_C2H_OP_HWTRACE_STATE;
-	response_msg.subOpcode	= HWTRACE_RESOURCE_CLEANUP;
-	response_msg.err	= SPH_HWTRACE_NO_ERR;
+		chan_response_msg.chanID	= chan->protocolID;
+		chan_response_msg.opcode	= SPH_IPC_C2H_OP_CHAN_HWTRACE_STATE;
+		chan_response_msg.subOpcode	= HWTRACE_RESOURCE_CLEANUP;
+		chan_response_msg.err		= SPH_HWTRACE_ERR_NO_ERR;
 
-	sphcs_msg_scheduler_queue_add_msg(sphcs->public_respq, &response_msg.value, 1);
+		sphcs_msg_scheduler_queue_add_msg(chan->respq, chan_response_msg.value, 2);
+
+		hw_tracing->chan = NULL;
+	} else {
+		memset(&response_msg.value, 0x0, sizeof(response_msg));
+
+		response_msg.opcode	= SPH_IPC_C2H_OP_HWTRACE_STATE;
+		response_msg.subOpcode	= HWTRACE_RESOURCE_CLEANUP;
+		response_msg.err	= SPH_HWTRACE_ERR_NO_ERR;
+
+		sphcs_msg_scheduler_queue_add_msg(sphcs->public_respq, &response_msg.value, 1);
+	}
 }
 
-int sphcs_hwtrace_init(struct sphcs *sphcs)
+int sphcs_hwtrace_init(struct sphcs *sphcs, struct sphcs_cmd_chan *chan)
 {
 	struct sphcs_hwtrace_data *hw_tracing = &sphcs->hw_tracing;
-	int hwtrace_err = SPH_HWTRACE_NO_ERR;
+	int hwtrace_err = SPH_HWTRACE_ERR_NO_ERR;
 	union c2h_HwTraceState response_msg;
+	union c2h_ChanHwTraceState chan_response_msg;
 	unsigned long flags;
 	struct sphcs_dma_res_info *r;
 
@@ -809,6 +861,8 @@ int sphcs_hwtrace_init(struct sphcs *sphcs)
 		goto reply_message;
 
 	}
+
+	hw_tracing->chan = chan;
 
 	SPH_SPIN_LOCK_IRQSAVE(&hw_tracing->lock_irq, flags);
 
@@ -828,13 +882,24 @@ int sphcs_hwtrace_init(struct sphcs *sphcs)
 	hw_tracing->hwtrace_status = SPHCS_HWTRACE_INITIALIZED;
 
 reply_message:
-	memset(&response_msg.value, 0x0, sizeof(response_msg));
+	if (chan) {
+		memset(chan_response_msg.value, 0x0, sizeof(chan_response_msg.value));
 
-	response_msg.opcode	= SPH_IPC_C2H_OP_HWTRACE_STATE;
-	response_msg.subOpcode	= HWTRACE_INIT;
-	response_msg.err	= hwtrace_err;
+		chan_response_msg.chanID	= chan->protocolID;
+		chan_response_msg.opcode	= SPH_IPC_C2H_OP_CHAN_HWTRACE_STATE;
+		chan_response_msg.subOpcode	= HWTRACE_INIT;
+		chan_response_msg.err	= hwtrace_err;
 
-	sphcs_msg_scheduler_queue_add_msg(sphcs->public_respq, &response_msg.value, 1);
+		sphcs_msg_scheduler_queue_add_msg(chan->respq, chan_response_msg.value, 2);
+	} else {
+		memset(&response_msg.value, 0x0, sizeof(response_msg));
+
+		response_msg.opcode	= SPH_IPC_C2H_OP_HWTRACE_STATE;
+		response_msg.subOpcode	= HWTRACE_INIT;
+		response_msg.err	= hwtrace_err;
+
+		sphcs_msg_scheduler_queue_add_msg(sphcs->public_respq, &response_msg.value, 1);
+	}
 
 	return 0;
 }
@@ -843,8 +908,10 @@ reply_message:
 int sphcs_hwtrace_deinit(struct sphcs *sphcs)
 {
 	struct sphcs_hwtrace_data *hw_tracing = &sphcs->hw_tracing;
-	int hwtrace_err = SPH_HWTRACE_NO_ERR;
+	struct sphcs_cmd_chan *chan = hw_tracing->chan;
+	int hwtrace_err = SPH_HWTRACE_ERR_NO_ERR;
 	union c2h_HwTraceState response_msg;
+	union c2h_ChanHwTraceState chan_response_msg;
 	struct sphcs_dma_res_info *r;
 	unsigned long flags;
 
@@ -872,13 +939,24 @@ int sphcs_hwtrace_deinit(struct sphcs *sphcs)
 
 reply_message:
 
-	memset(&response_msg.value, 0x0, sizeof(response_msg));
+	if (chan) {
+		memset(chan_response_msg.value, 0x0, sizeof(chan_response_msg.value));
 
-	response_msg.opcode	= SPH_IPC_C2H_OP_HWTRACE_STATE;
-	response_msg.subOpcode	= HWTRACE_DEINIT;
-	response_msg.err	= hwtrace_err;
+		chan_response_msg.chanID	= chan->protocolID;
+		chan_response_msg.opcode	= SPH_IPC_C2H_OP_CHAN_HWTRACE_STATE;
+		chan_response_msg.subOpcode	= HWTRACE_DEINIT;
+		chan_response_msg.err	= hwtrace_err;
 
-	sphcs_msg_scheduler_queue_add_msg(sphcs->public_respq, &response_msg.value, 1);
+		sphcs_msg_scheduler_queue_add_msg(chan->respq, chan_response_msg.value, 2);
+	} else {
+		memset(&response_msg.value, 0x0, sizeof(response_msg));
+
+		response_msg.opcode	= SPH_IPC_C2H_OP_HWTRACE_STATE;
+		response_msg.subOpcode	= HWTRACE_DEINIT;
+		response_msg.err	= hwtrace_err;
+
+		sphcs_msg_scheduler_queue_add_msg(sphcs->public_respq, &response_msg.value, 1);
+	}
 
 	return 0;
 }
@@ -899,7 +977,7 @@ static int sphcs_hwtrace_get_hostres_complete_cb(struct sphcs *sphcs,
 	struct sphcs_dma_res_info *r;
 	struct sg_table *sgt = &(host->sgt);
 	struct scatterlist *sgl_curr;
-	int hwtrace_err = SPH_HWTRACE_NO_ERR;
+	int hwtrace_err = SPH_HWTRACE_ERR_NO_ERR;
 	int i, ret = 0;
 	uint64_t total_entries_bytes = 0;
 	unsigned long flags;
@@ -1009,9 +1087,11 @@ void sphcs_hwtrace_unlock_host_res(struct sphcs *sphcs,
 				   uint32_t resource_index)
 {
 	struct sphcs_hwtrace_data *hw_tracing = &sphcs->hw_tracing;
+	struct sphcs_cmd_chan *chan = hw_tracing->chan;
 	union c2h_HwTraceState response_msg;
+	union c2h_ChanHwTraceState chan_response_msg;
 	unsigned long flags;
-	int hwtrace_err = SPH_HWTRACE_NO_ERR;
+	int hwtrace_err = SPH_HWTRACE_ERR_NO_ERR;
 	bool bFound = false;
 	struct sphcs_dma_res_info *r;
 
@@ -1045,56 +1125,189 @@ void sphcs_hwtrace_unlock_host_res(struct sphcs *sphcs,
 
 
 reply_message:
-	memset(&response_msg.value, 0x0, sizeof(response_msg));
+	if (chan) {
+		memset(chan_response_msg.value, 0x0, sizeof(chan_response_msg.value));
 
-	response_msg.opcode	= SPH_IPC_C2H_OP_HWTRACE_STATE;
-	response_msg.subOpcode	= HWTRACE_UNLOCK_RESOURCE;
-	response_msg.val1	= resource_index;
+		chan_response_msg.chanID	= chan->protocolID;
+		chan_response_msg.opcode	= SPH_IPC_C2H_OP_CHAN_HWTRACE_STATE;
+		chan_response_msg.subOpcode	= HWTRACE_UNLOCK_RESOURCE;
+		chan_response_msg.val1		= resource_index;
+		chan_response_msg.err		= hwtrace_err;
+
+		sphcs_msg_scheduler_queue_add_msg(chan->respq, chan_response_msg.value, 2);
+	} else {
+		memset(&response_msg.value, 0x0, sizeof(response_msg));
+
+		response_msg.opcode	= SPH_IPC_C2H_OP_HWTRACE_STATE;
+		response_msg.subOpcode	= HWTRACE_UNLOCK_RESOURCE;
+		response_msg.val1	= resource_index;
+		response_msg.err	= hwtrace_err;
+
+		sphcs_msg_scheduler_queue_add_msg(sphcs->public_respq, &response_msg.value, 1);
+	}
+}
+
+void sphcs_hwtrace_query_state(struct sphcs *sphcs, struct sphcs_cmd_chan *chan)
+{
+	struct sphcs_hwtrace_data *hw_tracing = &sphcs->hw_tracing;
+	union c2h_HwTraceState response_msg;
+	union c2h_ChanHwTraceState chan_response_msg;
+
+	if (chan) {
+		memset(chan_response_msg.value, 0x0, sizeof(chan_response_msg.value));
+
+		chan_response_msg.chanID	= chan->protocolID;
+		chan_response_msg.opcode	= SPH_IPC_C2H_OP_CHAN_HWTRACE_STATE;
+		chan_response_msg.subOpcode	= HWTRACE_QUERY_STATE;
+		chan_response_msg.val1	= hw_tracing->hwtrace_status;
+		chan_response_msg.val2	= hw_tracing->host_resource_count;
+
+		sphcs_msg_scheduler_queue_add_msg(chan->respq, chan_response_msg.value, 2);
+	} else {
+		memset(&response_msg.value, 0x0, sizeof(response_msg));
+
+		response_msg.opcode	= SPH_IPC_C2H_OP_HWTRACE_STATE;
+		response_msg.subOpcode	= HWTRACE_QUERY_STATE;
+		response_msg.val1	= hw_tracing->hwtrace_status;
+		response_msg.val2	= hw_tracing->host_resource_count;
+
+		sphcs_msg_scheduler_queue_add_msg(sphcs->public_respq, &response_msg.value, 1);
+	}
+}
+
+void sphcs_hwtrace_query_mem_pool_info(struct sphcs *sphcs, struct sphcs_cmd_chan *chan)
+{
+	struct sphcs_hwtrace_data *hw_tracing = &sphcs->hw_tracing;
+	union c2h_HwTraceState response_msg;
+	union c2h_ChanHwTraceState chan_response_msg;
+
+	if (chan) {
+		memset(chan_response_msg.value, 0x0, sizeof(chan_response_msg.value));
+
+		chan_response_msg.chanID	= chan->protocolID;
+		chan_response_msg.opcode	= SPH_IPC_C2H_OP_CHAN_HWTRACE_STATE;
+		chan_response_msg.subOpcode	= HWTRACE_GET_MEM_POOL_INFO;
+		chan_response_msg.val1		= hw_tracing->nr_pool_pages;
+		chan_response_msg.val2		= SPHCS_HWTRACING_MAX_POOL_LENGTH;
+
+		sphcs_msg_scheduler_queue_add_msg(chan->respq, chan_response_msg.value, 2);
+	} else {
+		memset(&response_msg.value, 0x0, sizeof(response_msg));
+
+		response_msg.opcode	= SPH_IPC_C2H_OP_HWTRACE_STATE;
+		response_msg.subOpcode	= HWTRACE_GET_MEM_POOL_INFO;
+		response_msg.val1	= hw_tracing->nr_pool_pages;
+		response_msg.val2	= SPHCS_HWTRACING_MAX_POOL_LENGTH;
+
+		sphcs_msg_scheduler_queue_add_msg(sphcs->public_respq, &response_msg.value, 1);
+	}
+}
+
+void sphcs_hwtrace_add_resource_2(struct sphcs *sphcs,
+				struct sphcs_add_resource_cmd *res_data)
+{
+	struct sphcs_hwtrace_data *hw_tracing = &sphcs->hw_tracing;
+	struct sphcs_cmd_chan *chan = hw_tracing->chan;
+	struct sphcs_hostres_map *hostres_map;
+	int hwtrace_err = SPH_HWTRACE_ERR_NO_ERR;
+	union c2h_ChanHwTraceState response_msg;
+	struct sphcs_dma_res_info *r;
+	struct host_res_info *res_info;
+	unsigned long flags;
+	bool bFound = false;
+
+	hostres_map = sphcs_cmd_chan_find_hostres(chan, res_data->mapID);
+	if (!hostres_map) {
+		sph_log_err(HWTRACE_LOG, "Fail to find host res map channel (%u) res map id (%u)\n", chan->protocolID, res_data->mapID);
+		hwtrace_err = SPH_HWTRACE_ERR_ADD_RESOURCE_FAIL;
+		goto reply_message;
+	}
+
+	switch (hw_tracing->hwtrace_status) {
+	case SPHCS_HWTRACE_INITIALIZED:
+	case SPHCS_HWTRACE_ASIGNED:
+	case SPHCS_HWTRACE_DEACTIVATED:
+		break;
+	default:
+		hwtrace_err = SPH_HWTRACE_ERR_INVALID_OPCODE;
+		sph_log_err(HWTRACE_LOG, "add resource request in a bad state\n");
+		goto reply_message;
+	}
+
+	//allocate new resource info.
+	res_info = kzalloc(sizeof(*res_info), GFP_KERNEL);
+	if (unlikely(res_info == NULL)) {
+		sph_log_err(HWTRACE_LOG, "allocation failed\n");
+		hwtrace_err = SPH_HWTRACE_ERR_NO_MEMORY;
+		goto reply_message;
+	}
+
+	res_info->sgt = hostres_map->host_sgt;
+	res_info->resource_size = hostres_map->size;
+	//TODO: remove this when old UMD removed
+	res_info->chan_owned = true;
+
+	SPH_SPIN_LOCK_IRQSAVE(&hw_tracing->lock_irq, flags);
+
+	list_for_each_entry(r,
+			    &hw_tracing->dma_stream_list,
+			    node) {
+		if (r->host_res == NULL &&
+		    ~(r->state & HWTRACE_STATE_NPK_RESOURCE_CLEANUP)) {
+			bFound = true;
+			r->host_res = res_info;
+			r->state |= HWTRACE_STATE_DMA_INFO_DIRTY;
+			break;
+		}
+	}
+
+	SPH_SPIN_UNLOCK_IRQRESTORE(&hw_tracing->lock_irq, flags);
+
+
+	if (!bFound) {
+		r = kzalloc(sizeof(*r), GFP_NOWAIT);
+		if (unlikely(r == NULL)) {
+			hwtrace_err = SPH_HWTRACE_ERR_NO_MEMORY;
+			goto reply_message;
+		}
+
+		r->state |= HWTRACE_STATE_DMA_INFO_DIRTY;
+		r->host_res = res_info;
+
+		SPH_SPIN_LOCK_IRQSAVE(&hw_tracing->lock_irq, flags);
+
+		res_info->resource_index = hw_tracing->host_resource_count++;
+		list_add_tail(&r->node, &hw_tracing->dma_stream_list);
+
+		SPH_SPIN_UNLOCK_IRQRESTORE(&hw_tracing->lock_irq, flags);
+	}
+
+	sphcs_hwtrace_update_state();
+
+reply_message:
+
+	memset(response_msg.value, 0x0, sizeof(response_msg.value));
+
+	response_msg.chanID     = chan->protocolID;
+	response_msg.opcode	= SPH_IPC_C2H_OP_CHAN_HWTRACE_STATE;
+	response_msg.subOpcode	= HWTRACE_ADD_RESOURCE;
 	response_msg.err	= hwtrace_err;
 
-	sphcs_msg_scheduler_queue_add_msg(sphcs->public_respq, &response_msg.value, 1);
-}
+	sphcs_msg_scheduler_queue_add_msg(chan->respq, response_msg.value, 2);
 
-void sphcs_hwtrace_query_state(struct sphcs *sphcs)
-{
-	struct sphcs_hwtrace_data *hw_tracing = &sphcs->hw_tracing;
-	union c2h_HwTraceState response_msg;
-
-	memset(&response_msg.value, 0x0, sizeof(response_msg));
-
-	response_msg.opcode	= SPH_IPC_C2H_OP_HWTRACE_STATE;
-	response_msg.subOpcode	= HWTRACE_QUERY_STATE;
-	response_msg.val1	= hw_tracing->hwtrace_status;
-	response_msg.val2	= hw_tracing->host_resource_count;
-
-	sphcs_msg_scheduler_queue_add_msg(sphcs->public_respq, &response_msg.value, 1);
-}
-
-void sphcs_hwtrace_query_mem_pool_info(struct sphcs *sphcs)
-{
-	struct sphcs_hwtrace_data *hw_tracing = &sphcs->hw_tracing;
-	union c2h_HwTraceState response_msg;
-
-	memset(&response_msg.value, 0x0, sizeof(response_msg));
-
-	response_msg.opcode	= SPH_IPC_C2H_OP_HWTRACE_STATE;
-	response_msg.subOpcode	= HWTRACE_GET_MEM_POOL_INFO;
-	response_msg.val1	= hw_tracing->nr_pool_pages;
-	response_msg.val2	= SPHCS_HWTRACING_MAX_POOL_LENGTH;
-
-	sphcs_msg_scheduler_queue_add_msg(sphcs->public_respq, &response_msg.value, 1);
+	return;
 }
 
 // opcode for adding new host resource for streaming data
 void sphcs_hwtrace_add_resource(struct sphcs *sphcs,
-				union h2c_HwTraceAddResource *msg)
+				struct sphcs_add_resource_cmd *res_data)
 {
 	struct sphcs_hwtrace_data *hw_tracing = &sphcs->hw_tracing;
 	struct sphcs_hwtrace_res_add_req *dma_req_data;
 	struct host_res_info *res_info;
 	union c2h_HwTraceState response_msg;
 	dma_addr_t dma_src_addr;
-	int hwtrace_err = SPH_HWTRACE_NO_ERR;
+	int hwtrace_err = SPH_HWTRACE_ERR_NO_ERR;
 	uint32_t resources_count = hw_tracing->host_resource_count;
 	int ret;
 	unsigned long timeout = usecs_to_jiffies(5000000);
@@ -1127,8 +1340,8 @@ void sphcs_hwtrace_add_resource(struct sphcs *sphcs,
 	}
 
 	dma_req_data->res_info = res_info;
-	dma_req_data->res_info->resource_size = msg->resource_size;
-	dma_src_addr = msg->descriptor_addr;
+	dma_req_data->res_info->resource_size = res_data->resource_size;
+	dma_src_addr = res_data->descriptor_addr;
 
 	ret = dma_page_pool_get_free_page(sphcs->dma_page_pool,
 					  &dma_req_data->card_dma_page_hndl,
@@ -1186,37 +1399,76 @@ reply_message:
 	sphcs_msg_scheduler_queue_add_msg(sphcs->public_respq, &response_msg.value, 1);
 }
 
+static void cleanup_hwtrace(struct sphcs_cmd_chan *chan, void *cb_ctx)
+{
+	struct sphcs *sphcs = (struct sphcs *)cb_ctx;
+
+	sphcs_hwtrace_deinit(sphcs);
+	sphcs_hwtrace_cleanup_resources_request(sphcs);
+}
 
 void sphcs_hwtrace_state(struct sphcs *sphcs,
-			 union h2c_HwTraceState *msg)
+				struct sphcs_state_cmd	*state_cmd,
+				struct sphcs_cmd_chan	*chan)
 {
 	union c2h_HwTraceState response_msg;
+	union c2h_ChanHwTraceState chan_response_msg;
 	struct sphcs_hwtrace_data *hw_tracing = &sphcs->hw_tracing;
-	int hwtrace_err = SPH_HWTRACE_NO_ERR;
+	int hwtrace_err = SPH_HWTRACE_ERR_NO_ERR;
 
 	if (hw_tracing->hwtrace_status == SPHCS_HWTRACE_NOT_SUPPORTED) {
 		hwtrace_err = SPH_HWTRACE_ERR_INTEL_TH_REG;
 		goto reply_message;
 	}
 
-	switch (msg->subOpcode) {
+	switch (state_cmd->subOpcode) {
 	case HWTRACE_INIT:
-		sphcs_hwtrace_init(sphcs);
+		sphcs_hwtrace_init(sphcs, chan);
+		if (chan &&
+			hw_tracing->hwtrace_status == SPHCS_HWTRACE_INITIALIZED) {
+			chan->destroy_cb = cleanup_hwtrace;
+			chan->destroy_cb_ctx = sphcs;
+		}
 		break;
 	case HWTRACE_DEINIT:
+		if (chan) {
+			if (!hw_tracing->chan || (chan->protocolID !=  hw_tracing->chan->protocolID)) {
+				sph_log_err(HWTRACE_LOG, "Err: Deinit Invalid channel\n");
+				hwtrace_err = SPH_HWTRACE_ERR_INVALID_VALUE;
+				goto reply_message;
+			}
+		}
 		sphcs_hwtrace_deinit(sphcs);
 		break;
 	case HWTRACE_RESOURCE_CLEANUP:
+		if (chan) {
+			if (!hw_tracing->chan || (chan->protocolID !=  hw_tracing->chan->protocolID)) {
+				sph_log_err(HWTRACE_LOG, "Err: Deinit Invalid channel\n");
+				hwtrace_err = SPH_HWTRACE_ERR_INVALID_VALUE;
+				goto reply_message;
+			}
+		}
 		sphcs_hwtrace_cleanup_resources_request(sphcs);
+		if (chan) {
+			chan->destroy_cb = NULL;
+			chan->destroy_cb_ctx = NULL;
+		}
 		break;
 	case HWTRACE_QUERY_STATE:
-		sphcs_hwtrace_query_state(sphcs);
+		sphcs_hwtrace_query_state(sphcs, chan);
 		break;
 	case HWTRACE_GET_MEM_POOL_INFO:
-		sphcs_hwtrace_query_mem_pool_info(sphcs);
+		sphcs_hwtrace_query_mem_pool_info(sphcs, chan);
 		break;
 	case HWTRACE_UNLOCK_RESOURCE:
-		sphcs_hwtrace_unlock_host_res(sphcs, msg->val);
+		if (chan) {
+			if (!hw_tracing->chan || (chan->protocolID !=  hw_tracing->chan->protocolID)) {
+				sph_log_err(HWTRACE_LOG, "Err: Deinit Invalid channel\n");
+				hwtrace_err = SPH_HWTRACE_ERR_INVALID_VALUE;
+				goto reply_message;
+			}
+		}
+		sphcs_hwtrace_unlock_host_res(sphcs, state_cmd->resource_index);
 		break;
 	default:
 		hwtrace_err = SPH_HWTRACE_ERR_INVALID_OPCODE;
@@ -1225,13 +1477,24 @@ void sphcs_hwtrace_state(struct sphcs *sphcs,
 
 	return;
 reply_message:
-	memset(&response_msg.value, 0x0, sizeof(response_msg));
+	if (chan) {
+		memset(chan_response_msg.value, 0x0, sizeof(chan_response_msg.value));
 
-	response_msg.opcode	= SPH_IPC_C2H_OP_HWTRACE_STATE;
-	response_msg.subOpcode	= msg->subOpcode;
-	response_msg.err	= hwtrace_err;
+		chan_response_msg.chanID	= chan->protocolID;
+		chan_response_msg.opcode	= SPH_IPC_C2H_OP_CHAN_HWTRACE_STATE;
+		chan_response_msg.subOpcode	= state_cmd->subOpcode;
+		chan_response_msg.err	= hwtrace_err;
 
-	sphcs_msg_scheduler_queue_add_msg(sphcs->public_respq, &response_msg.value, 1);
+		sphcs_msg_scheduler_queue_add_msg(chan->respq, chan_response_msg.value, 2);
+	} else {
+		memset(&response_msg.value, 0x0, sizeof(response_msg));
+
+		response_msg.opcode	= SPH_IPC_C2H_OP_HWTRACE_STATE;
+		response_msg.subOpcode	= state_cmd->subOpcode;
+		response_msg.err	= hwtrace_err;
+
+		sphcs_msg_scheduler_queue_add_msg(sphcs->public_respq, &response_msg.value, 1);
+	}
 }
 
 static void hwtrace_op_work_handler(struct work_struct *work)
@@ -1243,16 +1506,69 @@ static void hwtrace_op_work_handler(struct work_struct *work)
 
 	switch (op->type) {
 	case SPH_HWTRACE_WORK_ADD_RESOURCE:
-		sphcs_hwtrace_add_resource(sphcs, &op->add_resource_cmd);
+		if (op->chan)
+			sphcs_hwtrace_add_resource_2(sphcs, &op->add_resource_cmd);
+		else
+			sphcs_hwtrace_add_resource(sphcs, &op->add_resource_cmd);
 		break;
 	case SPH_HWTRACE_WORK_STATE:
-		sphcs_hwtrace_state(sphcs, &op->state_cmd);
+		sphcs_hwtrace_state(sphcs, &op->state_cmd, op->chan);
 		break;
 	};
 
+	if (op->chan)
+		sphcs_cmd_chan_put(op->chan);
 	kfree(op);
 }
 
+void IPC_OPCODE_HANDLER(CHAN_HWTRACE_ADD_RESOURCE)(struct sphcs *sphcs,
+					      union h2c_ChanHwTraceAddResource *msg)
+{
+	struct sphcs_hwtrace_cmd_work *work;
+	union c2h_ChanHwTraceState response_msg;
+	struct sphcs_hwtrace_data *hw_tracing = &sphcs->hw_tracing;
+	struct sphcs_cmd_chan *chan;
+	int hwtrace_err = SPH_HWTRACE_ERR_NO_ERR;
+
+	chan = sphcs_find_channel(sphcs, msg->chanID);
+	if (!chan) {
+		sph_log_err(HWTRACE_LOG, "Channel not found opcode=%d chanID=%d\n", msg->opcode, msg->chanID);
+		return;
+	}
+
+	if ((chan && !hw_tracing->chan) || (chan->protocolID != hw_tracing->chan->protocolID)) {
+		sph_log_err(HWTRACE_LOG, "Err: add resource Invalid channel\n");
+		hwtrace_err = SPH_HWTRACE_ERR_INVALID_VALUE;
+		goto reply_err;
+	}
+
+	work = kzalloc(sizeof(*work), GFP_NOWAIT);
+	if (unlikely(work == NULL)) {
+		sph_log_err(HWTRACE_LOG, "unable to allocate hwtrace_cmd_work object\n");
+		hwtrace_err = SPH_HWTRACE_ERR_NO_MEMORY;
+		goto reply_err;
+	}
+
+	work->type = SPH_HWTRACE_WORK_ADD_RESOURCE;
+	work->chan = chan;
+	work->add_resource_cmd.resource_size = msg->resource_size;
+	work->add_resource_cmd.mapID = msg->mapID;
+
+	INIT_WORK(&work->work, hwtrace_op_work_handler);
+	queue_work(chan->wq, &work->work);
+
+	return;
+reply_err:
+	memset(response_msg.value, 0x0, sizeof(response_msg.value));
+
+	response_msg.chanID	= msg->chanID;
+	response_msg.opcode	= SPH_IPC_C2H_OP_CHAN_HWTRACE_STATE;
+	response_msg.subOpcode	= HWTRACE_ADD_RESOURCE;
+	response_msg.err	= hwtrace_err;
+
+	sphcs_msg_scheduler_queue_add_msg(chan->respq, response_msg.value, 2);
+	sphcs_cmd_chan_put(chan);
+}
 
 void IPC_OPCODE_HANDLER(HWTRACE_ADD_RESOURCE)(struct sphcs *sphcs,
 					      union h2c_HwTraceAddResource *msg)
@@ -1269,8 +1585,8 @@ void IPC_OPCODE_HANDLER(HWTRACE_ADD_RESOURCE)(struct sphcs *sphcs,
 	}
 
 	work->type = SPH_HWTRACE_WORK_ADD_RESOURCE;
-
-	memcpy(work->add_resource_cmd.value, msg->value, sizeof(msg->value));
+	work->add_resource_cmd.resource_size = msg->resource_size;
+	work->add_resource_cmd.descriptor_addr = msg->descriptor_addr;
 
 	INIT_WORK(&work->work, hwtrace_op_work_handler);
 	queue_work(hw_tracing->cmd_wq, &work->work);
@@ -1289,6 +1605,45 @@ reply_err:
 	sphcs_msg_scheduler_queue_add_msg(sphcs->public_respq, &response_msg.value, 1);
 }
 
+void IPC_OPCODE_HANDLER(CHAN_HWTRACE_STATE)(struct sphcs *sphcs,
+				       union h2c_ChanHwTraceState *msg)
+{
+	struct sphcs_hwtrace_cmd_work *work;
+	union c2h_ChanHwTraceState response_msg;
+	struct sphcs_cmd_chan *chan;
+
+	chan = sphcs_find_channel(sphcs, msg->chanID);
+	if (!chan) {
+		sph_log_err(HWTRACE_LOG, "Channel not found opcode=%d chanID=%d\n", msg->opcode, msg->chanID);
+		return;
+	}
+
+	work = kzalloc(sizeof(*work), GFP_NOWAIT);
+	if (unlikely(work == NULL)) {
+		sph_log_err(HWTRACE_LOG, "unable to allocate hwtrace_cmd_work object\n");
+		goto reply_err;
+	}
+
+	work->chan = chan;
+	work->type = SPH_HWTRACE_WORK_STATE;
+	work->state_cmd.subOpcode = msg->subOpcode;
+	work->state_cmd.resource_index = msg->val;
+
+	INIT_WORK(&work->work, hwtrace_op_work_handler);
+	queue_work(chan->wq, &work->work);
+
+	return;
+reply_err:
+	memset(response_msg.value, 0x0, sizeof(response_msg.value));
+
+	response_msg.chanID	= msg->chanID;
+	response_msg.opcode	= SPH_IPC_C2H_OP_CHAN_HWTRACE_STATE;
+	response_msg.subOpcode	= msg->subOpcode;
+	response_msg.err	= SPH_HWTRACE_ERR_NO_MEMORY;
+
+	sphcs_msg_scheduler_queue_add_msg(chan->respq, response_msg.value, 2);
+	sphcs_cmd_chan_put(chan);
+}
 
 void IPC_OPCODE_HANDLER(HWTRACE_STATE)(struct sphcs *sphcs,
 				       union h2c_HwTraceState *msg)
@@ -1305,8 +1660,9 @@ void IPC_OPCODE_HANDLER(HWTRACE_STATE)(struct sphcs *sphcs,
 	}
 
 	work->type = SPH_HWTRACE_WORK_STATE;
+	work->state_cmd.subOpcode = msg->subOpcode;
+	work->state_cmd.resource_index = msg->val;
 
-	work->state_cmd.value = msg->value;
 	INIT_WORK(&work->work, hwtrace_op_work_handler);
 	queue_work(hw_tracing->cmd_wq, &work->work);
 
@@ -1322,4 +1678,102 @@ reply_err:
 	response_msg.err	= SPH_HWTRACE_ERR_NO_MEMORY;
 
 	sphcs_msg_scheduler_queue_add_msg(sphcs->public_respq, &response_msg.value, 1);
+}
+
+static int debug_status_show(struct seq_file *m, void *v)
+{
+	struct sphcs_hwtrace_data *hw_tracing = m->private;
+	unsigned long flags;
+	struct sphcs_dma_res_info *r;
+	uint32_t host_res_cleanup = 0, host_res_busy = 0,
+		npk_res_cleanup = 0, npk_res_busy = 0,
+		npk_res_ready = 0, dma_info_ready = 0,
+		dma_info_dirty = 0, res_cleanup = 0,
+		res_no_cleanup = 0, host_res_count = 0, dma_stream_list_count = 0;
+
+	if (unlikely(hw_tracing == NULL))
+		return -EINVAL;
+
+	SPH_SPIN_LOCK_IRQSAVE(&hw_tracing->lock_irq, flags);
+
+	seq_printf(m, "status %d\n", hw_tracing->hwtrace_status);
+
+	list_for_each_entry(r,
+			    &hw_tracing->dma_stream_list,
+			    node) {
+		if (r->state & HWTRACE_STATE_HOST_RESOURCE_CLEANUP)
+			host_res_cleanup++;
+		if (r->state & HWTRACE_STATE_HOST_RESOURCE_BUSY)
+			host_res_busy++;
+		if (r->state & HWTRACE_STATE_NPK_RESOURCE_CLEANUP)
+			npk_res_cleanup++;
+		if (r->state & HWTRACE_STATE_NPK_RESOURCE_BUSY)
+			npk_res_busy++;
+		if (r->state & HWTRACE_STATE_NPK_RESOURCE_READY)
+			npk_res_ready++;
+		if (r->state & HWTRACE_STATE_DMA_INFO_READY)
+			dma_info_ready++;
+		if (r->state & HWTRACE_STATE_DMA_INFO_DIRTY)
+			dma_info_dirty++;
+		if (r->state & HWTRACE_STATE_RESOURCE_CLEANUP)
+			res_cleanup++;
+		if (r->state & HWTRACE_STATE_NO_CLEANUP_RESOURCE)
+			res_no_cleanup++;
+		if (r->host_res)
+			host_res_count++;
+		dma_stream_list_count++;
+	}
+
+	seq_printf(m, "HWTRACE_STATE_HOST_RESOURCE_CLEANUP  %u\n", host_res_cleanup);
+	seq_printf(m, "HWTRACE_STATE_HOST_RESOURCE_BUSY  %u\n", host_res_busy);
+	seq_printf(m, "HWTRACE_STATE_NPK_RESOURCE_CLEANUP  %u\n", npk_res_cleanup);
+	seq_printf(m, "HWTRACE_STATE_NPK_RESOURCE_BUSY  %u\n", npk_res_busy);
+	seq_printf(m, "HWTRACE_STATE_NPK_RESOURCE_READY  %u\n", npk_res_ready);
+	seq_printf(m, "HWTRACE_STATE_DMA_INFO_READY  %u\n", dma_info_ready);
+	seq_printf(m, "HWTRACE_STATE_DMA_INFO_DIRTY  %u\n", dma_info_dirty);
+	seq_printf(m, "HWTRACE_STATE_RESOURCE_CLEANUP  %u\n", res_cleanup);
+	seq_printf(m, "HWTRACE_STATE_NO_CLEANUP_RESOURCE  %u\n", res_no_cleanup);
+	seq_printf(m, "number of host resources mapped to npk resource  %u\n", host_res_count);
+	seq_printf(m, "npk resources count  %u\n", dma_stream_list_count);
+	seq_printf(m, "npk nr_pool_pages %u\n", hw_tracing->nr_pool_pages);
+
+	SPH_SPIN_UNLOCK_IRQRESTORE(&hw_tracing->lock_irq, flags);
+	return 0;
+}
+
+static int debug_status_open(struct inode *inode, struct file *filp)
+{
+	return single_open(filp, debug_status_show, inode->i_private);
+}
+
+static const struct file_operations debug_status_fops = {
+	.open		= debug_status_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+};
+
+void hwtrace_init_debugfs(struct sphcs_hwtrace_data *hw_tracing,
+				struct dentry *parent,
+				const char    *dirname)
+{
+	struct dentry *dir, *stats;
+
+	if (!parent)
+		return;
+
+	dir = debugfs_create_dir(dirname, parent);
+	if (IS_ERR_OR_NULL(dir))
+		return;
+
+
+	stats = debugfs_create_file("status",
+				    0444,
+				    dir,
+				    (void *)hw_tracing,
+				    &debug_status_fops);
+	if (IS_ERR_OR_NULL(stats)) {
+		debugfs_remove(dir);
+		return;
+	}
 }

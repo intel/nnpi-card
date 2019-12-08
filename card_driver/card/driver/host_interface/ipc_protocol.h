@@ -45,7 +45,7 @@ SPH_STATIC_ASSERT(SPH_PAGE_SHIFT <= PAGE_SHIFT, "SPH_PAGE_SIZE is bigger than PA
 					     ((minor) & 0x1f) << 5 | \
 					     ((dot) & 0x1f))
 
-#define SPH_IPC_PROTOCOL_VERSION SPH_MAKE_VERSION(2, 6, 0)
+#define SPH_IPC_PROTOCOL_VERSION SPH_MAKE_VERSION(2, 9, 0)
 
 /* Maximumum of free pages, which device can hold at any time */
 #define MAX_HOST_RESPONSE_PAGES 32
@@ -90,6 +90,7 @@ struct response_list_entry {
 struct dma_chain_header {
 	u64 dma_next;
 	u32 total_nents;
+	u32 start_offset;
 	u64 size;
 };
 
@@ -101,6 +102,15 @@ struct dma_chain_entry {
 };
 
 #define NENTS_PER_PAGE ((SPH_PAGE_SIZE - sizeof(struct dma_chain_header)) / sizeof(struct dma_chain_entry))
+
+//
+// Command type codes used in command list elements
+//
+enum CmdListCommandType {
+	CMDLIST_CMD_INFREQ   = 0,
+	CMDLIST_CMD_COPY     = 1,
+	CMDLIST_CMD_COPYLIST = 2
+};
 
 /***************************************************************************
  * IPC messages layout definition
@@ -406,7 +416,11 @@ union h2c_InferenceCmdListOp {
 		u64 ctxID       : SPH_IPC_INF_CONTEXT_BITS;
 		u64 cmdID       : SPH_IPC_INF_CMDS_BITS;
 		u64 destroy     :  1;
-		u64 unused      : 33;
+		u64 is_first    :  1;
+		u64 is_last     :  1;
+		u64 opt_dependencies : 1;
+		u64 host_page_hndl  :  8;
+		u64 unused      : 22;
 
 		u64 host_pfn    : SPH_IPC_DMA_PFN_BITS;
 		u64 size        : (sizeof(u64) * __CHAR_BIT__ - SPH_IPC_DMA_PFN_BITS);
@@ -468,8 +482,8 @@ union h2c_InferenceNetworkProperty {
 		u64 netID         : SPH_IPC_INF_DEVNET_BITS;
 		u64 not_used      : 2;
 		u64 timeout       : 32;
-		u32 property	  : 32;
-		u32 property_val  : 32;
+		u64 property	  : 32;
+		u64 property_val  : 32;
 	};
 
 	u64 value[2];
@@ -920,6 +934,7 @@ struct sph_sys_info {
 	u16  fpga_rev;
 	uint64_t totalUnprotectedMemory;
 	uint64_t totalEccMemory;
+	u8 stepping;
 };
 
 /*

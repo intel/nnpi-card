@@ -42,7 +42,7 @@ enum cve_device_reset_reason {
 	CVE_DI_RESET_DUE_POWER_ON = 0x10
 };
 
-int set_idc_registers(struct cve_device *dev, uint8_t lock);
+int set_idc_registers(struct ice_network *ntw, uint8_t lock);
 int unset_idc_registers(struct cve_device *dev, uint8_t lock);
 
 /*
@@ -169,6 +169,24 @@ void ice_di_set_mmu_address_mode(struct cve_device *ice);
  * returns:
  */
 void ice_di_configure_atu_cbb_mapping(struct cve_device *ice);
+
+/*
+ * Disable the address based ATU selection
+ * inputs :
+ *	ice - ICE device
+ * outputs:
+ * returns:
+ */
+void ice_di_disable_dynamic_atu_selection(struct cve_device *ice);
+
+/*
+ * Configure caching properties for L1/L2 entries of page table
+ * inputs :
+ *	ice - ICE device
+ * outputs:
+ * returns:
+ */
+void ice_di_configure_pt_caching_reg(struct cve_device *ice);
 
 /*
  * invalidate page table base address register

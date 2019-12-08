@@ -242,6 +242,49 @@ union h2c_ChanInferenceNetworkResourceReservation {
 };
 CHECK_MESSAGE_SIZE(union h2c_ChanInferenceNetworkResourceReservation, 1);
 
+union h2c_ChanInferenceNetworkSetProperty {
+	struct {
+		u64 opcode        : 6; /* SPH_IPC_H2C_OP_CHAN_NETWORK_PROPERTY */
+		u64 chanID        : SPH_IPC_CHANNEL_BITS;
+		u64 netID         : SPH_IPC_INF_DEVNET_BITS;
+		u64 timeout       : 32;
+		u64 property	  : 32;
+		u64 property_val  : 32;
+	};
+
+	u64 value[2];
+};
+CHECK_MESSAGE_SIZE(union h2c_ChanInferenceNetworkSetProperty, 2);
+
+union h2c_ChanInferenceCmdListOp {
+	struct {
+		u64 opcode      :  6;  /* SPH_IPC_H2C_OP_CHAN_INF_CMDLIST */
+		u64 chanID      : SPH_IPC_CHANNEL_BITS;
+		u64 cmdID       : SPH_IPC_INF_CMDS_BITS;
+		u64 destroy     :  1;
+		u64 is_first    :  1;
+		u64 is_last     :  1;
+		u64 opt_dependencies : 1;
+		u64 size        : 16;
+		u64 unused      : 12;
+	};
+
+	u64 value;
+};
+CHECK_MESSAGE_SIZE(union h2c_ChanInferenceCmdListOp, 1);
+
+union h2c_ChanInferenceSchedCmdList {
+	struct {
+		u64 opcode      :  6;  /* SPH_IPC_H2C_OP_CHAN_SCHEDULE_CMDLIST */
+		u64 chanID      : SPH_IPC_CHANNEL_BITS;
+		u64 cmdID       : SPH_IPC_INF_CMDS_BITS;
+		u64 unused      : 32;
+	};
+
+	u64 value;
+};
+CHECK_MESSAGE_SIZE(union h2c_ChanInferenceSchedCmdList, 1);
+
 union c2h_ChanMsgHeader {
 	struct {
 		u64 opcode		: 6;
@@ -307,6 +350,64 @@ union c2h_ChanSyncDone {
 	u64 value;
 };
 CHECK_MESSAGE_SIZE(union c2h_ChanSyncDone, 1);
+
+union c2h_ChanInfReqFailed {
+	struct {
+		u64 opcode      : 6; /* SPH_IPC_C2H_OP_CHAN_INFREQ_FAILED */
+		u64 chanID      : SPH_IPC_CHANNEL_BITS;
+		u64 netID       : SPH_IPC_INF_DEVNET_BITS;
+		u64 infreqID    : SPH_IPC_INF_REQ_BITS;
+		u64 cmdID       : SPH_IPC_INF_CMDS_BITS;
+		u64 reason      : 16;
+		u64 cmdID_valid :  1;
+		u64 reserved    : 47;
+	};
+
+	u64 value[2];
+};
+CHECK_MESSAGE_SIZE(union c2h_ChanInfReqFailed, 2);
+
+union h2c_ChanHwTraceAddResource {
+	struct {
+		u64 opcode          : 6;  /* SPH_IPC_H2C_OP_CHAN_HWTRACE_ADD_RESOURCE */
+		u64 chanID          : SPH_IPC_CHANNEL_BITS;
+		u64 mapID           : 16;
+		u64 resourceIndex   : 8;  /* resource index */
+		u64 resource_size   : 32;
+		u64 reserved	    : 56;
+	};
+
+	u64 value[2];
+};
+CHECK_MESSAGE_SIZE(union h2c_ChanHwTraceAddResource, 2);
+
+union c2h_ChanHwTraceState {
+	struct {
+		u64 opcode		: 6;  /* SPH_IPC_C2H_OP_CHAN_HWTRACE_STATE */
+		u64 chanID              : SPH_IPC_CHANNEL_BITS;
+		u64 subOpcode		: 5;
+		u64 val1		: 32;
+		u64 val2		: 8;
+		u64 err			: 8;
+		u64 reserved		: 59;
+	};
+
+	u64 value[2];
+};
+CHECK_MESSAGE_SIZE(union c2h_ChanHwTraceState, 2);
+
+union h2c_ChanHwTraceState {
+	struct {
+		u64 opcode		: 6;  /* SPH_IPC_H2C_OP_CHAN_HWTRACE_STATE */
+		u64 chanID              : SPH_IPC_CHANNEL_BITS;
+		u64 reserved		: 11;
+		u64 subOpcode		: 5;
+		u64 val			: 32;
+	};
+
+	u64 value;
+};
+CHECK_MESSAGE_SIZE(union h2c_ChanHwTraceState, 1);
 
 #ifdef ULT
 union ult2_message {

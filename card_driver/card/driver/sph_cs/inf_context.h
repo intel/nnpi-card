@@ -14,6 +14,7 @@
 #include <linux/wait.h>
 #include <linux/idr.h>
 #include <linux/workqueue.h>
+#include <linux/atomic.h>
 #include "ipc_protocol.h"
 #include "inf_devres.h"
 #include "inf_cmd_list.h"
@@ -56,6 +57,7 @@ struct inf_context {
 	struct list_head     sync_points;
 	struct list_head     active_seq_list;
 	u32                  next_seq_id;
+	atomic_t             sched_tick;
 
 	struct inf_cmd_queue cmdq;
 
@@ -68,6 +70,7 @@ struct inf_context {
 
 	enum context_state state;
 	struct kmem_cache *exec_req_slab_cache;
+	bool daemon_ref_released;
 };
 
 struct inf_subres_load_session {
@@ -75,7 +78,7 @@ struct inf_subres_load_session {
 	struct inf_devres *devres;
 
 	dma_addr_t lli_addr;
-	int lli_size;
+	size_t lli_size;
 	void *lli_buf;
 
 	int                lli_space_need_wake;
@@ -87,22 +90,47 @@ struct inf_subres_load_session {
 	struct list_head node;
 };
 
+struct func_table {
+	int (*schedule)(struct inf_exec_req *req);
+	bool (*is_ready)(struct inf_exec_req *req);
+	int (*execute)(struct inf_exec_req *req);
+	void (*send_report)(struct inf_exec_req *req,
+			    enum event_val       eventVal);
+	void (*complete)(struct inf_exec_req *req, int err);
+	int (*obj_put)(struct inf_exec_req *req);
+	int (*migrate_priority)(struct inf_exec_req *req, uint8_t priority);
+
+	/* This function should not be called directly, use inf_exec_req_put instead */
+	void (*release)(struct kref *kref);
+};
+
 struct inf_exec_req {
 	bool                      in_progress;
-	bool                      is_copy;
+	enum CmdListCommandType   cmd_type;
 	spinlock_t                lock_irq;
 	struct kref               in_use;
 	struct inf_req_sequence   seq;
 	u64                       time; // queued or start execute time
 
+	struct inf_context *context;
+	u32                 last_sched_tick;
+
 	struct inf_cmd_list *cmd;
+	struct func_table const *f;
+
+	size_t               size;
+	//priority 0 == normal, 1 == high
+	uint8_t              priority;
 
 	union {
 		struct {
-			struct inf_copy     *copy;
-			size_t               size;
-			//priority 0 == normal, 1 == high
-			uint8_t              priority;
+			struct inf_cpylst *cpylst;
+			dma_addr_t         lli_addr;
+			uint16_t           num_opt_depend_devres;
+			struct inf_devres **opt_depend_devres;
+		};
+		struct {
+			struct inf_copy *copy;
 
 			/* following fields are used for "dynamic copy" only */
 			struct sphcs_hostres_map *hostres_map;
@@ -110,15 +138,16 @@ struct inf_exec_req {
 		};
 		struct {
 			struct inf_req   *infreq;
+			uint16_t          i_num_opt_depend_devres;
+			uint16_t          o_num_opt_depend_devres;
+			struct inf_devres **i_opt_depend_devres;
+			struct inf_devres **o_opt_depend_devres;
 			bool              sched_params_is_null;
-			struct inf_sched_params   sched_params;
+			uint8_t           debugOn : 1;
+			uint8_t           collectInfo : 1;
+			uint8_t           reserved : 6;
 		};
 	};
-};
-
-struct inf_cmd_list_entry {
-	struct inf_exec_req templ;
-	struct list_head    node;
 };
 
 int inf_context_create(uint16_t             protocolID,
@@ -198,5 +227,10 @@ void inf_context_remove_subres_load_session(struct inf_context *context, uint16_
 
 int inf_exec_req_get(struct inf_exec_req *req);
 int inf_exec_req_put(struct inf_exec_req *req);
+
+int inf_update_priority(struct inf_exec_req *req,
+			uint8_t priority,
+			bool card2host,
+			dma_addr_t lli_addr);
 
 #endif

@@ -14,6 +14,7 @@ u32 dma_calc_and_gen_lli(struct sg_table *srcSgt,
 		struct sg_table *dstSgt,
 		void *lliPtr,
 		uint64_t dst_offset,
+		uint64_t max_xfer_size,
 		void *(*set_data_elem)(void *sgl, dma_addr_t src, dma_addr_t dst, uint32_t size),
 		uint64_t *transfer_size)
 {
@@ -22,6 +23,7 @@ u32 dma_calc_and_gen_lli(struct sg_table *srcSgt,
 	struct scatterlist *next_srcSgl = srcSgt->sgl;
 	struct scatterlist *next_dstSgl = dstSgt->sgl;
 	unsigned int curr_dst_offset;
+	uint64_t total_size = 0;
 	struct region {
 		dma_addr_t   dma_address;
 		unsigned int length;
@@ -106,29 +108,36 @@ u32 dma_calc_and_gen_lli(struct sg_table *srcSgt,
 		/* build next data element from the smaller chunk */
 		num_of_elements++;
 		if (src_reg.length < dst_reg.length) {
+			if (max_xfer_size != 0 && total_size + src_reg.length >= max_xfer_size)
+				src_reg.length = max_xfer_size - total_size;
+
 			if (lliBuf)
 				lliBuf = set_data_elem(lliBuf,
 						       src_reg.dma_address,
 						       dst_reg.dma_address,
 						       src_reg.length);
-			if (transfer_size)
-				*transfer_size += src_reg.length;
+			total_size += src_reg.length;
 			dst_reg.dma_address += src_reg.length;
 			dst_reg.length -= src_reg.length;
 			src_reg.length = 0;
 		} else {
+			if (max_xfer_size != 0 && total_size + dst_reg.length >= max_xfer_size)
+				dst_reg.length = max_xfer_size - total_size;
+
 			if (lliBuf)
 				lliBuf = set_data_elem(lliBuf,
 						       src_reg.dma_address,
 						       dst_reg.dma_address,
 						       dst_reg.length);
-			if (transfer_size)
-				*transfer_size += dst_reg.length;
+			total_size += dst_reg.length;
 			src_reg.dma_address += dst_reg.length;
 			src_reg.length -= dst_reg.length;
 			dst_reg.length = 0;
 		}
-	} while (1);
+	} while (max_xfer_size == 0 || total_size < max_xfer_size);
+
+	if (transfer_size)
+		*transfer_size = total_size;
 
 	return num_of_elements;
 }

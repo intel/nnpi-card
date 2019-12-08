@@ -63,19 +63,14 @@ do { \
 } while (0)
 
 /*Calculate average ice cycles */
-#define __calc_ice_average_cycle(average_ice_cycles, total_time) \
+#define __calc_ice_max_cycle(max_ice_cycle, total_time) \
 do { \
-	uint8_t idx = 0, ice_cnt = 0; \
-	u64 sum = 0; \
+	uint8_t idx = 0;\
 	\
-	average_ice_cycles = 0; \
+	max_ice_cycle = 0; \
 	for (; idx < MAX_CVE_DEVICES_NR; idx++) { \
-		if (total_time[idx]) { \
-			sum += total_time[idx]; \
-			ice_cnt++; \
-		} \
-		if (ice_cnt) \
-			average_ice_cycles = (sum/ice_cnt); \
+		max_ice_cycle = ((max_ice_cycle > (total_time[idx])) ?\
+			 max_ice_cycle : (total_time[idx]));\
 	} \
 } while (0)
 
@@ -529,16 +524,22 @@ static void do_reset(struct cve_device *cve_dev,
 	 */
 	if (ntw->shared_read)
 		ice_di_configure_atu_cbb_mapping(cve_dev);
+	else
+		ice_di_disable_dynamic_atu_selection(cve_dev);
+
+	/* HACK: do a hard code stream mapping for caching of L1/L2 surfaces*/
+	ice_di_configure_pt_caching_reg(cve_dev);
 
 	/* reset the page table flags state */
 	cve_mm_reset_page_table_flags(hdom);
 
 	/* Commented cve_di_set_hw_counters as it is setting the activate
 	 * performance counters bit in MMU CONFIG ,which is now being done
-	 * through PMON configuration .
+	 * through PMON configuration. Enabled if requested explictly via knob
 	 */
 	/* Enable/Disable HW counters */
-	/*cve_di_set_hw_counters(cve_dev);*/
+	if (ice_dump_mmu_pmon())
+		cve_di_set_hw_counters(cve_dev);
 
 	/* reset dump register */
 	cve_di_reset_cve_dump(cve_dev, cfg_default.ice_dump_on_error,
@@ -922,6 +923,7 @@ static int __dispatch_single_job(
 	struct ice_infer *inf = ntw->curr_exe;
 	struct job_descriptor *job = jobgroup->next_dispatch;
 	int ret = 0;
+	struct cve_device_group *dg = cve_dg_get();
 
 	DO_TRACE(trace_icedrvScheduleJob(
 		SPH_TRACE_OP_STATE_QUEUED,
@@ -933,20 +935,6 @@ static int __dispatch_single_job(
 		ntw->curr_exe->swc_node.sw_id,
 		job, SPH_TRACE_OP_STATUS_CDYN_VAL,
 		cve_di_get_cdyn_val(job->di_hjob)));
-
-	ret = set_idc_registers(cve_dev, true);
-	if (ret < 0) {
-		cve_os_dev_log_default(CVE_LOGLEVEL_ERROR,
-			cve_dev->dev_index,
-			"ERROR:%d DEV:%p JG:%p ICE configuration failed\n",
-			ret, cve_dev, jobgroup);
-
-		if (ret == -ICEDRV_KERROR_ICE_DOWN)
-			ntw->ice_err_status |= ICE_READY_BIT_ERR;
-
-		return ret;
-	}
-
 
 	if (ntw->ice_dump &&
 	(ntw->ice_dump->allocated_buf_cnt < ntw->ice_dump->total_dump_buf)) {
@@ -1001,9 +989,9 @@ static int __dispatch_single_job(
 	/* Device FIFO pointer will now point to Network's ICE specific FIFO */
 	cve_dev->fifo_desc = &jobgroup->network->fifo_desc[cve_dev->dev_index];
 
-#ifdef _DEBUG
-	print_cur_page_table(hdom);
-#endif
+	if (dg->dump_conf.pt_dump)
+		print_cur_page_table(hdom);
+
 
 	cve_os_dev_log(CVE_LOGLEVEL_DEBUG,
 			cve_dev->dev_index,
@@ -1058,7 +1046,8 @@ int ice_ds_dispatch_jg(struct jobgroup_descriptor *jobgroup)
 	ntw->ntw_running = true;
 	ntw->curr_exe->inf_running = true;
 
-	if (dg->num_running_ntw == 1) {
+	if ((dg->num_running_ntw == 1)
+		&& (dg->clos_state != CLOS_STATE_SINGLE_NTW)) {
 		/* If this is the only Ntw running then respect the
 		 * CLOS requirement
 		 */
@@ -1067,13 +1056,28 @@ int ice_ds_dispatch_jg(struct jobgroup_descriptor *jobgroup)
 			"Allocate CLOS for NtwId=0x%lx\n", (uintptr_t)ntw);
 		__ntw_reserve_clos(ntw);
 		ice_os_set_clos((void *)&dg->dg_clos_manager);
+		dg->clos_state = CLOS_STATE_SINGLE_NTW;
 
-	} else if (dg->num_running_ntw == 2) {
+	} else if ((dg->num_running_ntw == 2)
+		&& (dg->clos_state != CLOS_STATE_MULTI_NTW)) {
 
 		cve_os_log(CVE_LOGLEVEL_INFO,
 			"Reset CLOS\n");
 		/* Reset CLOS MSR registers */
 		ice_os_reset_clos((void *)&dg->dg_clos_manager);
+		dg->clos_state = CLOS_STATE_MULTI_NTW;
+	}
+
+	retval = set_idc_registers(ntw, true);
+	if (retval < 0) {
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+			"ERROR:%d NtwID=0x%lx ICE configuration failed\n",
+			retval, (uintptr_t)ntw);
+
+		if (retval == -ICEDRV_KERROR_ICE_DOWN)
+			ntw->ice_err_status |= ICE_READY_BIT_ERR;
+
+		goto exit;
 	}
 
 	for (i = 0; i < jobgroup->submitted_jobs_nr; i++) {
@@ -1252,7 +1256,7 @@ int ice_ds_raise_event(struct ice_network *ntw, bool reschedule)
 	struct ds_context *context;
 	struct ice_infer *inf = ntw->curr_exe;
 	struct cve_completion_event event, *event_ptr;
-	u64 average_ice_cycles;
+	u64 max_ice_cycle;
 
 	declare_u8_var(trace_status);
 
@@ -1262,15 +1266,15 @@ int ice_ds_raise_event(struct ice_network *ntw, bool reschedule)
 	cur_jg = ntw->jg_list;
 
 	/*Calculate average ice cycles */
-	__calc_ice_average_cycle(average_ice_cycles, ntw->ntw_exec_time);
+	__calc_ice_max_cycle(max_ice_cycle, ntw->ntw_exec_time);
 
 	if (cur_jg->aborted_jobs_nr > 0) {
 		abort = CVE_JOBSGROUPSTATUS_ABORTED;
 		trace_status = SPH_TRACE_OP_STATUS_FAIL;
-		average_ice_cycles = abort;
+		max_ice_cycle = abort;
 	} else {
 		abort = CVE_JOBSGROUPSTATUS_COMPLETED;
-		trace_status = SPH_TRACE_OP_STATUS_AVG;
+		trace_status = SPH_TRACE_OP_STATUS_MAX;
 	}
 
 	DO_TRACE(trace_icedrvExecuteNetwork(
@@ -1279,7 +1283,7 @@ int ice_ds_raise_event(struct ice_network *ntw, bool reschedule)
 				ntw->swc_node.parent_sw_id,
 				ntw->swc_node.sw_id, ntw->network_id,
 				inf->swc_node.sw_id,
-				trace_status, average_ice_cycles));
+				trace_status, max_ice_cycle));
 
 	__reset_network_state(ntw);
 
@@ -1300,7 +1304,7 @@ int ice_ds_raise_event(struct ice_network *ntw, bool reschedule)
 		event.shared_read_err_status = ntw->shared_read_err_status;
 		memcpy(event.total_time, ntw->ntw_exec_time,
 			MAX_CVE_DEVICES_NR * sizeof(event.total_time[0]));
-		event.average_ice_cycles = average_ice_cycles;
+		event.max_ice_cycle = max_ice_cycle;
 	}
 
 	/* reset execution time before scheduling another inference */
@@ -1348,8 +1352,8 @@ int ice_ds_raise_event(struct ice_network *ntw, bool reschedule)
 					ntw->swc_node.parent_sw_id,
 					ntw->swc_node.sw_id, ntw->network_id,
 					inf->swc_node.sw_id,
-					SPH_TRACE_OP_STATUS_AVG,
-					event.average_ice_cycles));
+					SPH_TRACE_OP_STATUS_MAX,
+					event.max_ice_cycle));
 	}
 	return 0;
 }
@@ -2447,6 +2451,10 @@ static int __process_network_desc(
 			retval);
 		goto error_jg_desc_process;
 	}
+/* post patch dump enable through sysfs */
+
+	if (dg->dump_conf.post_patch_surf_dump)
+		dump_patched_surf(ntw);
 
 	/* cache ICEBO params. Networks without reservation, release resource
 	 * after no more inferences are queued. In case of preferred ICEBO
@@ -2680,6 +2688,7 @@ int cve_ds_handle_create_network(
 	network->ntw_rel_node.ntype = NODE_TYPE_RELEASE;
 	network->rr_node = NULL;
 	network->res_resource = false;
+	network->exIR_performed = 0;
 
 	retval = cve_dev_open_all_contexts(
 			(u64 *)network_desc->va_partition_config,
@@ -3163,6 +3172,8 @@ int cve_ds_handle_execute_infer(cve_context_process_id_t context_pid,
 #endif
 	inf->inf_pr = data->priority;
 	ntw->ntw_enable_bp = data->enable_bp;
+	if (!ntw->exIR_performed)
+		ntw->exIR_performed = 1;
 
 	DO_TRACE(trace_icedrvExecuteNetwork(
 				SPH_TRACE_OP_STATE_QUEUED,
@@ -3437,6 +3448,10 @@ int cve_ds_handle_fw_loading(
 		cve_os_log(CVE_LOGLEVEL_ERROR,
 				"ERROR:%d Given NtwID:0x%llx is not present in this context\n",
 				retval, network_id);
+		goto out;
+	}
+	if (network->exIR_performed) {
+		retval = -ICEDRV_KERROR_FW_FROZEN;
 		goto out;
 	}
 
@@ -4491,6 +4506,8 @@ static int __ntw_reserve_cntr(struct ice_network *ntw)
 		cve_os_log(CVE_LOGLEVEL_DEBUG, "Lazy Capture activated\n");
 
 		__lazy_capture_counters(ntw);
+
+		ntw->patch_cntr = false;
 
 		/* ntw->patch_cntr is already false */
 

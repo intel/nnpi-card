@@ -31,5 +31,7 @@ void sphcs_trace_init(void)
 	sph_trace_inf_create_to_str[SPH_TRACE_INF_CREATE_INF_REQ]		= SPH_TRACE_STR_INF_REQ;
 	sph_trace_inf_create_to_str[SPH_TRACE_INF_NET_SUBRES_CREATE_SESSION]	= SPH_TRACE_STR_SUBRES_CREATE_SESSION;
 	sph_trace_inf_create_to_str[SPH_TRACE_INF_CREATE_INF_SYNC]		= SPH_TRACE_STR_INF_SYNC;
+	sph_trace_inf_create_to_str[SPH_TRACE_INF_CREATE_COMMAND_LIST]	= SPH_TRACE_STR_COMMAND_LIST;
+	sph_trace_inf_create_to_str[SPH_TRACE_INF_ADD_TO_COPY_LIST]		= SPH_TRACE_STR_ADD_TO_COPY_LIST;
 	sph_trace_inf_create_to_str[SPH_TRACE_INF_CREATE_NUM]			= SPH_TRACE_STR_UNDEFINED;
 }

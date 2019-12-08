@@ -73,24 +73,12 @@ void sphcs_send_event_report(struct sphcs *sphcs,
 			     int contextID,
 			     int objID)
 {
-	union c2h_EventReport event;
-
-	event.value = 0;
-	event.opcode = SPH_IPC_C2H_OP_EVENT_REPORT;
-	event.eventCode = eventCode;
-	event.eventVal = eventVal;
-	if (contextID >= 0) {
-		event.contextID = contextID;
-		event.ctxValid = 1;
-	}
-	if (objID >= 0) {
-		event.objID = objID;
-		event.objValid = 1;
-	}
-
-	log_c2h_event("Sending event", &event);
-
-	sphcs_msg_scheduler_queue_add_msg(sphcs->public_respq, &event.value, 1);
+	sphcs_send_event_report_ext(sphcs,
+				    eventCode,
+				    eventVal,
+				    contextID,
+				    objID,
+				    -1);
 }
 
 void sphcs_send_event_report_ext(struct sphcs *sphcs,
@@ -632,6 +620,7 @@ static int host_page_list_dma_completed(struct sphcs *sphcs, void *ctx, const vo
 	uint64_t total_entries_bytes = 0;
 	int i, res = 0;
 	enum event_val eventVal = 0;
+	uint32_t start_offset = 0;
 
 	if (unlikely(status == SPHCS_DMA_STATUS_FAILED)) {
 		/* dma failed */
@@ -656,6 +645,7 @@ static int host_page_list_dma_completed(struct sphcs *sphcs, void *ctx, const vo
 			goto done;
 		}
 		dma_req_data->sgl_curr = &(host_sgt->sgl[0]);
+		start_offset = chain_header->start_offset;
 	}
 
 	SPH_ASSERT(host_sgt->orig_nents == chain_header->total_nents);
@@ -677,6 +667,13 @@ static int host_page_list_dma_completed(struct sphcs *sphcs, void *ctx, const vo
 
 		SPH_ASSERT(chain_header->size >= total_entries_bytes);
 
+		if (start_offset > 0) {
+			current_sgl->offset = start_offset;
+			current_sgl->dma_address += start_offset;
+			current_sgl->length -= start_offset;
+			start_offset = 0;
+		}
+
 		current_sgl = sg_next(current_sgl);
 	}
 
@@ -696,10 +693,17 @@ static int host_page_list_dma_completed(struct sphcs *sphcs, void *ctx, const vo
 		// update the length of last entry
 		SPH_ASSERT(chain_entry[i].n_pages * SPH_PAGE_SIZE >= chain_header->size - total_entries_bytes);
 		current_sgl->length = chain_header->size - total_entries_bytes;
+
+		if (start_offset > 0) {
+			current_sgl->offset = start_offset;
+			current_sgl->dma_address += start_offset;
+			current_sgl->length -= start_offset;
+			start_offset = 0;
+		}
 	}
 
 	/* Finished to iterate the current page and update host sg table */
-	dma_req_data->total_size += chain_header->size;
+	dma_req_data->total_size += (chain_header->size - chain_header->start_offset);
 
 	// read next DMA page
 	if (dma_src_addr != 0x0) {
@@ -983,6 +987,10 @@ static int sphcs_create_sphcs(void                           *hw_handle,
 		sph_log_err(START_UP_LOG, "Failed to initialize intel trace hub module\n");
 		goto free_counters_infreq;
 	}
+
+	hwtrace_init_debugfs(&sphcs->hw_tracing,
+				sphcs->debugfs_dir,
+				"hwtrace");
 
 	ret = sphcs_crash_dump_init();
 	if (ret) {

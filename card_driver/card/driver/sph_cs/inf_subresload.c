@@ -74,7 +74,7 @@ enum event_val inf_subresload_execute(struct inf_context *context, union h2c_Sub
 	struct sg_table *res_dst_sgt;
 	int res;
 	uint64_t data_size;
-	uint32_t lli_size;
+	size_t lli_size;
 	uint64_t transfer_size;
 	struct subres_lli_space_node *lli_space;
 	struct inf_subres_load_session *session = inf_context_get_subres_load_session(context, cmd->sessionID);

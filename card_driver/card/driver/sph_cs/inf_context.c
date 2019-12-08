@@ -6,6 +6,7 @@
 
 #include "inf_context.h"
 #include <linux/kernel.h>
+#include <linux/hashtable.h>
 #include <linux/slab.h>
 #include "inf_devres.h"
 #include "inf_devnet.h"
@@ -16,6 +17,7 @@
 #include "sph_time.h"
 #include "periodic_timer.h"
 #include "sph_error.h"
+#include "sphcs_inf.h"
 
 struct inf_sync_point {
 	struct list_head node;
@@ -76,6 +78,7 @@ int inf_context_create(uint16_t             protocolID,
 	context->state = CONTEXT_OK;
 	context->attached = 0;
 	context->destroyed = 0;
+	atomic_set(&context->sched_tick, 1);
 	spin_lock_init(&context->lock);
 	spin_lock_init(&context->sync_lock_irq);
 	spin_lock_init(&context->sw_counters_lock_irq);
@@ -84,7 +87,7 @@ int inf_context_create(uint16_t             protocolID,
 	hash_init(context->devres_hash);
 	hash_init(context->copy_hash);
 	hash_init(context->devnet_hash);
-
+	context->daemon_ref_released = true;
 	INIT_LIST_HEAD(&context->sync_points);
 	INIT_LIST_HEAD(&context->active_seq_list);
 	INIT_LIST_HEAD(&context->subresload_sessions);
@@ -114,6 +117,12 @@ int inf_context_create(uint16_t             protocolID,
 		}
 	}
 
+	SPH_SPIN_LOCK_BH(&g_the_sphcs->inf_data->lock_bh);
+	hash_add(g_the_sphcs->inf_data->context_hash,
+		 &context->hash_node,
+		 context->protocolID);
+	SPH_SPIN_UNLOCK_BH(&g_the_sphcs->inf_data->lock_bh);
+
 	*out_context = context;
 	SPH_SW_COUNTER_ATOMIC_INC(g_sph_sw_counters, SPHCS_SW_COUNTERS_INFERENCE_NUM_CONTEXTS);
 	return 0;
@@ -142,6 +151,9 @@ int inf_context_runtime_attach(struct inf_context *context)
 	}
 	context->attached = 1;
 	SPH_SPIN_UNLOCK(&context->lock);
+
+	/* Take kref, dedicated to runtime */
+	inf_context_get(context);
 
 	return 0;
 }
@@ -186,6 +198,10 @@ static void release_context(struct kref *kref)
 	struct inf_subres_load_session *m;
 	int i;
 
+	SPH_SPIN_LOCK_BH(&g_the_sphcs->inf_data->lock_bh);
+	hash_del(&context->hash_node);
+	SPH_SPIN_UNLOCK_BH(&g_the_sphcs->inf_data->lock_bh);
+
 	if (!context->chan) {
 		drain_workqueue(context->wq);
 		destroy_workqueue(context->wq);
@@ -221,14 +237,15 @@ static void release_context(struct kref *kref)
 
 	kmem_cache_destroy(context->exec_req_slab_cache);
 
-	if (context->chan != NULL)
-		sphcs_cmd_chan_put(context->chan);
-	else if (likely(context->destroyed))
+	if (likely(context->destroyed))
 		sphcs_send_event_report(g_the_sphcs,
 					SPH_IPC_CONTEXT_DESTROYED,
 					0,
 					context->protocolID,
 					-1);
+
+	if (context->chan != NULL)
+		sphcs_cmd_chan_put(context->chan);
 
 	kfree(context);
 }
@@ -269,7 +286,6 @@ void inf_context_destroy_objects(struct inf_context *context)
 		hash_for_each(context->copy_hash, i, copy, hash_node) {
 			if (copy->destroyed == 0) {
 				copy->destroyed = -1;
-				hash_del(&copy->hash_node);
 				SPH_SPIN_UNLOCK(&context->lock);
 				inf_copy_put(copy);
 				found = true;
@@ -290,12 +306,13 @@ void inf_context_destroy_objects(struct inf_context *context)
 			devnet->destroyed = -1;
 			SPH_SPIN_UNLOCK(&devnet->lock);
 
+			SPH_SPIN_UNLOCK(&context->lock);
+			inf_devnet_destroy_all_infreq(devnet);
 			if (found) {
-				SPH_SPIN_UNLOCK(&context->lock);
-				inf_devnet_destroy_all_infreq(devnet);
 				inf_devnet_put(devnet);
 				break;
 			}
+			SPH_SPIN_LOCK(&context->lock);
 		}
 	} while (found);
 	SPH_SPIN_UNLOCK(&context->lock);
@@ -515,7 +532,7 @@ void del_all_active_create_and_inf_requests(struct inf_context *context)
 					SPH_SPIN_UNLOCK_IRQRESTORE(&infreq->lock_irq, flags);
 					SPH_SPIN_UNLOCK(&devnet->lock);
 					found = true;
-					inf_req_complete(active_req,
+					active_req->f->complete(active_req,
 							 -SPHER_CONTEXT_BROKEN);
 					SPH_SPIN_LOCK(&devnet->lock);
 					break;
@@ -787,7 +804,6 @@ struct inf_cmd_list *inf_context_find_cmd(struct inf_context *context,
 	SPH_SPIN_LOCK(&context->lock);
 	hash_for_each_possible(context->cmd_hash, cmd, hash_node, protocolID)
 		if (cmd->protocolID == protocolID) {
-			SPH_ASSERT(cmd->status == CREATED);
 			SPH_ASSERT(!cmd->destroyed);
 			SPH_SPIN_UNLOCK(&context->lock);
 			return cmd;
@@ -854,8 +870,6 @@ struct inf_devnet *inf_context_find_devnet(struct inf_context *context, uint16_t
 	SPH_SPIN_LOCK(&context->lock);
 	hash_for_each_possible(context->devnet_hash, devnet, hash_node, protocolID)
 		if (devnet->protocolID == protocolID) {
-			SPH_ASSERT(devnet->created);
-			SPH_ASSERT(devnet->destroyed == 0);
 			SPH_SPIN_UNLOCK(&context->lock);
 			return devnet;
 		}
@@ -871,7 +885,6 @@ struct inf_copy *inf_context_find_copy(struct inf_context *context, uint16_t pro
 	SPH_SPIN_LOCK(&context->lock);
 	hash_for_each_possible(context->copy_hash, copy, hash_node, protocolID) {
 		if (copy->protocolID == protocolID) {
-			SPH_ASSERT(copy->destroyed == 0);
 			SPH_SPIN_UNLOCK(&context->lock);
 			return copy;
 		}
@@ -891,7 +904,6 @@ void destroy_copy_on_create_failed(struct inf_copy *copy)
 		SPH_SPIN_UNLOCK(&copy->context->lock);
 		return;
 	}
-	hash_del(&copy->hash_node);
 	SPH_SPIN_UNLOCK(&copy->context->lock);
 
 	inf_copy_put(copy);
@@ -913,11 +925,12 @@ int inf_context_find_and_destroy_copy(struct inf_context *context,
 	if (unlikely(copy == NULL)) {
 		SPH_SPIN_UNLOCK(&context->lock);
 		return -ENXIO;
+	} else if (copy->destroyed) {
+		SPH_SPIN_UNLOCK(&context->lock);
+		return -ENXIO;
 	}
 
-	SPH_ASSERT(!copy->destroyed);
 	copy->destroyed = 1;
-	hash_del(&copy->hash_node);
 	SPH_SPIN_UNLOCK(&copy->context->lock);
 
 	inf_copy_put(copy);
@@ -927,18 +940,22 @@ int inf_context_find_and_destroy_copy(struct inf_context *context,
 
 void inf_req_try_execute(struct inf_exec_req *req)
 {
-	bool ready;
 	int err;
 	unsigned long flags;
+	u32 curr_sched_tick;
 
 	SPH_ASSERT(req != NULL);
 
-	if (req->is_copy)
-		ready = inf_copy_req_ready(req);
-	else
-		ready = inf_req_ready(req);
+	SPH_SPIN_LOCK_IRQSAVE(&req->lock_irq, flags);
+	curr_sched_tick = atomic_read(&req->context->sched_tick);
+	if (req->last_sched_tick == curr_sched_tick) {
+		SPH_SPIN_UNLOCK_IRQRESTORE(&req->lock_irq, flags);
+		return;
+	}
+	req->last_sched_tick = curr_sched_tick;
+	SPH_SPIN_UNLOCK_IRQRESTORE(&req->lock_irq, flags);
 
-	if (!ready)
+	if (!req->f->is_ready(req))
 		return;
 
 	SPH_SPIN_LOCK_IRQSAVE(&req->lock_irq, flags);
@@ -949,18 +966,10 @@ void inf_req_try_execute(struct inf_exec_req *req)
 	req->in_progress = true;
 	SPH_SPIN_UNLOCK_IRQRESTORE(&req->lock_irq, flags);
 
-	if (req->is_copy) {
-		err = inf_copy_req_execute(req);
-	} else {
-		err = inf_req_execute(req);
-	}
+	err = req->f->execute(req);
 
-	if (unlikely(err < 0)) {
-		if (req->is_copy)
-			inf_copy_req_complete(req, err, 0);
-		else
-			inf_req_complete(req, err);
-	}
+	if (unlikely(err < 0))
+		req->f->complete(req, err);
 
 }
 
@@ -1054,8 +1063,32 @@ int inf_exec_req_get(struct inf_exec_req *req)
 
 int inf_exec_req_put(struct inf_exec_req *req)
 {
-	if (req->is_copy)
-		return kref_put(&req->in_use, inf_copy_req_release);
-	else
-		return kref_put(&req->in_use, inf_req_release);
+	return kref_put(&req->in_use, req->f->release);
+}
+
+int inf_update_priority(struct inf_exec_req *req,
+			uint8_t priority,
+			bool card2host,
+			dma_addr_t lli_addr)
+{
+	unsigned long flags;
+	int ret = 0;
+
+	SPH_SPIN_LOCK_IRQSAVE(&req->lock_irq, flags);
+	if (!req->in_progress) {
+		//Request didn't reached HW yet , just update priority here
+		req->priority = priority;
+	} else {
+		//Call Dma scheduler for update
+		ret = sphcs_dma_sched_update_priority(g_the_sphcs->dmaSched,
+							sph_dma_direction(card2host),
+							req->priority,
+							sph_dma_priority(priority),
+							lli_addr);
+		if (ret == 0)
+			req->priority = priority;
+	}
+	SPH_SPIN_UNLOCK_IRQRESTORE(&req->lock_irq, flags);
+
+	return ret;
 }

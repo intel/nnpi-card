@@ -44,13 +44,14 @@ struct hw_revision_t {
 };
 
 extern struct kobject *icedrv_kobj;
+
 int is_wd_error(u32 status);
 void get_hw_revision(struct cve_device *cve_dev,
 				struct hw_revision_t *hw_rev);
 int do_reset_device(struct cve_device *cve_dev, uint8_t idc_reset);
 void ice_di_start_llc_pmon(struct cve_device *dev, bool pmon_0_1);
 void ice_di_read_llc_pmon(struct cve_device *dev);
-void cve_print_mmio_regs(struct cve_device *cve_dev);
+void ice_dump_hw_err_info(struct cve_device *cve_dev);
 void store_ecc_err_count(struct cve_device *cve_dev);
 int init_platform_data(struct cve_device *cve_dev);
 void cleanup_platform_data(struct cve_device *cve_dev);
@@ -61,6 +62,9 @@ void hw_config_sysfs_term(struct cve_device *ice_dev);
 void icedrv_sysfs_term(void);
 void perform_daemon_suspend(struct cve_device *ice_dev);
 void perform_daemon_reset(struct cve_device *ice_dev);
+int sw_debug_sysfs_init(void);
+void sw_debug_sysfs_term(void);
+
 
 /* Init cve_dump register in the device
  * inputs: os_dev - os device handle;
@@ -100,7 +104,7 @@ void cve_di_set_cve_dump_configuration_register(
 		struct di_cve_dump_buffer ice_dump_buf);
 int cve_sync_sgt_to_llc(struct sg_table *sgt);
 
-void ice_di_disable_clk_squashing(struct cve_device *dev);
+void ice_di_configure_clk_squashing(struct cve_device *dev, bool disable);
 
 int set_ice_freq(void *ice_freq_config);
 
@@ -123,6 +127,8 @@ u32 __get_llc_max_freq(void);
 #define get_llc_max_freq() MAX_LLC_FREQ_PARAM
 #define store_llc_max_freq() __no_op_stub
 #define restore_llc_max_freq() __no_op_return_success
+#define init_sw_debug_sysfs() __no_op_return_success
+#define term_sw_debug_sysfs() __no_op_stub
 #else
 #define init_icedrv_sysfs() icedrv_sysfs_init()
 #define term_icedrv_sysfs() icedrv_sysfs_term()
@@ -133,6 +139,8 @@ u32 __get_llc_max_freq(void);
 #define get_llc_max_freq() __get_llc_max_freq()
 #define store_llc_max_freq() __store_llc_max_freq()
 #define restore_llc_max_freq() __restore_llc_max_freq()
+#define init_sw_debug_sysfs() sw_debug_sysfs_init()
+#define term_sw_debug_sysfs() sw_debug_sysfs_term()
 #endif
 
 int ice_di_get_core_blob_sz(void);
@@ -142,8 +150,8 @@ int ice_di_get_core_blob_sz(void);
 #define __rdy_min_usleep (10000)
 #define __rdy_bit_max_trial (800)
 #else
-#define __rdy_max_usleep (3000)
-#define __rdy_min_usleep (1000)
+#define __rdy_max_usleep (60)
+#define __rdy_min_usleep (50)
 #define __rdy_bit_max_trial (8)
 #endif /*ICEDRV_ENABLE_HSLE_FLOW*/
 

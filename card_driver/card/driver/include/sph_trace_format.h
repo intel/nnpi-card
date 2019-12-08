@@ -26,19 +26,21 @@
 #define _SPH_TRACE_FORMAT_H
 
 
-#define SPH_TRACE_COPY			copy
-#define SPH_TRACE_INFREQ		infreq
-#define SPH_TRACE_DMA			dma
-#define SPH_TRACE_INF_CREATE		infer_create
-#define SPH_TRACE_INF_NET_SUBRES	inf_net_subres
-#define SPH_TRACE_IPC			ipc
-#define SPH_TRACE_MMIO			pep_mmio
+#define SPH_TRACE_COPY			 copy
+#define SPH_TRACE_INFREQ		 infreq
+#define SPH_TRACE_CMDLIST		 cmdlist
+#define SPH_TRACE_CPYLIST_CREATE cpylist_create
+#define SPH_TRACE_DMA			 dma
+#define SPH_TRACE_INF_CREATE	 infer_create
+#define SPH_TRACE_INF_NET_SUBRES inf_net_subres
+#define SPH_TRACE_IPC			 ipc
+#define SPH_TRACE_MMIO			 pep_mmio
 
 #define SPH_TRACE_FIELD_STATE		"state"
 
-#define SPH_TRACE_STR_QUEUED		"q"	// state - q: operation is in queue
-#define SPH_TRACE_STR_START		"s"	// state - s: operation has began
-#define SPH_TRACE_STR_COMPLETE		"c"	// state - c: operation has completed
+#define SPH_TRACE_STR_QUEUED    "q"	// state - q: operation is in queue
+#define SPH_TRACE_STR_START     "s"	// state - s: operation has began
+#define SPH_TRACE_STR_COMPLETE  "c"	// state - c: operation has completed
 #define SPH_TRACE_STR_CB_START		"cbs"   // state - cbs: callback function of operation has began
 #define SPH_TRACE_STR_CB_COMPLETE	"cbc"   // state - cbc: callback function of operation has completed
 #define SPH_TRACE_STR_CB_NW_COMPLETE	"cbnwc" // state - cbnwc: callback ran from the interrupt and completed
@@ -52,6 +54,8 @@
 #define SPH_TRACE_STR_INF_REQ			"inf_req"
 #define SPH_TRACE_STR_SUBRES_CREATE_SESSION	"subres_remote_session"
 #define SPH_TRACE_STR_INF_SYNC			"sync"
+#define SPH_TRACE_STR_COMMAND_LIST		"cmd_list"
+#define SPH_TRACE_STR_ADD_TO_COPY_LIST	"add_to_cpylist"
 #define SPH_TRACE_STR_UNDEFINED "undefined"
 
 

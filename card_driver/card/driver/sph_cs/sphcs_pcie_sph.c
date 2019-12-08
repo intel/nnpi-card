@@ -997,7 +997,7 @@ u32 sphcs_sph_dma_calc_lli_size(void            *hw_handle,
 				struct sg_table *dst,
 				uint64_t         dst_offset)
 {
-	return (dma_calc_and_gen_lli(src, dst, NULL, dst_offset, NULL, NULL) + 1) * sizeof(struct sph_dma_data_element) + sizeof(struct sph_lli_header);
+	return (dma_calc_and_gen_lli(src, dst, NULL, dst_offset, 0, NULL, NULL) + 1) * sizeof(struct sph_dma_data_element) + sizeof(struct sph_lli_header);
 }
 
 u64 sphcs_sph_dma_gen_lli(void            *hw_handle,
@@ -1018,7 +1018,7 @@ u64 sphcs_sph_dma_gen_lli(void            *hw_handle,
 	lli_header->cut_element = NULL;
 
 	/* Fill SGL */
-	num_of_elements = dma_calc_and_gen_lli(src, dst, data_element, dst_offset, dma_set_lli_data_element, &transfer_size);
+	num_of_elements = dma_calc_and_gen_lli(src, dst, data_element, dst_offset, 0, dma_set_lli_data_element, &transfer_size);
 	if (num_of_elements == 0) {
 		sph_log_err(EXECUTE_COMMAND_LOG, "ERROR: gen_lli cannot generate any data element.\n");
 		return 0;
@@ -1035,6 +1035,70 @@ u64 sphcs_sph_dma_gen_lli(void            *hw_handle,
 
 	return transfer_size;
 }
+
+static u32 sphcs_sph_dma_calc_lli_size_vec(void *hw_handle, uint64_t dst_offset, genlli_get_next_cb cb, void *cb_ctx)
+{
+	struct sg_table *src;
+	struct sg_table *dst;
+	u64              max_size;
+	u32              nelem = 0;
+
+	if (hw_handle == NULL || cb == NULL)
+		return 0;
+
+	while ((*cb)(cb_ctx, &src, &dst, &max_size)) {
+		nelem += dma_calc_and_gen_lli(src, dst, NULL, dst_offset, max_size, NULL, NULL);
+		dst_offset = 0;
+	}
+
+	return (nelem + 1) * sizeof(struct sph_dma_data_element) + sizeof(struct sph_lli_header);
+}
+
+static u64 sphcs_sph_dma_gen_lli_vec(void *hw_handle, void *outLli, uint64_t dst_offset, genlli_get_next_cb cb, void *cb_ctx)
+{
+	struct sg_table *src;
+	struct sg_table *dst;
+	u64              max_size;
+	u32 num_of_elements;
+	u32 nelem = 0;
+	struct sph_lli_header *lli_header = (struct sph_lli_header *)outLli;
+	struct sph_dma_data_element *data_element = (struct sph_dma_data_element *)(outLli + sizeof(*lli_header));
+	struct sph_dma_data_element *last_data_element = NULL;
+	uint64_t transfer_size = 0;
+	uint64_t total_transfer_size = 0;
+
+	if (hw_handle == NULL || cb == NULL || outLli == NULL)
+		return 0;
+
+	lli_header->cut_element = NULL;
+
+	/* Fill SGL */
+	while ((*cb)(cb_ctx, &src, &dst, &max_size)) {
+		num_of_elements = dma_calc_and_gen_lli(src, dst, data_element, dst_offset, max_size, dma_set_lli_data_element, &transfer_size);
+		if (num_of_elements == 0) {
+			sph_log_err(EXECUTE_COMMAND_LOG, "ERROR: gen_lli cannot generate any data element.\n");
+			return 0;
+		}
+		dst_offset = 0;
+		last_data_element = data_element + num_of_elements - 1;
+		data_element += num_of_elements;
+		nelem += num_of_elements;
+		total_transfer_size += transfer_size;
+	}
+
+	if (unlikely(last_data_element == NULL))
+		return 0;
+
+	/* Move to the last element and set local interrupt enable bit */
+	last_data_element->control |= DMA_CTRL_LIE;
+
+	/* Set Link data element */
+	dma_set_lli_data_element(data_element, 0, 0, 0);
+	data_element->control = DMA_CTRL_LLP;
+
+	return total_transfer_size;
+}
+
 
 static void restore_lli(struct sph_lli_header *lli_header)
 {
@@ -1577,6 +1641,8 @@ static struct sphcs_pcie_hw_ops s_pcie_sph_ops = {
 	.dma.calc_lli_size = sphcs_sph_dma_calc_lli_size,
 	.dma.gen_lli = sphcs_sph_dma_gen_lli,
 	.dma.edit_lli = sphcs_sph_dma_edit_lli,
+	.dma.calc_lli_size_vec = sphcs_sph_dma_calc_lli_size_vec,
+	.dma.gen_lli_vec = sphcs_sph_dma_gen_lli_vec,
 	.dma.start_xfer_h2c = sphcs_sph_dma_start_xfer_h2c,
 	.dma.start_xfer_c2h = sphcs_sph_dma_start_xfer_c2h,
 	.dma.start_xfer_h2c_single = sphcs_sph_dma_start_xfer_h2c_single,

@@ -42,7 +42,8 @@ struct inf_devnet {
 	bool                created;
 	enum create_status  edit_status;
 	int                 destroyed;
-	void               *create_dma_data_ptr;
+
+	void               *edit_data;
 
 	struct sph_sw_counters *sw_counters;
 	bool serial_infreq_exec;

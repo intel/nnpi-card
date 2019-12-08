@@ -49,6 +49,7 @@
 #define CREDIT_ACC_REG_SIZE (8)
 #define CNC_CR_NUM_OF_REGS_PER_BID 8
 #define CNC_CR_NUM_OF_REGS      1
+#define ICE_MAX_GP_REG 32
 
 struct config {
 	uint32_t ice_gecoe_dec_partial_access_count_offset;
@@ -62,6 +63,22 @@ struct config {
 	uint32_t ice_delphi_dbg_perf_cnt_2_reg_offset;
 	uint32_t ice_mmu_1_system_map_mem_invalidate_offset;
 	uint32_t ice_mmu_1_system_map_mem_pt_base_addr_offset;
+	uint32_t ice_mmu_1_system_map_stream_id_l1_0;
+	uint32_t ice_mmu_1_system_map_stream_id_l1_1;
+	uint32_t ice_mmu_1_system_map_stream_id_l1_2;
+	uint32_t ice_mmu_1_system_map_stream_id_l1_3;
+	uint32_t ice_mmu_1_system_map_stream_id_l1_4;
+	uint32_t ice_mmu_1_system_map_stream_id_l1_5;
+	uint32_t ice_mmu_1_system_map_stream_id_l1_6;
+	uint32_t ice_mmu_1_system_map_stream_id_l1_7;
+	uint32_t ice_mmu_1_system_map_stream_id_l2_0;
+	uint32_t ice_mmu_1_system_map_stream_id_l2_1;
+	uint32_t ice_mmu_1_system_map_stream_id_l2_2;
+	uint32_t ice_mmu_1_system_map_stream_id_l2_3;
+	uint32_t ice_mmu_1_system_map_stream_id_l2_4;
+	uint32_t ice_mmu_1_system_map_stream_id_l2_5;
+	uint32_t ice_mmu_1_system_map_stream_id_l2_6;
+	uint32_t ice_mmu_1_system_map_stream_id_l2_7;
 	uint32_t ice_sem_base;
 	uint32_t ice_sem_mmio_general_offset;
 	uint32_t ice_sem_mmio_demon_enable_offset;
@@ -411,6 +428,20 @@ uint32_t  RSVD_0               :  21;
 uint32_t                         val;
 };
 
+union ice_mmu_fault_info_t {
+	struct ICE_MMU_INNER_FAULT_DETAILS_t {
+		/* (TLC=0,ASIP=1,DSP=2,DSE=3,DELPHI=4)*/
+		uint32_t  ORIGINATOR           :   3;
+		uint32_t  RW_N                 :   1;
+		/*   One for read transaction, zero for write*/
+		uint32_t  L1                   :   1;
+		/*   One for Layer one (page directory) fault if page fault*/
+		uint32_t  RSVD_0               :  27;
+	}  mmu_fault_detail;
+
+	uint32_t val;
+};
+
 
 union ice_mmu_inner_stream_mapping_config_t {
 	struct ICE_MMU_INNER_MEM_TLC_DSP_STREAM_MAPPING {
@@ -702,5 +733,17 @@ typedef struct __attribute__((aligned(64))){
 	uint32_t	compilationTime;
 	uint32_t 	magicValue[7];
 }CVECOREBLOB_T;
+
+
+
+union tlc_error_handling_reg_t {
+	struct CBB_ERROR_CODE_t {
+		uint32_t err_type	: 8;
+		uint32_t err_category	: 8;
+		uint32_t cbb_id		: 16;
+	} cbb_err_code;
+
+	uint32_t val;
+};
 
 #endif /* _SPH_DEVICE_REGS_H_ */

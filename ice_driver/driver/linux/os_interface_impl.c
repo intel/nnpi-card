@@ -135,6 +135,7 @@ u32 ice_fw_select;
 u32 block_mmu;
 u32 enable_b_step;
 u32 disable_clk_gating;
+u32 enable_mmu_pmon;
 struct config cfg_default;
 
 static u32 icemask_user;
@@ -192,6 +193,10 @@ MODULE_PARM_DESC(iccp_throttling, "Enable/Disable throttling mode for B step. De
 
 module_param_array(initial_iccp_config, int, NULL, 0);
 MODULE_PARM_DESC(initial_iccp_config, "Array of initial iccp config to be done {INITIAL_CDYN_VAL,RESET_CDYN_VAL,BLOCKED_CDYN_VAL}");
+
+module_param(enable_mmu_pmon, int, 0);
+MODULE_PARM_DESC(enable_mmu_pmon, "Enable dumping of MMU PMON after each job completion. Default is 0 i.e disabled");
+
 /* UITILITY FUNCTIONS */
 
 /* MODULE LEVEL VARIABLES */
@@ -1547,6 +1552,13 @@ int cve_probe_common(struct cve_os_device *linux_device, int dev_ind)
 				"init_iccp_sysfs failed %d\n", retval);
 	}
 
+	/*initialize sw debug dump*/
+	retval = init_sw_debug_sysfs();
+	if (retval != 0) {
+		cve_os_log(CVE_LOGLEVEL_WARNING,
+				"failed in init_sw_debug_sysfs() %d\n", retval);
+	}
+
 	/* register with power balancer */
 	dg = cve_dg_get();
 	if (!dg) {
@@ -1658,7 +1670,7 @@ void cve_remove_common(struct cve_os_device *linux_device)
 	if (!dg) {
 		cve_os_log(CVE_LOGLEVEL_ERROR,
 			"Could not find valid device group pointer\n");
-		goto term_iccp;
+		goto term_sysfsCall;
 	}
 
 	ret = restore_llc_max_freq();
@@ -1674,7 +1686,11 @@ void cve_remove_common(struct cve_os_device *linux_device)
 	}
 	sphpb_unmap_idc_mailbox_base_registers(&dg->sphmb);
 
-term_iccp:
+term_sysfsCall:
+
+	/* remove sw debug dump */
+	term_sw_debug_sysfs();
+
 	/*remove iccp specific fops*/
 	term_iccp_sysfs();
 
@@ -2160,6 +2176,7 @@ static int __init cve_init(void)
 	param.enable_llc_config_via_axi_reg = enable_llc_config_via_axi_reg;
 	param.ice_power_off_delay_ms = ice_power_off_delay_ms;
 	param.ice_sch_preemption = ice_sch_preemption;
+	param.enable_mmu_pmon = enable_mmu_pmon;
 	param.initial_iccp_config[0] = initial_iccp_config[0];
 	param.initial_iccp_config[1] = initial_iccp_config[1];
 	param.initial_iccp_config[2] = initial_iccp_config[2];

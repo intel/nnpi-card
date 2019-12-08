@@ -27,8 +27,9 @@ struct inf_copy {
 	bool                  active;
 
 
+	struct sg_table host_sgt;
 	dma_addr_t  lli_addr;
-	int         lli_size;
+	size_t      lli_size;
 	void       *lli_buf;
 
 	struct sph_sw_counters *sw_counters;
@@ -53,10 +54,10 @@ struct inf_copy {
 };
 
 int inf_d2d_copy_create(uint16_t protocolCopyID,
-		    struct inf_context *context,
-		    struct inf_devres *devres,
-		    uint64_t hostDmaAddr,
-		    struct inf_copy **out_copy);
+			struct inf_context *context,
+			struct inf_devres *devres,
+			uint64_t hostDmaAddr,
+			struct inf_copy **out_copy);
 
 int inf_copy_create(uint16_t            protocolCopyID,
 		    struct inf_context *context,
@@ -79,12 +80,8 @@ int inf_copy_req_init_subres_copy(struct inf_exec_req *req,
 				  uint16_t hostres_map_id,
 				  uint64_t devres_offset,
 				  size_t size);
-int inf_copy_req_sched(struct inf_exec_req *req);
-bool inf_copy_req_ready(struct inf_exec_req *copy_req);
-int inf_copy_req_execute(struct inf_exec_req *copy_req);
-void inf_copy_req_complete(struct inf_exec_req *copy_req, int err, u32 xferTimeUS);
 
-/* This function should not be called directly, use inf_exec_req_put instead */
-void inf_copy_req_release(struct kref *kref);
+struct sg_table *inf_copy_src_sgt(struct inf_copy *copy);
+struct sg_table *inf_copy_dst_sgt(struct inf_copy *copy);
 
 #endif

@@ -71,6 +71,9 @@ inline void cve_decouple_debugger_reset(struct cve_device *cve_dev)
 static struct kobject *hwconfig_kobj;
 static struct kobject *llcfreq_kobj;
 
+/* kobject for sw_debug  */
+static struct kobject *swdebug_kobj;
+
 
 struct llcpmoninfo_details {
 	u32 index;
@@ -129,6 +132,57 @@ static ssize_t store_llcpmon(struct kobject *kobj,
 		struct kobj_attribute *attr,
 		const char *buf, size_t count);
 
+
+/* show and store function for debug_dump */
+
+static ssize_t show_cbdump(struct kobject *kobj,
+		struct kobj_attribute *attr,
+		char *buf);
+
+static ssize_t store_cbdump(struct kobject *kobj,
+		struct kobj_attribute *attr,
+		const char *buf, size_t count);
+
+static ssize_t show_ptdump(struct kobject *kobj,
+		struct kobj_attribute *attr,
+		char *buf);
+
+static ssize_t store_ptdump(struct kobject *kobj,
+		struct kobj_attribute *attr,
+		const char *buf, size_t count);
+
+static ssize_t show_postpatchsurfdump(struct kobject *kobj,
+		struct kobj_attribute *attr,
+		char *buf);
+
+static ssize_t store_postpatchsurfdump(struct kobject *kobj,
+		struct kobj_attribute *attr,
+		const char *buf, size_t count);
+
+static ssize_t show_icereset(struct kobject *kobj,
+		struct kobj_attribute *attr,
+		char *buf);
+
+static ssize_t store_icereset(struct kobject *kobj,
+		struct kobj_attribute *attr,
+		const char *buf, size_t count);
+
+static ssize_t show_llcconfig(struct kobject *kobj,
+		struct kobj_attribute *attr,
+		char *buf);
+
+static ssize_t store_llcconfig(struct kobject *kobj,
+		struct kobj_attribute *attr,
+		const char *buf, size_t count);
+
+static ssize_t show_pagesizeconfig(struct kobject *kobj,
+		struct kobj_attribute *attr,
+		char *buf);
+
+static ssize_t store_pagesizeconfig(struct kobject *kobj,
+		struct kobj_attribute *attr,
+		const char *buf, size_t count);
+
 static struct kobj_attribute icefreqinfo_attr =
 __ATTR(freqinfo, 0444, show_ice_freqinfo, NULL);
 
@@ -152,6 +206,43 @@ __ATTR(llcpmon_config, 0664, show_llcpmonconfig, store_llcpmon);
 
 static struct kobj_attribute llcpmon_read_attr =
 __ATTR(llcpmon_counters, 0444, show_llcpmon, NULL);
+
+
+/* attribute registration for debug_dump*/
+
+static struct kobj_attribute cb_dump_attr =
+__ATTR(cb_dump, 0664, show_cbdump, store_cbdump);
+
+static struct kobj_attribute pt_dump_attr =
+__ATTR(pt_dump, 0664, show_ptdump, store_ptdump);
+
+static struct kobj_attribute post_patch_surf_dump_attr =
+__ATTR(pp_surf_dump, 0664, show_postpatchsurfdump, store_postpatchsurfdump);
+
+static struct kobj_attribute ice_reset_attr =
+__ATTR(ice_reset, 0664, show_icereset, store_icereset);
+
+static struct kobj_attribute llc_config_attr =
+__ATTR(llc_config, 0664, show_llcconfig, store_llcconfig);
+
+static struct kobj_attribute page_size_config_attr =
+__ATTR(page_size_config, 0664, show_pagesizeconfig, store_pagesizeconfig);
+
+static struct attribute *debug_attrs[] = {
+	&cb_dump_attr.attr,
+	&pt_dump_attr.attr,
+	&post_patch_surf_dump_attr.attr,
+	&ice_reset_attr.attr,
+	&llc_config_attr.attr,
+	&page_size_config_attr.attr,
+	NULL,	/* need to NULL terminate the list of attributes */
+};
+
+static struct attribute_group debug_attr_group = {
+		.attrs = debug_attrs,
+};
+
+
 
 static struct attribute *ice_freq_attrs[] = {
 	&icefreqinfo_attr.attr,
@@ -301,6 +392,7 @@ static void configure_llc(struct cve_device *cve_dev)
 	/* changing the AXI default bits (20-23) in page table entry
 	 * to be 24-27, value should be 0x6DA658
 	 */
+	struct cve_device_group *dg = cve_dg_get();
 	union ice_mmu_inner_mem_axi_table_pt_index_bits_t axi_pt_bits;
 	u32 llc_bit = CVE_LLC_BIT_SHIFT;
 
@@ -317,6 +409,14 @@ static void configure_llc(struct cve_device *cve_dev)
 		cfg_default.mmu_base +
 		cfg_default.mmu_axi_tbl_pt_idx_bits_offset,
 		axi_pt_bits.val);
+
+	if (dg->dump_conf.llc_config)
+		cve_os_dev_log_default(CVE_LOGLEVEL_INFO,
+			cve_dev->dev_index,
+			"AXI_TABLE_PT_INDEX_REG  Offset=0x%x, Value=0x%x\n",
+			(cfg_default.mmu_base +
+			 cfg_default.mmu_axi_tbl_pt_idx_bits_offset),
+			 axi_pt_bits.val);
 
 	/* Disabling because during HSLE bringup it was recommended
 	 * to let these registers have default value
@@ -354,6 +454,22 @@ static void configure_llc(struct cve_device *cve_dev)
 		cfg_default.mmu_page_walk_axi_attri_offset,
 		CVE_PAGE_WALK_AXI_ATTRIBUTES);
 
+	if (dg->dump_conf.llc_config == 1)
+		cve_os_dev_log_default(CVE_LOGLEVEL_INFO,
+			cve_dev->dev_index,
+			"TLC_LLC_CONFIG  Offset=0x%x,Value=0x%x\n ASIP_LLC_CONFIG Offset=0x%x,Value=0x%x\n DSP_LLC_CONFIG  Offset=0x%x,Value=0x%x\n ICE_PAGE_WALK_AXI_ATTRIBUTES  Offset=0x%x,Value=0x%x\n",
+			(cfg_default.mmu_base +
+				cfg_default.mmu_tlc_axi_attri_offset),
+			CVE_TLC_LLC_CONFIG,
+			(cfg_default.mmu_base +
+				cfg_default.mmu_asip_axi_attri_offset),
+			CVE_ASIP_LLC_CONFIG,
+			(cfg_default.mmu_base +
+			    cfg_default.mmu_dsp_axi_attri_offset),
+			CVE_DSP_LLC_CONFIG,
+			(cfg_default.mmu_base +
+				cfg_default.mmu_page_walk_axi_attri_offset),
+			CVE_PAGE_WALK_AXI_ATTRIBUTES);
 }
 
 int configure_ice_frequency(struct cve_device *dev)
@@ -503,6 +619,7 @@ int do_reset_device(struct cve_device *cve_dev, uint8_t idc_reset)
 {
 	int retval = 0;
 	uint64_t value, mask, notify_ice_mask;
+	struct cve_device_group *dg = cve_dg_get();
 
 	/*cve_save_dtf_regs(cve_dev);*/
 
@@ -518,7 +635,7 @@ int do_reset_device(struct cve_device *cve_dev, uint8_t idc_reset)
 		retval = set_gp_reg_to_test_val(cve_dev);
 
 		/* SW WA for STEP A */
-		ice_di_disable_clk_squashing(cve_dev);
+		ice_di_configure_clk_squashing(cve_dev, true);
 
 		cve_os_write_idc_mmio(cve_dev,
 			cfg_default.bar0_mem_icerst_offset, value);
@@ -533,6 +650,8 @@ int do_reset_device(struct cve_device *cve_dev, uint8_t idc_reset)
 				cve_dev->dev_index);
 			return -1;
 		}
+		/* SW WA for STEP A */
+		ice_di_configure_clk_squashing(cve_dev, false);
 
 /* This piece of code was never active. It was there
  * in CVE to support Platform Driver.
@@ -581,6 +700,11 @@ int do_reset_device(struct cve_device *cve_dev, uint8_t idc_reset)
 
 	configure_dtf(cve_dev);
 
+	if (dg->dump_conf.ice_reset)
+		cve_os_dev_log_default(CVE_LOGLEVEL_INFO,
+			cve_dev->dev_index,
+			"ICE_RESET is done\n");
+
 	/* configure the LLC after reset */
 	configure_llc(cve_dev);
 
@@ -589,36 +713,70 @@ int do_reset_device(struct cve_device *cve_dev, uint8_t idc_reset)
 	return retval;
 }
 
+#define __max_u32 0xFFFFFFFF
+
+/* if diff from max is < error val then counter needs to wrapped to
+ * avoid overflow. so only add a extra difference from max allowed
+ * after resetting the counter
+ */
+#define __handle_counter_wrap(hswc, cnt, cnt_wrap, val) \
+do { \
+	u32 temp; \
+\
+	temp = __max_u32 - ice_swc_counter_get(hswc, cnt); \
+	if (temp < val) { \
+		ice_swc_counter_set(hswc, cnt, 0); \
+		ice_swc_counter_inc(hswc, cnt_wrap); \
+		val = val - temp; \
+	} \
+\
+	ice_swc_counter_add(hswc, cnt, val); \
+} while (0)
+
+#define __set_persistant_secc_counter(hswc, secc_err) \
+	__handle_counter_wrap(hswc,\
+			ICEDRV_SWC_DEVICE_COUNTER_ECC_SERRCOUNT, \
+			ICEDRV_SWC_DEVICE_COUNTER_ECC_SERRCOUNT_WRAP, \
+			secc_err)
+
+#define __set_persistant_decc_counter(hswc, decc_err) \
+	__handle_counter_wrap(hswc,\
+			ICEDRV_SWC_DEVICE_COUNTER_ECC_DERRCOUNT, \
+			ICEDRV_SWC_DEVICE_COUNTER_ECC_DERRCOUNT_WRAP, \
+			decc_err)
+
+
 void store_ecc_err_count(struct cve_device *cve_dev)
 {
 #ifndef RING3_VALIDATION
+
 	uint32_t serr, derr, parity_err;
 	union mmio_hub_mem_unmapped_err_id_t unmapped_err;
 
 	serr = cve_os_read_mmio_32_force_print(cve_dev,
 			cfg_default.mmio_ecc_serrcount_offset);
-
-	derr = cve_os_read_mmio_32_force_print(cve_dev,
-			cfg_default.mmio_ecc_derrcount_offset);
-
-	parity_err = cve_os_read_mmio_32_force_print(cve_dev,
-			cfg_default.mmio_parity_errcount_offset);
-
-	unmapped_err.val = cve_os_read_mmio_32_force_print(cve_dev,
-			cfg_default.mmio_unmapped_err_id_offset);
-
 	ice_swc_counter_add(cve_dev->hswc_infer,
 			ICEDRV_SWC_INFER_DEVICE_COUNTER_ECC_SERRCOUNT,
 			serr);
 
-	ice_swc_counter_add(cve_dev->hswc_infer,
-			ICEDRV_SWC_INFER_DEVICE_COUNTER_ECC_DERRCOUNT,
-			derr);
 
+	__set_persistant_secc_counter(cve_dev->hswc, serr);
+
+	derr = cve_os_read_mmio_32_force_print(cve_dev,
+			cfg_default.mmio_ecc_derrcount_offset);
+	ice_swc_counter_add(cve_dev->hswc,
+			ICEDRV_SWC_DEVICE_COUNTER_ECC_DERRCOUNT, derr);
+
+	__set_persistant_decc_counter(cve_dev->hswc, derr);
+
+	parity_err = cve_os_read_mmio_32_force_print(cve_dev,
+			cfg_default.mmio_parity_errcount_offset);
 	ice_swc_counter_add(cve_dev->hswc_infer,
 			ICEDRV_SWC_INFER_DEVICE_COUNTER_PARITY_ERRCOUNT,
 			parity_err);
 
+	unmapped_err.val = cve_os_read_mmio_32_force_print(cve_dev,
+			cfg_default.mmio_unmapped_err_id_offset);
 	ice_swc_counter_set(cve_dev->hswc_infer,
 			ICEDRV_SWC_INFER_DEVICE_COUNTER_UNMAPPED_ERR_ID,
 			unmapped_err.field.TID_ERR);
@@ -634,31 +792,84 @@ void store_ecc_err_count(struct cve_device *cve_dev)
 #endif
 }
 
-void cve_print_mmio_regs(struct cve_device *cve_dev)
+static void __dump_mmu_fault_info(struct cve_device *ice)
 {
-	int i;
+	union ice_mmu_fault_info_t mmu_reg;
+	u32 val[3];
 
-	cve_os_read_mmio_32_force_print(cve_dev,
+	mmu_reg.val = cve_os_read_mmio_32(ice,
 			cfg_default.mmu_base +
 			cfg_default.mmu_fault_details_offset);
-	cve_os_read_mmio_32_force_print(cve_dev,
+	val[0] = cve_os_read_mmio_32(ice,
 			cfg_default.mmu_base +
 			cfg_default.mmu_fault_linear_addr_offset);
-	cve_os_read_mmio_32_force_print(cve_dev,
+	val[1] = cve_os_read_mmio_32(ice,
 			cfg_default.mmu_base +
 			cfg_default.mmu_fault_physical_addr_offset);
-	cve_os_read_mmio_32_force_print(cve_dev,
+	val[2] = cve_os_read_mmio_32(ice,
 			cfg_default.mmu_base +
 			cfg_default.mmu_chicken_bits_offset);
-	cve_os_read_mmio_32_force_print(cve_dev,
+
+	cve_os_log_default(CVE_LOGLEVEL_ERROR,
+			"ICE%d MMU FaultDetail:0x%x[Src:%d{T:0,I:2,D:3,C:4} isRead:%d isL1:%d] FaultVA:0x%x FaultPA:0x%x ChickenBit:0x%x\n",
+			ice->dev_index,
+			mmu_reg.val,
+			mmu_reg.mmu_fault_detail.ORIGINATOR,
+			mmu_reg.mmu_fault_detail.RW_N,
+			mmu_reg.mmu_fault_detail.L1,
+			val[0], val[1], val[2]);
+}
+
+static void __dump_tlc_err_reg(struct cve_device *ice)
+{
+	union tlc_error_handling_reg_t tlc_err;
+	u32 val[2];
+
+	tlc_err.val = cve_os_read_mmio_32(ice,
 			cfg_default.mmio_cbb_err_code_offset);
-	cve_os_read_mmio_32_force_print(cve_dev,
+	val[0] = cve_os_read_mmio_32(ice,
 			cfg_default.mmio_cbb_error_info_offset);
-	cve_os_read_mmio_32_force_print(cve_dev,
+	val[1] = cve_os_read_mmio_32(ice,
 			cfg_default.mmio_tlc_info_offset);
-	for (i = 0; i < 16; i++)
-		cve_os_read_mmio_32_force_print(cve_dev,
-			cfg_default.mmio_gp_regs_offset + 4*i);
+	cve_os_log_default(CVE_LOGLEVEL_ERROR,
+			"ICE%d CbbErrCode:0x%x[Type:0x%x Category:0x%x Cbb:0x%x] CbbErrInfo:0x%x TlcInfo:0x%x\n",
+			ice->dev_index, tlc_err.val,
+			tlc_err.cbb_err_code.err_type,
+			tlc_err.cbb_err_code.err_category,
+			tlc_err.cbb_err_code.cbb_id,
+			val[0], val[1]);
+}
+
+static void __dump_gp_reg(struct cve_device *ice)
+{
+	int i;
+	u32 val[4];
+
+	for (i = 0; i < ICE_MAX_GP_REG; i = i + 4) {
+		val[0] = cve_os_read_mmio_32(ice,
+				cfg_default.mmio_gp_regs_offset + i * 4);
+		val[1] = cve_os_read_mmio_32(ice,
+				cfg_default.mmio_gp_regs_offset +
+				((i + 1) * 4));
+		val[2] = cve_os_read_mmio_32(ice,
+				cfg_default.mmio_gp_regs_offset +
+				((i + 2) * 4));
+		val[3] = cve_os_read_mmio_32(ice,
+				cfg_default.mmio_gp_regs_offset +
+				((i + 1) * 4));
+		cve_os_log_default(CVE_LOGLEVEL_ERROR,
+				"ICE%d GP%d:0x%x GP%d:0x%x GP%d:0x%x GP%d:0x%x\n",
+				ice->dev_index, i, val[0],
+				(i + 1), val[1], (i + 2), val[2],
+				(i + 3), val[3]);
+	}
+}
+
+void ice_dump_hw_err_info(struct cve_device *ice)
+{
+	__dump_mmu_fault_info(ice);
+	__dump_tlc_err_reg(ice);
+	__dump_gp_reg(ice);
 }
 
 int init_platform_data(struct cve_device *cve_dev)
@@ -814,16 +1025,20 @@ void ice_di_update_page_sz(struct cve_device *cve_dev, u32 *page_sz_array)
 	 * page size entries
 	 */
 	int i;
+	struct cve_device_group __maybe_unused *dg = cve_dg_get();
 
 	for (i = 0; i < ICE_PAGE_SZ_CONFIG_REG_COUNT; i++) {
 		cve_os_write_mmio_32(cve_dev,
 				(cfg_default.mmu_base +
 				 cfg_default.mmu_page_sizes_offset + (i * 4)),
 				page_sz_array[i]);
-		cve_os_dev_log(CVE_LOGLEVEL_DEBUG,
+		cve_os_dev_log(dg->dump_conf.page_size_config ?
+			    CVE_LOGLEVEL_INFO : CVE_LOGLEVEL_DEBUG,
 				cve_dev->dev_index,
-				"PAGE_SZ_CONFIG_REG Index=%d, Value=0x%x\n",
-				i, page_sz_array[i]);
+				"PAGE_SZ_CONFIG_REG Index=%d, offset=0x%x, Value=0x%x\n",
+				i, (cfg_default.mmu_base +
+				 cfg_default.mmu_page_sizes_offset + (i * 4)),
+				page_sz_array[i]);
 	}
 
 }
@@ -956,10 +1171,10 @@ int ice_di_get_core_blob_sz(void)
 }
 
 
-void ice_di_disable_clk_squashing(struct cve_device *dev)
+void ice_di_configure_clk_squashing(struct cve_device *dev, bool disable)
 {
 	u32 offset, count = 10;
-	u64 read_val, write_val = 0, mask = 0;
+	u32 read_val, write_val = 0, mask = 0;
 	u8 bo_id = (dev->dev_index / 2);
 
 	if (ice_get_b_step_enable_flag())
@@ -970,24 +1185,32 @@ void ice_di_disable_clk_squashing(struct cve_device *dev)
 
 
 	read_val = cve_os_read_idc_mmio(dev, offset);
-	mask = (1ULL << cfg_default.mem_clk_gate_ctl_dont_squash_iceclk_lsb);
-	write_val = (read_val | mask);
+	mask = (1 << cfg_default.mem_clk_gate_ctl_dont_squash_iceclk_lsb);
+	if (disable)
+		write_val = (read_val | mask);
+	else
+		write_val = (read_val & ~mask);
+
 	cve_os_write_idc_mmio(dev, offset, write_val);
 	cve_os_log(CVE_LOGLEVEL_DEBUG,
-			"ICEDC_ICEBO_CLK_GATE_CTL_OFFSET(0x%x): Read:0x%llx Write:0x%llx\n",
-			offset, read_val, write_val);
+			"ICEDC_ICEBO_CLK_GATE_CTL_OFFSET(0x%x): Read:0x%x Write:0x%x disable:%d\n",
+			offset, read_val, write_val, disable);
 
-	/* Check if ICEs are Ready */
-	/* Driver is not yet sure how long to wait for ICERDY */
+	/* Check if register write is successful */
 	while (count) {
 		read_val = cve_os_read_idc_mmio(dev, offset);
-		if ((read_val & mask) == mask)
-			break;
-		usleep_range(100, 500);
+		if (disable) {
+			if ((read_val & mask) == mask)
+				break;
+		} else {
+			if ((read_val | ~mask) == ~mask)
+				break;
+		}
+		usleep_range(100, 110);
 
 		/*TODO HACK: trace to track if reg value is correctly set */
 		cve_os_log(CVE_LOGLEVEL_INFO,
-			"ICEDC_ICEBO_CLK_GATE_CTL_OFFSET(0x%x): Read:0x%llx Write:0x%llx\n",
+			"ICEDC_ICEBO_CLK_GATE_CTL_OFFSET(0x%x): Read:0x%x Write:0x%x\n",
 			offset, read_val, write_val);
 		count--;
 	}
@@ -1014,6 +1237,219 @@ static ssize_t show_ice_freq(struct kobject *kobj,
 	cve_os_log_default(CVE_LOGLEVEL_INFO, "Not Implemented");
 
 	return 0;
+}
+
+static ssize_t store_cbdump(struct kobject *kobj,
+		struct kobj_attribute *attr,
+		const char *buf, size_t count)
+{
+	int ret = 0, val;
+	struct cve_device_group *dg = cve_dg_get();
+
+	if (!dg) {
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+			"null dg pointer (%d) !!\n", -EINVAL);
+		return -EINVAL;
+	}
+
+	ret = kstrtoint(buf, 10, &val);
+	if (ret < 0)
+		return ret;
+
+	dg->dump_conf.cb_dump = (u8)val;
+
+	return count;
+}
+
+static ssize_t show_cbdump(struct kobject *kobj,
+				struct kobj_attribute *attr, char *buf)
+{
+	struct cve_device_group *dg = cve_dg_get();
+
+	if (!dg) {
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+			"null dg pointer (%d) !!\n", -EINVAL);
+		return -EINVAL;
+	}
+	return sprintf(buf, "%d\n", dg->dump_conf.cb_dump);
+}
+
+static ssize_t store_ptdump(struct kobject *kobj,
+		struct kobj_attribute *attr,
+		const char *buf, size_t count)
+{
+	int ret = 0, val;
+	struct cve_device_group *dg = cve_dg_get();
+
+	if (!dg) {
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+			"null dg pointer (%d) !!\n", -EINVAL);
+		return -EINVAL;
+	}
+
+	ret = kstrtoint(buf, 10, &val);
+	if (ret < 0)
+		return ret;
+
+	dg->dump_conf.pt_dump = (u8)val;
+
+	return count;
+}
+
+static ssize_t show_ptdump(struct kobject *kobj,
+				struct kobj_attribute *attr, char *buf)
+{
+	struct cve_device_group *dg = cve_dg_get();
+
+	if (!dg) {
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+			"null dg pointer (%d) !!\n", -EINVAL);
+		return -EINVAL;
+	}
+	return sprintf(buf, "%d\n", dg->dump_conf.pt_dump);
+}
+
+static ssize_t store_postpatchsurfdump(struct kobject *kobj,
+		struct kobj_attribute *attr,
+		const char *buf, size_t count)
+{
+	int ret = 0, val;
+
+	struct cve_device_group *dg = cve_dg_get();
+
+	if (!dg) {
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+			"null dg pointer (%d) !!\n", -EINVAL);
+		return -EINVAL;
+	}
+
+	ret = kstrtoint(buf, 10, &val);
+	if (ret < 0)
+		return ret;
+
+	dg->dump_conf.post_patch_surf_dump = (u8) val;
+
+	return count;
+}
+
+static ssize_t show_postpatchsurfdump(struct kobject *kobj,
+				struct kobj_attribute *attr, char *buf)
+{
+	struct cve_device_group *dg = cve_dg_get();
+
+	if (!dg) {
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+			"null dg pointer (%d) !!\n", -EINVAL);
+		return -EINVAL;
+	}
+	return sprintf(buf, "%d\n", dg->dump_conf.post_patch_surf_dump);
+}
+
+static ssize_t store_icereset(struct kobject *kobj,
+		struct kobj_attribute *attr,
+		const char *buf, size_t count)
+{
+	int ret = 0, val;
+
+	struct cve_device_group *dg = cve_dg_get();
+
+	if (!dg) {
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+			"null dg pointer (%d) !!\n", -EINVAL);
+		return -EINVAL;
+	}
+
+	ret = kstrtoint(buf, 10, &val);
+	if (ret < 0)
+		return ret;
+
+	dg->dump_conf.ice_reset = (u8) val;
+
+	return count;
+}
+
+static ssize_t show_icereset(struct kobject *kobj,
+				struct kobj_attribute *attr, char *buf)
+{
+	struct cve_device_group *dg = cve_dg_get();
+
+	if (!dg) {
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+			"null dg pointer (%d) !!\n", -EINVAL);
+		return -EINVAL;
+	}
+	return sprintf(buf, "%d\n", dg->dump_conf.ice_reset);
+}
+
+static ssize_t store_llcconfig(struct kobject *kobj,
+		struct kobj_attribute *attr,
+		const char *buf, size_t count)
+{
+	int ret = 0, val;
+	struct cve_device_group *dg = cve_dg_get();
+
+	if (!dg) {
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+			"null dg pointer (%d) !!\n", -EINVAL);
+		return -EINVAL;
+	}
+
+	ret = kstrtoint(buf, 10, &val);
+	if (ret < 0)
+		return ret;
+
+	dg->dump_conf.llc_config = (u8)val;
+
+	return count;
+}
+
+static ssize_t show_llcconfig(struct kobject *kobj,
+				struct kobj_attribute *attr, char *buf)
+{
+	struct cve_device_group *dg = cve_dg_get();
+
+	if (!dg) {
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+			"null dg pointer (%d) !!\n", -EINVAL);
+		return -EINVAL;
+	}
+	return sprintf(buf, "%d\n", dg->dump_conf.llc_config);
+}
+
+static ssize_t store_pagesizeconfig(struct kobject *kobj,
+		struct kobj_attribute *attr,
+		const char *buf, size_t count)
+{
+	int ret = 0, val;
+	struct cve_device_group *dg = cve_dg_get();
+
+	if (!dg) {
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+			"null dg pointer (%d) !!\n", -EINVAL);
+		return -EINVAL;
+	}
+
+	ret = kstrtoint(buf, 10, &val);
+	if (ret < 0)
+		return ret;
+
+	dg->dump_conf.page_size_config = (u8) val;
+
+	return count;
+}
+
+static ssize_t show_pagesizeconfig(struct kobject *kobj,
+		struct kobj_attribute *attr,
+		char *buf)
+{
+	struct cve_device_group *dg = cve_dg_get();
+
+	if (!dg) {
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+			"null dg pointer (%d) !!\n", -EINVAL);
+		return -EINVAL;
+	}
+	return sprintf(buf, "%d\n", dg->dump_conf.page_size_config);
 }
 
 static ssize_t store_ice_freq(struct kobject *kobj,
@@ -1260,6 +1696,76 @@ int icedrv_sysfs_init(void)
 out:
 	FUNC_LEAVE()
 	return ret;
+}
+
+static int debug_dump_init(void)
+{
+	int ret;
+
+	/* Create files for dump  */
+	ret = sysfs_create_group(swdebug_kobj, &debug_attr_group);
+	if (ret) {
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+			"debug_attr_group group creation failed\n");
+	}
+	return ret;
+}
+
+/*  function for debug print    */
+
+int sw_debug_sysfs_init(void)
+{
+	int ret;
+
+	FUNC_ENTER();
+	/* create base subdir once */
+	if (!icedrv_kobj) {
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+			"icedrv kobj doesn't exist\n");
+		ret = -ENOMEM;
+		goto out;
+	}
+
+	if (swdebug_kobj)
+		goto dump_init;
+
+	swdebug_kobj = kobject_create_and_add("swdebug", icedrv_kobj);
+	if (!swdebug_kobj) {
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+					"swdebug kobj creation failed\n");
+		ret = -ENOMEM;
+		goto out;
+	}
+
+dump_init:
+	ret = debug_dump_init();
+	if (ret) {
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+			"debug_dump_init failed\n");
+		goto swdebug_kobj_free;
+	}
+	goto out;
+
+swdebug_kobj_free:
+	kobject_put(swdebug_kobj);
+	swdebug_kobj = NULL;
+
+out:
+	FUNC_LEAVE();
+	return ret;
+}
+
+void sw_debug_sysfs_term(void)
+{
+	FUNC_ENTER();
+
+	if (swdebug_kobj) {
+		kobject_put(swdebug_kobj);
+		swdebug_kobj = NULL;
+		cve_os_log(CVE_LOGLEVEL_DEBUG,
+			"sw debug kobj deleted\n");
+	}
+	FUNC_LEAVE();
 }
 
 int hw_config_sysfs_init(struct cve_device *ice_dev)

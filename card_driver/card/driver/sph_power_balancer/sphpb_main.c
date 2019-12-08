@@ -14,27 +14,49 @@
 #include <linux/kobject.h>
 #include <linux/file.h>
 #include <linux/fs.h>
-#include <linux/spinlock.h>
 #include <linux/mutex.h>
 #include <linux/anon_inodes.h>
 #include <linux/uaccess.h>
 #include <linux/fcntl.h>
 #include <asm/msr.h>
 #include <linux/sched/clock.h>
+#include "sphpb_trace.h"
 #include "sph_log.h"
 #include "sph_version.h"
 #include "sphpb.h"
 #include "sphpb_punit.h"
-#include "sphpb_icedriver.h"
 #include "sphpb_bios_mailbox.h"
 
 struct sphpb_pb *g_the_sphpb;
+
+static ssize_t show_bios_mailbox_locked(struct kobject *kobj,
+					struct kobj_attribute *attr,
+					char *buf);
+
+static ssize_t store_bios_mailbox_locked(struct kobject *kobj,
+					 struct kobj_attribute *attr,
+					 const char *buf, size_t count);
+
+static ssize_t show_debug_log_value(struct kobject *kobj,
+				    struct kobj_attribute *attr,
+				    char *buf);
+
+static ssize_t store_debug_log_value(struct kobject *kobj,
+				     struct kobj_attribute *attr,
+				     const char *buf, size_t count);
+
+
+static struct kobj_attribute bios_mailbox_locked_attr =
+__ATTR(bios_mailbox_locked, 0664, show_bios_mailbox_locked, store_bios_mailbox_locked);
+
+static struct kobj_attribute debug_log_attr =
+__ATTR(debug_log, 0664, show_debug_log_value, store_debug_log_value);
 
 
 
 /* request to get a list of recommended ices to use when job starts */
 static int sphpb_get_efficient_ice_list(uint64_t ice_mask,
-					enum SPHPB_DDR_REQUEST ddr,
+					uint32_t ddr_bw,
 					uint16_t ring_divisor_fx,
 					uint16_t ratio_fx,
 					uint8_t *o_ice_array,
@@ -42,13 +64,10 @@ static int sphpb_get_efficient_ice_list(uint64_t ice_mask,
 {
 	int ret;
 
-	/*
-	 * first time call to set initial ring divisor value
-	 */
-	if (g_the_sphpb->icedrv_cb->get_icebo_to_ring_ratio &&
-	    !g_the_sphpb->icebo_ring_divisor)
-		ret = g_the_sphpb->icedrv_cb->get_icebo_to_ring_ratio(&g_the_sphpb->icebo_ring_divisor);
-
+	if (g_the_sphpb->debug_log)
+		sph_log_info(POWER_BALANCER_LOG,
+			     "request list of ices - ice mask - %llu  ddr_bw = %uMB/s ring_divisor = 0x%x(U1.15) ratio = %u\n",
+			     ice_mask, ddr_bw, ring_divisor_fx, ratio_fx);
 
 	ret = sphpb_mng_get_efficient_ice_list(g_the_sphpb,
 					       ice_mask,
@@ -63,16 +82,26 @@ static int sphpb_get_efficient_ice_list(uint64_t ice_mask,
 
 /* request from sphpb to set ice to ring and ice ratio */
 int sphpb_request_ice_dvfs_values(uint32_t ice_index,
-				  enum SPHPB_DDR_REQUEST ddr,
+				  uint32_t ddr_bw,
 				  uint16_t ring_divisor_fx,
 				  uint16_t ratio_fx)
 {
 	int ret;
 
+	DO_TRACE(trace_power_request(ice_index,
+				     ring_divisor_fx,
+				     ddr_bw));
+
+	if (g_the_sphpb->debug_log)
+		sph_log_info(POWER_BALANCER_LOG,
+			     "Got request for ICE %u - ddr_bw=%uMB/s ring_divisor=0x%x(U1.15) ratio=%u\n",
+			     ice_index, ddr_bw, ring_divisor_fx, ratio_fx);
+
 	ret = sphpb_mng_request_ice_dvfs_values(g_the_sphpb,
-					    ice_index,
-					    ring_divisor_fx,
-					    ratio_fx);
+						ice_index,
+						ddr_bw,
+						ring_divisor_fx,
+						ratio_fx);
 
 	return ret;
 }
@@ -82,13 +111,10 @@ int sphpb_set_power_state(uint32_t ice_index, bool bOn)
 {
 	int ret;
 
-	/*
-	 * first time call to set initial ring divisor value
-	 */
-	if (g_the_sphpb->icedrv_cb->get_icebo_to_ring_ratio &&
-	    !g_the_sphpb->icebo_ring_divisor)
-		ret = g_the_sphpb->icedrv_cb->get_icebo_to_ring_ratio(&g_the_sphpb->icebo_ring_divisor);
-
+	if (g_the_sphpb->debug_log)
+		sph_log_info(POWER_BALANCER_LOG,
+			     "set power state for ICE %u - Power State - %s\n",
+			     ice_index, bOn ? "ON" : "OFF");
 
 	ret = sphpb_mng_set_icebo_enable(g_the_sphpb,
 					 ice_index,
@@ -97,13 +123,23 @@ int sphpb_set_power_state(uint32_t ice_index, bool bOn)
 	return ret;
 }
 
-static void sphpb_throttle_init(struct sphpb_pb *sphpb)
+int sphpb_throttle_init(struct sphpb_pb *sphpb)
 {
+	int ret = 0;
 	sphpb->throttle_data.curr_state = 0x0;
 
 	sphpb->throttle_data.cpu_stat = kmalloc_array(num_possible_cpus(), sizeof(struct cpu_perfstat), GFP_KERNEL);
-	if (unlikely(sphpb->throttle_data.cpu_stat == NULL))
+	if (unlikely(sphpb->throttle_data.cpu_stat == NULL)) {
+		ret = -ENOMEM;
 		sph_log_err(POWER_BALANCER_LOG, "Throttling init failure: Out of memory.\n");
+	}
+	return ret;
+}
+
+void sphpb_throttle_deinit(struct sphpb_pb *sphpb)
+{
+	sphpb->throttle_data.curr_state = 0x0;
+	kfree(sphpb->throttle_data.cpu_stat);
 }
 
 static void sphpb_throttle_prepare(void)
@@ -111,23 +147,22 @@ static void sphpb_throttle_prepare(void)
 	uint32_t cpu;
 	int ret;
 
-	mutex_lock(&g_the_sphpb->mutex_lock);
 	if (unlikely(g_the_sphpb->icedrv_cb == NULL ||
-	    g_the_sphpb->icedrv_cb->set_clock_squash == NULL)) {
-		mutex_unlock(&g_the_sphpb->mutex_lock);
-		return;
-	}
+	    g_the_sphpb->icedrv_cb->set_clock_squash == NULL))
+		goto err;
 
 	ret = g_the_sphpb->icedrv_cb->set_clock_squash(0, g_the_sphpb->throttle_data.curr_state,
 						       g_the_sphpb->throttle_data.curr_state != 0x0);
-	mutex_unlock(&g_the_sphpb->mutex_lock);
 	if (unlikely(ret < 0))
 		sph_log_err(POWER_BALANCER_LOG, "Throttling failure: Unable to disable ice throttling. Err(%d)\n", ret);
 
 	if (g_the_sphpb->throttle_data.curr_state != 0x0)
-		ret = set_sagv_freq(SAGV_POLICY_FIXED_LOW, SAGV_POLICY_DYNAMIC);
+		g_the_sphpb->request_ddr_value = SAGV_POLICY_FIXED_LOW;
 	else
-		ret = set_sagv_freq(SAGV_POLICY_DYNAMIC, SAGV_POLICY_DYNAMIC);
+		g_the_sphpb->request_ddr_value = SAGV_POLICY_DYNAMIC;
+
+	ret = set_sagv_freq(g_the_sphpb->request_ddr_value, SAGV_POLICY_DYNAMIC);
+
 	if (unlikely(ret < 0))
 		sph_log_err(POWER_BALANCER_LOG, "Throttling failure: Unable to set Dynamic DRAM frequency. Err(%d)\n", ret);
 
@@ -137,14 +172,21 @@ static void sphpb_throttle_prepare(void)
 		return;
 	for (cpu = 0; cpu < num_possible_cpus(); ++cpu)
 		smp_call_function_single(cpu, aperfmperf_snapshot_khz, &g_the_sphpb->throttle_data.cpu_stat[cpu], true);
+err:
+	return;
+
 }
 
 static void sphpb_unregister_driver(void)
 {
 	if (!g_the_sphpb) {
-		sph_log_err(POWER_BALANCER_LOG, "sph_power_balancer was failed to register");
+		sph_log_err(POWER_BALANCER_LOG, "sph_power_balancer was failed to un-register");
 		return;
 	}
+
+	if (g_the_sphpb->debug_log)
+		sph_log_info(POWER_BALANCER_LOG, "got request to unregister_driver\n");
+
 
 	mutex_lock(&g_the_sphpb->mutex_lock);
 
@@ -154,7 +196,8 @@ static void sphpb_unregister_driver(void)
 
 	mutex_unlock(&g_the_sphpb->mutex_lock);
 
-	sph_log_err(POWER_BALANCER_LOG, "Throttling disabled: callback functions are not inited.\n");
+	if (g_the_sphpb->debug_log)
+		sph_log_info(POWER_BALANCER_LOG, "unregister_driver, completed - throttling is not active\n");
 }
 
 const struct sphpb_callbacks *sph_power_balancer_register_driver(const struct sphpb_icedrv_callbacks *drv_data)
@@ -164,23 +207,96 @@ const struct sphpb_callbacks *sph_power_balancer_register_driver(const struct sp
 		return NULL;
 	}
 
+	if (g_the_sphpb->debug_log)
+		sph_log_info(POWER_BALANCER_LOG, "got request to register driver\n");
+
+
 	mutex_lock(&g_the_sphpb->mutex_lock);
 
 	if (g_the_sphpb->icedrv_cb) {
 		sph_log_err(POWER_BALANCER_LOG, "sph_power_balancer already registered");
-		mutex_unlock(&g_the_sphpb->mutex_lock);
-		return NULL;
+		goto err;
 	}
 
 	g_the_sphpb->icedrv_cb = drv_data;
 
-	mutex_unlock(&g_the_sphpb->mutex_lock);
-
 	sphpb_throttle_prepare();
 
+	mutex_unlock(&g_the_sphpb->mutex_lock);
+
+	if (g_the_sphpb->icedrv_cb->get_icebo_to_ring_ratio)
+		g_the_sphpb->icedrv_cb->get_icebo_to_ring_ratio(&g_the_sphpb->orig_icebo_ring_divisor);
+
+	g_the_sphpb->icebo_ring_divisor = SPHPB_MIN_RING_POSSIBLE_VALUE;
+
+	if (g_the_sphpb->debug_log)
+		sph_log_info(POWER_BALANCER_LOG, "register driver completed\n");
+
 	return &g_the_sphpb->callbacks;
+err:
+	mutex_unlock(&g_the_sphpb->mutex_lock);
+
+	if (g_the_sphpb->debug_log)
+		sph_log_info(POWER_BALANCER_LOG, "register driver failed\n");
+
+	return NULL;
 }
 EXPORT_SYMBOL(sph_power_balancer_register_driver);
+
+
+static ssize_t show_bios_mailbox_locked(struct kobject *kobj,
+					struct kobj_attribute *attr,
+					char *buf)
+{
+	return sprintf(buf, "%d\n", g_the_sphpb->bios_mailbox_locked);
+}
+
+static ssize_t store_bios_mailbox_locked(struct kobject *kobj,
+					 struct kobj_attribute *attr,
+					 const char *buf, size_t count)
+{
+	int ret = count;
+	unsigned long val;
+
+	if (kstrtoul(buf, 0, &val) < 0)
+		return -EINVAL;
+
+	mutex_lock(&g_the_sphpb->mutex_lock);
+
+	if (val != 0 && g_the_sphpb->bios_mailbox_locked)
+		ret = -EBUSY;
+	else if (val == 0 && !g_the_sphpb->bios_mailbox_locked)
+		ret = -EINVAL;
+	else
+		g_the_sphpb->bios_mailbox_locked = val;
+
+	mutex_unlock(&g_the_sphpb->mutex_lock);
+
+	return ret;
+}
+
+static ssize_t show_debug_log_value(struct kobject *kobj,
+				    struct kobj_attribute *attr,
+				    char *buf)
+{
+	return sprintf(buf, "%d\n", g_the_sphpb->debug_log);
+}
+
+static ssize_t store_debug_log_value(struct kobject *kobj,
+				     struct kobj_attribute *attr,
+				     const char *buf, size_t count)
+{
+	int ret = count;
+	unsigned long val;
+
+	if (kstrtoul(buf, 0, &val) < 0)
+		return -EINVAL;
+
+	g_the_sphpb->debug_log = (val != 0) ? 1 : 0;
+
+	return ret;
+}
+
 
 int create_sphpb(void)
 {
@@ -195,12 +311,13 @@ int create_sphpb(void)
 	if (!sphpb)
 		return -ENOMEM;
 
+	mutex_init(&sphpb->mutex_lock);
+
 	sphpb->callbacks.get_efficient_ice_list		= sphpb_get_efficient_ice_list;
 	sphpb->callbacks.request_ice_dvfs_values	= sphpb_request_ice_dvfs_values;
 	sphpb->callbacks.set_power_state		= sphpb_set_power_state;
 	sphpb->callbacks.unregister_driver		= sphpb_unregister_driver;
 
-	sphpb->max_ring_divisor_ice_num = -1;
 	for (icebo = 0; icebo < SPHPB_MAX_ICEBO_COUNT; icebo++)
 		sphpb->icebo[icebo].ring_divisor_idx = -1;
 
@@ -211,46 +328,73 @@ int create_sphpb(void)
 		goto err;
 	}
 
-	ret = sphpb_iccp_table_sysfs_init(sphpb);
-	if (ret)
+	ret = sysfs_create_file(sphpb->kobj, &bios_mailbox_locked_attr.attr);
+	if (ret) {
+		sph_log_err(POWER_BALANCER_LOG, "sphpb bios mailbox attr failed - err(%d)\n", ret);
 		goto cleanup_kobj;
+	}
+
+	ret = sysfs_create_file(sphpb->kobj, &debug_log_attr.attr);
+	if (ret) {
+		sph_log_err(POWER_BALANCER_LOG, "sphpb bios mailbox attr failed - err(%d)\n", ret);
+		goto cleanup_bios_mailbox_attr;
+	}
 
 	ret = sphpb_ring_freq_sysfs_init(sphpb);
 	if (ret)
-		goto cleanup_iccp_table;
+		goto cleanup_debug_log_attr;
 
 	ret = sphpb_ia_cycles_sysfs_init(sphpb);
 	if (ret)
-		goto cleanup_iccp_table;
-
-	ret = sphpb_icebo_sysfs_init(sphpb);
-	if (ret)
-		goto cleanup_ia_table;
-
-
-	spin_lock_init(&sphpb->lock);
-
-	sphpb_map_idc_mailbox_base_registers(sphpb);
+		goto cleanup_ring_freq_sysfs;
 
 	ret = sphpb_map_bios_mailbox(sphpb);
-	if (unlikely(ret < 0))
+	if (ret) {
 		sph_log_err(POWER_BALANCER_LOG, "sphpb_map_bios_mailbox failed with err: %d.\n", ret);
+		goto cleanup_ia_cycles_sysfs;
+	}
 
-	sphpb_throttle_init(sphpb);
+	ret = sphpb_power_overshoot_sysfs_init(sphpb);
+	if (ret) {
+		sph_log_err(POWER_BALANCER_LOG, "sphpb_power_overshoot_sysfs_init failed with err: %d.\n", ret);
+		goto cleanup_map_bios_mailbox_sysfs;
+
+	}
+
+	ret = sphpb_throttle_init(sphpb);
+	if (ret) {
+		sph_log_err(POWER_BALANCER_LOG, "sphpb_throttle_init failed with err: %d.\n", ret);
+		goto cleanup_power_overshoot_sysfs;
+	}
+
+	sphpb_trace_init();
 
 	g_the_sphpb = sphpb;
 
 	return 0;
+cleanup_power_overshoot_sysfs:
+	sphpb_power_overshoot_sysfs_deinit(sphpb);
 
-cleanup_ia_table:
+cleanup_map_bios_mailbox_sysfs:
+	sphpb_unmap_bios_mailbox(sphpb);
+
+cleanup_ia_cycles_sysfs:
 	sphpb_ia_cycles_sysfs_deinit(sphpb);
 
-cleanup_iccp_table:
-	sphpb_iccp_table_sysfs_deinit(sphpb);
+cleanup_ring_freq_sysfs:
+	sphpb_ring_freq_sysfs_deinit(sphpb);
+
+cleanup_debug_log_attr:
+	sysfs_remove_file(sphpb->kobj, &debug_log_attr.attr);
+
+cleanup_bios_mailbox_attr:
+	sysfs_remove_file(sphpb->kobj, &bios_mailbox_locked_attr.attr);
 
 cleanup_kobj:
 	kobject_put(sphpb->kobj);
 err:
+	mutex_destroy(&sphpb->mutex_lock);
+
 	kfree(sphpb);
 
 	return ret;
@@ -262,21 +406,23 @@ void destroy_sphpb(void)
 	if (unlikely(g_the_sphpb == NULL))
 		return;
 
-	kfree(g_the_sphpb->throttle_data.cpu_stat);
+	sphpb_throttle_deinit(g_the_sphpb);
 
-	sphpb_icebo_sysfs_deinit(g_the_sphpb);
+	sphpb_power_overshoot_sysfs_deinit(g_the_sphpb);
+
+	sphpb_unmap_bios_mailbox(g_the_sphpb);
 
 	sphpb_ia_cycles_sysfs_deinit(g_the_sphpb);
 
 	sphpb_ring_freq_sysfs_deinit(g_the_sphpb);
 
-	sphpb_iccp_table_sysfs_deinit(g_the_sphpb);
+	sysfs_remove_file(g_the_sphpb->kobj, &bios_mailbox_locked_attr.attr);
 
-	sphpb_unmap_idc_mailbox_base_registers(g_the_sphpb);
-
-	sphpb_unmap_bios_mailbox(g_the_sphpb);
+	sysfs_remove_file(g_the_sphpb->kobj, &debug_log_attr.attr);
 
 	kobject_put(g_the_sphpb->kobj);
+
+	mutex_destroy(&g_the_sphpb->mutex_lock);
 
 	kfree(g_the_sphpb);
 

@@ -32,6 +32,7 @@ struct ice_drv_config {
 	u8 ice_sch_preemption;
 	u8 iccp_throttling;
 	u32 initial_iccp_config[3];
+	u8 enable_mmu_pmon;
 };
 
 /*
@@ -158,4 +159,7 @@ u32 ice_get_reset_cdyn_val(void);
 
 /*retrive blocked cdyn requested value */
 u32 ice_get_blocked_cdyn_val(void);
+
+/*check if user has requested to dump MMu PMONs after Job completion*/
+u8 ice_dump_mmu_pmon(void);
 #endif /* CVE_DEVICE_GROUP_H_ */

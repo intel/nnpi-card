@@ -253,7 +253,7 @@ int sphcs_response_pool_get_response_page_wait(uint32_t index, dma_addr_t *out_h
 		ret = wait_event_interruptible(pool->hrp_waitq,
 					 !list_empty(&pool->host_response_pages_list));
 		if (ret)
-			return ret;
+			return -EINTR;
 
 		ret = sphcs_response_pool_get_response_page(index, out_host_dma_addr, out_host_page_hndl);
 	}

@@ -192,7 +192,7 @@ static void __dealloc_l2_page(struct cve_lin_mm_domain *cve_domain,
  * outputs:
  * returns:
  */
-#ifdef _DEBUG
+
 static void __dump_pt(struct cve_lin_mm_domain *adom,
 		struct ice_mmu_config *mmu_config)
 {
@@ -207,7 +207,7 @@ static void __dump_pt(struct cve_lin_mm_domain *adom,
 		if (adom->pgd_vaddr[l1_idx] == INVALID_PAGE)
 			continue;
 
-		cve_os_dev_log(CVE_LOGLEVEL_DEBUG,
+		cve_os_dev_log(CVE_LOGLEVEL_INFO,
 			adom->cve_dev->dev_index,
 			"l1: index=%u ICEVA=0x%llx value=%8.8x; PT2 page: IAVA=%p, PA=0x%llx\n",
 			l1_idx,
@@ -220,14 +220,14 @@ static void __dump_pt(struct cve_lin_mm_domain *adom,
 				l2_idx < ICE_L2PT_PTES(mmu_config->l2_width);
 				l2_idx++) {
 			pt_entry_t *l2_pt_vaddr = adom->virtual_l1[l1_idx];
-			ice_va_t cve_vaddr = ice_va_hi +
+			ice_va_t __maybe_unused cve_vaddr = ice_va_hi +
 				(l2_idx <<
 				 ICE_L2PT_SHIFT(mmu_config->page_shift));
 
 			if (l2_pt_vaddr[l2_idx] == INVALID_PAGE)
 				continue;
 
-			cve_os_dev_log(CVE_LOGLEVEL_DEBUG,
+			cve_os_dev_log(CVE_LOGLEVEL_INFO,
 				adom->cve_dev->dev_index,
 				"\tl2: index=%u ICEVA=0x%llx value=%8.8x PA=%llx prot=%c%c%c\n",
 				l2_idx,
@@ -257,7 +257,7 @@ void cve_page_table_dump(struct cve_lin_mm_domain *adom)
 	mmu_config = &hw_reserved_mmu_config;
 	__mmu_config_35bit_va_page_32K_BAR1(mmu_config);
 
-	cve_os_log(CVE_LOGLEVEL_DEBUG,
+	cve_os_log(CVE_LOGLEVEL_INFO,
 			">>>>>>>>>>> begin IOMMU page table dump >>>>>>>>>>>\n");
 
 	for (; partition_id < ICE_MEM_MAX_PARTITION; partition_id++) {
@@ -271,11 +271,11 @@ void cve_page_table_dump(struct cve_lin_mm_domain *adom)
 		__dump_pt(adom, mmu_config);
 	}
 
-	cve_os_log(CVE_LOGLEVEL_DEBUG,
+	cve_os_log(CVE_LOGLEVEL_INFO,
 			"<<<<<<<<<< end IOMMU page table dump <<<<<<<<<<\n");
 	FUNC_LEAVE();
 }
-#endif /* DEBUG */
+
 
 /*
  * allocate and initialize a page in a page table
@@ -416,8 +416,7 @@ static int __alloc_new_l2_page(struct cve_lin_mm_domain *cve_domain,
 		u32 end_mask = ((1 << l2_borrowed_width) - 1);
 		u32 start_mask = ~end_mask;
 
-		start_l1 = (l1_idx & start_mask);
-		end_l1 = (start_l1 + end_mask);
+		end_l1 = ((l1_idx & start_mask) + end_mask);
 	}
 
 	l1_entry = (l2_pt_dma_addr >> ICE_DEFAULT_PA_SHIFT) | ICE_PD_BIT;

@@ -19,6 +19,30 @@
 #include "sphcs_trace.h"
 #include "sphcs_sw_counters.h"
 
+static int infreq_req_sched(struct inf_exec_req *req);
+static bool inf_req_ready(struct inf_exec_req *req);
+static int inf_req_execute(struct inf_exec_req *req);
+static void inf_req_complete(struct inf_exec_req *req, int err);
+static void send_infreq_report(struct inf_exec_req *req,
+			       enum event_val       eventVal);
+static int inf_req_infreq_put(struct inf_exec_req *req);
+static int inf_req_migrate_priority(struct inf_exec_req *req, uint8_t priority);
+static void inf_req_release(struct kref *kref);
+
+struct func_table const s_req_funcs = {
+	.schedule = infreq_req_sched,
+	.is_ready = inf_req_ready,
+	.execute = inf_req_execute,
+	.complete = inf_req_complete,
+	.send_report = send_infreq_report,
+	.obj_put = inf_req_infreq_put,
+	//not used for infreq
+	.migrate_priority = inf_req_migrate_priority,
+
+	/* This function should not be called directly, use inf_exec_req_put instead */
+	.release = inf_req_release
+};
+
 int inf_req_create(uint16_t            protocolID,
 		   struct inf_devnet  *devnet,
 		   struct inf_req    **out_infreq)
@@ -142,21 +166,19 @@ static void release_infreq(struct kref *kref)
 {
 	struct inf_req *infreq = container_of(kref, struct inf_req, ref);
 	struct inf_destroy_infreq cmd_args;
-	int i;
-	int ret = 0;
+	uint32_t i;
+	int ret;
 
 	SPH_SPIN_LOCK(&infreq->devnet->lock);
 	hash_del(&infreq->hash_node);
 	SPH_SPIN_UNLOCK(&infreq->devnet->lock);
 
 	for (i = 0; i < infreq->n_inputs; i++) {
-		ret = inf_devres_put(infreq->inputs[i]);
-		SPH_ASSERT(ret == 0);
+		inf_devres_put(infreq->inputs[i]);
 	}
 
 	for (i = 0; i < infreq->n_outputs; i++) {
-		ret = inf_devres_put(infreq->outputs[i]);
-		SPH_ASSERT(ret == 0);
+		inf_devres_put(infreq->outputs[i]);
 	}
 
 	if (likely(infreq->status == CREATED)) {
@@ -178,9 +200,6 @@ static void release_infreq(struct kref *kref)
 	SPH_SW_COUNTER_DEC(infreq->devnet->sw_counters,
 			   NET_SPHCS_SW_COUNTERS_NUM_INFER_CMDS);
 
-	ret = inf_devnet_put(infreq->devnet);
-	SPH_ASSERT(ret == 0);
-
 	if (likely(infreq->destroyed == 1))
 		sphcs_send_event_report_ext(g_the_sphcs,
 					SPH_IPC_INFREQ_DESTROYED,
@@ -188,6 +207,8 @@ static void release_infreq(struct kref *kref)
 					infreq->devnet->context->protocolID,
 					infreq->protocolID,
 					infreq->devnet->protocolID);
+
+	inf_devnet_put(infreq->devnet);
 
 	if (likely(infreq->inputs != NULL))
 		kfree(infreq->inputs);
@@ -226,27 +247,45 @@ static void migrate_priority(struct inf_req *infreq, struct inf_exec_req *req)
 void infreq_req_init(struct inf_exec_req *req,
 		     struct inf_req *infreq,
 		     struct inf_cmd_list *cmd,
-		     struct inf_sched_params *params)
+		     uint8_t priority,
+		     bool sched_params_are_null,
+		     uint16_t batchSize,
+		     uint8_t debugOn,
+		     uint8_t collectInfo)
 {
 	kref_init(&req->in_use);
 	req->in_progress = false;
-	req->is_copy = false;
+	req->context = infreq->devnet->context;
+	req->last_sched_tick = 0;
+	req->cmd_type = CMDLIST_CMD_INFREQ;
+	req->f = &s_req_funcs;
 	req->infreq = infreq;
 	req->cmd = cmd;
-	req->sched_params_is_null = (params == NULL);
-	if (!req->sched_params_is_null)
-		memcpy(&req->sched_params, params, sizeof(struct inf_sched_params));
+	req->priority = priority;
+	req->sched_params_is_null = sched_params_are_null;
+	if (!sched_params_are_null) {
+		req->size = batchSize;
+		req->debugOn = debugOn;
+		req->collectInfo = collectInfo;
+	}
 	req->time = 0;
+	req->i_num_opt_depend_devres = 0;
+	req->o_num_opt_depend_devres = 0;
+	req->i_opt_depend_devres = NULL;
+	req->o_opt_depend_devres = NULL;
 }
 
-int infreq_req_sched(struct inf_exec_req *req)
+static int infreq_req_sched(struct inf_exec_req *req)
 {
-	struct inf_req *infreq = req->infreq;
+	struct inf_req *infreq;
 	int err;
 	int i = 0;
 	int j = 0;
 	int k;
 
+	SPH_ASSERT(req->cmd_type == CMDLIST_CMD_INFREQ);
+
+	infreq = req->infreq;
 	if (SPH_SW_GROUP_IS_ENABLE(infreq->sw_counters,
 				   INFREQ_SPHCS_SW_COUNTERS_GROUP))
 		req->time = sph_time_us();
@@ -255,6 +294,12 @@ int infreq_req_sched(struct inf_exec_req *req)
 	spin_lock_init(&req->lock_irq);
 	inf_context_seq_id_init(infreq->devnet->context, &req->seq);
 	inf_exec_req_get(req);
+
+	DO_TRACE(trace_infreq(SPH_TRACE_OP_STATUS_QUEUED,
+					   infreq->devnet->context->protocolID,
+					   infreq->devnet->protocolID,
+					   infreq->protocolID,
+					   req->cmd ? req->cmd->protocolID : -1));
 
 	/* place write dependency on the network resource to prevent
 	 * two infer request of the same network to work in parallel.
@@ -282,7 +327,7 @@ int infreq_req_sched(struct inf_exec_req *req)
 	}
 
 	// Migrate high priority
-	if (req->sched_params.priority == 0)
+	if (req->priority != 0)
 		migrate_priority(infreq, req);
 
 	// Request scheduled
@@ -303,22 +348,22 @@ fail:
 	inf_devres_del_req_from_queue(infreq->devnet->first_devres, req);
 fail_first:
 	inf_context_seq_id_fini(infreq->devnet->context, &req->seq);
-	inf_req_put(req->infreq);
+	inf_req_put(infreq);
 
 	return err;
 }
 
-/* This function should not be called directly, use inf_exec_req_put instead */
-void inf_req_release(struct kref *kref)
+static void inf_req_release(struct kref *kref)
 {
 	struct inf_exec_req *req = container_of(kref,
 						struct inf_exec_req,
 						in_use);
-	struct inf_req *infreq = req->infreq;
+	struct inf_req *infreq;
 	int i;
 
-	SPH_ASSERT(!req->is_copy);
+	SPH_ASSERT(req->cmd_type == CMDLIST_CMD_INFREQ);
 
+	infreq = req->infreq;
 	inf_devres_del_req_from_queue(infreq->devnet->first_devres, req);
 	for (i = 0; i < infreq->n_inputs; i++)
 		inf_devres_del_req_from_queue(infreq->inputs[i], req);
@@ -326,17 +371,27 @@ void inf_req_release(struct kref *kref)
 		inf_devres_del_req_from_queue(infreq->outputs[i], req);
 	inf_context_seq_id_fini(infreq->devnet->context, &req->seq);
 
+	/* advance sched tick and try execute next requests */
+	atomic_add(2, &req->context->sched_tick);
+
+	inf_devres_try_execute(infreq->devnet->first_devres);
+	for (i = 0; i < infreq->n_inputs; i++)
+		inf_devres_try_execute(infreq->inputs[i]);
+	for (i = 0; i < infreq->n_outputs; i++)
+		inf_devres_try_execute(infreq->outputs[i]);
+
 	kmem_cache_free(infreq->devnet->context->exec_req_slab_cache, req);
 	inf_req_put(infreq);
 }
 
-bool inf_req_ready(struct inf_exec_req *req)
+static bool inf_req_ready(struct inf_exec_req *req)
 {
-	struct inf_req *infreq = req->infreq;
+	struct inf_req *infreq;
 	int i;
 
-	SPH_ASSERT(!req->is_copy);
+	SPH_ASSERT(req->cmd_type == CMDLIST_CMD_INFREQ);
 
+	infreq = req->infreq;
 	/* cannot start execute if another infreq of the same network is running*/
 	if (!inf_devres_req_ready(infreq->devnet->first_devres,
 				  req,
@@ -344,18 +399,30 @@ bool inf_req_ready(struct inf_exec_req *req)
 		return false;
 
 	/* check input resources dependency */
-	for (i = 0; i < infreq->n_inputs; i++)
-		if (!inf_devres_req_ready(infreq->inputs[i],
-					  req,
-					  true))
+	if (req->i_num_opt_depend_devres > 0) {
+		for (i = 0; i < req->i_num_opt_depend_devres; i++)
+			if (!inf_devres_req_ready(req->i_opt_depend_devres[i], req, true))
+				return false;
+	} else {
+		for (i = 0; i < infreq->n_inputs; i++)
+			if (!inf_devres_req_ready(infreq->inputs[i],
+						  req,
+						  true))
 			return false;
+	}
 
 	/* check output resources dependency */
-	for (i = 0; i < infreq->n_outputs; i++)
-		if (!inf_devres_req_ready(infreq->outputs[i],
-					  req,
-					  false))
-			return false;
+	if (req->o_num_opt_depend_devres > 0) {
+		for (i = 0; i < req->o_num_opt_depend_devres; i++)
+			if (!inf_devres_req_ready(req->o_opt_depend_devres[i], req, false))
+				return false;
+	} else {
+		for (i = 0; i < infreq->n_outputs; i++)
+			if (!inf_devres_req_ready(infreq->outputs[i],
+						  req,
+						  false))
+				return false;
+	}
 
 	return true;
 }
@@ -383,21 +450,26 @@ unsigned long inf_req_read_exec_command(char __user *buf,
 	return ret;
 }
 
-int inf_req_execute(struct inf_exec_req *req)
+static int inf_req_execute(struct inf_exec_req *req)
 {
-	struct inf_req *infreq = req->infreq;
-	struct inf_context *context = infreq->devnet->context;
+	struct inf_req *infreq;
+	struct inf_context *context;
 	unsigned long flags, flags2;
 	int ret;
 
-	SPH_ASSERT(!req->is_copy);
+	SPH_ASSERT(req->cmd_type == CMDLIST_CMD_INFREQ);
 	SPH_ASSERT(req->in_progress);
+
+	infreq = req->infreq;
+	context = infreq->devnet->context;
+
 	SPH_ASSERT(infreq->active_req == NULL);
 
 	DO_TRACE(trace_infreq(SPH_TRACE_OP_STATUS_START,
 		     infreq->devnet->context->protocolID,
 		     infreq->devnet->protocolID,
-		     infreq->protocolID));
+		     infreq->protocolID,
+		     req->cmd ? req->cmd->protocolID : -1));
 
 	if (SPH_SW_GROUP_IS_ENABLE(infreq->sw_counters,
 				   INFREQ_SPHCS_SW_COUNTERS_GROUP)) {
@@ -435,9 +507,13 @@ int inf_req_execute(struct inf_exec_req *req)
 
 	SPH_SPIN_LOCK_IRQSAVE(&infreq->lock_irq, flags);
 	infreq->exec_cmd.ready_flags = 1;
-	infreq->exec_cmd.sched_params = req->sched_params;
 	infreq->exec_cmd.sched_params_is_null = req->sched_params_is_null;
-
+	if (!req->sched_params_is_null) {
+		infreq->exec_cmd.sched_params.batchSize = (uint16_t)req->size;
+		infreq->exec_cmd.sched_params.priority = req->priority;
+		infreq->exec_cmd.sched_params.debugOn = req->debugOn;
+		infreq->exec_cmd.sched_params.collectInfo = req->collectInfo;
+	}
 	SPH_SPIN_LOCK_IRQSAVE(&context->sw_counters_lock_irq, flags2);
 	if (context->infreq_counter == 0 &&
 	    SPH_SW_GROUP_IS_ENABLE(context->sw_counters, CTX_SPHCS_SW_COUNTERS_GROUP_INFERENCE))
@@ -483,31 +559,50 @@ int inf_req_execute(struct inf_exec_req *req)
 	return ret;
 }
 
-void infreq_send_req_fail(struct inf_exec_req *req,
-			  enum event_val       eventVal)
+static inline void infreq_send_req_fail(struct inf_exec_req *req,
+					enum event_val       eventVal)
 {
 	union c2h_InfreqFailed msg;
+	struct inf_req *infreq;
 
-	SPH_ASSERT(!req->is_copy);
+	SPH_ASSERT(req->cmd_type == CMDLIST_CMD_INFREQ);
 
-	if (req->cmd == NULL) {
+	infreq = req->infreq;
+	if (infreq->devnet->context->chan != NULL) {
+		union c2h_ChanInfReqFailed chan_msg;
+
+		memset(chan_msg.value, 0, sizeof(chan_msg.value));
+		chan_msg.opcode = SPH_IPC_C2H_OP_CHAN_INFREQ_FAILED;
+		chan_msg.chanID = infreq->devnet->context->chan->protocolID;
+		chan_msg.netID = infreq->devnet->protocolID;
+		chan_msg.infreqID = infreq->protocolID;
+		chan_msg.reason = eventVal;
+		if (req->cmd != NULL) {
+			chan_msg.cmdID_valid = 1;
+			chan_msg.cmdID = req->cmd->protocolID;
+		}
+		sphcs_msg_scheduler_queue_add_msg(g_the_sphcs->public_respq,
+						  &chan_msg.value[0],
+						  sizeof(chan_msg.value) / sizeof(u64));
+		return;
+	} else if (req->cmd == NULL) {
 		sphcs_send_event_report_ext(g_the_sphcs,
 				SPH_IPC_SCHEDULE_INFREQ_FAILED,
 				eventVal,
-				req->infreq->devnet->context->protocolID,
-				req->infreq->protocolID,
-				req->infreq->devnet->protocolID);
+				infreq->devnet->context->protocolID,
+				infreq->protocolID,
+				infreq->devnet->protocolID);
 		return;
 	}
 
 	msg.rep_msg.opcode = SPH_IPC_C2H_OP_INFREQ_FAILED;
 	msg.rep_msg.eventCode = SPH_IPC_SCHEDULE_INFREQ_FAILED;
 	msg.rep_msg.eventVal = eventVal;
-	msg.rep_msg.contextID = req->infreq->devnet->context->protocolID;
+	msg.rep_msg.contextID = infreq->devnet->context->protocolID;
 	msg.rep_msg.ctxValid = 1;
-	msg.rep_msg.objID = req->infreq->protocolID;
+	msg.rep_msg.objID = infreq->protocolID;
 	msg.rep_msg.objValid = 1;
-	msg.rep_msg.objID_2 = req->infreq->devnet->protocolID;
+	msg.rep_msg.objID_2 = infreq->devnet->protocolID;
 	msg.rep_msg.objValid_2 = 1;
 
 	msg.cmdID = req->cmd->protocolID;
@@ -523,7 +618,14 @@ void infreq_send_req_fail(struct inf_exec_req *req,
 	sphcs_msg_scheduler_queue_add_msg(g_the_sphcs->public_respq, &msg.value[0], sizeof(msg));
 }
 
-void inf_req_complete(struct inf_exec_req *req, int err)
+static void send_infreq_report(struct inf_exec_req *req,
+			       enum event_val       eventVal)
+{
+	if (eventVal != 0)
+		infreq_send_req_fail(req, eventVal);
+}
+
+static void inf_req_complete(struct inf_exec_req *req, int err)
 {
 	struct inf_req *infreq;
 	struct inf_context *context;
@@ -533,7 +635,7 @@ void inf_req_complete(struct inf_exec_req *req, int err)
 	uint16_t eventVal;
 	bool last_completed;
 
-	SPH_ASSERT(!req->is_copy);
+	SPH_ASSERT(req->cmd_type == CMDLIST_CMD_INFREQ);
 	SPH_ASSERT(req->in_progress);
 
 	infreq = req->infreq;
@@ -557,10 +659,11 @@ void inf_req_complete(struct inf_exec_req *req, int err)
 	}
 	SPH_SPIN_UNLOCK_IRQRESTORE(&context->sw_counters_lock_irq, flags);
 
-	DO_TRACE(trace_infreq(SPH_TRACE_OP_STATUS_COMPLETE,
-		     infreq->devnet->context->protocolID,
-		     infreq->devnet->protocolID,
-		     infreq->protocolID));
+	 DO_TRACE(trace_infreq(SPH_TRACE_OP_STATUS_COMPLETE,
+				  infreq->devnet->context->protocolID,
+				  infreq->devnet->protocolID,
+				  infreq->protocolID,
+				  cmd ? cmd->protocolID : -1));
 
 	if (SPH_SW_GROUP_IS_ENABLE(infreq->sw_counters,
 				   INFREQ_SPHCS_SW_COUNTERS_GROUP)) {
@@ -631,7 +734,7 @@ void inf_req_complete(struct inf_exec_req *req, int err)
 			eventVal = SPH_IPC_RUNTIME_FAILED;
 		}
 		sph_log_err(EXECUTE_COMMAND_LOG, "Got Error. errno: %d, eventVal=%u\n", err, eventVal);
-		infreq_send_req_fail(req, eventVal);
+		req->f->send_report(req, eventVal);
 
 		//TODO GLEB: decide according to error if brake the context, brake the card or do nothing
 		inf_context_set_state(infreq->devnet->context,
@@ -640,10 +743,14 @@ void inf_req_complete(struct inf_exec_req *req, int err)
 
 	if (cmd != NULL) {
 		SPH_SPIN_LOCK_IRQSAVE(&cmd->lock_irq, flags);
-		if (--cmd->reqs_left == 0)
+		if (--cmd->num_left == 0)
 			send_cmdlist_event_report = true;
 		SPH_SPIN_UNLOCK_IRQRESTORE(&cmd->lock_irq, flags);
 	}
+
+	 DO_TRACE_IF(send_cmdlist_event_report, trace_cmdlist(SPH_TRACE_OP_STATUS_COMPLETE,
+			 cmd->context->protocolID, cmd->protocolID));
+
 	if (send_cmdlist_event_report)
 		sphcs_send_event_report(g_the_sphcs,
 					SPH_IPC_EXECUTE_CMD_COMPLETE,
@@ -652,4 +759,15 @@ void inf_req_complete(struct inf_exec_req *req, int err)
 					cmd->protocolID);
 
 	inf_exec_req_put(req);
+}
+
+static int inf_req_infreq_put(struct inf_exec_req *req)
+{
+	return inf_req_put(req->infreq);
+}
+
+static int inf_req_migrate_priority(struct inf_exec_req *req, uint8_t priority)
+{
+	// don't migrate priority of infreq
+	return 0;
 }

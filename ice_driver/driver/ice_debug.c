@@ -341,7 +341,8 @@ const char *get_regs_str(uint32_t offset)
 	if (offset == cfg_default.mmio_tlc_info_offset)
 		return "TLC_INFO_REG";
 	if (offset >= cfg_default.mmio_gp_regs_offset &&
-			offset <= (cfg_default.mmio_gp_regs_offset + (4 * 15)))
+			offset <=
+		(cfg_default.mmio_gp_regs_offset + (4 * ICE_MAX_GP_REG)))
 		return "GENERAL_PURPOSE_REG";
 	if (offset >= (cfg_default.mmu_base + cfg_default.mmu_page_sizes_offset)
 		&& offset <= (cfg_default.mmu_base +

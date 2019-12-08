@@ -46,9 +46,9 @@ mv /sph_tmp/* /tmp/
 rm -rf /sph_tmp
 
 #symlinks for backward compatibility with modules new location
-ln -s /opt/intel_nnpi/modules/* /lib/modules/$(uname -r)/extra 
-ln -s /opt/intel_nnpi/lib/* /usr/local/lib 
-ln -s /opt/intel_nnpi/bin/* /usr/local/bin
+ln -s /opt/intel_nnpi/modules /lib/modules/$(uname -r)/extra 
+ln -s /opt/intel_nnpi/lib /usr/local/lib 
+ln -s /opt/intel_nnpi/bin /usr/local/bin
 ln -sf /opt/intel_nnpi/bin/sph_runtime_psw  /usr/bin/sph_runtime_psw
 ln -sf /opt/intel_nnpi/bin/sph_counterd /usr/bin/sph_counterd
 ln -sf /opt/intel_nnpi/bin/sph_logger   /usr/bin/sph_logger
