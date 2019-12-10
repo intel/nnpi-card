@@ -258,7 +258,9 @@ CHECK_MESSAGE_SIZE(union h2c_ChanInferenceNetworkSetProperty, 2);
 
 union h2c_ChanInferenceCmdListOp {
 	struct {
-		u64 opcode      :  6;  /* SPH_IPC_H2C_OP_CHAN_INF_CMDLIST */
+		u64 opcode      :  6;  /* SPH_IPC_H2C_OP_CHAN_INF_CMDLIST or
+					* SPH_IPC_H2C_OP_CHAN_SCHEDULE_CMDLIST
+					*/
 		u64 chanID      : SPH_IPC_CHANNEL_BITS;
 		u64 cmdID       : SPH_IPC_INF_CMDS_BITS;
 		u64 destroy     :  1;
@@ -272,18 +274,6 @@ union h2c_ChanInferenceCmdListOp {
 	u64 value;
 };
 CHECK_MESSAGE_SIZE(union h2c_ChanInferenceCmdListOp, 1);
-
-union h2c_ChanInferenceSchedCmdList {
-	struct {
-		u64 opcode      :  6;  /* SPH_IPC_H2C_OP_CHAN_SCHEDULE_CMDLIST */
-		u64 chanID      : SPH_IPC_CHANNEL_BITS;
-		u64 cmdID       : SPH_IPC_INF_CMDS_BITS;
-		u64 unused      : 32;
-	};
-
-	u64 value;
-};
-CHECK_MESSAGE_SIZE(union h2c_ChanInferenceSchedCmdList, 1);
 
 union c2h_ChanMsgHeader {
 	struct {

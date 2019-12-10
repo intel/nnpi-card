@@ -252,7 +252,7 @@ static int inf_cpylst_init_llis(struct inf_cpylst *cpylst)
 	return 0;
 }
 
-int inf_cpylst_build_cur_lli(struct inf_cpylst *cpylst)
+void inf_cpylst_build_cur_lli(struct inf_cpylst *cpylst)
 {
 	struct genlli_iterator it;
 	u64 total_entries_bytes;
@@ -267,7 +267,7 @@ int inf_cpylst_build_cur_lli(struct inf_cpylst *cpylst)
 								   &it);
 	SPH_ASSERT(total_entries_bytes > 0);
 
-	return 0;
+	return;
 }
 
 int inf_cpylst_add_copy(struct inf_cpylst *cpylst,
@@ -292,7 +292,7 @@ int inf_cpylst_add_copy(struct inf_cpylst *cpylst,
 	size = size != 0 ? size : copy->devres->size;
 	cpylst->copies[cpylst->added_copies] = copy;
 	cpylst->sizes[cpylst->added_copies] = size;
-	cpylst->sizes[cpylst->added_copies] = priority;
+	cpylst->priorities[cpylst->added_copies] = priority;
 	++cpylst->added_copies;
 	cpylst->size += size;
 	if (unlikely(cpylst->added_copies == cpylst->n_copies)) {
@@ -619,7 +619,7 @@ static void inf_cpylst_req_complete(struct inf_exec_req *req, int err)
 #endif
 
 	if (unlikely(err < 0)) {
-		sph_log_err(EXECUTE_COMMAND_LOG, "Execute copy failed with err=%d\n", err);
+		sph_log_err(EXECUTE_COMMAND_LOG, "Execute coylst failed with err=%d\n", err);
 		switch (err) {
 		case -ENOMEM:
 			eventVal = SPH_IPC_NO_MEMORY;
@@ -643,9 +643,6 @@ static void inf_cpylst_req_complete(struct inf_exec_req *req, int err)
 		SPH_SPIN_UNLOCK_IRQRESTORE(&cmd->lock_irq, flags);
 	}
 
-	 DO_TRACE_IF(send_cmdlist_event_report, trace_cmdlist(SPH_TRACE_OP_STATUS_COMPLETE,
-			 cmd->context->protocolID, cmd->protocolID));
-
 	if (eventVal == 0 && send_cmdlist_event_report) {
 		// if success and should send both cmd and copy reports,
 		// send one merged report
@@ -666,6 +663,13 @@ static void inf_cpylst_req_complete(struct inf_exec_req *req, int err)
 						0,
 						cmd->context->protocolID,
 						cmd->protocolID);
+	}
+
+	if (send_cmdlist_event_report) {
+		DO_TRACE(trace_cmdlist(SPH_TRACE_OP_STATUS_COMPLETE,
+			 cmd->context->protocolID, cmd->protocolID));
+		// for schedule
+		inf_cmd_put(cmd);
 	}
 
 	memcpy(cpylst->cur_sizes, cpylst->sizes, cpylst->n_copies * sizeof(cpylst->sizes[0]));

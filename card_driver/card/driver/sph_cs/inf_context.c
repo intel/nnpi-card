@@ -78,6 +78,7 @@ int inf_context_create(uint16_t             protocolID,
 	context->state = CONTEXT_OK;
 	context->attached = 0;
 	context->destroyed = 0;
+	context->runtime_detach_sent = false;
 	atomic_set(&context->sched_tick, 1);
 	spin_lock_init(&context->lock);
 	spin_lock_init(&context->sync_lock_irq);
@@ -91,6 +92,7 @@ int inf_context_create(uint16_t             protocolID,
 	INIT_LIST_HEAD(&context->sync_points);
 	INIT_LIST_HEAD(&context->active_seq_list);
 	INIT_LIST_HEAD(&context->subresload_sessions);
+	init_waitqueue_head(&context->sched_waitq);
 
 	ret = sph_create_sw_counters_values_node(g_hSwCountersInfo_context,
 						 (u32)protocolID,
@@ -364,6 +366,21 @@ inline void inf_context_get(struct inf_context *context)
 
 inline int inf_context_put(struct inf_context *context)
 {
+	bool send_runtime = false;
+
+	/*
+	 * send runtime detach request to runtime
+	 * if only runtime and daemon will remain attached after the put
+	 */
+	SPH_SPIN_LOCK(&context->lock);
+	if (context->attached > 0 &&
+	    !context->runtime_detach_sent)
+		send_runtime = context->runtime_detach_sent = (kref_read(&context->ref) <= (context->daemon_ref_released ? 2 : 3));
+	SPH_SPIN_UNLOCK(&context->lock);
+
+	if (send_runtime)
+		inf_context_runtime_detach(context);
+
 	return kref_put(&context->ref, release_context);
 }
 
@@ -484,6 +501,7 @@ void inf_context_seq_id_fini(struct inf_context      *context,
 	if (!list_empty(&context->sync_points))
 		evaluate_sync_points(context);
 	SPH_SPIN_UNLOCK_IRQRESTORE(&context->sync_lock_irq, flags);
+	wake_up_all(&context->sched_waitq);
 }
 
 

@@ -12,7 +12,7 @@
 #include "sph_debug.h"
 #include "ipc_c2h_events.h"
 
-#define CHECK_MESSAGE_SIZE(t, nQW) SPH_STATIC_ASSERT(sizeof(t) == 8*(nQW), "Size of " #t " Does not match!!")
+#define CHECK_MESSAGE_SIZE(t, nQW) SPH_STATIC_ASSERT(sizeof(t) == sizeof(u64)*(nQW), "Size of " #t " Does not match!!")
 #else
 #define CHECK_MESSAGE_SIZE(t, nQW)
 #define SPH_STATIC_ASSERT(t, nQW)
@@ -412,7 +412,9 @@ CHECK_MESSAGE_SIZE(union h2c_InferenceResourceOp, 2);
 
 union h2c_InferenceCmdListOp {
 	struct {
-		u64 opcode      :  6;  /* SPH_IPC_H2C_OP_INF_CMDLIST */
+		u64 opcode      :  6;  /* SPH_IPC_H2C_OP_INF_CMDLIST or
+					* SPH_IPC_H2C_OP_SCHEDULE_CMDLIST
+					*/
 		u64 ctxID       : SPH_IPC_INF_CONTEXT_BITS;
 		u64 cmdID       : SPH_IPC_INF_CMDS_BITS;
 		u64 destroy     :  1;
@@ -432,7 +434,7 @@ CHECK_MESSAGE_SIZE(union h2c_InferenceCmdListOp, 2);
 
 union h2c_InferenceSchedCmdList {
 	struct {
-		u64 opcode      :  6;  /* SPH_IPC_H2C_OP_SCHEDULE_CMDLIST */
+		u64 opcode      :  6;  /* SPH_IPC_H2C_OP_SCHEDULE_CMDLIST_NO_OW */
 		u64 ctxID       : SPH_IPC_INF_CONTEXT_BITS;
 		u64 cmdID       : SPH_IPC_INF_CMDS_BITS;
 		u64 unused      : 34;

@@ -12,6 +12,12 @@
 #include "inf_req.h"
 #include "inf_cpylst.h"
 
+struct id_range {
+	struct list_head node;
+	uint16_t         first;
+	uint16_t         last;
+};
+
 int inf_cmd_create(uint16_t              protocolID,
 		   struct inf_context   *context,
 		   struct inf_cmd_list **out_cmd)
@@ -26,6 +32,8 @@ int inf_cmd_create(uint16_t              protocolID,
 	cmd->magic = inf_cmd_create;
 	cmd->protocolID = protocolID;
 	cmd->req_list = NULL;
+	cmd->edits = NULL;
+	cmd->edits_idx = 0;
 
 	/* make sure context will not be destroyed during cmd life */
 	inf_context_get(context);
@@ -38,12 +46,21 @@ int inf_cmd_create(uint16_t              protocolID,
 	cmd->num_reqs = 0;
 	cmd->num_left = 0;
 
+	INIT_LIST_HEAD(&cmd->devres_id_ranges);
+
 	if (context->chan == NULL) {
 		cmd->h2c_dma_desc.dma_direction = SPHCS_DMA_DIRECTION_HOST_TO_CARD;
 		cmd->h2c_dma_desc.dma_priority = SPHCS_DMA_PRIORITY_NORMAL;
 		cmd->h2c_dma_desc.flags = 0;
 		cmd->h2c_dma_desc.serial_channel =
 			sphcs_dma_sched_create_serial_channel(g_the_sphcs->dmaSched);
+	}
+
+	/* Allocate memory for overwrite DMA */
+	cmd->vptr = dma_alloc_coherent(g_the_sphcs->hw_device, SPH_PAGE_SIZE, &cmd->dma_addr, GFP_KERNEL);
+	if (unlikely(cmd->vptr == NULL)) {
+		kfree(cmd);
+		return -ENOMEM;
 	}
 
 	*out_cmd = cmd;
@@ -82,8 +99,10 @@ static void release_cmd(struct kref *kref)
 	struct inf_cmd_list *cmd = container_of(kref,
 						struct inf_cmd_list,
 						ref);
+	struct id_range *range, *tmp;
 	uint16_t i;
 	int ret;
+	bool optimized = false;
 
 	SPH_ASSERT(is_inf_cmd_ptr(cmd));
 
@@ -96,17 +115,39 @@ static void release_cmd(struct kref *kref)
 			if (likely(cmd->req_list[i].f != NULL))
 				cmd->req_list[i].f->obj_put(&cmd->req_list[i]);
 			if (cmd->req_list[i].cmd_type == CMDLIST_CMD_COPYLIST) {
-				if (cmd->req_list[i].num_opt_depend_devres > 0)
+				if (cmd->req_list[i].num_opt_depend_devres > 0) {
 					kfree(cmd->req_list[i].opt_depend_devres);
+					optimized = true;
+				}
 			} else if (cmd->req_list[i].cmd_type == CMDLIST_CMD_INFREQ) {
-				if (cmd->req_list[i].i_num_opt_depend_devres > 0)
+				if (cmd->req_list[i].i_num_opt_depend_devres > 0) {
 					kfree(cmd->req_list[i].i_opt_depend_devres);
-				if (cmd->req_list[i].o_num_opt_depend_devres > 0)
+					optimized = true;
+				}
+				if (cmd->req_list[i].o_num_opt_depend_devres > 0) {
 					kfree(cmd->req_list[i].o_opt_depend_devres);
+					optimized = true;
+				}
 			}
 		}
 		kfree(cmd->req_list);
+		if (optimized)
+			cmd->context->num_optimized_cmd_lists--;
 	}
+
+	if (likely(cmd->edits != NULL))
+		kfree(cmd->edits);
+
+	if (!list_empty(&cmd->devres_id_ranges))
+		list_for_each_entry_safe(range, tmp, &cmd->devres_id_ranges, node) {
+			list_del(&range->node);
+			kfree(range);
+		}
+
+	dma_free_coherent(g_the_sphcs->hw_device, //TODO GLEB: can it be at fast path?
+			  SPH_PAGE_SIZE,
+			  cmd->vptr,
+			  cmd->dma_addr);
 
 	if (likely(cmd->destroyed == 1))
 		sphcs_send_event_report(g_the_sphcs,
@@ -136,12 +177,6 @@ inline int inf_cmd_put(struct inf_cmd_list *cmd)
 /*
  * dependency list optimization code for commands inside command list
  */
-struct id_range {
-	struct list_head node;
-	uint16_t         first;
-	uint16_t         last;
-};
-
 struct inf_devres_list_entry {
 	struct list_head   node;
 	struct inf_devres *devres;
@@ -153,7 +188,6 @@ struct id_set {
 	struct list_head req_list;
 	bool             is_output;
 	bool             merged;
-	bool             written;
 
 	struct list_head  devres_groups;
 };
@@ -177,21 +211,42 @@ static struct id_set *id_set_create(bool for_write)
 	INIT_LIST_HEAD(&idset->devres_groups);
 	idset->is_output = for_write;
 	idset->merged = false;
-	idset->written = for_write;
 
 	return idset;
 }
 
-static int id_set_add(struct id_set *idset, uint16_t first_id, uint16_t last_id)
+static int id_range_add(struct list_head *ranges, uint16_t first_id, uint16_t last_id)
 {
 	struct id_range *range, *new_range;
 
-	list_for_each_entry(range, &idset->ranges, node) {
+	list_for_each_entry(range, ranges, node) {
+		// do not add already existing ids
+		if (first_id >= range->first && first_id <= range->last) {
+			if (last_id <= range->last)
+				return 0;
+			first_id = range->last + 1;
+		}
+
 		if (last_id == range->first-1) {
 			range->first = first_id;
 			return 0;
 		} else if (first_id == range->last+1) {
 			range->last = last_id;
+
+			// merge with next entries
+			range = list_next_entry(range, node);
+			while (&range->node != ranges) {
+				new_range = list_next_entry(range, node);
+				if (range->first <= last_id) {
+					range->first = last_id + 1;
+					if (range->first > range->last)
+						list_del(&range->node);
+					else
+						break;
+				} else
+					break;
+				range = new_range;
+			}
 			return 0;
 		} else if (last_id < range->first)
 			break;
@@ -203,7 +258,7 @@ static int id_set_add(struct id_set *idset, uint16_t first_id, uint16_t last_id)
 
 	new_range->first = first_id;
 	new_range->last = last_id;
-	list_add_tail(&new_range->node, &idset->ranges);
+	list_add_tail(&new_range->node, ranges);
 	return 0;
 }
 
@@ -222,25 +277,25 @@ static int id_set_add_req(struct id_set *set, struct inf_exec_req *req, struct i
 	return 0;
 }
 
-static struct id_set *id_set_intersect(struct id_set *set0, struct id_set *set1)
+static uint32_t id_range_intersect(struct list_head *isect,
+				   struct list_head *ranges0,
+				   struct list_head *ranges1)
 {
-	struct id_set *isect;
 	struct id_range *r0, *r1, *n;
-	struct req_entry *r, *tmpr;
+	uint32_t n_intersect = 0;
 
-	if (list_empty(&set0->ranges) ||
-	    list_empty(&set1->ranges))
-		return NULL;
-
-	isect = id_set_create(set0->written);
-
-	r0 = list_first_entry(&set0->ranges, struct id_range, node);
-	r1 = list_first_entry(&set1->ranges, struct id_range, node);
-	while (&r0->node != &set0->ranges && &r1->node != &set1->ranges) {
+	r0 = list_first_entry(ranges0, struct id_range, node);
+	r1 = list_first_entry(ranges1, struct id_range, node);
+	while (&r0->node != ranges0 && &r1->node != ranges1) {
 		uint16_t first = (r0->first > r1->first ? r0->first : r1->first);
 		uint16_t last = (r0->last < r1->last ? r0->last : r1->last);
 
 		if (first <= last) {
+			n_intersect += (last - first + 1);
+
+			if (isect == NULL)
+				return n_intersect;
+
 			if (first > r0->first)
 				r0->last = first - 1;
 			else
@@ -251,28 +306,42 @@ static struct id_set *id_set_intersect(struct id_set *set0, struct id_set *set1)
 			else
 				r1->first = last + 1;
 
-			if (r0->first >= r0->last) {
+			if (r0->first > r0->last) {
 				n = list_next_entry(r0, node);
 				list_del(&r0->node);
 				kfree(r0);
 				r0 = n;
 			}
 
-			if (r1->first >= r1->last) {
+			if (r1->first > r1->last) {
 				n = list_next_entry(r1, node);
 				list_del(&r1->node);
 				kfree(r1);
 				r1 = n;
 			}
 
-			id_set_add(isect, first, last);
+			id_range_add(isect, first, last);
 		} else if (r0->first < r1->first)
 			r0 = list_next_entry(r0, node);
 		else
 			r1 = list_next_entry(r1, node);
 	}
 
-	if (list_empty(&isect->ranges)) {
+	return n_intersect;
+}
+
+static struct id_set *id_set_intersect(struct id_set *set0, struct id_set *set1)
+{
+	struct id_set *isect;
+	struct req_entry *r, *tmpr;
+
+	if (list_empty(&set0->ranges) ||
+	    list_empty(&set1->ranges))
+		return NULL;
+
+	isect = id_set_create(false);
+
+	if (id_range_intersect(&isect->ranges, &set0->ranges, &set1->ranges) == 0) {
 		kfree(isect);
 		return NULL;
 	}
@@ -282,6 +351,7 @@ static struct id_set *id_set_intersect(struct id_set *set0, struct id_set *set1)
 	list_for_each_entry_safe(r, tmpr, &set1->req_list, node)
 		id_set_add_req(isect, r->req, r->idset);
 	isect->merged = true;
+
 	return isect;
 }
 
@@ -296,14 +366,12 @@ static int id_set_merge(struct list_head *sets, struct id_set *set)
 	}
 
 	list_for_each_entry(curr_set, sets, node) {
-		if (curr_set->written) {
-			isect = id_set_intersect(curr_set, set);
-			if (isect != NULL)
-				list_add_tail(&isect->node, sets);
+		isect = id_set_intersect(curr_set, set);
+		if (isect != NULL)
+			list_add_tail(&isect->node, sets);
 
-			if (list_empty(&set->ranges))
-				break;
-		}
+		if (list_empty(&set->ranges))
+			break;
 	}
 
 	list_add_tail(&set->node, sets);
@@ -335,10 +403,111 @@ static void id_set_free(struct id_set *set)
 	kfree(set);
 }
 
-void inf_cmd_optimize_group_devres(struct inf_cmd_list *cmd)
+static void inf_cmd_clear_group_deves_optimization(struct inf_cmd_list *cmd)
+{
+	struct inf_exec_req *req;
+	uint16_t i;
+
+	for (i = 0; i < cmd->num_reqs; i++) {
+		req = &cmd->req_list[i];
+		if (req->cmd_type == CMDLIST_CMD_COPYLIST) {
+			if (req->num_opt_depend_devres > 0) {
+				kfree(req->opt_depend_devres);
+				req->num_opt_depend_devres = 0;
+			}
+		} else if (req->cmd_type == CMDLIST_CMD_INFREQ) {
+			if (req->i_num_opt_depend_devres > 0) {
+				kfree(req->i_opt_depend_devres);
+				req->i_num_opt_depend_devres = 0;
+			}
+			if (req->o_num_opt_depend_devres > 0) {
+				kfree(req->o_opt_depend_devres);
+				req->o_num_opt_depend_devres = 0;
+			}
+		}
+	}
+}
+
+static int build_access_group_sets(struct inf_cmd_list *cmd,
+				   struct list_head    *sets)
 {
 	uint16_t i, j;
 	struct inf_exec_req *req;
+	struct id_set *idset;
+
+	for (i = 0; i < cmd->num_reqs; i++) {
+		req = &cmd->req_list[i];
+		if (req->cmd_type == CMDLIST_CMD_COPY) {
+			idset = id_set_create(!req->copy->card2Host);
+			if (!idset)
+				return -1;
+			id_set_add_req(idset, req, idset);
+			if (id_range_add(&idset->ranges,
+					 req->copy->devres->protocolID,
+					 req->copy->devres->protocolID) != 0)
+				return -1;
+			if (id_range_add(&cmd->devres_id_ranges,
+					 req->copy->devres->protocolID,
+					 req->copy->devres->protocolID) != 0)
+				return -1;
+			id_set_merge(sets, idset);
+		} else if (req->cmd_type == CMDLIST_CMD_COPYLIST) {
+			idset = id_set_create(!req->cpylst->copies[0]->card2Host);
+			if (!idset)
+				return -1;
+			id_set_add_req(idset, req, idset);
+			for (j = 0; j < req->cpylst->n_copies; j++) {
+				if (id_range_add(&idset->ranges,
+						 req->cpylst->copies[j]->devres->protocolID,
+						 req->cpylst->copies[j]->devres->protocolID) != 0)
+					return -1;
+				if (id_range_add(&cmd->devres_id_ranges,
+						 req->cpylst->copies[j]->devres->protocolID,
+						 req->cpylst->copies[j]->devres->protocolID) != 0)
+					return -1;
+			}
+			id_set_merge(sets, idset);
+		} else if (req->cmd_type == CMDLIST_CMD_INFREQ) {
+			idset = id_set_create(false);
+			if (!idset)
+				return -1;
+			id_set_add_req(idset, req, idset);
+			for (j = 0; j < req->infreq->n_inputs; j++) {
+				if (id_range_add(&idset->ranges,
+						 req->infreq->inputs[j]->protocolID,
+						 req->infreq->inputs[j]->protocolID) != 0)
+					return -1;
+				if (id_range_add(&cmd->devres_id_ranges,
+						 req->infreq->inputs[j]->protocolID,
+						 req->infreq->inputs[j]->protocolID) != 0)
+					return -1;
+			}
+			id_set_merge(sets, idset);
+
+			idset = id_set_create(true);
+			if (!idset)
+				return -1;
+			id_set_add_req(idset, req, idset);
+			for (j = 0; j < req->infreq->n_outputs; j++) {
+				if (id_range_add(&idset->ranges,
+						 req->infreq->outputs[j]->protocolID,
+						 req->infreq->outputs[j]->protocolID) != 0)
+					return -1;
+				if (id_range_add(&cmd->devres_id_ranges,
+						 req->infreq->outputs[j]->protocolID,
+						 req->infreq->outputs[j]->protocolID) != 0)
+					return -1;
+			}
+			id_set_merge(sets, idset);
+		}
+	}
+
+	return 0;
+}
+
+void inf_cmd_optimize_group_devres(struct inf_cmd_list *cmd)
+{
+	uint16_t i;
 	struct id_set *idset, *tmp;
 	struct list_head sets;
 	struct id_range *r;
@@ -346,6 +515,7 @@ void inf_cmd_optimize_group_devres(struct inf_cmd_list *cmd)
 	struct req_entry *re;
 	uint16_t id;
 	struct inf_devres_list_entry *devres_entry;
+	struct inf_cmd_list *c;
 	int success = false;
 
 	SPH_ASSERT(cmd != NULL);
@@ -356,54 +526,35 @@ void inf_cmd_optimize_group_devres(struct inf_cmd_list *cmd)
 
 	INIT_LIST_HEAD(&sets);
 
-	/* build and merge devres access groups */
-	for (i = 0; i < cmd->num_reqs; i++) {
-		req = &cmd->req_list[i];
-		if (req->cmd_type == CMDLIST_CMD_COPY) {
-			idset = id_set_create(!req->copy->card2Host);
-			if (!idset)
-				goto done;
-			id_set_add_req(idset, req, idset);
-			if (id_set_add(idset,
-				       req->copy->devres->protocolID,
-				       req->copy->devres->protocolID) != 0)
-				goto done;
-			id_set_merge(&sets, idset);
-		} else if (req->cmd_type == CMDLIST_CMD_COPYLIST) {
-			idset = id_set_create(!req->cpylst->copies[0]->card2Host);
-			if (!idset)
-				goto done;
-			id_set_add_req(idset, req, idset);
-			for (j = 0; j < req->cpylst->n_copies; j++)
-				if (id_set_add(idset,
-					       req->cpylst->copies[j]->devres->protocolID,
-					       req->cpylst->copies[j]->devres->protocolID) != 0)
-					goto done;
-			id_set_merge(&sets, idset);
-		} else if (req->cmd_type == CMDLIST_CMD_INFREQ) {
-			idset = id_set_create(false);
-			if (!idset)
-				goto done;
-			id_set_add_req(idset, req, idset);
-			for (j = 0; j < req->infreq->n_inputs; j++)
-				if (id_set_add(idset,
-					       req->infreq->inputs[j]->protocolID,
-					       req->infreq->inputs[j]->protocolID) != 0)
-					goto done;
-			id_set_merge(&sets, idset);
+	/* wait for all active scheduled requests to finish */
+	wait_event(cmd->context->sched_waitq,
+		   list_empty(&cmd->context->active_seq_list));
 
-			idset = id_set_create(true);
-			if (!idset)
+	/* build and merge devres access groups */
+	if (build_access_group_sets(cmd, &sets) != 0)
+		goto done;
+
+	/*
+	 * for each exising command list - merge into same set and
+	 * re-optimize if some device resource is shared with the command list
+	 */
+	SPH_SPIN_LOCK(&cmd->context->lock);
+	hash_for_each(cmd->context->cmd_hash, i, c, hash_node) {
+		if (c == cmd)
+			continue;
+
+		if (id_range_intersect(NULL,
+				       &cmd->devres_id_ranges,
+				       &c->devres_id_ranges) > 0) {
+			SPH_SPIN_UNLOCK(&cmd->context->lock);
+			inf_cmd_clear_group_deves_optimization(c);
+			cmd->context->num_optimized_cmd_lists--;
+			if (build_access_group_sets(c, &sets) != 0)
 				goto done;
-			id_set_add_req(idset, req, idset);
-			for (j = 0; j < req->infreq->n_outputs; j++)
-				if (id_set_add(idset,
-					       req->infreq->outputs[j]->protocolID,
-					       req->infreq->outputs[j]->protocolID) != 0)
-					goto done;
-			id_set_merge(&sets, idset);
+			SPH_SPIN_LOCK(&cmd->context->lock);
 		}
 	}
+	SPH_SPIN_UNLOCK(&cmd->context->lock);
 
 	/* add devres pivot of merged sets to devres_groups of requests */
 	list_for_each_entry_safe(idset, tmp, &sets, node) {
@@ -516,12 +667,14 @@ void inf_cmd_optimize_group_devres(struct inf_cmd_list *cmd)
 	}
 
 	success = true;
+	cmd->context->num_optimized_cmd_lists++;
 
 done:
+	if (!success)
+		sph_log_err(GENERAL_LOG, "dependency optimization for cmdlist %d has failed!!\n", cmd->protocolID);
+
 	list_for_each_entry_safe(idset, tmp, &sets, node) {
 		if (!success) {
-			sph_log_err(GENERAL_LOG, "dependency optimization for cmdlist %d has failed!!\n", cmd->protocolID);
-
 			list_for_each_entry(re, &idset->req_list, node) {
 				if (re->req->cmd_type == CMDLIST_CMD_COPYLIST) {
 					if (re->req->num_opt_depend_devres > 0) {

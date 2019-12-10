@@ -50,10 +50,12 @@ void IPC_OPCODE_HANDLER(INF_CMDLIST)(struct sphcs                  *sphcs,
 void IPC_OPCODE_HANDLER(CHAN_INF_CMDLIST)(struct sphcs                      *sphcs,
 					  union h2c_ChanInferenceCmdListOp  *cmd);
 
-void IPC_OPCODE_HANDLER(SCHEDULE_CMDLIST)(struct sphcs                     *sphcs,
-					  union h2c_InferenceSchedCmdList  *cmd);
+void IPC_OPCODE_HANDLER(SCHEDULE_CMDLIST)(struct sphcs                 *sphcs,
+					  union h2c_InferenceCmdListOp *cmd);
+void IPC_OPCODE_HANDLER(SCHEDULE_CMDLIST_NO_OW)(struct sphcs                    *sphcs,
+						union h2c_InferenceSchedCmdList *cmd);
 void IPC_OPCODE_HANDLER(CHAN_SCHEDULE_CMDLIST)(struct sphcs                    *sphcs,
-					       union h2c_ChanInferenceSchedCmdList *cmd);
+					       union h2c_ChanInferenceCmdListOp *cmd);
 
 void IPC_OPCODE_HANDLER(INF_NETWORK)(struct sphcs                  *sphcs,
 				      union h2c_InferenceNetworkOp *cmd);

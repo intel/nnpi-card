@@ -750,9 +750,6 @@ static void inf_copy_req_complete(struct inf_exec_req *req, int err)
 		SPH_SPIN_UNLOCK_IRQRESTORE(&cmd->lock_irq, flags);
 	}
 
-	 DO_TRACE_IF(send_cmdlist_event_report, trace_cmdlist(SPH_TRACE_OP_STATUS_COMPLETE,
-			 cmd->context->protocolID, cmd->protocolID));
-
 	if (eventVal == 0 && send_cmdlist_event_report && !is_d2d_copy) {
 		// if success and should send both cmd and copy reports,
 		// send one merged report
@@ -773,6 +770,12 @@ static void inf_copy_req_complete(struct inf_exec_req *req, int err)
 						cmd->protocolID);
 	}
 
+	if (send_cmdlist_event_report) {
+		DO_TRACE(trace_cmdlist(SPH_TRACE_OP_STATUS_COMPLETE,
+			 cmd->context->protocolID, cmd->protocolID));
+		// for schedule
+		inf_cmd_put(cmd);
+	}
 	copy->active = false;
 
 	if (is_d2d_copy)

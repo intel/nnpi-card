@@ -158,6 +158,7 @@ enum event_val {
 	SPH_IPC_NO_SUCH_HOSTRES         = 23,
 	SPH_IPC_DEVNET_EDIT_BUSY        = 24,
 	SPH_IPC_DEVNET_EDIT_ERROR       = 25,
+	SPH_IPC_NOT_SUPPORTED           = 26,
 
 	//Non failure events
 	SPH_IPC_CMDLIST_FINISHED       = 128,

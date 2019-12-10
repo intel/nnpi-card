@@ -48,6 +48,7 @@ struct inf_context {
 	spinlock_t         sw_counters_lock_irq;
 	int                attached;
 	int                destroyed;
+	bool               runtime_detach_sent;
 	DECLARE_HASHTABLE(cmd_hash, 6);
 	DECLARE_HASHTABLE(devres_hash, 6);
 	DECLARE_HASHTABLE(devnet_hash, 6);
@@ -56,8 +57,10 @@ struct inf_context {
 	struct workqueue_struct *wq;
 	struct list_head     sync_points;
 	struct list_head     active_seq_list;
+	wait_queue_head_t    sched_waitq;
 	u32                  next_seq_id;
 	atomic_t             sched_tick;
+	u32                  num_optimized_cmd_lists;
 
 	struct inf_cmd_queue cmdq;
 

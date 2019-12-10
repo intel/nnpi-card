@@ -59,8 +59,9 @@ H2C_OPCODE(CHANNEL_RB_OP,		23, union h2c_ChannelDataRingbufOp)
 H2C_OPCODE(CHANNEL_HOSTRES_OP,		24, union h2c_ChannelHostresOp)
 H2C_OPCODE(GET_CR_FIFO,			25, union h2c_GetCrFIFO)
 H2C_OPCODE(INF_CMDLIST,			26, union h2c_InferenceCmdListOp)
-H2C_OPCODE(SCHEDULE_CMDLIST,		27, union h2c_InferenceSchedCmdList)
-H2C_OPCODE(NETWORK_PROPERTY,            28, union h2c_InferenceNetworkProperty)
+H2C_OPCODE(SCHEDULE_CMDLIST,		27, union h2c_InferenceCmdListOp)
+H2C_OPCODE(SCHEDULE_CMDLIST_NO_OW,	28, union h2c_InferenceSchedCmdList)
+H2C_OPCODE(NETWORK_PROPERTY,            29, union h2c_InferenceNetworkProperty)
 
 #ifdef ULT
 H2C_OPCODE(ULT_OP,               30, union ult_message)

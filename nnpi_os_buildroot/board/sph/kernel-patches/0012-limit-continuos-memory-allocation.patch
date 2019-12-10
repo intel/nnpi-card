@@ -1,6 +1,6 @@
-From bacbfce86e4fa2d1233466b9999c470bbd96b62d Mon Sep 17 00:00:00 2001
+From a2835a7de9f5e59f066fbefdf09d8beac15453e7 Mon Sep 17 00:00:00 2001
 From: farah kassabri <farah.kassabri@intel.com>
-Date: Sun, 20 Oct 2019 17:41:17 +0300
+Date: Wed, 27 Nov 2019 21:56:18 -0500
 Subject: [PATCH] Dont't try to allocate continuous memory for 4GB or more.
 
 struct scatterlist length field defined as unsigned int and cannot store value of 0x100000000 or more.
@@ -8,53 +8,32 @@ In that case, even if we managed to allocate continuous 4GB, we create sg list w
 the length field of that entry will store 0, and when we call gen_pool_free specifying sg->length
 it'll free no memory of the heap pool chunk.
 ---
- drivers/staging/android/ion/ion_chunk_heap.c | 32 +++++++++++++++-------------
- 1 file changed, 17 insertions(+), 15 deletions(-)
+ drivers/staging/android/ion/ion_chunk_heap.c | 5 +++++
+ 1 file changed, 5 insertions(+)
 
 diff --git a/drivers/staging/android/ion/ion_chunk_heap.c b/drivers/staging/android/ion/ion_chunk_heap.c
-index bf6ca7f..b1b8ac3 100644
+index bf6ca7f..d522a0d 100644
 --- a/drivers/staging/android/ion/ion_chunk_heap.c
 +++ b/drivers/staging/android/ion/ion_chunk_heap.c
-@@ -133,22 +133,24 @@ static int ion_chunk_heap_allocate(struct ion_heap *heap,
- 	if (!table)
- 		return -ENOMEM;
+@@ -16,6 +16,8 @@
  
--	/* Always try to allocate the buffer to be physically contiguous */
--	rc = ion_chunk_heap_allocate_contig(chunk_heap,
--					    allocated_size,
--					    table,
--					    &data);
--
--	/* If allocation succeeded, we are done */
--	if (rc == 0) {
--		pr_debug("%s: Buffer allocated contiguously\n", __func__);
--		goto done;
--	}
-+	/* Always try to allocate the buffer to be physically contiguous, only if allocated_size < 4GB */
-+	if (allocated_size < 0x100000000) {
-+		rc = ion_chunk_heap_allocate_contig(chunk_heap,
-+						    allocated_size,
-+						    table,
-+						    &data);
+ #include "ion.h"
+ 
++#define MAX_CONT_BUFF_SIZE 0x100000000
 +
-+		/* If allocation succeeded, we are done */
-+		if (rc == 0) {
-+			pr_debug("%s: Buffer allocated contiguously\n", __func__);
-+			goto done;
-+		}
+ struct ion_chunk_heap {
+ 	struct ion_heap heap;
+ 	struct gen_pool *pool;
+@@ -33,6 +35,9 @@ static int ion_chunk_heap_allocate_contig(struct ion_chunk_heap *chunk_heap,
+ 	unsigned long paddr;
+ 	int rc;
  
--	/* If the allocation failed and the buffer must be contiguous */
--	if (rc && (flags & ION_FLAG_CONTIG)) {
--		pr_err("Failed to allocate physically contiguous buffer\n");
--		goto err;
-+		/* If the allocation failed and the buffer must be contiguous */
-+		if (rc && (flags & ION_FLAG_CONTIG)) {
-+			pr_err("Failed to allocate physically contiguous buffer\n");
-+			goto err;
-+		}
- 	}
- 
- 	/* Fall back to scattered allocation */
++	if (allocated_size >= MAX_CONT_BUFF_SIZE)
++		return -EINVAL;
++
+ 	paddr = gen_pool_alloc_algo(chunk_heap->pool,
+ 				    allocated_size,
+ 				    gen_pool_first_fit_align,
 -- 
-2.7.4
+1.8.3.1
 

@@ -748,15 +748,17 @@ static void inf_req_complete(struct inf_exec_req *req, int err)
 		SPH_SPIN_UNLOCK_IRQRESTORE(&cmd->lock_irq, flags);
 	}
 
-	 DO_TRACE_IF(send_cmdlist_event_report, trace_cmdlist(SPH_TRACE_OP_STATUS_COMPLETE,
-			 cmd->context->protocolID, cmd->protocolID));
-
-	if (send_cmdlist_event_report)
+	if (send_cmdlist_event_report) {
 		sphcs_send_event_report(g_the_sphcs,
 					SPH_IPC_EXECUTE_CMD_COMPLETE,
 					0,
 					cmd->context->protocolID,
 					cmd->protocolID);
+		DO_TRACE(trace_cmdlist(SPH_TRACE_OP_STATUS_COMPLETE,
+			 cmd->context->protocolID, cmd->protocolID));
+		// for schedule
+		inf_cmd_put(cmd);
+	}
 
 	inf_exec_req_put(req);
 }

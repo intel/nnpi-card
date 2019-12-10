@@ -516,10 +516,12 @@ static void dispatch_next_subjobs(struct di_job *job,
 			job->first_cb_desc = 1;
 
 			cve_os_log(CVE_LOGLEVEL_INFO,
-				"Cold Run (Skipping EmbCB)\n");
+				"ICE%d: Cold Run (Skipping EmbCB)\n",
+				dev->dev_index);
 		} else {
 			cve_os_log(CVE_LOGLEVEL_INFO,
-				"Cold Run (With EmbCB)\n");
+				"ICE:%d: Cold Run (With EmbCB)\n",
+				dev->dev_index);
 		}
 
 		job->cold_run = 0;
@@ -847,24 +849,27 @@ int set_idc_registers(struct ice_network *ntw, uint8_t lock)
 	sphpb_cbs = dg->sphpb.sphpb_cbs;
 
 	do {
-		ice_dev_set_power_state(dev, ICE_POWER_ON);
-		ice_swc_counter_set(dev->hswc,
-			ICEDRV_SWC_DEVICE_COUNTER_POWER_STATE,
-			ICE_POWER_ON);
+		if (mask & (1ULL << (dev->dev_index + 4))) {
+			ice_dev_set_power_state(dev, ICE_POWER_ON);
+			ice_swc_counter_set(dev->hswc,
+					ICEDRV_SWC_DEVICE_COUNTER_POWER_STATE,
+					ICE_POWER_ON);
 
-		if (sphpb_cbs && sphpb_cbs->set_power_state) {
-			ret = sphpb_cbs->set_power_state(dev->dev_index, true);
-			if (ret) {
-				cve_os_dev_log(CVE_LOGLEVEL_ERROR,
-					dev->dev_index,
-					"failed in setting power state as ON with power balancer (%d)\n",
-					ret);
+			if (sphpb_cbs && sphpb_cbs->set_power_state) {
+				ret = sphpb_cbs->set_power_state(dev->dev_index,
+						true);
+				if (ret) {
+					cve_os_dev_log(CVE_LOGLEVEL_ERROR,
+							dev->dev_index,
+							"failed in setting power state as ON with power balancer (%d)\n",
+							ret);
+				}
+				ret = 0;
 			}
-			ret = 0;
-		}
 
-		cve_di_set_device_reset_flag(dev,
-			CVE_DI_RESET_DUE_POWER_ON);
+			cve_di_set_device_reset_flag(dev,
+					CVE_DI_RESET_DUE_POWER_ON);
+		}
 
 		dev = cve_dle_next(dev, owner_list);
 	} while (dev != ntw->ice_list);

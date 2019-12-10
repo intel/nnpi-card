@@ -178,7 +178,7 @@ int dma_page_pool_get_page_addr(pool_handle pool, page_handle page, dma_addr_t *
  *
  * This function should be called when all the needed data
  * was read and the page is free to be reused.
- * After calling this function all the data in the page can be overwriten,
+ * After calling this function all the data in the page can be overwritten,
  * or even the page memory can be freed.
  * And there will no be any way to access it or restore it.
  *

@@ -28,6 +28,16 @@ struct inf_cmd_list {
 	uint16_t             num_reqs;
 	uint16_t             num_left;
 
+	//for edit params
+	struct req_params   *edits;
+	uint16_t             edits_idx;
+	void                *vptr;
+	dma_addr_t           dma_addr;
+
+	// list of devres ids acccessed by this command list.
+	// Used for devres_group optimization
+	struct list_head     devres_id_ranges;
+
 	/* used only for "UMD1" implementation - remove once moved to UMD2 */
 	struct sphcs_dma_desc h2c_dma_desc;
 };

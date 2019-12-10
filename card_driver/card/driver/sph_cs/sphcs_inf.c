@@ -316,14 +316,6 @@ static int find_and_destroy_context(struct inf_data *inf_data, uint16_t ctxID)
 	context->destroyed = 1;
 	SPH_SPIN_UNLOCK(&context->lock);
 
-	/*
-	 * if runtime is attached to the context, send a detach
-	 * request to the runtime and the context will be destroyed
-	 * when the runtime will be detached.
-	 */
-	if (likely(context->attached > 0))
-		inf_context_runtime_detach(context);
-
 	inf_context_put(context);
 
 	return 0;
@@ -1470,14 +1462,12 @@ static int cmdlist_create_dma_complete(struct sphcs *sphcs,
 	struct inf_devnet *devnet;
 	struct inf_req *infreq;
 	uint16_t protID;
-	uint32_t cmdlist_len;
-	uint32_t cmd_index;
+	uint32_t cmdlist_len, cmd_index;
 	size_t size;
 	uint8_t cmd_type, priority = 0;
 	uint16_t ncopies, batchSize = 0;
 	uint8_t debugOn = 0, collectInfo = 0, sched_params_are_null;
 	uint8_t *begin;
-	union c2h_DmaPageHandleFree free_page_msg;
 
 	if (cmd->context->chan != NULL)
 		sphcs_cmd_chan_update_cmd_head(cmd->context->chan, 0, PAGE_SIZE);
@@ -1488,6 +1478,7 @@ static int cmdlist_create_dma_complete(struct sphcs *sphcs,
 		goto destroy_cmd;
 	}
 	if (unlikely(cmd->destroyed != 0)) {
+		val = SPH_IPC_NO_SUCH_CMD;
 		ret = -1;
 		goto done;
 	}
@@ -1495,13 +1486,13 @@ static int cmdlist_create_dma_complete(struct sphcs *sphcs,
 	if (data->is_first) {
 		POP_VALUE(data->vptr, uint32_t, &cmdlist_len);
 		data->data_size -= sizeof(uint32_t);
-		if (cmdlist_len == 0) {
+		if (unlikely(cmdlist_len == 0)) {
 			val = SPH_IPC_RUNTIME_NOT_SUPPORTED;
 			ret = -EINVAL;
 			goto destroy_cmd;
 		}
 		cmd->req_list = kmalloc_array(cmdlist_len, sizeof(struct inf_exec_req), GFP_KERNEL);
-		if (cmd->req_list == NULL) {
+		if (unlikely(cmd->req_list == NULL)) {
 			ret = -ENOMEM;
 			goto destroy_cmd;
 		}
@@ -1560,6 +1551,7 @@ static int cmdlist_create_dma_complete(struct sphcs *sphcs,
 							 cmd->context->protocolID, cmd->protocolID, cpylst->idx_in_cmd));
 				}
 			}
+			++cmd->edits_idx;//count max edits possible
 			break;
 		case CMDLIST_CMD_INFREQ:
 			SPH_ASSERT(cmd->num_left == 0);
@@ -1596,14 +1588,15 @@ static int cmdlist_create_dma_complete(struct sphcs *sphcs,
 					debugOn,
 					collectInfo);
 			++cmd->num_reqs;
+			++cmd->edits_idx;//count max edits possible
 			break;
 		case CMDLIST_CMD_COPYLIST:
 			SPH_ASSERT(cmd->num_left == 0);
 			POP_VALUE(data->vptr, uint16_t, &ncopies);
 			SPH_ASSERT(ncopies > 0);
 
-			DO_TRACE(trace_cpylist_create(SPH_TRACE_OP_STATUS_QUEUED, cmd->context->protocolID, cmd->protocolID, cpylst->idx_in_cmd));
-			DO_TRACE(trace_cpylist_create(SPH_TRACE_OP_STATUS_START, cmd->context->protocolID, cmd->protocolID, cpylst->idx_in_cmd));
+			DO_TRACE(trace_cpylist_create(SPH_TRACE_OP_STATUS_QUEUED, cmd->context->protocolID, cmd->protocolID, cmd->num_reqs));
+			DO_TRACE(trace_cpylist_create(SPH_TRACE_OP_STATUS_START, cmd->context->protocolID, cmd->protocolID, cmd->num_reqs));
 
 			ret = inf_cpylst_create(cmd, cmd->num_reqs, ncopies, &cpylst);
 			if (ret < 0) {
@@ -1626,6 +1619,13 @@ static int cmdlist_create_dma_complete(struct sphcs *sphcs,
 	// packet.
 	if (!data->is_last)
 		goto done;
+
+	cmd->edits = kmalloc_array(cmd->edits_idx, sizeof(struct req_params), GFP_KERNEL);
+	if (unlikely(cmd->edits == NULL)) {
+		ret = -ENOMEM;
+		goto destroy_cmd;
+	}
+	cmd->edits_idx = 0;
 
 	SPH_SPIN_LOCK_IRQSAVE(&cmd->lock_irq, flags);
 	if (unlikely(cmd->destroyed != 0)) {
@@ -1663,7 +1663,8 @@ send_report:
 				cmd->protocolID);
 done:
 	if (cmd->context->chan == NULL) {
-		free_page_msg.value = 0;
+		union c2h_DmaPageHandleFree free_page_msg = { .value = 0 };
+
 		free_page_msg.opcode = SPH_IPC_C2H_OP_DMA_PAGE_HANDLE_FREE;
 		free_page_msg.host_page_hndl = data->host_page_hdl;
 		sphcs_msg_scheduler_queue_add_msg(g_the_sphcs->public_respq, &free_page_msg.value, 1);
@@ -2543,6 +2544,11 @@ void IPC_OPCODE_HANDLER(SCHEDULE_COPY)(struct sphcs                 *sphcs,
 		goto send_error;
 	}
 
+	if (unlikely(context->num_optimized_cmd_lists > 0)) {
+		val = SPH_IPC_NOT_SUPPORTED;
+		goto send_error;
+	}
+
 	copy = inf_context_find_copy(context, cmd->protCopyID);
 	if (unlikely(copy == NULL)) {
 		val = SPH_IPC_NO_SUCH_COPY;
@@ -2596,6 +2602,11 @@ void IPC_OPCODE_HANDLER(CHAN_SCHEDULE_COPY)(struct sphcs                 *sphcs,
 		goto send_error;
 	}
 
+	if (unlikely(context->num_optimized_cmd_lists > 0)) {
+		val = SPH_IPC_NOT_SUPPORTED;
+		goto send_error;
+	}
+
 	copy = inf_context_find_copy(context, cmd->protCopyID);
 	if (unlikely(copy == NULL)) {
 		val = SPH_IPC_NO_SUCH_COPY;
@@ -2646,6 +2657,11 @@ void IPC_OPCODE_HANDLER(CHAN_SCHEDULE_COPY_LARGE)(struct sphcs                 *
 
 	if (unlikely(inf_context_get_state(context) != CONTEXT_OK)) {
 		val = SPH_IPC_CONTEXT_BROKEN;
+		goto send_error;
+	}
+
+	if (unlikely(context->num_optimized_cmd_lists > 0)) {
+		val = SPH_IPC_NOT_SUPPORTED;
 		goto send_error;
 	}
 
@@ -2738,12 +2754,11 @@ send_error:
 				cmd->chanID, cmd->protCopyID);
 }
 
-static void handle_sched_cmdlist(struct sphcs        *sphcs,
-				 struct inf_context  *context,
-				 struct inf_cmd_list *cmdlist,
+static void handle_sched_cmdlist(struct inf_cmd_list *cmdlist,
 				 struct req_params   *params,
 				 uint16_t             num_params)
 {
+	struct inf_context  *context = cmdlist->context;
 	struct inf_exec_req *req;
 	unsigned long flags;
 	int ret = 0;
@@ -2753,10 +2768,13 @@ static void handle_sched_cmdlist(struct sphcs        *sphcs,
 
 	SPH_SPIN_LOCK_IRQSAVE(&cmdlist->lock_irq, flags);
 	SPH_ASSERT(cmdlist->num_left == 0);
+	++cmdlist->num_left; // to prevent completion reports in time of schedule
 	SPH_SPIN_UNLOCK_IRQRESTORE(&cmdlist->lock_irq, flags);
 
-	DO_TRACE(trace_cmdlist(SPH_TRACE_OP_STATUS_QUEUED, cmdlist->context->protocolID, cmdlist->protocolID));
-	DO_TRACE(trace_cmdlist(SPH_TRACE_OP_STATUS_START, cmdlist->context->protocolID, cmdlist->protocolID));
+	// for schedule
+	inf_cmd_get(cmdlist);
+
+	DO_TRACE(trace_cmdlist(SPH_TRACE_OP_STATUS_START, context->protocolID, cmdlist->protocolID));
 
 	for (i = 0; i < cmdlist->num_reqs; ++i) {
 		req = kmem_cache_alloc(context->exec_req_slab_cache, GFP_NOWAIT);
@@ -2799,7 +2817,7 @@ static void handle_sched_cmdlist(struct sphcs        *sphcs,
 				break;
 			};
 		}
-		if (k != 0) { //cpylist params were overwriten
+		if (k != 0) { //cpylist params were overwritten
 			for ( ; req->priority == 0 && k < req->cpylst->n_copies; ++k) {
 				if (req->cpylst->priorities[k] == 1)
 					req->priority = 1;
@@ -2814,6 +2832,9 @@ static void handle_sched_cmdlist(struct sphcs        *sphcs,
 
 		ret = req->f->schedule(req);
 		if (unlikely(ret < 0)) {
+			SPH_SPIN_LOCK_IRQSAVE(&cmdlist->lock_irq, flags);
+			--cmdlist->num_left;
+			SPH_SPIN_UNLOCK_IRQRESTORE(&cmdlist->lock_irq, flags);
 			kmem_cache_free(context->exec_req_slab_cache, req);
 			break;
 		}
@@ -2821,26 +2842,236 @@ static void handle_sched_cmdlist(struct sphcs        *sphcs,
 	if (unlikely(i < cmdlist->num_reqs)) {
 		for ( ; i < cmdlist->num_reqs; ++i)
 			cmdlist->req_list[i].f->send_report(&cmdlist->req_list[i], SPH_IPC_NO_MEMORY);
-		SPH_SPIN_LOCK_IRQSAVE(&cmdlist->lock_irq, flags);
-		if (--cmdlist->num_left == 0) {
-			SPH_SPIN_UNLOCK_IRQRESTORE(&cmdlist->lock_irq, flags);
-			goto send_completion;
-		}
-		SPH_SPIN_UNLOCK_IRQRESTORE(&cmdlist->lock_irq, flags);
 	}
+	SPH_SPIN_LOCK_IRQSAVE(&cmdlist->lock_irq, flags);
+	if (--cmdlist->num_left == 0) {// schedule finished
+		SPH_SPIN_UNLOCK_IRQRESTORE(&cmdlist->lock_irq, flags);
+		goto send_completion;
+	}
+	SPH_SPIN_UNLOCK_IRQRESTORE(&cmdlist->lock_irq, flags);
 
 	goto done;
 
 send_completion:
-	sphcs_send_event_report(sphcs, SPH_IPC_EXECUTE_CMD_COMPLETE, 0,
+	// for schedule
+	inf_cmd_put(cmdlist);
+	sphcs_send_event_report(g_the_sphcs, SPH_IPC_EXECUTE_CMD_COMPLETE, 0,
 				context->protocolID, cmdlist->protocolID);
 done:
-	if (params != NULL)
-		kfree(params);
+	cmdlist->edits_idx = 0;
 }
 
-void IPC_OPCODE_HANDLER(SCHEDULE_CMDLIST)(struct sphcs                    *sphcs,
-					  union h2c_InferenceSchedCmdList *cmd)
+static int cmdlist_schedule_dma_complete(struct sphcs *sphcs,
+					 void *ctx,
+					 const void *user_data,
+					 int status,
+					 u32 xferTimeUS)
+{
+	struct inf_cmd_list *cmd = (struct inf_cmd_list *)ctx;
+	uint32_t num_edits, cmd_index;
+	uint8_t byte;
+	uint16_t i, protID, ncopies;
+	uint8_t sched_params_are_null;
+	uint8_t *begin, *p = cmd->vptr;
+	uint16_t sched_dma_size;
+	bool is_last;
+	enum event_val val;
+	int ret = 0;
+
+	if (cmd->context->chan != NULL) {
+		union h2c_ChanInferenceCmdListOp *command = (union h2c_ChanInferenceCmdListOp *)user_data;
+
+		sched_dma_size = command->size;
+		is_last = command->is_last;
+
+		sphcs_cmd_chan_update_cmd_head(cmd->context->chan, 0, PAGE_SIZE);
+	} else {//UMD1 path
+		union h2c_InferenceCmdListOp *command = (union h2c_InferenceCmdListOp *)user_data;
+		union c2h_DmaPageHandleFree free_page_msg = { .value = 0 };
+
+		sched_dma_size = command->size;
+		is_last = command->is_last;
+
+		free_page_msg.opcode = SPH_IPC_C2H_OP_DMA_PAGE_HANDLE_FREE;
+		free_page_msg.host_page_hndl = command->host_page_hndl;
+		ret = sphcs_msg_scheduler_queue_add_msg(g_the_sphcs->public_respq, &free_page_msg.value, 1);
+		if (unlikely(ret < 0)) {
+			val = SPH_IPC_NO_MEMORY;
+			goto finish;
+		}
+	}
+
+	if (unlikely(status == SPHCS_DMA_STATUS_FAILED)) {
+		val = SPH_IPC_DMA_ERROR;
+		ret = -EFAULT;
+		goto finish;
+	}
+
+	if (cmd->edits_idx == 0 && cmd->num_left == 0) { //First DMA
+		POP_VALUE(p, uint32_t, &num_edits);//We don't need it, "edits" is allocated on create
+		sched_dma_size -= sizeof(uint32_t);
+		if (unlikely(num_edits == 0)) {
+			val = SPH_IPC_RUNTIME_NOT_SUPPORTED;
+			ret = -EINVAL;
+			goto finish;
+		}
+	}
+
+	while (sched_dma_size > 0) {
+		begin = p;
+		POP_VALUE(p, uint32_t, &cmd_index);
+		POP_VALUE(p, uint8_t, &byte);
+		switch (byte) {
+		case CMDLIST_CMD_COPY:
+			POP_VALUE(p, uint16_t, &protID); //not used here
+			POP_VALUE(p, uint8_t, &cmd->edits[cmd->edits_idx].priority);
+			POP_VALUE(p, uint64_t, &cmd->edits[cmd->edits_idx].size);
+			if (cmd->num_left == 0) {// standalone copy
+				SPH_ASSERT(cmd->req_list[cmd_index].cmd_type == CMDLIST_CMD_COPY);
+				cmd->edits[cmd->edits_idx].idx = cmd_index;
+			} else { // copy in cpylst
+				SPH_ASSERT(cmd->req_list[cmd->edits[cmd->edits_idx].idx].cmd_type == CMDLIST_CMD_COPYLIST);
+				// cmd->edits[cmd->edits_idx].idx is already uptodate
+				cmd->edits[cmd->edits_idx].cpy_idx = cmd_index;
+				--cmd->num_left;
+			}
+			++cmd->edits_idx;
+			break;
+		case CMDLIST_CMD_INFREQ:
+			SPH_ASSERT(cmd->req_list[cmd_index].cmd_type == CMDLIST_CMD_INFREQ);
+			SPH_ASSERT(cmd->num_left == 0);
+			POP_VALUE(p, uint16_t, &protID); //not used here
+			POP_VALUE(p, uint16_t, &protID); //not used here
+			cmd->edits[cmd->edits_idx].idx = cmd_index;
+			POP_VALUE(p, uint8_t, &sched_params_are_null);
+			cmd->req_list[cmd_index].sched_params_is_null = sched_params_are_null;
+			if (sched_params_are_null == 0) {
+				POP_VALUE(p, uint16_t, &cmd->req_list[cmd_index].size);
+				POP_VALUE(p, uint8_t, &cmd->req_list[cmd_index].priority);
+				POP_VALUE(p, uint8_t, &byte); cmd->req_list[cmd_index].debugOn = byte;
+				POP_VALUE(p, uint8_t, &byte); cmd->req_list[cmd_index].collectInfo = byte;
+			}
+			++cmd->edits_idx;
+			break;
+		case CMDLIST_CMD_COPYLIST:
+			SPH_ASSERT(cmd->req_list[cmd_index].cmd_type == CMDLIST_CMD_COPYLIST);
+			SPH_ASSERT(cmd->num_left == 0);
+			POP_VALUE(p, uint16_t, &ncopies);
+			SPH_ASSERT(ncopies > 0);
+			for (i = cmd->edits_idx; i < cmd->edits_idx + ncopies; ++i)
+				cmd->edits[i].idx = cmd_index;
+			cmd->num_left = ncopies;
+			break;
+		default:
+			//NOT supported
+			val = SPH_IPC_RUNTIME_NOT_SUPPORTED;
+			ret = -EINVAL;
+			goto finish;
+		}
+		sched_dma_size -= ((uint8_t *)p - begin);
+	}
+
+	// Do not start schedule if not last packet
+	if (!is_last)
+		goto finish;
+
+	SPH_ASSERT(cmd->num_left == 0);
+
+	handle_sched_cmdlist(cmd, cmd->edits, cmd->edits_idx);
+	cmd->edits_idx = 0;
+
+finish:
+	// put kref for DMA
+	inf_cmd_put(cmd);
+
+	if (unlikely(ret < 0)) {
+		cmd->edits_idx = 0;
+		cmd->num_left = 0;
+		sphcs_send_event_report(g_the_sphcs,
+					SPH_IPC_EXECUTE_CMD_COMPLETE,
+					val,
+					cmd->context->protocolID,
+					cmd->protocolID);
+	}
+
+	return ret;
+}
+
+void IPC_OPCODE_HANDLER(SCHEDULE_CMDLIST)(struct sphcs                 *sphcs,
+					  union h2c_InferenceCmdListOp *cmd)
+{
+	struct inf_context *context;
+	struct inf_cmd_list *cmdlist;
+	enum event_val val = 0;
+	int ret;
+
+	context = find_context(sphcs->inf_data, cmd->ctxID);
+	if (unlikely(context == NULL)) {
+		val = SPH_IPC_NO_SUCH_CONTEXT;
+		goto send_error;
+	}
+
+	if (unlikely(inf_context_get_state(context) != CONTEXT_OK)) {
+		val = SPH_IPC_CONTEXT_BROKEN;
+		goto send_error;
+	}
+
+	cmdlist = inf_context_find_cmd(context, cmd->cmdID);
+	if (unlikely(cmdlist == NULL)) {
+		val = SPH_IPC_NO_SUCH_CMD;
+		goto send_error;
+	}
+	SPH_ASSERT(cmdlist->status == CREATED);
+
+
+	if (cmd->is_first == 0 || cmd->is_last == 0) { //TODO Add support to overwrite parameters for more than 1 page
+		val = SPH_IPC_RUNTIME_NOT_SUPPORTED;
+		goto send_error;
+	}
+	if (cmd->is_first) {
+		SPH_ASSERT(cmdlist->edits_idx == 0);
+		SPH_ASSERT(cmdlist->num_left == 0);
+		DO_TRACE(trace_cmdlist(SPH_TRACE_OP_STATUS_QUEUED, cmd->ctxID, cmd->cmdID));
+		if (cmd->size == 0) { //No overwritten parameters
+			SPH_ASSERT(cmd->is_last == 1);
+			handle_sched_cmdlist(cmdlist, NULL, 0);
+
+			return;
+		}
+	}
+
+	SPH_ASSERT(cmd->size > 0);
+
+	// for DMA
+	inf_cmd_get(cmdlist);
+
+	ret = sphcs_dma_sched_start_xfer_single(g_the_sphcs->dmaSched,
+						&cmdlist->h2c_dma_desc,//TODO: consider use high priority
+						SPH_IPC_DMA_PFN_TO_ADDR(cmd->host_pfn),
+						cmdlist->dma_addr,
+						cmd->size,
+						cmdlist_schedule_dma_complete,
+						cmdlist,
+						cmd,
+						sizeof(*cmd));
+
+	if (unlikely(ret < 0)) {
+		val = SPH_IPC_NO_MEMORY;
+		goto fail;
+	}
+
+	return;
+
+fail:
+	// put kref for DMA
+	inf_cmd_put(cmdlist);
+send_error:
+	sphcs_send_event_report(sphcs, SPH_IPC_EXECUTE_CMD_COMPLETE, val,
+				cmd->ctxID, cmd->cmdID);
+}
+
+void IPC_OPCODE_HANDLER(SCHEDULE_CMDLIST_NO_OW)(struct sphcs                    *sphcs,
+						union h2c_InferenceSchedCmdList *cmd)
 {
 	struct inf_context *context;
 	struct inf_cmd_list *cmdlist;
@@ -2864,7 +3095,11 @@ void IPC_OPCODE_HANDLER(SCHEDULE_CMDLIST)(struct sphcs                    *sphcs
 	}
 	SPH_ASSERT(cmdlist->status == CREATED);
 
-	handle_sched_cmdlist(sphcs, context, cmdlist, NULL, 0);
+
+	SPH_ASSERT(cmdlist->edits_idx == 0);
+	SPH_ASSERT(cmdlist->num_left == 0);
+	DO_TRACE(trace_cmdlist(SPH_TRACE_OP_STATUS_QUEUED, cmd->ctxID, cmd->cmdID));
+	handle_sched_cmdlist(cmdlist, NULL, 0);
 
 	return;
 
@@ -2874,11 +3109,15 @@ send_error:
 }
 
 void IPC_OPCODE_HANDLER(CHAN_SCHEDULE_CMDLIST)(struct sphcs                    *sphcs,
-					       union h2c_ChanInferenceSchedCmdList *cmd)
+					       union h2c_ChanInferenceCmdListOp *cmd)
 {
 	struct inf_context *context;
 	struct inf_cmd_list *cmdlist;
 	enum event_val val = 0;
+	dma_addr_t host_dma_addr;
+	struct sphcs_host_rb *cmd_data_rb;
+	u32 host_chunk_size;
+	int ret;
 
 	context = find_context(sphcs->inf_data, cmd->chanID);
 	if (unlikely(context == NULL || context->chan == NULL)) {
@@ -2898,10 +3137,61 @@ void IPC_OPCODE_HANDLER(CHAN_SCHEDULE_CMDLIST)(struct sphcs                    *
 	}
 	SPH_ASSERT(cmdlist->status == CREATED);
 
-	handle_sched_cmdlist(sphcs, context, cmdlist, NULL, 0);
+	if (cmd->is_first == 0 || cmd->is_last == 0) { //TODO Add support to overwrite parameters for more than 1 page
+		val = SPH_IPC_RUNTIME_NOT_SUPPORTED;
+		goto send_error;
+	}
+	if (cmd->is_first) {
+		SPH_ASSERT(cmdlist->edits_idx == 0);
+		SPH_ASSERT(cmdlist->num_left == 0);
+		DO_TRACE(trace_cmdlist(SPH_TRACE_OP_STATUS_QUEUED, cmdlist->context->protocolID, cmdlist->protocolID));
+		if (cmd->size == 0) { //No overwritten parameters
+			SPH_ASSERT(cmd->is_last == 1);
+			handle_sched_cmdlist(cmdlist, NULL, 0);
+
+			return;
+		}
+	}
+
+	SPH_ASSERT(cmd->size > 0);
+
+	// for DMA
+	inf_cmd_get(cmdlist);
+
+	cmd_data_rb = &context->chan->h2c_rb[0];
+	/* need to advance h2c ring buffer by one page */
+	host_rb_update_free_space(cmd_data_rb, SPH_PAGE_SIZE);
+	ret = host_rb_get_avail_space(cmd_data_rb,
+					SPH_PAGE_SIZE,
+					1,
+					&host_dma_addr,
+					&host_chunk_size);
+
+	SPH_ASSERT(ret == 1);
+	SPH_ASSERT((host_dma_addr & SPH_IPC_DMA_ADDR_ALIGN_MASK) == 0);
+
+	host_rb_update_avail_space(cmd_data_rb, SPH_PAGE_SIZE);
+
+	ret = sphcs_dma_sched_start_xfer_single(g_the_sphcs->dmaSched,
+						&context->chan->h2c_dma_desc,//TODO: consider use high priority
+						host_dma_addr,
+						cmdlist->dma_addr,
+						cmd->size,
+						cmdlist_schedule_dma_complete,
+						cmdlist,
+						cmd,
+						sizeof(*cmd));
+
+	if (unlikely(ret < 0)) {
+		val = SPH_IPC_NO_MEMORY;
+		goto fail;
+	}
 
 	return;
 
+fail:
+	// put kref for DMA
+	inf_cmd_put(cmdlist);
 send_error:
 	sphcs_send_event_report(sphcs, SPH_IPC_EXECUTE_CMD_COMPLETE, val,
 				cmd->chanID, cmd->cmdID);
@@ -3257,6 +3547,11 @@ void IPC_OPCODE_HANDLER(SCHEDULE_INF_REQ)(struct sphcs                   *sphcs,
 		goto send_error;
 	}
 
+	if (unlikely(context->num_optimized_cmd_lists > 0)) {
+		val = SPH_IPC_NOT_SUPPORTED;
+		goto send_error;
+	}
+
 	devnet = inf_context_find_devnet(context, cmd->netID);
 	if (unlikely(devnet == NULL)) {
 		val = SPH_IPC_NO_SUCH_NET;
@@ -3320,6 +3615,11 @@ void IPC_OPCODE_HANDLER(CHAN_SCHEDULE_INF_REQ)(struct sphcs                   *s
 
 	if (unlikely(inf_context_get_state(context) != CONTEXT_OK)) {
 		val = SPH_IPC_CONTEXT_BROKEN;
+		goto send_error;
+	}
+
+	if (unlikely(context->num_optimized_cmd_lists > 0)) {
+		val = SPH_IPC_NOT_SUPPORTED;
 		goto send_error;
 	}
 
@@ -3527,7 +3827,7 @@ static void network_property_op_work_handler(struct work_struct *work)
 		}
 	} break;
 	default:
-		sph_log_err(EXECUTE_COMMAND_LOG, "unexpected network property (%u)\n", op->cmd.property);
+		sph_log_err(CREATE_COMMAND_LOG, "unexpected network property (%u)\n", op->cmd.property);
 		sphcs_send_event_report(g_the_sphcs,
 						SPH_IPC_DEVNET_SET_PROPERTY_FAILED,
 						SPH_IPC_NO_SUCH_CMD,

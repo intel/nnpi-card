@@ -67,7 +67,7 @@ ln -sf /opt/intel_nnpi/bin/sph_maintenance /usr/bin/sph_maintenance
 
 #initializing SPH card driver
 echo "initializing SPH card driver"
-insmod /opt/intel_nnpi/modules/sphcs.ko
+insmod /opt/intel_nnpi/modules/sphcs.ko mem_thr=50000
 error_check "insmod sphcs.ko"
 
 #initializing SPH power balancing driver

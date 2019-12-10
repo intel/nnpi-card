@@ -47,7 +47,7 @@ H2C_OPCODE(CHAN_SYNC, 43, union h2c_ChanSync)
 H2C_OPCODE(CHAN_INF_NETWORK_RESOURCE_RESERVATION, 44, union h2c_ChanInferenceNetworkResourceReservation)
 H2C_OPCODE(CHAN_NETWORK_PROPERTY, 45, union h2c_ChanInferenceNetworkSetProperty)
 H2C_OPCODE(CHAN_INF_CMDLIST, 46, union h2c_ChanInferenceCmdListOp)
-H2C_OPCODE(CHAN_SCHEDULE_CMDLIST, 47, union h2c_ChanInferenceSchedCmdList)
+H2C_OPCODE(CHAN_SCHEDULE_CMDLIST, 47, union h2c_ChanInferenceCmdListOp)
 H2C_OPCODE(CHAN_HWTRACE_ADD_RESOURCE, 48, union h2c_ChanHwTraceAddResource)
 H2C_OPCODE(CHAN_HWTRACE_STATE, 49, union h2c_ChanHwTraceState)
 

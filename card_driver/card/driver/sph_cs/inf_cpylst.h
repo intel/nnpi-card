@@ -59,7 +59,7 @@ int inf_cpylst_add_copy(struct inf_cpylst  *cpylst,
 			uint64_t size,
 			uint8_t priority);
 
-int inf_cpylst_build_cur_lli(struct inf_cpylst *cpylst);
+void inf_cpylst_build_cur_lli(struct inf_cpylst *cpylst);
 
 void inf_cpylst_get(struct inf_cpylst *cpylst);
 int inf_cpylst_put(struct inf_cpylst *cpylst);
