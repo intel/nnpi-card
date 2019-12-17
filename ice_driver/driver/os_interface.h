@@ -56,6 +56,7 @@ extern u32 ice_fw_select;
 extern u32 block_mmu;
 extern u32 enable_b_step;
 extern u32 disable_clk_gating;
+extern u32 pin_atu;
 
 typedef u32 cve_virtual_address_t;
 typedef u32 pt_entry_t;

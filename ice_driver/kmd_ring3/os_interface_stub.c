@@ -69,6 +69,7 @@ bool print_debug;
 static u32 icemask;
 u32 block_mmu;
 struct config cfg_default;
+u32 pin_atu = 1;
 
 /* log file */
 static FILE* pLogStream = NULL;

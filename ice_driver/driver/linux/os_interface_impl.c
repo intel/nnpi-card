@@ -136,6 +136,7 @@ u32 block_mmu;
 u32 enable_b_step;
 u32 disable_clk_gating;
 u32 enable_mmu_pmon;
+u32 pin_atu = 1;
 struct config cfg_default;
 
 static u32 icemask_user;
@@ -196,6 +197,9 @@ MODULE_PARM_DESC(initial_iccp_config, "Array of initial iccp config to be done {
 
 module_param(enable_mmu_pmon, int, 0);
 MODULE_PARM_DESC(enable_mmu_pmon, "Enable dumping of MMU PMON after each job completion. Default is 0 i.e disabled");
+
+module_param(pin_atu, int, 0);
+MODULE_PARM_DESC(pin_atu, "Enable ATU pinning (Delphi-ATU0, DSE-ATU1, IVP-ATU2, TLC-ATU3)");
 
 /* UITILITY FUNCTIONS */
 

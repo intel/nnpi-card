@@ -45,7 +45,7 @@ error_check "make SPH_x86_64_efi_Simics_nnpi_defconfig"
 
 set -x; 
 cd $TOOLCHAIN_BUILD_DIR
-make toolchain
+make sdk
 error_check "make toolchain"
 
 cd ../../

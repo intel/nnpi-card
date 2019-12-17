@@ -522,10 +522,14 @@ static void do_reset(struct cve_device *cve_dev,
 	 * Done only if network requests shared read else default address
 	 * based ATU mapping is used
 	 */
-	if (ntw->shared_read)
+#if 1
+	if (pin_atu)
 		ice_di_configure_atu_cbb_mapping(cve_dev);
 	else
 		ice_di_disable_dynamic_atu_selection(cve_dev);
+#else
+	ice_di_configure_atu_cbb_mapping(cve_dev);
+#endif
 
 	/* HACK: do a hard code stream mapping for caching of L1/L2 surfaces*/
 	ice_di_configure_pt_caching_reg(cve_dev);
@@ -962,7 +966,7 @@ static int __dispatch_single_job(
 		/* if driver has respected the request then set the shared
 		 * read mmio else disable it
 		 */
-		if (ntw->icebo_req == ICEBO_MANDATORY)
+		if (ntw->shared_read)
 			ice_di_set_shared_read_reg(cve_dev, ntw, 1);
 		else
 			ice_di_set_shared_read_reg(cve_dev, ntw, 0);
@@ -3370,7 +3374,7 @@ void cve_ds_handle_job_completion(struct cve_device *dev,
 				SPH_TRACE_OP_STATUS_PERF, exec_time));
 
 	if (ntw->shared_read)
-		is_shared_read_error(ntw, dev, dev->dev_index / 2);
+		ice_di_is_shared_read_error(ntw, dev, dev->dev_index / 2);
 
 	/* remove the job from the jobgroup list */
 	jobgroup->ended_jobs_nr++;

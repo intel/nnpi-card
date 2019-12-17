@@ -2191,26 +2191,29 @@ static void __configure_atu_dse_mapping(struct cve_device *ice,
 		u32 offset_bytes)
 {
 	union ice_mmu_inner_stream_mapping_config_t reg;
+	bool bZero = ((cfg_default.mmu_base +
+			cfg_default.mmu_dse_surf_0_3_stream_mapping_offset) ==
+			offset_bytes);
 
 	reg.val = cve_os_read_mmio_32(ice, offset_bytes);
 	reg.dse_stream_mapping.ATU0 = DSE_ATU_MAPPING;
 	/*Disable address based ATU selection */
-	reg.dse_stream_mapping.READ_IS_ADDRESS_BASED0 = 0;
+	reg.dse_stream_mapping.READ_IS_ADDRESS_BASED0 = bZero ? 1 : 0;
 	reg.dse_stream_mapping.ATU_AND_STREAM_ARE_ADDRESS_BASED0 = 0;
 
 	reg.dse_stream_mapping.ATU1 = DSE_ATU_MAPPING;
 	/*Disable address based ATU selection */
-	reg.dse_stream_mapping.READ_IS_ADDRESS_BASED1 = 0;
+	reg.dse_stream_mapping.READ_IS_ADDRESS_BASED1 = bZero ? 1 : 0;
 	reg.dse_stream_mapping.ATU_AND_STREAM_ARE_ADDRESS_BASED1 = 0;
 
 	reg.dse_stream_mapping.ATU2 = DSE_ATU_MAPPING;
 	/*Disable address based ATU selection */
-	reg.dse_stream_mapping.READ_IS_ADDRESS_BASED2 = 0;
+	reg.dse_stream_mapping.READ_IS_ADDRESS_BASED2 = bZero ? 1 : 0;
 	reg.dse_stream_mapping.ATU_AND_STREAM_ARE_ADDRESS_BASED2 = 0;
 
 	reg.dse_stream_mapping.ATU3 = DSE_ATU_MAPPING;
 	/*Disable address based ATU selection */
-	reg.dse_stream_mapping.READ_IS_ADDRESS_BASED3 = 0;
+	reg.dse_stream_mapping.READ_IS_ADDRESS_BASED3 = bZero ? 1 : 0;
 	reg.dse_stream_mapping.ATU_AND_STREAM_ARE_ADDRESS_BASED3 = 0;
 	cve_os_write_mmio_32(ice, offset_bytes, reg.val);
 }
@@ -2330,32 +2333,32 @@ static void __l1_stream_mapping(struct cve_device *ice)
 
 		offset_bytes = atu_base +
 			cfg_default.ice_mmu_1_system_map_stream_id_l1_1;
-		val = 4;
+		val = 8;
 		cve_os_write_mmio_32(ice, offset_bytes, val);
 
 		offset_bytes = atu_base +
 			cfg_default.ice_mmu_1_system_map_stream_id_l1_2;
-		val = (i == __large_surface_reserved_atu) ? 12 : 8;
+		val = 11;
 		cve_os_write_mmio_32(ice, offset_bytes, val);
 
 		offset_bytes = atu_base +
 			cfg_default.ice_mmu_1_system_map_stream_id_l1_3;
-		val = 13;
+		val = (i == __large_surface_reserved_atu) ? 12 : 13;
 		cve_os_write_mmio_32(ice, offset_bytes, val);
 
 		offset_bytes = atu_base +
 			cfg_default.ice_mmu_1_system_map_stream_id_l1_4;
-		val = 14;
+		val = (i == __large_surface_reserved_atu) ? 13 : 14;
 		cve_os_write_mmio_32(ice, offset_bytes, val);
 
 		offset_bytes = atu_base +
 			cfg_default.ice_mmu_1_system_map_stream_id_l1_5;
-		val = 14;
+		val = (i == __large_surface_reserved_atu) ? 13 : 14;
 		cve_os_write_mmio_32(ice, offset_bytes, val);
 
 		offset_bytes = atu_base +
 			cfg_default.ice_mmu_1_system_map_stream_id_l1_6;
-		val = 14;
+		val = (i == __large_surface_reserved_atu) ? 13 : 14;
 		cve_os_write_mmio_32(ice, offset_bytes, val);
 
 		offset_bytes = atu_base +
@@ -2367,6 +2370,8 @@ static void __l1_stream_mapping(struct cve_device *ice)
 
 static void __l2_stream_mapping(struct cve_device *ice)
 {
+#define __large_surface_reserved_atu  3
+
 	u32 i, val = 0, atu_base, offset_bytes;
 
 	for (i = 0; i < MAX_ATU_COUNT; i++) {
@@ -2381,32 +2386,32 @@ static void __l2_stream_mapping(struct cve_device *ice)
 
 		offset_bytes = atu_base +
 			cfg_default.ice_mmu_1_system_map_stream_id_l2_1;
-		val = 4;
+		val = 8;
 		cve_os_write_mmio_32(ice, offset_bytes, val);
 
 		offset_bytes = atu_base +
 			cfg_default.ice_mmu_1_system_map_stream_id_l2_2;
-		val = (i == __large_surface_reserved_atu) ? 12 : 8;
+		val = 11;
 		cve_os_write_mmio_32(ice, offset_bytes, val);
 
 		offset_bytes = atu_base +
 			cfg_default.ice_mmu_1_system_map_stream_id_l2_3;
-		val = 13;
+		val = (i == __large_surface_reserved_atu) ? 12 : 13;
 		cve_os_write_mmio_32(ice, offset_bytes, val);
 
 		offset_bytes = atu_base +
 			cfg_default.ice_mmu_1_system_map_stream_id_l2_4;
-		val = 14;
+		val = (i == __large_surface_reserved_atu) ? 13 : 14;
 		cve_os_write_mmio_32(ice, offset_bytes, val);
 
 		offset_bytes = atu_base +
 			cfg_default.ice_mmu_1_system_map_stream_id_l2_5;
-		val = 14;
+		val = (i == __large_surface_reserved_atu) ? 13 : 14;
 		cve_os_write_mmio_32(ice, offset_bytes, val);
 
 		offset_bytes = atu_base +
 			cfg_default.ice_mmu_1_system_map_stream_id_l2_6;
-		val = 14;
+		val = (i == __large_surface_reserved_atu) ? 13 : 14;
 		cve_os_write_mmio_32(ice, offset_bytes, val);
 
 		offset_bytes = atu_base +
@@ -2574,3 +2579,31 @@ static void __dump_mmu_pmon(struct cve_device *ice)
 			ice->dev_index,
 			"MMU Reads:%u Writes:%u\n", reads, writes);
 }
+
+/* Update network's shared read error if exists */
+void ice_di_is_shared_read_error(struct ice_network *ntw,
+					struct cve_device *dev, int bo_id)
+{
+	AXI_SHARED_READ_STATUS_T err_reg;
+	u32 offset, icebo_offset;
+
+	icebo_offset = ICEDC_ICEBO_OFFSET(bo_id);
+	offset = icebo_offset + cfg_default.axi_shared_read_status_offset;
+	err_reg.val = cve_os_read_idc_mmio(dev, offset);
+
+	if (err_reg.field.error_flag) {
+
+		cve_os_dev_log_default(CVE_LOGLEVEL_ERROR,
+			dev->dev_index,
+			"Error: NtwID:0x%llx, shared_read_status value:%x\n",
+			ntw->network_id, err_reg.val);
+
+		ntw->shared_read_err_status = err_reg.field.error_flag;
+		err_reg.field.error_flag = 0;
+		cve_os_write_idc_mmio(dev, offset, err_reg.val);
+
+		ice_di_set_shared_read_reg(dev, ntw, 1);
+	}
+
+}
+

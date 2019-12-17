@@ -23,6 +23,7 @@
 
 #include "os_interface.h"
 #include "project_device_interface.h"
+#include "device_interface.h"
 
 /* general purpose register #13 assigned for CVE driver.
  * it uses for validate reset done.
@@ -36,38 +37,6 @@
 #define ICE_MMIO_GP_RESET_REG_TEST_VAL     0xCAFED00D
 #define ICE_INTR_STS_SINGLE_ECC_ERR \
 	MMIO_HUB_MEM_INTERRUPT_STATUS_DSRAM_SINGLE_ERR_INTERRUPT_MASK
-
-/* Update network's shared read error if exists */
-static inline void is_shared_read_error(struct ice_network *ntw,
-					struct cve_device *dev, int bo_id)
-{
-	AXI_SHARED_READ_STATUS_T err_reg;
-	u32 offset, icebo_offset;
-
-	icebo_offset = ICEDC_ICEBO_OFFSET(bo_id);
-	offset = icebo_offset + cfg_default.axi_shared_read_status_offset;
-	err_reg.val = cve_os_read_idc_mmio(dev, offset);
-
-	if (err_reg.field.error_flag) {
-		AXI_SHARED_READ_CFG_T cfg_reg;
-
-		ntw->shared_read_err_status = err_reg.field.error_flag;
-		err_reg.field.error_flag = 0;
-		cve_os_write_idc_mmio(dev, offset, err_reg.val);
-
-		/*re-enable shared read */
-		offset = icebo_offset + cfg_default.axi_shared_read_cfg_offset;
-		cfg_reg.field.shared_read_enable = 1;
-		cve_os_write_idc_mmio(dev, offset, cfg_reg.val);
-
-		cve_os_dev_log_default(CVE_LOGLEVEL_ERROR,
-			dev->dev_index,
-			"Error: NtwID:0x%llx, shared_read_status value:%x\n",
-			ntw->network_id, err_reg.val);
-	}
-
-}
-
 
 static inline int is_dsram_single_err(u32 status)
 {

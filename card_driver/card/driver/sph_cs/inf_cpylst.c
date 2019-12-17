@@ -427,6 +427,7 @@ static int inf_cpylst_req_sched(struct inf_exec_req *req)
 #endif
 
 	// First try to execute
+	req->last_sched_tick = 0;
 	inf_req_try_execute(req);
 
 	inf_exec_req_put(req);
