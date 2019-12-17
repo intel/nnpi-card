@@ -4513,6 +4513,9 @@ static int __ntw_reserve_cntr(struct ice_network *ntw)
 
 		ntw->patch_cntr = false;
 
+		if (ice_is_soc() && ice_get_a_step_enable_flag())
+			ntw->patch_cntr = true;
+
 		/* ntw->patch_cntr is already false */
 
 		goto out;

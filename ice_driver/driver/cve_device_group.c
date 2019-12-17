@@ -818,6 +818,14 @@ int ice_get_power_off_delay_param(void)
 	return drv_config_param.ice_power_off_delay_ms;
 }
 
+int ice_get_a_step_enable_flag(void)
+{
+	if (drv_config_param.enable_sph_b_step)
+		return false;
+	else
+		return true;
+}
+
 int ice_get_b_step_enable_flag(void)
 {
 	return drv_config_param.enable_sph_b_step;

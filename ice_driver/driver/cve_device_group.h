@@ -142,6 +142,9 @@ int ice_get_power_off_delay_param(void);
 
 u32 ice_get_usec_timediff(struct timespec *time1, struct timespec *time2);
 
+/* retrieve  a step enable flag */
+int ice_get_a_step_enable_flag(void);
+
 /* retrieve  b step enable flag */
 int ice_get_b_step_enable_flag(void);
 
