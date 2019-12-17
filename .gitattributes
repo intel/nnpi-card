@@ -1,3 +1,0 @@
-nnpi_os_external_sources/sources/linux-5.1/linux-5.1.tar.xz filter=lfs diff=lfs merge=lfs -text
-nnpi_os_external_sources/sources/linux-firmware-1baa34868b2c0a004dc595b20678145e3fff83e7/linux-firmware-1baa34868b2c0a004dc595b20678145e3fff83e7.tar.gz filter=lfs diff=lfs merge=lfs -text
-nnpi_os_external_sources/sources/linux-headers-5.1/linux-5.1.tar.xz filter=lfs diff=lfs merge=lfs -text
