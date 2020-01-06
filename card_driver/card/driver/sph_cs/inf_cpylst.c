@@ -130,9 +130,14 @@ int inf_cpylst_create(struct inf_cmd_list *cmd,
 		goto free_sizes;
 	}
 
+	cpylst->devreses = kcalloc(num_copies, sizeof(uint64_t), GFP_KERNEL);
+	if (unlikely(cpylst->devreses == NULL)) {
+		sph_log_err(CREATE_COMMAND_LOG, "FATAL: line:%u failed to allocate array of device resourses\n", __LINE__);
+		goto free_cur_sizes;
+	}
+
 	cpylst->magic = inf_cpylst_create;
 	cpylst->idx_in_cmd = cmdlist_index;
-	cpylst->cmd = cmd;
 	cpylst->n_copies = num_copies;
 	cpylst->added_copies = 0;
 	cpylst->size = 0;
@@ -162,6 +167,8 @@ int inf_cpylst_create(struct inf_cmd_list *cmd,
 
 	return 0;
 
+free_cur_sizes:
+	kfree(cpylst->cur_sizes);
 free_sizes:
 	kfree(cpylst->sizes);
 free_priorities:
@@ -293,6 +300,7 @@ int inf_cpylst_add_copy(struct inf_cpylst *cpylst,
 	cpylst->copies[cpylst->added_copies] = copy;
 	cpylst->sizes[cpylst->added_copies] = size;
 	cpylst->priorities[cpylst->added_copies] = priority;
+	cpylst->devreses[cpylst->added_copies] = copy->devres;
 	++cpylst->added_copies;
 	cpylst->size += size;
 	if (unlikely(cpylst->added_copies == cpylst->n_copies)) {
@@ -329,6 +337,7 @@ static void release_cpylst(struct inf_cpylst *cpylst)
 			break;
 		inf_copy_put(cpylst->copies[i]);
 	}
+	kfree(cpylst->devreses);
 	kfree(cpylst->cur_sizes);
 	kfree(cpylst->sizes);
 	kfree(cpylst->priorities);
@@ -343,23 +352,24 @@ static void inf_cpylst_req_release(struct kref *kref)
 						struct inf_exec_req,
 						in_use);
 	struct inf_cpylst *cpylst;
+	struct inf_cmd_list *cmd = req->cmd;
 	uint16_t i;
 
 	SPH_ASSERT(req->cmd_type == CMDLIST_CMD_COPYLIST);
-	SPH_ASSERT(req->cmd != NULL);
+	SPH_ASSERT(cmd != NULL);
 
 	cpylst = req->cpylst;
-	for (i = 0; i < cpylst->n_copies; ++i)
-		inf_devres_del_req_from_queue(cpylst->copies[i]->devres, req);
-	inf_context_seq_id_fini(cpylst->cmd->context, &req->seq);
+	for (i = 0; i < req->num_opt_depend_devres; ++i)
+		inf_devres_del_req_from_queue(req->opt_depend_devres[i], req);
+	inf_context_seq_id_fini(req->context, &req->seq);
 
 	/* advance sched tick and try execute next requests */
 	atomic_add(2, &req->context->sched_tick);
-	for (i = 0; i < cpylst->n_copies; ++i)
-		inf_devres_try_execute(cpylst->copies[i]->devres);
+	for (i = 0; i < req->num_opt_depend_devres; ++i)
+		inf_devres_try_execute(req->opt_depend_devres[i]);
 
-	kmem_cache_free(cpylst->cmd->context->exec_req_slab_cache, req);
-	inf_cmd_put(cpylst->cmd);
+	kmem_cache_free(req->context->exec_req_slab_cache, req);
+	inf_cmd_put(cmd);
 }
 
 void inf_cpylst_req_init(struct inf_exec_req *req,
@@ -377,13 +387,14 @@ void inf_cpylst_req_init(struct inf_exec_req *req,
 	req->size = 0;
 	req->priority = 0;
 	req->time = 0;
-	req->num_opt_depend_devres = 0;
-	req->opt_depend_devres = NULL;
+	req->num_opt_depend_devres = req->cpylst->n_copies;
+	req->opt_depend_devres = req->cpylst->devreses;
 }
 
 static int inf_cpylst_req_sched(struct inf_exec_req *req)
 {
 	struct inf_cpylst *cpylst;
+	bool read;
 	uint16_t i;
 	int err;
 
@@ -393,15 +404,15 @@ static int inf_cpylst_req_sched(struct inf_exec_req *req)
 	cpylst = req->cpylst;
 	inf_cmd_get(req->cmd);
 	spin_lock_init(&req->lock_irq);
-	inf_context_seq_id_init(cpylst->cmd->context, &req->seq);
+	inf_context_seq_id_init(req->context, &req->seq);
 
 	DO_TRACE(trace_copy(SPH_TRACE_OP_STATUS_QUEUED,
-		 req->cmd->context->protocolID,
+		 req->context->protocolID,
 		 cpylst->idx_in_cmd,
 		 req->cmd->protocolID,
 		 cpylst->copies[0]->card2Host,
 		 req->size,
-		 req->cpylst->n_copies));
+		 cpylst->n_copies));
 
 #if 0
 	if (SPH_SW_GROUP_IS_ENABLE(copy->sw_counters,
@@ -412,10 +423,9 @@ static int inf_cpylst_req_sched(struct inf_exec_req *req)
 
 	inf_exec_req_get(req);
 
-	for (i = 0; i < cpylst->n_copies; ++i) {
-		err = inf_devres_add_req_to_queue(cpylst->copies[i]->devres,
-						  req,
-						  cpylst->copies[i]->card2Host);
+	read = cpylst->copies[0]->card2Host;
+	for (i = 0; i < req->num_opt_depend_devres; ++i) {
+		err = inf_devres_add_req_to_queue(req->opt_depend_devres[i], req, read);
 		if (unlikely(err < 0))
 			goto fail;
 	}
@@ -436,8 +446,8 @@ static int inf_cpylst_req_sched(struct inf_exec_req *req)
 
 fail:
 	for (--i; i >= 0; --i)
-		inf_devres_del_req_from_queue(cpylst->copies[i]->devres, req);
-	inf_context_seq_id_fini(cpylst->cmd->context, &req->seq);
+		inf_devres_del_req_from_queue(req->opt_depend_devres[i], req);
+	inf_context_seq_id_fini(req->context, &req->seq);
 	inf_cmd_put(req->cmd);
 
 	return err;
@@ -445,26 +455,18 @@ fail:
 
 static bool inf_cpylst_req_ready(struct inf_exec_req *req)
 {
-	struct inf_cpylst *cpylst;
+	bool read;
 	uint16_t i;
 
 	SPH_ASSERT(req->cmd_type == CMDLIST_CMD_COPYLIST);
 
-	cpylst = req->cpylst;
-
-	if (cpylst->active)
+	if (req->cpylst->active)
 		return false;
 
-	if (req->num_opt_depend_devres > 0) {
-		for (i = 0; i < req->num_opt_depend_devres; i++)
-			if (!inf_devres_req_ready(req->opt_depend_devres[i], req, cpylst->copies[0]->card2Host))
-				return false;
-	} else {
-		for (i = 0; i < cpylst->n_copies; ++i)
-			if (!inf_devres_req_ready(cpylst->copies[i]->devres,
-						  req,
-						  cpylst->copies[i]->card2Host))
-				return false;
+	read = req->cpylst->copies[0]->card2Host;
+	for (i = 0; i < req->num_opt_depend_devres; ++i) {
+		if (!inf_devres_req_ready(req->opt_depend_devres[i], req, read))
+			return false;
 	}
 
 	return true;
@@ -550,7 +552,7 @@ static int inf_cpylst_req_execute(struct inf_exec_req *req)
 
 	cpylst->active = true;
 
-	if (inf_context_get_state(cpylst->cmd->context) != CONTEXT_OK)
+	if (inf_context_get_state(req->context) != CONTEXT_OK)
 		return -SPHER_CONTEXT_BROKEN;
 
 	return sphcs_dma_sched_start_xfer(g_the_sphcs->dmaSched, desc,
@@ -693,7 +695,7 @@ static void send_cpylst_report(struct inf_exec_req *req,
 	sphcs_send_event_report_ext(g_the_sphcs,
 				    eventCode,
 				    eventVal,
-				    cpylst->cmd->context->protocolID,
+				    req->context->protocolID,
 				    req->cmd->protocolID,
 				    cpylst->idx_in_cmd);
 }

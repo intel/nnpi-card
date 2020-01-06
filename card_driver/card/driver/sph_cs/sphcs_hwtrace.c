@@ -44,6 +44,13 @@
 #define HWTRACE_STATE_NO_CLEANUP_RESOURCE	BIT_SET(8)
 
 
+#define SGT_NR_BLOCK 3
+#define MSC_SW_TAG_LASTBLK	BIT(0)
+#define MSC_SW_TAG_LASTWIN	BIT(1)
+
+
+
+
 #define HWTRACE_STATE_RESOURCES_BUSY(flag)	(flag & (HWTRACE_STATE_NPK_RESOURCE_BUSY | HWTRACE_STATE_HOST_RESOURCE_BUSY | HWTRACE_STATE_DMA_INFO_DIRTY))
 
 //dtf channel config for dma engine
@@ -51,7 +58,7 @@ const struct sphcs_dma_desc g_dma_desc_c2h_dtf_nowait = {
 	.dma_direction  = SPHCS_DMA_DIRECTION_CARD_TO_HOST,
 	.dma_priority   = SPHCS_DMA_PRIORITY_DTF,
 	.serial_channel = 0,
-	.flags          = 0
+	.flags          = SPHCS_DMA_START_XFER_COMPLETION_NO_WAIT
 };
 
 
@@ -125,6 +132,23 @@ struct sphcs_hwtrace_cmd_work {
 	struct sphcs_cmd_chan		*chan;
 };
 
+/*
+ * Multiblock/multiwindow block descriptor
+ */
+struct msc_block_desc {
+	u32	sw_tag;
+	u32	block_sz;
+	u32	next_blk;
+	u32	next_win;
+	u32	res0[4];
+	u32	hw_tag;
+	u32	valid_dw;
+	u32	ts_low;
+	u32	ts_high;
+	u32	res1[4];
+} __packed;
+
+
 void sphcs_hwtrace_wakeup_clients(void)
 {
 	struct sphcs_hwtrace_data *hw_tracing = &g_the_sphcs->hw_tracing;
@@ -177,7 +201,7 @@ int sphcs_hwtrace_create_sg_table_from_pages(struct page *pages,
 	struct scatterlist *current_sgl;
 	int ret;
 
-	ret = sg_alloc_table(sgt, 3, GFP_NOWAIT);
+	ret = sg_alloc_table(sgt, SGT_NR_BLOCK, GFP_NOWAIT);
 	if (ret) {
 		return ret;
 	}
@@ -188,8 +212,8 @@ int sphcs_hwtrace_create_sg_table_from_pages(struct page *pages,
 	current_sgl = sgt->sgl;
 
 	sg_set_page(&(current_sgl[0]), &(pages[0]), (4) * PAGE_SIZE, 0);
-	sg_set_page(&(current_sgl[1]), &(pages[8]), (nr_pages-8) * PAGE_SIZE, 0);
-	sg_set_page(&(current_sgl[2]), &(pages[4]), (4) * PAGE_SIZE, 0);
+	sg_set_page(&(current_sgl[1]), &(pages[54]), (nr_pages-54) * PAGE_SIZE, 0);
+	sg_set_page(&(current_sgl[2]), &(pages[4]), (50) * PAGE_SIZE, 0);
 
 	return 0;
 }
@@ -452,6 +476,31 @@ void sphcs_hwtrace_update_state(void)
 	}
 }
 
+static void sphcs_hwtrace_window_header_cleanup(struct npk_res_info *r)
+{
+	struct scatterlist *sg;
+	unsigned int blk;
+
+	for_each_sg(r->sgt->sgl, sg, SGT_NR_BLOCK, blk) {
+		struct msc_block_desc *bdesc = sg_virt(sg);
+		u32 next_win = bdesc->next_win;
+		u32 next_blk = bdesc->next_blk;
+		u32 sw_tag = bdesc->sw_tag;
+
+		if (sw_tag & MSC_SW_TAG_LASTBLK)
+			sw_tag = MSC_SW_TAG_LASTBLK;
+		else
+			sw_tag = 0x0;
+
+		memset(bdesc, 0, sizeof(*bdesc));
+
+		bdesc->next_win = next_win;
+		bdesc->next_blk = next_blk;
+		bdesc->sw_tag	= sw_tag;
+		bdesc->block_sz = sg->length / 64;
+	}
+}
+
 //callback from dma engine when NPK resource to host copy via pep ended
 static int sphcs_hwtrace_dma_stream_complete_cb(struct sphcs *sphcs, void *ctx, const void *user_data, int status, u32 timeUS)
 {
@@ -471,6 +520,8 @@ static int sphcs_hwtrace_dma_stream_complete_cb(struct sphcs *sphcs, void *ctx, 
 
 	//release npk resource
 	if (hw_tracing->intel_th_device && r->npk_res) {
+		sphcs_hwtrace_window_header_cleanup(r->npk_res);
+
 		sphcs_intel_th_window_unlock(hw_tracing->intel_th_device,
 					     r->npk_res->sgt);
 	}
@@ -491,8 +542,13 @@ static int sphcs_hwtrace_dma_stream_complete_cb(struct sphcs *sphcs, void *ctx, 
 
 	//if status != 0 report error to host
 	if (status != SPHCS_DMA_STATUS_DONE) {
-		sph_log_err(HWTRACE_LOG, "hwtrace dma failed for resource number %d\n",
-			     r->host_res->resource_index);
+		if (r->host_res) {
+			sph_log_err(HWTRACE_LOG, "hwtrace dma failed for resource number %d\n",
+				    r->host_res->resource_index);
+		} else {
+			sph_log_err(HWTRACE_LOG, "hwtrace dma failed for resource unknown\n");
+		}
+
 		return -EINVAL;
 	}
 
@@ -739,12 +795,24 @@ void intel_th_free_window(void *priv, struct sg_table *sgt)
 
 void intel_th_activate(void *priv)
 {
+	struct sphcs_hwtrace_data *hw_tracing = (struct sphcs_hwtrace_data *)priv;
+	struct sphcs_dma_res_info *r;
+
+
 	if (g_the_sphcs->hw_tracing.hwtrace_status == SPHCS_HWTRACE_REGISTERED) {
 		sph_log_err(HWTRACE_LOG, "callback request, but trace was not initialized\n");
 		return;
 	}
 
 	sphcs_dma_sched_reserve_channel_for_dtf(g_the_sphcs->dmaSched, true);
+
+	list_for_each_entry(r,
+			    &hw_tracing->dma_stream_list,
+			    node) {
+		if (r->npk_res)
+			sphcs_hwtrace_window_header_cleanup(r->npk_res);
+	}
+
 
 	g_the_sphcs->hw_tracing.hwtrace_status = SPHCS_HWTRACE_ACTIVATED;
 }

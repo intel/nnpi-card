@@ -35,6 +35,7 @@
 /*TODO: These macros to be taken from coral once available */
 #define ICE_TLC_HI_TLC_DEBUG_REG_MMOFFSET 0x13C
 #define ICE_TLC_HI_TLC_GENERATE_CONTROL_UCMD_REG_MMOFFSET 0x138
+#define ICE_TLC_LOW_BASE 0x2000
 
 const struct config cfg_b = {
 	.ice_gecoe_dec_partial_access_count_offset	= CVE_GECOE_GECOE_DEC_PARTIAL_ACCESS_COUNT_MMOFFSET,
@@ -88,6 +89,7 @@ const struct config cfg_b = {
 	.ice_prog_cores_ctrl_offset			= CVE_MMIO_HUB_PROG_CORES_CONTROL_MMOFFSET,
 	.ice_dse_base					= CVE_DSE_BASE,
 	.ice_axi_max_inflight_offset			= CVE_DSE_AXI_MAX_INFLIGHT_MMOFFSET,
+	.ice_tlc_low_base				= ICE_TLC_LOW_BASE,
 	.ice_tlc_hi_base				= CVE_TLC_HI_BASE,
 	.ice_tlc_hi_tlc_debug_reg_offset		= ICE_TLC_HI_TLC_DEBUG_REG_MMOFFSET,
 	.ice_tlc_hi_tlc_control_ucmd_reg_offset		= ICE_TLC_HI_TLC_GENERATE_CONTROL_UCMD_REG_MMOFFSET,

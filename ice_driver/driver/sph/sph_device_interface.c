@@ -1068,7 +1068,7 @@ void cve_di_set_cve_dump_control_register(struct cve_device *cve_dev,
 		uint8_t dumpTrigger, struct di_cve_dump_buffer ice_dump_buf)
 {
 	union tlc_hi_mem_tlc_dump_control_reg_t reg;
-	u32 offset_bytes = cfg_default.ice_tlc_hi_base +
+	u32 offset_bytes = cfg_default.ice_tlc_low_base +
 			cfg_default.ice_tlc_hi_dump_control_offset;
 
 	if (ice_dump_buf.is_allowed_tlc_dump) {
@@ -1225,7 +1225,7 @@ static ssize_t show_ice_freqinfo(struct kobject *kobj,
 
 	ret = sprintf((buf + ret),
 		"freq value has to be in the range of %d-%d MHz, multiple of 25\n",
-		MIN_ICE_FREQ_PARAM, MAX_ICE_FREQ_PARAM);
+		MIN_ICE_FREQ_PARAM, get_ice_max_freq());
 	return ret;
 }
 
@@ -1461,7 +1461,9 @@ static ssize_t store_ice_freq(struct kobject *kobj,
 	u32 freq_to_set;
 	struct ice_hw_config_ice_freq freq_conf;
 	int ret = 0;
+	u32 max_freq_allowed;
 
+	max_freq_allowed = get_ice_max_freq();
 	ret = sscanf(kobj->name, "ice%d", &dev_index);
 	if (ret < 1) {
 		cve_os_log(CVE_LOGLEVEL_ERROR, "failed getting ice id %s\n",
@@ -1483,11 +1485,11 @@ static ssize_t store_ice_freq(struct kobject *kobj,
 		return ret;
 
 	if (freq_to_set < MIN_ICE_FREQ_PARAM ||
-			freq_to_set > MAX_ICE_FREQ_PARAM ||
+			freq_to_set > max_freq_allowed ||
 				freq_to_set % ICE_FREQ_DIVIDER_FACTOR != 0) {
 		cve_os_log_default(CVE_LOGLEVEL_ERROR,
 			"ice freq required has to be in range of %d-%d, multiple of 25\n",
-			MIN_ICE_FREQ_PARAM, MAX_ICE_FREQ_PARAM);
+			MIN_ICE_FREQ_PARAM, max_freq_allowed);
 		return -EINVAL;
 	}
 	if (ret < 0)
@@ -2412,6 +2414,28 @@ void ice_di_read_llc_pmon(struct cve_device *dev)
 				bo_id, pmon_cntr[0], pmon_cntr[1],
 				pmon_cntr[2], pmon_cntr[3]);
 }
+
+u32 __get_ice_max_freq(void)
+{
+	struct cve_device_group *dg;
+
+	dg = cve_dg_get();
+
+	return dg->ice_max_freq;
+}
+
+void __store_ice_max_freq(void)
+{
+	struct cve_device_group *dg;
+	u64 freq;
+	u32 val;
+
+	freq = get_ice_freq();
+	val = freq & 0xFFFFFFFF;
+	dg = cve_dg_get();
+	dg->ice_max_freq = (max_ice_ratio(val) * 25);
+}
+
 u32 __get_llc_max_freq(void)
 {
 	struct cve_device_group *dg;

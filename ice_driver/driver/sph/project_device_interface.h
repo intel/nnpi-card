@@ -25,7 +25,9 @@
 #include "cve_driver_internal.h"
 
 #define LLC_FREQ_MSR 0x620
+#define ICE_FREQ_MSR 0x1AD
 #define LLC_MASK 0xFFFF8080
+#define max_ice_ratio(a) ((a) & 0xFF)
 #define max_llc_ratio(a) ((a) & 0x7F)
 #define min_llc_ratio(a) (((a) >> 8) & 0x7F)
 #define MAX_LLCPMON_CONFIG 7
@@ -115,6 +117,8 @@ void __term_ice_iccp(struct cve_device *dev);
 void __store_llc_max_freq(void);
 int __restore_llc_max_freq(void);
 u32 __get_llc_max_freq(void);
+void __store_ice_max_freq(void);
+u32 __get_ice_max_freq(void);
 #define __no_op_return_success 0
 
 #ifdef RING3_VALIDATION
@@ -127,6 +131,8 @@ u32 __get_llc_max_freq(void);
 #define get_llc_max_freq() MAX_LLC_FREQ_PARAM
 #define store_llc_max_freq() __no_op_stub
 #define restore_llc_max_freq() __no_op_return_success
+#define get_ice_max_freq() MAX_ICE_FREQ_PARAM
+#define store_ice_max_freq() __no_op_stub
 #define init_sw_debug_sysfs() __no_op_return_success
 #define term_sw_debug_sysfs() __no_op_stub
 #else
@@ -139,6 +145,8 @@ u32 __get_llc_max_freq(void);
 #define get_llc_max_freq() __get_llc_max_freq()
 #define store_llc_max_freq() __store_llc_max_freq()
 #define restore_llc_max_freq() __restore_llc_max_freq()
+#define get_ice_max_freq() __get_ice_max_freq()
+#define store_ice_max_freq() __store_ice_max_freq()
 #define init_sw_debug_sysfs() sw_debug_sysfs_init()
 #define term_sw_debug_sysfs() sw_debug_sysfs_term()
 #endif

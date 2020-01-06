@@ -966,7 +966,7 @@ void inf_req_try_execute(struct inf_exec_req *req)
 
 	SPH_SPIN_LOCK_IRQSAVE(&req->lock_irq, flags);
 	curr_sched_tick = atomic_read(&req->context->sched_tick);
-	if (req->last_sched_tick == curr_sched_tick) {
+	if (req->in_progress || req->last_sched_tick == curr_sched_tick) {
 		SPH_SPIN_UNLOCK_IRQRESTORE(&req->lock_irq, flags);
 		return;
 	}

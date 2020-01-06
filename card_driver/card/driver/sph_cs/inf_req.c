@@ -269,10 +269,10 @@ void infreq_req_init(struct inf_exec_req *req,
 		req->collectInfo = collectInfo;
 	}
 	req->time = 0;
-	req->i_num_opt_depend_devres = 0;
-	req->o_num_opt_depend_devres = 0;
-	req->i_opt_depend_devres = NULL;
-	req->o_opt_depend_devres = NULL;
+	req->i_num_opt_depend_devres = infreq->n_inputs;
+	req->o_num_opt_depend_devres = infreq->n_outputs;
+	req->i_opt_depend_devres = infreq->inputs;
+	req->o_opt_depend_devres = infreq->outputs;
 }
 
 static int infreq_req_sched(struct inf_exec_req *req)
@@ -310,16 +310,16 @@ static int infreq_req_sched(struct inf_exec_req *req)
 	if (unlikely(err < 0))
 		goto fail_first;
 
-	for (i = 0; i < infreq->n_inputs; i++) {
-		err = inf_devres_add_req_to_queue(infreq->inputs[i],
+	for (i = 0; i < req->i_num_opt_depend_devres; ++i) {
+		err = inf_devres_add_req_to_queue(req->i_opt_depend_devres[i],
 						  req,
 						  true);
 		if (unlikely(err < 0))
 			goto fail;
 	}
 
-	for (j = 0; j < infreq->n_outputs; j++) {
-		err = inf_devres_add_req_to_queue(infreq->outputs[j],
+	for (j = 0; j < req->o_num_opt_depend_devres; ++j) {
+		err = inf_devres_add_req_to_queue(req->o_opt_depend_devres[j],
 						  req,
 						  false);
 		if (unlikely(err < 0))
@@ -343,9 +343,9 @@ static int infreq_req_sched(struct inf_exec_req *req)
 
 fail:
 	for (k = 0; k < i; k++)
-		inf_devres_del_req_from_queue(infreq->inputs[k], req);
+		inf_devres_del_req_from_queue(req->i_opt_depend_devres[k], req);
 	for (k = 0; k < j; k++)
-		inf_devres_del_req_from_queue(infreq->outputs[k], req);
+		inf_devres_del_req_from_queue(req->o_opt_depend_devres[k], req);
 	inf_devres_del_req_from_queue(infreq->devnet->first_devres, req);
 fail_first:
 	inf_context_seq_id_fini(infreq->devnet->context, &req->seq);
@@ -366,20 +366,20 @@ static void inf_req_release(struct kref *kref)
 
 	infreq = req->infreq;
 	inf_devres_del_req_from_queue(infreq->devnet->first_devres, req);
-	for (i = 0; i < infreq->n_inputs; i++)
-		inf_devres_del_req_from_queue(infreq->inputs[i], req);
-	for (i = 0; i < infreq->n_outputs; i++)
-		inf_devres_del_req_from_queue(infreq->outputs[i], req);
+	for (i = 0; i < req->i_num_opt_depend_devres; ++i)
+		inf_devres_del_req_from_queue(req->i_opt_depend_devres[i], req);
+	for (i = 0; i < req->o_num_opt_depend_devres; ++i)
+		inf_devres_del_req_from_queue(req->o_opt_depend_devres[i], req);
 	inf_context_seq_id_fini(infreq->devnet->context, &req->seq);
 
 	/* advance sched tick and try execute next requests */
 	atomic_add(2, &req->context->sched_tick);
 
 	inf_devres_try_execute(infreq->devnet->first_devres);
-	for (i = 0; i < infreq->n_inputs; i++)
-		inf_devres_try_execute(infreq->inputs[i]);
-	for (i = 0; i < infreq->n_outputs; i++)
-		inf_devres_try_execute(infreq->outputs[i]);
+	for (i = 0; i < req->i_num_opt_depend_devres; ++i)
+		inf_devres_try_execute(req->i_opt_depend_devres[i]);
+	for (i = 0; i < req->o_num_opt_depend_devres; ++i)
+		inf_devres_try_execute(req->o_opt_depend_devres[i]);
 
 	kmem_cache_free(infreq->devnet->context->exec_req_slab_cache, req);
 	inf_req_put(infreq);
@@ -400,30 +400,14 @@ static bool inf_req_ready(struct inf_exec_req *req)
 		return false;
 
 	/* check input resources dependency */
-	if (req->i_num_opt_depend_devres > 0) {
-		for (i = 0; i < req->i_num_opt_depend_devres; i++)
-			if (!inf_devres_req_ready(req->i_opt_depend_devres[i], req, true))
-				return false;
-	} else {
-		for (i = 0; i < infreq->n_inputs; i++)
-			if (!inf_devres_req_ready(infreq->inputs[i],
-						  req,
-						  true))
+	for (i = 0; i < req->i_num_opt_depend_devres; ++i)
+		if (!inf_devres_req_ready(req->i_opt_depend_devres[i], req, true))
 			return false;
-	}
 
 	/* check output resources dependency */
-	if (req->o_num_opt_depend_devres > 0) {
-		for (i = 0; i < req->o_num_opt_depend_devres; i++)
-			if (!inf_devres_req_ready(req->o_opt_depend_devres[i], req, false))
-				return false;
-	} else {
-		for (i = 0; i < infreq->n_outputs; i++)
-			if (!inf_devres_req_ready(infreq->outputs[i],
-						  req,
-						  false))
-				return false;
-	}
+	for (i = 0; i < req->o_num_opt_depend_devres; ++i)
+		if (!inf_devres_req_ready(req->o_opt_depend_devres[i], req, false))
+			return false;
 
 	return true;
 }

@@ -103,6 +103,7 @@ struct config {
 	uint32_t ice_prog_cores_ctrl_offset;
 	uint32_t ice_dse_base;
 	uint32_t ice_axi_max_inflight_offset;
+	uint32_t ice_tlc_low_base;
 	uint32_t ice_tlc_hi_base;
 	uint32_t ice_tlc_base;
 	uint32_t ice_tlc_hi_dump_control_offset;

@@ -21,12 +21,12 @@ struct inf_cpylst {
 	uint16_t              idx_in_cmd;
 	uint16_t              n_copies;
 	struct inf_copy     **copies;
+	struct inf_devres   **devreses;
 	uint8_t              *priorities;
 	uint64_t             *sizes;
 	uint64_t             *cur_sizes;
 	uint32_t              added_copies;
 	uint64_t              size;
-	struct inf_cmd_list  *cmd; //TODO CPYLST can be removed?
 	bool                  active;
 
 

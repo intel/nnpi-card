@@ -115,16 +115,16 @@ static void release_cmd(struct kref *kref)
 			if (likely(cmd->req_list[i].f != NULL))
 				cmd->req_list[i].f->obj_put(&cmd->req_list[i]);
 			if (cmd->req_list[i].cmd_type == CMDLIST_CMD_COPYLIST) {
-				if (cmd->req_list[i].num_opt_depend_devres > 0) {
+				if (cmd->req_list[i].num_opt_depend_devres < cmd->req_list[i].cpylst->n_copies) {
 					kfree(cmd->req_list[i].opt_depend_devres);
 					optimized = true;
 				}
 			} else if (cmd->req_list[i].cmd_type == CMDLIST_CMD_INFREQ) {
-				if (cmd->req_list[i].i_num_opt_depend_devres > 0) {
+				if (cmd->req_list[i].i_num_opt_depend_devres < cmd->req_list[i].infreq->n_inputs) {
 					kfree(cmd->req_list[i].i_opt_depend_devres);
 					optimized = true;
 				}
-				if (cmd->req_list[i].o_num_opt_depend_devres > 0) {
+				if (cmd->req_list[i].o_num_opt_depend_devres < cmd->req_list[i].infreq->n_outputs) {
 					kfree(cmd->req_list[i].o_opt_depend_devres);
 					optimized = true;
 				}
@@ -411,18 +411,21 @@ static void inf_cmd_clear_group_deves_optimization(struct inf_cmd_list *cmd)
 	for (i = 0; i < cmd->num_reqs; i++) {
 		req = &cmd->req_list[i];
 		if (req->cmd_type == CMDLIST_CMD_COPYLIST) {
-			if (req->num_opt_depend_devres > 0) {
+			if (req->num_opt_depend_devres < req->cpylst->n_copies) {
 				kfree(req->opt_depend_devres);
-				req->num_opt_depend_devres = 0;
+				req->opt_depend_devres = req->cpylst->devreses;
+				req->num_opt_depend_devres = req->cpylst->n_copies;
 			}
 		} else if (req->cmd_type == CMDLIST_CMD_INFREQ) {
-			if (req->i_num_opt_depend_devres > 0) {
+			if (req->i_num_opt_depend_devres < req->infreq->n_inputs) {
 				kfree(req->i_opt_depend_devres);
-				req->i_num_opt_depend_devres = 0;
+				req->i_opt_depend_devres = req->infreq->inputs;
+				req->i_num_opt_depend_devres = req->infreq->n_inputs;
 			}
-			if (req->o_num_opt_depend_devres > 0) {
+			if (req->o_num_opt_depend_devres < req->infreq->n_outputs) {
 				kfree(req->o_opt_depend_devres);
-				req->o_num_opt_depend_devres = 0;
+				req->o_opt_depend_devres = req->infreq->outputs;
+				req->o_num_opt_depend_devres = req->infreq->n_outputs;
 			}
 		}
 	}
@@ -677,18 +680,21 @@ done:
 		if (!success) {
 			list_for_each_entry(re, &idset->req_list, node) {
 				if (re->req->cmd_type == CMDLIST_CMD_COPYLIST) {
-					if (re->req->num_opt_depend_devres > 0) {
+					if (re->req->num_opt_depend_devres < re->req->cpylst->n_copies) {
 						kfree(re->req->opt_depend_devres);
-						re->req->num_opt_depend_devres = 0;
+						re->req->opt_depend_devres = re->req->cpylst->devreses;
+						re->req->num_opt_depend_devres = re->req->cpylst->n_copies;
 					}
 				} else if (re->req->cmd_type == CMDLIST_CMD_INFREQ) {
-					if (re->req->i_num_opt_depend_devres > 0) {
+					if (re->req->i_num_opt_depend_devres < re->req->infreq->n_inputs) {
 						kfree(re->req->i_opt_depend_devres);
-						re->req->i_num_opt_depend_devres = 0;
+						re->req->i_opt_depend_devres = re->req->infreq->inputs;
+						re->req->i_num_opt_depend_devres = re->req->infreq->n_inputs;
 					}
-					if (re->req->o_num_opt_depend_devres > 0) {
+					if (re->req->o_num_opt_depend_devres < re->req->infreq->n_outputs) {
 						kfree(re->req->o_opt_depend_devres);
-						re->req->o_num_opt_depend_devres = 0;
+						re->req->o_opt_depend_devres = re->req->infreq->outputs;
+						re->req->o_num_opt_depend_devres = re->req->infreq->n_outputs;
 					}
 				}
 			}
