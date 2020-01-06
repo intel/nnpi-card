@@ -35,7 +35,7 @@
 
 /* min system memory threshold in KB */
 static uint32_t mem_thr;
-module_param(mem_thr, uint, 0400);
+module_param(mem_thr, uint, 0644);
 
 static inline uint32_t getFreeMem(void)
 {
@@ -4193,4 +4193,99 @@ static void release_pending_create_context_reuquests(void *cmd_args)
 				-1);
 
 	destroy_context_on_create_failed(g_the_sphcs, context);
+}
+
+static int sched_status_show(struct seq_file *m, void *v)
+{
+	struct inf_data *inf_data;
+	struct inf_context *context;
+	struct inf_req_sequence *seq;
+	struct inf_exec_req *req;
+	unsigned long flags;
+	u64 curr_time;
+	int i;
+	int num_contexts = 0;
+
+	if (!g_the_sphcs)
+		return -1;
+
+	curr_time = sph_time_us();
+	inf_data = g_the_sphcs->inf_data;
+	SPH_SPIN_LOCK_BH(&inf_data->lock_bh);
+	hash_for_each(inf_data->context_hash, i, context, hash_node) {
+		num_contexts++;
+		SPH_SPIN_LOCK_IRQSAVE(&context->sync_lock_irq, flags);
+		if (!context->attached || context->destroyed || context->runtime_detach_sent)
+			seq_printf(m, "Context %d attach state: attached=%d destroyed=%d runtime_detach_sent=%d\n",
+				   context->protocolID,
+				   context->attached,
+				   context->destroyed,
+				   context->runtime_detach_sent);
+		if (list_empty(&context->active_seq_list)) {
+			seq_printf(m, "Context %d: No scheduled commands, state=%d\n", context->protocolID, context->state);
+		} else {
+			seq_printf(m, "Context %d: state=%d\n", context->protocolID, context->state);
+			list_for_each_entry(seq, &context->active_seq_list, node) {
+				req = container_of(seq,
+						   struct inf_exec_req,
+						   seq);
+				if (req->cmd_type == CMDLIST_CMD_INFREQ) {
+					seq_printf(m, "\tinfer command %d network %d\n",
+						  req->infreq->protocolID,
+						  req->infreq->devnet->protocolID);
+					if (req->cmd != NULL)
+						seq_printf(m, "\tcommand list %d\n", req->cmd->protocolID);
+					seq_printf(m, "\tin_progress: %d\n", req->in_progress);
+					seq_printf(m, "\tpriority: %d\n", req->priority);
+					seq_printf(m, "\ttime: %lld\n", curr_time - req->time);
+				} else if (req->cmd_type == CMDLIST_CMD_COPY) {
+					seq_printf(m, "\tcopy command %d\n", req->copy->protocolID);
+					if (req->cmd != NULL)
+						seq_printf(m, "\tcommand list %d\n", req->cmd->protocolID);
+					seq_printf(m, "\tin_progress: %d\n", req->in_progress);
+					seq_printf(m, "\tpriority: %d\n", req->priority);
+					seq_printf(m, "\ttime: %lld\n", curr_time - req->time);
+				} else if (req->cmd_type == CMDLIST_CMD_COPYLIST) {
+					seq_printf(m, "\tcopy list command idx=%d, n_copies=%d\n",
+						   req->cpylst->idx_in_cmd,
+						   req->cpylst->n_copies);
+					if (req->cmd != NULL)
+						seq_printf(m, "\tcommand list %d\n", req->cmd->protocolID);
+					seq_printf(m, "\tin_progress: %d\n", req->in_progress);
+					seq_printf(m, "\tpriority: %d\n", req->priority);
+					seq_printf(m, "\ttime: %lld\n", curr_time - req->time);
+				} else {
+					seq_printf(m, "\tUNKNWON COMMAND TYPE %d !!!\n", req->cmd_type);
+				}
+			}
+		}
+		SPH_SPIN_UNLOCK_IRQRESTORE(&context->sync_lock_irq, flags);
+	}
+	SPH_SPIN_UNLOCK_BH(&inf_data->lock_bh);
+
+	if (num_contexts == 0)
+		seq_puts(m, "No active contexts\n");
+
+	return 0;
+}
+
+static int sched_status_open(struct inode *inode, struct file *filp)
+{
+	return single_open(filp, sched_status_show, inode->i_private);
+}
+
+static const struct file_operations sched_status_fops = {
+	.open		= sched_status_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+};
+
+void sphcs_inf_init_debugfs(struct dentry *parent)
+{
+	debugfs_create_file("sched_status",
+			    0444,
+			    parent,
+			    NULL,
+			    &sched_status_fops);
 }

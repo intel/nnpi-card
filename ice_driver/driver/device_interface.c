@@ -31,6 +31,7 @@
 #include "cve_driver_internal.h"
 #include "ice_debug.h"
 #include "sph_device_regs.h"
+#include "dev_context.h"
 
 #ifdef RING3_VALIDATION
 #include "coral.h"
@@ -479,7 +480,8 @@ static void dispatch_next_subjobs(struct di_job *job,
 			sphpb_cbs = dg->sphpb.sphpb_cbs;
 		}
 		if (sphpb_cbs && sphpb_cbs->request_ice_dvfs_values &&
-			(job->ring_to_ice_ratio || job->ice_to_ice_ratio)) {
+			(job->ring_to_ice_ratio || job->ice_to_ice_ratio
+			 || job->ddr_bw)) {
 			cve_os_dev_log(CVE_LOGLEVEL_DEBUG,
 				dev->dev_index,
 			"ddr_bw %d, ring2ice_ratio 0x%x, ice2ice_ratio 0x%x\n",
@@ -1070,6 +1072,34 @@ static inline void enable_dsp_clock_gating(struct cve_device *cve_dev)
 		cve_os_write_mmio_32(cve_dev,
 				cfg_default.mmio_dpcg_control, reg.val);
 	}
+}
+static int get_ice_dump(struct cve_device *dev)
+{
+	uint32_t status_32 = 0;
+	int ret = 0;
+	uint32_t count = 100;
+
+	if (dev->cve_dump_buf.is_allowed_tlc_dump) {
+
+		cve_di_mask_interrupts(dev);
+		cve_di_reset_cve_dump(dev, cfg_default.ice_dump_now,
+					dev->cve_dump_buf);
+
+		while (count) {
+			usleep_range(1000, 1100);
+			status_32 = cve_os_read_mmio_32(dev,
+				cfg_default.mmio_intr_status_offset);
+
+			if (is_ice_dump_completed(status_32)) {
+				dev->cve_dump_buf.is_allowed_tlc_dump = 0;
+				ret = 1;
+				break;
+			}
+			count--;
+		}
+		di_enable_interrupts(dev);
+	}
+	return ret;
 }
 void cve_di_start_running(struct cve_device *cve_dev)
 {
@@ -1771,6 +1801,13 @@ void cve_di_interrupt_handler_deferred_proc(struct idc_device *dev)
 				continue;
 		}
 
+		if (is_wd_error(status)) {
+			if (get_ice_dump(cve_dev)) {
+				status = status |
+				cfg_default.
+				mmio_intr_status_dump_completed_mask;
+			}
+		}
 		/*If error detected and recovery enabled*/
 		if (ice_err) {
 			job_status = CVE_JOBSTATUS_ABORTED;
@@ -2196,22 +2233,22 @@ static void __configure_atu_dse_mapping(struct cve_device *ice,
 			offset_bytes);
 
 	reg.val = cve_os_read_mmio_32(ice, offset_bytes);
-	reg.dse_stream_mapping.ATU0 = DSE_ATU_MAPPING;
+	/* reg.dse_stream_mapping.ATU0 = DSE_ATU_MAPPING; */
 	/*Disable address based ATU selection */
 	reg.dse_stream_mapping.READ_IS_ADDRESS_BASED0 = bZero ? 1 : 0;
 	reg.dse_stream_mapping.ATU_AND_STREAM_ARE_ADDRESS_BASED0 = 0;
 
-	reg.dse_stream_mapping.ATU1 = DSE_ATU_MAPPING;
+	/* reg.dse_stream_mapping.ATU1 = DSE_ATU_MAPPING; */
 	/*Disable address based ATU selection */
 	reg.dse_stream_mapping.READ_IS_ADDRESS_BASED1 = bZero ? 1 : 0;
 	reg.dse_stream_mapping.ATU_AND_STREAM_ARE_ADDRESS_BASED1 = 0;
 
-	reg.dse_stream_mapping.ATU2 = DSE_ATU_MAPPING;
+	/* reg.dse_stream_mapping.ATU2 = DSE_ATU_MAPPING; */
 	/*Disable address based ATU selection */
 	reg.dse_stream_mapping.READ_IS_ADDRESS_BASED2 = bZero ? 1 : 0;
 	reg.dse_stream_mapping.ATU_AND_STREAM_ARE_ADDRESS_BASED2 = 0;
 
-	reg.dse_stream_mapping.ATU3 = DSE_ATU_MAPPING;
+	/* reg.dse_stream_mapping.ATU3 = DSE_ATU_MAPPING; */
 	/*Disable address based ATU selection */
 	reg.dse_stream_mapping.READ_IS_ADDRESS_BASED3 = bZero ? 1 : 0;
 	reg.dse_stream_mapping.ATU_AND_STREAM_ARE_ADDRESS_BASED3 = 0;

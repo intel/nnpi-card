@@ -25,6 +25,8 @@
 #include <linux/spinlock.h>
 #include <linux/dma-buf.h>
 #include <linux/intel_th.h>
+#include <linux/pci.h>
+
 
 #include "sph_hwtrace_protocol.h"
 #include "sphcs_hwtrace.h"
@@ -36,6 +38,8 @@
 #define HWTRACING_POOL_PAGE_COUNT ((uint32_t)(256))
 #define HWTRACING_MIN_PAGE_COUNT ((uint32_t)(128))
 
+#define INTEL_TH_PCI_DEVICE_ID 0x45c5
+
 struct msu_buffer_driver g_msu = {"sph_hwtrace",
 	NULL,
 	intel_th_assign_mode,
@@ -46,6 +50,22 @@ struct msu_buffer_driver g_msu = {"sph_hwtrace",
 	intel_th_deactivate,
 	intel_th_window_ready};
 
+void fix_interrupt_support_intel_th_device(void)
+{
+	struct pci_dev *pDev = NULL;
+
+	while ((pDev = pci_get_device(PCI_VENDOR_ID_INTEL, PCI_ANY_ID, pDev))) {
+		if (pDev->device == INTEL_TH_PCI_DEVICE_ID) {
+			u16 control;
+
+			pci_read_config_word(pDev, pDev->msi_cap + PCI_MSI_FLAGS, &control);
+			if ((control & 0x30) != 0x30) {
+				control |= 0x10;
+				pci_write_config_word(pDev, pDev->msi_cap + PCI_MSI_FLAGS, control);
+			}
+		}
+	}
+}
 
 //cleanup memory pool for hw tracing.
 
@@ -144,6 +164,8 @@ int sphcs_init_th_driver(void)
 		sph_log_err(HWTRACE_LOG, "unable to register intel_th service - err %d", ret);
 		goto cmd_wq_cleanup;
 	}
+
+	fix_interrupt_support_intel_th_device();
 
 	hw_tracing->hwtrace_status = SPHCS_HWTRACE_REGISTERED;
 

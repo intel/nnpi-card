@@ -919,6 +919,8 @@ static int sphcs_create_sphcs(void                           *hw_handle,
 		goto free_sched;
 	}
 
+	sphcs_inf_init_debugfs(sphcs->debugfs_dir);
+
 	ret = sph_create_sw_counters_info_node(NULL,
 					       &g_sw_counters_set_global,
 					       NULL,

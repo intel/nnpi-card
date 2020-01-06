@@ -824,6 +824,7 @@ void ice_os_reset_clos(void *pmclos);
 
 int set_llc_freq(void *llc_freq_config);
 uint64_t get_llc_freq(void);
+uint64_t get_ice_freq(void);
 
 #ifdef RING3_VALIDATION
 

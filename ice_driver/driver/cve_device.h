@@ -469,6 +469,17 @@ struct cve_device_group {
 	 *
 	 */
 	u32 llc_max_freq;
+	/*The max ice freq is read from MSR_TURBO_RATIO_LIMIT
+	 *(1ADH) [7:0] bits during driver module load after the
+	 *and will be stored in ice_max_freq.
+	 *
+	 * This value varies depending on QDF of the SoC
+	 * QDF/SSPEC	Max_freq_obtained
+	 * Q3JN		800 MHz
+	 * Q7QC		600 MHz
+	 *
+	 */
+	u32 ice_max_freq;
 	struct debug_dump_conf dump_conf;
 };
 

@@ -6,6 +6,7 @@
 #ifndef _SPHCS_INF_H
 #define _SPHCS_INF_H
 
+#include <linux/debugfs.h>
 #include "sphcs_cs.h"
 #include "ipc_chan_protocol.h"
 
@@ -28,6 +29,7 @@ struct inf_data {
 
 int inference_init(struct sphcs *sphcs);
 int inference_fini(struct sphcs *sphcs);
+void sphcs_inf_init_debugfs(struct dentry *parent);
 
 void IPC_OPCODE_HANDLER(INF_CONTEXT)(struct sphcs                 *sphcs,
 				     union h2c_InferenceContextOp *cmd);

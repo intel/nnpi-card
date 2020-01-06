@@ -282,17 +282,19 @@ void inf_devres_del_req_from_queue(struct inf_devres   *devres,
 	list_del(&pos->node);
 	++devres->queue_version;
 
-	/* Notify src device */
-	if (devres->usage_flags & IOCTL_INF_RES_P2P_DST) {
-		sphcs_p2p_send_rel_cr(&devres->p2p_buf);
-		sphcs_p2p_ring_doorbell(&devres->p2p_buf);
-	}
+	if (devres->is_p2p_buf) {
+		/* Notify src device */
+		if (devres->usage_flags & IOCTL_INF_RES_P2P_DST) {
+			sphcs_p2p_send_rel_cr(&devres->p2p_buf);
+			sphcs_p2p_ring_doorbell(&devres->p2p_buf);
+		}
 
-	/* On dst side - no data ready to read,
-	 * on src side - the dst side is not ready
-	 */
-	if (pos->read)
-		devres->p2p_buf.ready = false;
+		/* On dst side - no data ready to read,
+		 * on src side - the dst side is not ready
+		 */
+		if (pos->read)
+			devres->p2p_buf.ready = false;
+	}
 
 	SPH_SPIN_UNLOCK_IRQRESTORE(&devres->lock_irq, flags);
 

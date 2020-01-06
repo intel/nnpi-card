@@ -412,6 +412,10 @@ uint64_t get_llc_freq(void)
 	return native_read_msr(LLC_FREQ_MSR);
 }
 
+uint64_t get_ice_freq(void)
+{
+	return native_read_msr(ICE_FREQ_MSR);
+}
 int set_llc_freq(void *llc_freq_config)
 {
 	u32 lo, hi, msr, freq_min, freq_max, val_low, val_high;
@@ -1585,11 +1589,13 @@ int cve_probe_common(struct cve_os_device *linux_device, int dev_ind)
 				"Unable to register sph power balancer\n");
 	}
 
-	retval = ice_iccp_levels_init(dg);
-	if (retval) {
-		cve_os_log(CVE_LOGLEVEL_ERROR,
-			"ice_iccp_levels_init() failed: %d\n", retval);
-		retval = 0;
+	if (ice_get_b_step_enable_flag()) {
+		retval = ice_iccp_levels_init(dg);
+		if (retval) {
+			cve_os_log(CVE_LOGLEVEL_ERROR,
+				"ice_iccp_levels_init() failed: %d\n", retval);
+			retval = 0;
+		}
 	}
 create_idc:
 	/* create cve_x directory */
@@ -1656,6 +1662,7 @@ create_idc:
 
 	}
 	store_llc_max_freq();
+	store_ice_max_freq();
 out:
 	FUNC_LEAVE();
 	return retval;
