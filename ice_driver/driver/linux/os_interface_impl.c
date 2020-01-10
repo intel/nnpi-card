@@ -1589,6 +1589,7 @@ int cve_probe_common(struct cve_os_device *linux_device, int dev_ind)
 				"Unable to register sph power balancer\n");
 	}
 
+#if 0
 	if (ice_get_b_step_enable_flag()) {
 		retval = ice_iccp_levels_init(dg);
 		if (retval) {
@@ -1597,6 +1598,8 @@ int cve_probe_common(struct cve_os_device *linux_device, int dev_ind)
 			retval = 0;
 		}
 	}
+#endif
+
 create_idc:
 	/* create cve_x directory */
 	snprintf(dev_name,
