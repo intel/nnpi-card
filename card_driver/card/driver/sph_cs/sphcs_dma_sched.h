@@ -1,5 +1,5 @@
 /********************************************
- * Copyright (C) 2019 Intel Corporation
+ * Copyright (C) 2019-2020 Intel Corporation
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  ********************************************/
@@ -12,13 +12,19 @@
 struct sphcs_dma_sched;
 struct sphcs;
 
+/*
+ * IMPORTANT: Upon adding new priority codes, make sure that
+ * SPHCS_DMA_PRIORITY_MAX stays equal to the last priority code.
+ */
 enum sphcs_dma_priority_request {
-	SPHCS_DMA_PRIORITY_HIGH,
+	SPHCS_DMA_PRIORITY_HIGH = 0,
 	SPHCS_DMA_PRIORITY_NORMAL,
 	SPHCS_DMA_PRIORITY_LOW,
 	SPHCS_DMA_PRIORITY_DTF,
-	SPHCS_DMA_NUM_PRIORITIES
+	SPHCS_DMA_PRIORITY_MAX = SPHCS_DMA_PRIORITY_DTF
 };
+
+#define SPHCS_DMA_NUM_PRIORITIES (SPHCS_DMA_PRIORITY_MAX+1)
 
 enum sphcs_dma_direction {
 	SPHCS_DMA_DIRECTION_CARD_TO_HOST,

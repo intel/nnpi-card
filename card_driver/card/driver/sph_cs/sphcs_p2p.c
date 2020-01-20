@@ -1,5 +1,5 @@
 /********************************************
- * Copyright (C) 2019 Intel Corporation
+ * Copyright (C) 2019-2020 Intel Corporation
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  ********************************************/
@@ -59,7 +59,7 @@ struct sphcs_p2p_fw_cr_fifo_elem {
 /* 32 bit release creadit message */
 struct sphcs_p2p_rel_cr_fifo_elem {
 	u32 sbid :5;
-	u64 is_new :1;
+	u32 is_new :1;
 	u32 reserved :26;
 };
 
@@ -301,34 +301,41 @@ int sphcs_p2p_new_message_arrived(void)
 	u32 i;
 	struct sphcs_p2p_fw_cr_fifo_elem *fw_fifo_elem;
 	struct sphcs_p2p_rel_cr_fifo_elem *rel_fifo_elem;
+	bool new_element_found;
 
 	sph_log_debug(GENERAL_LOG, "Signaled by peer\n");
 
 	/* Check all FIFOs managed by this device */
 	for (i = 0; i < MAX_NUM_OF_P2P_DEVS; i++) {
-		/* Check whether the new element has been written to the fw credit fifo */
-		fw_fifo_elem = fw_fifos[i].vaddr + fw_fifos[i].rd_ptr * fw_fifos[i].elem_size;
-		SPH_ASSERT(fw_fifo_elem);
-		if (fw_fifo_elem->is_new) {
-			sph_log_debug(GENERAL_LOG, "Credit forwarded for dst buffer %u\n", fw_fifo_elem->dbid);
-			dst_bufs[fw_fifo_elem->dbid]->ready = true;
-			s_p2p_cbs->new_data_arrived(dst_bufs[fw_fifo_elem->dbid]);
-			/* Mark the element as handled and promote the read ptr */
-			fw_fifo_elem->is_new = 0;
-			fw_fifos[i].rd_ptr = inc_fifo_ptr(fw_fifos[i].depth, fw_fifos[i].rd_ptr);
-		}
+		do {
+			/* Check whether the new element has been written to the fw credit fifo */
+			fw_fifo_elem = fw_fifos[i].vaddr + fw_fifos[i].rd_ptr * fw_fifos[i].elem_size;
+			SPH_ASSERT(fw_fifo_elem);
+			new_element_found = fw_fifo_elem->is_new;
+			if (new_element_found) {
+				sph_log_debug(GENERAL_LOG, "Credit forwarded for dst buffer %u\n", fw_fifo_elem->dbid);
+				dst_bufs[fw_fifo_elem->dbid]->ready = true;
+				s_p2p_cbs->new_data_arrived(dst_bufs[fw_fifo_elem->dbid]);
+				/* Mark the element as handled and promote the read ptr */
+				fw_fifo_elem->is_new = 0;
+				fw_fifos[i].rd_ptr = inc_fifo_ptr(fw_fifos[i].depth, fw_fifos[i].rd_ptr);
+			}
+		} while (new_element_found);
 
-		/* Check whether the new element has been written to the rel credit fifo */
-		rel_fifo_elem = rel_fifos[i].vaddr + rel_fifos[i].rd_ptr * rel_fifos[i].elem_size;
-		SPH_ASSERT(rel_fifo_elem);
-		if (rel_fifo_elem->is_new) {
-			sph_log_debug(GENERAL_LOG, "Credit released for src buffer %u\n", rel_fifo_elem->sbid);
-			src_bufs[rel_fifo_elem->sbid]->ready = true;
-			s_p2p_cbs->data_consumed(src_bufs[rel_fifo_elem->sbid]);
-			/* Mark the element as handled and promote the read ptr */
-			rel_fifo_elem->is_new = 0;
-			rel_fifos[i].rd_ptr = inc_fifo_ptr(rel_fifos[i].depth, rel_fifos[i].rd_ptr);
-		}
+		do {
+			/* Check whether the new element has been written to the rel credit fifo */
+			rel_fifo_elem = rel_fifos[i].vaddr + rel_fifos[i].rd_ptr * rel_fifos[i].elem_size;
+			SPH_ASSERT(rel_fifo_elem);
+			new_element_found = rel_fifo_elem->is_new;
+			if (new_element_found) {
+				sph_log_debug(GENERAL_LOG, "Credit released for src buffer %u\n", rel_fifo_elem->sbid);
+				src_bufs[rel_fifo_elem->sbid]->ready = true;
+				s_p2p_cbs->data_consumed(src_bufs[rel_fifo_elem->sbid]);
+				/* Mark the element as handled and promote the read ptr */
+				rel_fifo_elem->is_new = 0;
+				rel_fifos[i].rd_ptr = inc_fifo_ptr(rel_fifos[i].depth, rel_fifos[i].rd_ptr);
+			}
+		} while (new_element_found);
 	}
 
 	return 0;
@@ -337,7 +344,7 @@ int sphcs_p2p_new_message_arrived(void)
 int sphcs_p2p_init(struct sphcs *sphcs, struct sphcs_p2p_cbs *p2p_cbs)
 {
 	u32 i;
-	int rc;
+	int rc = 0;
 
 	pr_c2h_dma_desc.dma_direction = SPHCS_DMA_DIRECTION_CARD_TO_HOST;
 	pr_c2h_dma_desc.dma_priority = SPHCS_DMA_PRIORITY_HIGH;

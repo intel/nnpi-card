@@ -29,6 +29,7 @@ struct ice_drv_config {
 	u8 sph_soc;
 	int ice_power_off_delay_ms;
 	bool enable_sph_b_step;
+	bool enable_sph_c_step;
 	u8 ice_sch_preemption;
 	u8 iccp_throttling;
 	u32 initial_iccp_config[3];
@@ -147,6 +148,12 @@ int ice_get_a_step_enable_flag(void);
 
 /* retrieve  b step enable flag */
 int ice_get_b_step_enable_flag(void);
+
+/* retrieve  c step enable flag */
+int ice_get_c_step_enable_flag(void);
+
+/* check if b or c step flag set */
+int ice_check_b_or_c_step_enable_flag(void);
 
 /* check if user has requested to disable preemption*/
 u8 ice_sch_allow_preemption(void);

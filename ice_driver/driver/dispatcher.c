@@ -522,14 +522,11 @@ static void do_reset(struct cve_device *cve_dev,
 	 * Done only if network requests shared read else default address
 	 * based ATU mapping is used
 	 */
-#if 1
+
 	if (pin_atu)
 		ice_di_configure_atu_cbb_mapping(cve_dev);
 	else
 		ice_di_disable_dynamic_atu_selection(cve_dev);
-#else
-	ice_di_configure_atu_cbb_mapping(cve_dev);
-#endif
 
 	/* HACK: do a hard code stream mapping for caching of L1/L2 surfaces*/
 	ice_di_configure_pt_caching_reg(cve_dev);
@@ -3341,6 +3338,7 @@ void cve_ds_handle_job_completion(struct cve_device *dev,
 	cve_ds_job_handle_t ds_job_handle,
 	enum cve_job_status job_status, u64 exec_time)
 {
+	u32 err;
 	struct jobgroup_descriptor *jobgroup;
 	struct job_descriptor *job;
 	struct ice_network *ntw;
@@ -3373,8 +3371,20 @@ void cve_ds_handle_job_completion(struct cve_device *dev,
 				ntw->network_id, inf->swc_node.sw_id, job,
 				SPH_TRACE_OP_STATUS_PERF, exec_time));
 
-	if (ntw->shared_read)
-		ice_di_is_shared_read_error(ntw, dev, dev->dev_index / 2);
+	if (ntw->shared_read) {
+
+		err = ice_di_is_shared_read_error(dev);
+
+		if (err) {
+			cve_os_dev_log_default(CVE_LOGLEVEL_ERROR,
+				dev->dev_index,
+				"Error: NtwID:0x%llx, shared_read_status value:%x\n",
+				ntw->network_id, err);
+
+			ntw->shared_read_err_status = 1;
+			ice_di_set_shared_read_reg(dev, ntw, 1);
+		}
+	}
 
 	/* remove the job from the jobgroup list */
 	jobgroup->ended_jobs_nr++;

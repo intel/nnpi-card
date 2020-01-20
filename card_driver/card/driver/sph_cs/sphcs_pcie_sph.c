@@ -1,5 +1,5 @@
 /********************************************
- * Copyright (C) 2019 Intel Corporation
+ * Copyright (C) 2019-2020 Intel Corporation
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  ********************************************/
@@ -185,11 +185,9 @@ static enum {
 	SPH_FLR_MODE_IGNORE
 } s_flr_mode;
 
-#ifdef ULT
 struct sph_dma_channel {
 	u64   usTime;
 };
-#endif  //ULT
 
 struct sph_pci_device {
 	struct pci_dev *pdev;
@@ -215,10 +213,8 @@ struct sph_pci_device {
 
 	spinlock_t      dma_lock_irq;
 
-#ifdef ULT
 	struct sph_dma_channel h2c_channels[NUM_H2C_CHANNELS];
 	struct sph_dma_channel c2h_channels[NUM_C2H_CHANNELS];
-#endif
 };
 
 struct sph_dma_data_element {
@@ -517,10 +513,8 @@ static void handle_dma_interrupt(struct sph_pci_device *sph_pci, u32 dma_read_st
 			if (chan_status) {
 				u64  usTime = (u64)0x0;
 
-#ifdef ULT
-				usTime = sph_time_us() - sph_pci->h2c_channels[i].usTime;
-
-#endif //ULT
+				if (sph_pci->h2c_channels[i].usTime != 0)
+					usTime = sph_time_us() - sph_pci->h2c_channels[i].usTime;
 
 				/* send int upstream */
 				if (sph_pci->dmaSched)
@@ -569,9 +563,8 @@ static void handle_dma_interrupt(struct sph_pci_device *sph_pci, u32 dma_read_st
 			if (chan_status) {
 				u64 usTime = (u64)0x0;
 
-#ifdef ULT
-				usTime = sph_time_us() - sph_pci->c2h_channels[i].usTime;
-#endif //ULT
+				if (sph_pci->c2h_channels[i].usTime > 0)
+					usTime = sph_time_us() - sph_pci->c2h_channels[i].usTime;
 
 				/* send int upstream */
 				if (sph_pci->dmaSched)
@@ -1220,10 +1213,11 @@ int sphcs_sph_dma_start_xfer_h2c(void      *hw_handle,
 
 	sphcs_sph_dma_set_ch_weights(sph_pci, channel, priority, DMA_READ_CHAN_ARB_WEIGHT_LOW_REG);
 
-#ifdef ULT
 	/* get time stamp */
-	sph_pci->h2c_channels[channel].usTime = sph_time_us();
-#endif //ULT
+	if (SPH_SW_GROUP_IS_ENABLE(g_sph_sw_counters, SPHCS_SW_COUNTERS_GROUP_DMA))
+		sph_pci->h2c_channels[channel].usTime = sph_time_us();
+	else
+		sph_pci->h2c_channels[channel].usTime = 0;
 
 	/* start the channel */
 	sph_mmio_write(sph_pci,
@@ -1276,10 +1270,11 @@ int sphcs_sph_dma_start_xfer_c2h(void      *hw_handle,
 
 	sphcs_sph_dma_set_ch_weights(sph_pci, channel, priority, DMA_WRITE_CHAN_ARB_WEIGHT_LOW_REG);
 
-#ifdef ULT
 	/* get time stamp */
-	sph_pci->c2h_channels[channel].usTime = sph_time_us();
-#endif //ULT
+	if (SPH_SW_GROUP_IS_ENABLE(g_sph_sw_counters, SPHCS_SW_COUNTERS_GROUP_DMA))
+		sph_pci->c2h_channels[channel].usTime = sph_time_us();
+	else
+		sph_pci->c2h_channels[channel].usTime = 0;
 
 	/* start the channel */
 	sph_mmio_write(sph_pci,
@@ -1330,10 +1325,11 @@ int sphcs_sph_dma_start_xfer_h2c_single(void      *hw_handle,
 
 	sphcs_sph_dma_set_ch_weights(sph_pci, channel, priority, DMA_READ_CHAN_ARB_WEIGHT_LOW_REG);
 
-#ifdef ULT
 	/* get time stamp */
-	sph_pci->h2c_channels[channel].usTime = sph_time_us();
-#endif //ULT
+	if (SPH_SW_GROUP_IS_ENABLE(g_sph_sw_counters, SPHCS_SW_COUNTERS_GROUP_DMA))
+		sph_pci->h2c_channels[channel].usTime = sph_time_us();
+	else
+		sph_pci->h2c_channels[channel].usTime = 0;
 
 	/* start the channel */
 	sph_mmio_write(sph_pci,
@@ -1378,16 +1374,17 @@ int sphcs_sph_dma_start_xfer_c2h_single(void      *hw_handle,
 		       DMA_DAR_HIGH_OFF_WRCH(channel),
 		       upper_32_bits(dst));
 	sph_mmio_write(sph_pci,
-		       DMA_LLP_LOW_OFF_RDCH(channel), 0);
+		       DMA_LLP_LOW_OFF_WRCH(channel), 0);
 	sph_mmio_write(sph_pci,
-		       DMA_LLP_HIGH_OFF_RDCH(channel), 0);
+		       DMA_LLP_HIGH_OFF_WRCH(channel), 0);
 
 	sphcs_sph_dma_set_ch_weights(sph_pci, channel, priority, DMA_WRITE_CHAN_ARB_WEIGHT_LOW_REG);
 
-#ifdef ULT
 	/* get time stamp */
-	sph_pci->c2h_channels[channel].usTime = sph_time_us();
-#endif //ULT
+	if (SPH_SW_GROUP_IS_ENABLE(g_sph_sw_counters, SPHCS_SW_COUNTERS_GROUP_DMA))
+		sph_pci->c2h_channels[channel].usTime = sph_time_us();
+	else
+		sph_pci->c2h_channels[channel].usTime = 0;
 
 	/* start the channel */
 	sph_mmio_write(sph_pci,
@@ -1424,9 +1421,7 @@ int sphcs_sph_dma_xfer_c2h_single(void      *hw_handle,
 				  int       *dma_status,
 				  u32       *usTime)
 {
-#ifdef ULT
-	u64 start_dma_time, end_dma_time;
-#endif
+	u64 start_dma_time = 0, end_dma_time;
 	struct sph_pci_device *sph_pci = (struct sph_pci_device *)hw_handle;
 	u32 res_transfer_size, status, channel_status;
 	unsigned long time;
@@ -1461,13 +1456,13 @@ int sphcs_sph_dma_xfer_c2h_single(void      *hw_handle,
 		       DMA_DAR_HIGH_OFF_WRCH(channel),
 		       upper_32_bits(dst));
 	sph_mmio_write(sph_pci,
-		       DMA_LLP_LOW_OFF_RDCH(channel), 0);
+		       DMA_LLP_LOW_OFF_WRCH(channel), 0);
 	sph_mmio_write(sph_pci,
-		       DMA_LLP_HIGH_OFF_RDCH(channel), 0);
+		       DMA_LLP_HIGH_OFF_WRCH(channel), 0);
 
-#ifdef ULT
-	start_dma_time = sph_time_us();
-#endif
+	if (SPH_SW_GROUP_IS_ENABLE(g_sph_sw_counters, SPHCS_SW_COUNTERS_GROUP_DMA))
+		start_dma_time = sph_time_us();
+
 	/* start the DMA */
 	sph_mmio_write(sph_pci,
 		       DMA_WRITE_DOORBELL_OFF,
@@ -1494,10 +1489,12 @@ int sphcs_sph_dma_xfer_c2h_single(void      *hw_handle,
 			*dma_status = SPHCS_DMA_STATUS_FAILED;
 	} else
 		*dma_status = SPHCS_DMA_STATUS_FAILED;
-#ifdef ULT
-	end_dma_time = sph_time_us();
-	*usTime = (u32)(end_dma_time - start_dma_time);
-#endif
+
+	if (start_dma_time != 0) {
+		end_dma_time = sph_time_us();
+		*usTime = (u32)(end_dma_time - start_dma_time);
+	}
+
 	return 0;
 }
 

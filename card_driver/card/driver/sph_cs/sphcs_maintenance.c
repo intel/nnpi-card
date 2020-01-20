@@ -1,5 +1,5 @@
 /********************************************
- * Copyright (C) 2019 Intel Corporation
+ * Copyright (C) 2019-2020 Intel Corporation
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  ********************************************/
@@ -36,6 +36,10 @@
 #define FPGA_LOWER_THERMAL_REG         10
 #define FPGA_REVISION_REG              11
 #define FPGA_SCRATCHPAD_REG            12
+#define FPGA_FRU_PRD_SERIAL_BASE_REG   13
+#define FPGA_FRU_PRD_SERIAL_LEN         7
+#define FPGA_FRU_BRD_PART_NO_BASE_REG  20
+#define FPGA_FRU_BRD_PART_NO_LEN        5
 
 static struct cdev s_cdev;
 static dev_t       s_devnum;
@@ -46,6 +50,9 @@ static bool s_force_update_fpga;
 static u16 s_board_id;
 static u16 s_fab_id;
 static u16 s_fpga_rev;
+static unsigned char s_prd_serial[SPH_PRD_SERIAL_LEN];
+static unsigned char s_brd_part_no[SPH_PART_NUM_LEN];
+
 
 static struct sph_sys_info s_sys_info_packet;
 static bool                s_sys_info_packet_valid;
@@ -211,6 +218,12 @@ static long set_sys_info(void __user *arg)
 	memcpy(s_sys_info_packet.image_version,
 	       sys_info.image_version,
 	       SPH_IMAGE_VERSION_LEN);
+	memcpy(s_sys_info_packet.prd_serial,
+	       s_prd_serial,
+	       sizeof(s_prd_serial));
+	memcpy(s_sys_info_packet.brd_part_no,
+	       s_brd_part_no,
+	       sizeof(s_brd_part_no));
 	s_sys_info_packet.fpga_rev = s_fpga_rev;
 	s_sys_info_packet.stepping = sys_info.stepping;
 	s_sys_info_packet_valid = true;
@@ -417,6 +430,8 @@ static int sphcs_maint_attach_fpga(struct device *dev, void *dummy)
 {
 	struct i2c_adapter *adap;
 	struct i2c_board_info info;
+	u16 *sptr;
+	int i;
 
 	// return if already attached
 	if (s_fpga_client)
@@ -453,8 +468,27 @@ static int sphcs_maint_attach_fpga(struct device *dev, void *dummy)
 	s_fpga_rev = i2c_smbus_read_word_data(s_fpga_client,
 					      FPGA_REVISION_REG);
 
-	sph_log_info(MAINTENANCE_LOG, "Found FPGA SMBus device BoardID=0x%x FabID=0x%x FPGA Revision %u\n",
-		     s_board_id, s_fab_id, s_fpga_rev);
+
+	sptr = (u16 *)&s_prd_serial;
+	for (i = 0; i < FPGA_FRU_PRD_SERIAL_LEN; i++)
+		*(sptr++) = i2c_smbus_read_word_data(s_fpga_client,
+						     FPGA_FRU_PRD_SERIAL_BASE_REG + i);
+
+	sptr = (u16 *)&s_brd_part_no;
+	for (i = 0; i < FPGA_FRU_BRD_PART_NO_LEN; i++)
+		*(sptr++) = i2c_smbus_read_word_data(s_fpga_client,
+						     FPGA_FRU_BRD_PART_NO_BASE_REG + i);
+
+	/* Old FPGA revisions does not provide serial and part number */
+	if (s_prd_serial[0] > 0xf0)
+		strcpy(s_prd_serial, "Not-Avail");
+	if (s_brd_part_no[0] > 0xf0)
+		strcpy(s_brd_part_no, "Not-Avail");
+
+	sph_log_info(MAINTENANCE_LOG, "Found FPGA SMBus device BoardID=0x%x FabID=0x%x FPGA Revision %u\n"
+				      "\tbrd_part_no %s\n"
+				      "\tprd_serial %s\n",
+		     s_board_id, s_fab_id, s_fpga_rev, s_brd_part_no, s_prd_serial);
 
 	return 1;
 }
@@ -498,6 +532,9 @@ int sphcs_init_maint_interface(void)
 	}
 
 	sph_power_init();
+
+	memset(s_prd_serial, 0, sizeof(s_prd_serial));
+	memset(s_brd_part_no, 0, sizeof(s_brd_part_no));
 
 	// Try to attach to FPGA SMBus device if adapter already present
 	ret = i2c_for_each_dev(NULL, sphcs_maint_attach_fpga);

@@ -1,5 +1,5 @@
 /********************************************
- * Copyright (C) 2019 Intel Corporation
+ * Copyright (C) 2019-2020 Intel Corporation
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  ********************************************/
@@ -68,6 +68,8 @@ static uint64_t add_cb_data(struct periodic_timer *timer, struct periodic_timer_
 	unsigned long flags;
 	struct periodic_timer_data *new_data =  kzalloc(sizeof(*data), GFP_KERNEL);
 
+	if (!new_data)
+		return 0;
 	memcpy(new_data, data, sizeof(*data));
 	new_data->removed = false;
 

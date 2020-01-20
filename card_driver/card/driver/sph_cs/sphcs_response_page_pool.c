@@ -1,5 +1,5 @@
 /********************************************
- * Copyright (C) 2019 Intel Corporation
+ * Copyright (C) 2019-2020 Intel Corporation
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  ********************************************/
@@ -134,6 +134,10 @@ void IPC_OPCODE_HANDLER(HOST_RESPONSE_PAGES)(
 	struct host_response_pages_work *host_response_pages_work;
 
 	host_response_pages_work = kmalloc(sizeof(struct host_response_pages_work), GFP_ATOMIC);
+	if (!host_response_pages_work) {
+		sph_log_err(GENERAL_LOG, "No memory handling host response page\n");
+		return;
+	}
 	host_response_pages_work->host_pfn = req->host_pfn;
 	host_response_pages_work->num_of_pages = req->num_pages;
 	host_response_pages_work->response_pool_index = req->response_pool_index;

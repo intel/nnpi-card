@@ -420,7 +420,6 @@ static void move_to_stale_list(struct gen_sync_attr                 *gen_sync,
 
 fail_create:
 	kobject_put(stale_node->kobj);
-	kfree(stale_node);
 fail_create_list:
 	while (!list_empty(&stale_node->kobject_list)) {
 		kobj_node = list_first_entry(&stale_node->kobject_list, struct kobj_node, node);
@@ -428,6 +427,7 @@ fail_create_list:
 		kobject_put(kobj_node->kobj);
 		kfree(kobj_node);
 	}
+	kfree(stale_node);
 fail_alloc:
 	sph_log_err(GENERAL_LOG, "Failed to create stale attr, removing object!!\n");
 	release_bin_file(kobj, attr);
@@ -918,8 +918,14 @@ int sph_create_sw_counters_values_node(void *hInfoNode,
 				struct kobj_node *new_kobj = kzalloc(sizeof(*new_kobj), GFP_KERNEL);
 				const char *name = sw_counters_info->counters_set->name;
 
+				if (!new_kobj) {
+					sph_log_err(GENERAL_LOG, "unable to allocate kernel object\n");
+					ret = -ENOMEM;
+					goto cleanup_sw_counters_values;
+				}
 				new_kobj->kobj = kobject_create_and_add(name, kobj);
 				if (!new_kobj->kobj) {
+					kfree(new_kobj);
 					sph_log_err(GENERAL_LOG, "unable to create dirname for counters values - %s\n", name);
 					ret = -ENOMEM;
 					goto cleanup_sw_counters_values;

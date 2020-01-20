@@ -176,7 +176,7 @@ do {\
 } while (0)
 
 #define __select_val_for_correct_version(bstep_val, astep_val) \
-	((ice_get_b_step_enable_flag()) ? bstep_val : astep_val)
+	((ice_check_b_or_c_step_enable_flag()) ? bstep_val : astep_val)
 
 #define __BSTEP_BAR1_ICE_REGION_SPILL_SZ 0x0
 #define __ASTEP_BAR1_ICE_REGION_SPILL_SZ (0x4000) /*16K*/

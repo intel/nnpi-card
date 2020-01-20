@@ -1,5 +1,5 @@
 /********************************************
- * Copyright (C) 2019 Intel Corporation
+ * Copyright (C) 2019-2020 Intel Corporation
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  ********************************************/
@@ -578,6 +578,10 @@ static int sphcs_create_p2p_heap(struct sphcs *sphcs)
 	/* the first SPH_CRASH_DUMP_SIZE bytes of the memory, accessed through BAR2,
 	 * are reserved for the crash dump, the rest are managed by peer-to-peer heap
 	 */
+	if (!reg) {
+		sph_log_err(START_UP_LOG, "Allocation failure during p2p heap creation\n");
+		return -ENOMEM;
+	}
 	reg->start = sphcs->inbound_mem_dma_addr + SPH_CRASH_DUMP_SIZE;
 	reg->size = sphcs->inbound_mem_size - SPH_CRASH_DUMP_SIZE;
 	list_add(&reg->list, &p2p_regions);

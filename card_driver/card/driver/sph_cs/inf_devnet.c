@@ -1,5 +1,5 @@
 /********************************************
- * Copyright (C) 2019 Intel Corporation
+ * Copyright (C) 2019-2020 Intel Corporation
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  ********************************************/
@@ -37,6 +37,24 @@ int inf_devnet_add_devres(struct inf_devnet *devnet,
 	return 0;
 }
 
+struct inf_devres *inf_devnet_find_ecc_devres(struct inf_devnet *devnet, uint32_t usage_flags)
+{
+	bool found = false;
+	struct devres_node *n;
+
+	sph_log_debug(GENERAL_LOG, "requested usage flags 0x%X\n", usage_flags);
+
+	SPH_SPIN_LOCK(&devnet->lock);
+	list_for_each_entry(n, &devnet->devres_list, node) {
+		if ((n->devres->usage_flags & usage_flags) == usage_flags) {
+			found = true;
+			break;
+		}
+	}
+	SPH_SPIN_UNLOCK(&devnet->lock);
+
+	return found ? n->devres : NULL;
+}
 void inf_devnet_attach_all_devres(struct inf_devnet *devnet)
 {
 	struct devres_node *n;
@@ -116,6 +134,13 @@ int inf_devnet_create(uint16_t protocolID,
 
 	SPH_SW_COUNTER_ATOMIC_INC(context->sw_counters, CTX_SPHCS_SW_COUNTERS_INFERENCE_NUM_NETWORKS);
 
+	inf_devnet_get(devnet);
+	SPH_SPIN_LOCK(&context->lock);
+	hash_add(context->devnet_hash,
+		 &devnet->hash_node,
+		 protocolID);
+	SPH_SPIN_UNLOCK(&context->lock);
+
 	*out_devnet = devnet;
 
 	return 0;
@@ -135,9 +160,9 @@ int is_inf_devnet_ptr(void *ptr)
 /* This function is called only when creation is failed,
  * to destroy already created part
  */
-void destroy_devnet_on_create_failed(struct inf_devnet *devnet)
+void inf_devnet_on_create_or_add_res_failed(struct inf_devnet *devnet)
 {
-	bool dma_completed, should_destroy;
+	bool dma_completed, should_destroy = false, add_res_revert = false;
 
 	SPH_SPIN_LOCK(&devnet->lock);
 
@@ -146,16 +171,21 @@ void destroy_devnet_on_create_failed(struct inf_devnet *devnet)
 	if (dma_completed)
 		devnet->edit_status = CREATE_STARTED;
 
-	should_destroy = (!devnet->created && devnet->destroyed == 0);
-	if (likely(should_destroy))
-		devnet->destroyed = -1;
+	if (!devnet->created) { // create failed, destroy
+		should_destroy = (devnet->destroyed == 0);
+		if (should_destroy)
+			devnet->destroyed = -1;
+	} else { // add res failed, revert
+		add_res_revert = true;
+	}
 
 	SPH_SPIN_UNLOCK(&devnet->lock);
 
 
-	inf_devnet_delete_devres(devnet, false);
+	if (add_res_revert)
+		inf_devnet_delete_devres(devnet, false);
 
-	if (likely(should_destroy))
+	if (should_destroy)
 		inf_devnet_put(devnet);
 
 	// if got failure from RT
@@ -204,15 +234,12 @@ static void release_devnet(struct kref *kref)
 	kfree(devnet);
 }
 
-inline void inf_devnet_get(struct inf_devnet *devnet)
+int inf_devnet_get(struct inf_devnet *devnet)
 {
-	int ret;
-
-	ret = kref_get_unless_zero(&devnet->ref);
-	SPH_ASSERT(ret != 0);
+	return kref_get_unless_zero(&devnet->ref);
 }
 
-inline int inf_devnet_put(struct inf_devnet *devnet)
+int inf_devnet_put(struct inf_devnet *devnet)
 {
 	return kref_put(&devnet->ref, release_devnet);
 }
@@ -242,13 +269,12 @@ static int inf_req_create_dma_complete_callback(struct sphcs *sphcs,
 	uint64_t *int64ptr;
 	uint32_t *intptr;
 	uint16_t *shortptr;
-	uint32_t n_inputs;
-	uint32_t n_outputs;
+	uint32_t n_inputs, n_outputs, i;
 	uint32_t config_data_size;
 	struct inf_devres **inputs;
 	struct inf_devres **outputs;
 	void *config_data;
-	int ret, i;
+	int ret;
 	unsigned long flags;
 	enum event_val val;
 
@@ -313,22 +339,22 @@ static int inf_req_create_dma_complete_callback(struct sphcs *sphcs,
 
 	shortptr = (uint16_t *)intptr;
 	for (i = 0; i < n_inputs; i++) {
-		inputs[i] = inf_context_find_devres(infreq->devnet->context,
-							*(shortptr++));
+		inputs[i] = inf_context_find_and_get_devres(infreq->devnet->context,
+							    *(shortptr++));
 		if (unlikely(inputs[i] == NULL)) {
 			val = SPH_IPC_NO_SUCH_DEVRES;
 			ret = -EFAULT;
-			goto free_config;
+			goto put_inputs;
 		}
 	}
 
 	for (i = 0; i < n_outputs; i++) {
-		outputs[i] = inf_context_find_devres(infreq->devnet->context,
-							*(shortptr++));
+		outputs[i] = inf_context_find_and_get_devres(infreq->devnet->context,
+							     *(shortptr++));
 		if (unlikely(outputs[i] == NULL)) {
 			val = SPH_IPC_NO_SUCH_DEVRES;
 			ret = -EFAULT;
-			goto free_config;
+			goto put_outputs;
 		}
 	}
 
@@ -343,6 +369,10 @@ static int inf_req_create_dma_complete_callback(struct sphcs *sphcs,
 				    outputs,
 				    config_data_size,
 				    config_data);
+	for (i = 0; i < n_inputs; ++i)
+		inf_devres_put(inputs[i]);
+	for (i = 0; i < n_outputs; ++i)
+		inf_devres_put(outputs[i]);
 	if (unlikely(ret < 0)) {
 		val = SPH_IPC_NO_MEMORY;
 		goto free_config;
@@ -398,6 +428,13 @@ static int inf_req_create_dma_complete_callback(struct sphcs *sphcs,
 
 	goto done;
 
+put_outputs:
+	for (--i; i < n_outputs; --i)
+		inf_devres_put(outputs[i]);
+	i = n_inputs;
+put_inputs:
+	for (--i; i < n_inputs; --i)
+		inf_devres_put(inputs[i]);
 free_config:
 	if (config_data_size > 0)
 		kfree(config_data);
@@ -492,8 +529,29 @@ struct inf_req *inf_devnet_find_infreq(struct inf_devnet *devnet,
 			       hash_node,
 			       protocolID)
 		if (infreq->protocolID == protocolID) {
-			SPH_ASSERT(infreq->status == CREATED);
-			SPH_ASSERT(infreq->destroyed == 0);
+			SPH_SPIN_UNLOCK(&devnet->lock);
+			return infreq;
+		}
+	SPH_SPIN_UNLOCK(&devnet->lock);
+
+	return NULL;
+}
+
+struct inf_req *inf_devnet_find_and_get_infreq(struct inf_devnet *devnet,
+					       uint16_t           protocolID)
+{
+	struct inf_req *infreq;
+
+	SPH_SPIN_LOCK(&devnet->lock);
+	hash_for_each_possible(devnet->infreq_hash,
+			       infreq,
+			       hash_node,
+			       protocolID)
+		if (infreq->protocolID == protocolID) {
+			if (unlikely(infreq->status != CREATED))
+				break;
+			if (unlikely(infreq->destroyed || inf_req_get(infreq) == 0))
+				break;
 			SPH_SPIN_UNLOCK(&devnet->lock);
 			return infreq;
 		}

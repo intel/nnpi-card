@@ -1,5 +1,5 @@
 /********************************************
- * Copyright (C) 2019 Intel Corporation
+ * Copyright (C) 2019-2020 Intel Corporation
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  ********************************************/
@@ -67,7 +67,7 @@ int inf_copy_create(uint16_t            protocolCopyID,
 		    bool                subres_copy,
 		    struct inf_copy   **out_copy);
 
-void inf_copy_get(struct inf_copy *copy);
+int inf_copy_get(struct inf_copy *copy);
 int inf_copy_put(struct inf_copy *copy);
 
 void inf_copy_req_init(struct inf_exec_req *req,

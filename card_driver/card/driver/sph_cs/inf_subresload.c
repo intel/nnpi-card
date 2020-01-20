@@ -1,5 +1,5 @@
 /********************************************
- * Copyright (C) 2019 Intel Corporation
+ * Copyright (C) 2019-2020 Intel Corporation
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  ********************************************/
@@ -219,6 +219,9 @@ static struct subres_lli_space_node *lli_find_space(struct inf_subres_load_sessi
 	}
 
 	lli_space = kzalloc(sizeof(*lli_space), GFP_KERNEL);
+	if (!lli_space)
+		return NULL;
+
 	lli_space->size = size;
 
 	SPH_SPIN_LOCK(&session->lock);

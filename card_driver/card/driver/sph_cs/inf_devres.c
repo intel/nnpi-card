@@ -1,5 +1,5 @@
 /********************************************
- * Copyright (C) 2019 Intel Corporation
+ * Copyright (C) 2019-2020 Intel Corporation
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  ********************************************/
@@ -11,12 +11,14 @@
 #include "sph_log.h"
 #include "inf_context.h"
 #include "inf_copy.h"
+#include "inf_exec_req.h"
 #include "ioctl_inf.h"
 
 int inf_devres_create(uint16_t            protocolID,
 		      struct inf_context *context,
 		      uint64_t            size,
 		      uint8_t             depth,
+		      uint64_t            align,
 		      uint32_t            usage_flags,
 		      struct inf_devres **out_devres)
 {
@@ -38,6 +40,7 @@ int inf_devres_create(uint16_t            protocolID,
 
 	spin_lock_init(&devres->lock_irq);
 	devres->size = size;
+	devres->align = align;
 	devres->depth = depth;
 	devres->usage_flags = usage_flags;
 	if ((usage_flags & IOCTL_INF_RES_INPUT) &&
@@ -208,15 +211,12 @@ static void release_devres(struct kref *kref)
 	kfree(devres);
 }
 
-inline void inf_devres_get(struct inf_devres *devres)
+int inf_devres_get(struct inf_devres *devres)
 {
-	int ret;
-
-	ret = kref_get_unless_zero(&devres->ref);
-	SPH_ASSERT(ret != 0);
+	return kref_get_unless_zero(&devres->ref);
 }
 
-inline int inf_devres_put(struct inf_devres *devres)
+int inf_devres_put(struct inf_devres *devres)
 {
 	return kref_put(&devres->ref, release_devres);
 }

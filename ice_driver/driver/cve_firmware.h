@@ -35,9 +35,12 @@
 #define RTL_RELEASE_A_STEP_FW_PATH "intel_nnpi/a_step/release/"
 #define RTL_DEBUG_B_STEP_FW_PATH "intel_nnpi/b_step/debug/"
 #define RTL_RELEASE_B_STEP_FW_PATH "intel_nnpi/b_step/release/"
+#define RTL_DEBUG_C_STEP_FW_PATH "intel_nnpi/c_step/debug/"
+#define RTL_RELEASE_C_STEP_FW_PATH "intel_nnpi/c_step/release/"
 
 #define RTL_A_STEP_FW_BASE_PACKAGE_DIR "/a_step/base_package"
 #define RTL_B_STEP_FW_BASE_PACKAGE_DIR "/b_step/base_package"
+#define RTL_C_STEP_FW_BASE_PACKAGE_DIR "/c_step/base_package"
 
 /* describes a firmware loading binary file path */
 struct cve_fw_file {

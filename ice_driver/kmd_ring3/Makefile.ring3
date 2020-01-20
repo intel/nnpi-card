@@ -45,7 +45,7 @@ endif
 
 ifdef RELEASE
 CFLAGS= $(INCLUDES) -Wall -Werror
-CFLAGS+=-O2 -fstack-protector-all -Wformat -Wformat-security -D_FORTIFY_SOURCE=2
+CFLAGS+=-O3 -fstack-protector-all -Wformat -Wformat-security -D_FORTIFY_SOURCE=2
 endif
 
 LDFLAGS=
@@ -88,6 +88,7 @@ endif
 SRCS+=$(VERSION_DIR)/version.c\
 	$(DRIVER_DIR)/a_step_regs.c\
 	$(DRIVER_DIR)/b_step_regs.c\
+	$(DRIVER_DIR)/c_step_regs.c\
 	$(DRIVER_DIR)/dispatcher.c\
 	$(DRIVER_DIR)/iova_allocator.c \
 	$(DRIVER_DIR)/device_interface.c\

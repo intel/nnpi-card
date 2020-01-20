@@ -1,5 +1,5 @@
 /********************************************
- * Copyright (C) 2019 Intel Corporation
+ * Copyright (C) 2019-2020 Intel Corporation
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  ********************************************/
@@ -13,6 +13,7 @@
 #include "ipc_protocol.h"
 #include "inf_types.h"
 #include "inf_cmd_list.h"
+#include "inf_exec_req.h"
 #include "sphcs_sw_counters.h"
 
 struct inf_devnet;
@@ -65,7 +66,7 @@ void destroy_infreq_on_create_failed(struct inf_req *infreq);
 
 int is_inf_req_ptr(void *ptr);
 
-void inf_req_get(struct inf_req *infreq);
+int inf_req_get(struct inf_req *infreq);
 int inf_req_put(struct inf_req *infreq);
 
 void infreq_req_init(struct inf_exec_req *req,

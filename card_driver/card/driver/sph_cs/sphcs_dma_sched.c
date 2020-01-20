@@ -1,5 +1,5 @@
 /********************************************
- * Copyright (C) 2019 Intel Corporation
+ * Copyright (C) 2019-2020 Intel Corporation
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  ********************************************/
@@ -853,16 +853,16 @@ int sphcs_dma_sched_start_xfer(struct sphcs_dma_sched      *dmaSched,
 	if (user_data_size > MAX_USER_DATA_SIZE) {
 		sph_log_debug(DMA_LOG, "Warning: user_data_size (%d) is greater than slab cache max size(%d)\n", user_data_size, MAX_USER_DATA_SIZE);
 		req = kzalloc(sizeof(*req) + (user_data_size > 0 ? user_data_size - 1 : 0), GFP_NOWAIT);
-		req->is_slab_cache_alloc = 0;
 	} else {
 		req = kmem_cache_alloc(dmaSched->slab_cache_ptr, GFP_NOWAIT);
-		req->is_slab_cache_alloc = 1;
 	}
+
 	if (!req) {
 		sph_log_err(EXECUTE_COMMAND_LOG, "FATAL: Failed to allocate DMA req start\n");
 		return -ENOMEM;
 	}
 
+	req->is_slab_cache_alloc = (user_data_size > MAX_USER_DATA_SIZE) ? 0 : 1;
 	req->retry_counter = 0;
 	req->callback = callback;
 	req->callback_ctx = callback_ctx;

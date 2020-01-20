@@ -617,9 +617,18 @@ static void do_fpga_reset(struct cve_device *cve_dev, u8 reset_type)
 
 int do_reset_device(struct cve_device *cve_dev, uint8_t idc_reset)
 {
+	u32 err;
 	int retval = 0;
 	uint64_t value, mask, notify_ice_mask;
 	struct cve_device_group *dg = cve_dg_get();
+
+	err = ice_di_is_shared_read_error(cve_dev);
+	if (err) {
+		cve_os_dev_log_default(CVE_LOGLEVEL_ERROR,
+			cve_dev->dev_index,
+			"Error: shared_read_status value:%x\n",
+			err);
+	}
 
 	/*cve_save_dtf_regs(cve_dev);*/
 

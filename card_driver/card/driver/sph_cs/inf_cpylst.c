@@ -1,5 +1,5 @@
 /********************************************
- * Copyright (C) 2019 Intel Corporation
+ * Copyright (C) 2019-2020 Intel Corporation
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  ********************************************/
@@ -15,6 +15,7 @@
 #include "ipc_protocol.h"
 #include "inf_context.h"
 #include "inf_copy.h"
+#include "inf_exec_req.h"
 #include "sph_error.h"
 #include "sphcs_trace.h"
 
@@ -130,7 +131,7 @@ int inf_cpylst_create(struct inf_cmd_list *cmd,
 		goto free_sizes;
 	}
 
-	cpylst->devreses = kcalloc(num_copies, sizeof(uint64_t), GFP_KERNEL);
+	cpylst->devreses = kmalloc_array(num_copies, sizeof(uint64_t), GFP_KERNEL);
 	if (unlikely(cpylst->devreses == NULL)) {
 		sph_log_err(CREATE_COMMAND_LOG, "FATAL: line:%u failed to allocate array of device resourses\n", __LINE__);
 		goto free_cur_sizes;

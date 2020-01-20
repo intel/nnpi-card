@@ -1,5 +1,5 @@
 /********************************************
- * Copyright (C) 2019 Intel Corporation
+ * Copyright (C) 2019-2020 Intel Corporation
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  ********************************************/
@@ -52,7 +52,7 @@ struct inf_devnet {
 int inf_devnet_create(uint16_t protocolID,
 		      struct inf_context *context,
 		      struct inf_devnet **out_devnet);
-void destroy_devnet_on_create_failed(struct inf_devnet *devnet);
+void inf_devnet_on_create_or_add_res_failed(struct inf_devnet *devnet);
 
 int inf_devnet_add_devres(struct inf_devnet *devnet,
 			  struct inf_devres *devres);
@@ -62,7 +62,7 @@ void inf_devnet_delete_devres(struct inf_devnet *devnet,
 
 int is_inf_devnet_ptr(void *ptr);
 
-void inf_devnet_get(struct inf_devnet *devnet);
+int inf_devnet_get(struct inf_devnet *devnet);
 int inf_devnet_put(struct inf_devnet *devnet);
 
 int inf_devnet_create_infreq(struct inf_devnet *devnet,
@@ -72,8 +72,12 @@ int inf_devnet_create_infreq(struct inf_devnet *devnet,
 			     uint16_t           dma_size);
 struct inf_req *inf_devnet_find_infreq(struct inf_devnet *devnet,
 				       uint16_t           protocolID);
+struct inf_req *inf_devnet_find_and_get_infreq(struct inf_devnet *devnet,
+					       uint16_t           protocolID);
 int inf_devnet_find_and_destroy_infreq(struct inf_devnet *devnet,
 				       uint16_t           infreqID);
 int inf_devnet_destroy_all_infreq(struct inf_devnet *devnet);
+struct inf_devres *inf_devnet_find_ecc_devres(struct inf_devnet *devnet,
+					      uint32_t usage_flag);
 
 #endif

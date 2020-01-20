@@ -1,5 +1,5 @@
 /********************************************
- * Copyright (C) 2019 Intel Corporation
+ * Copyright (C) 2019-2020 Intel Corporation
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  ********************************************/
@@ -993,7 +993,7 @@ static long process_register_service(struct file *f, void __user *arg)
 	if (unlikely(ret != 0))
 		return -EFAULT;
 
-	if (unlikely(req.name_len == 0))
+	if (unlikely(req.name_len == 0 || req.name_len > SPH_MAX_GENERIC_SERVICES))
 		return -EINVAL;
 
 	service_name = kmalloc(req.name_len+1, GFP_KERNEL);
@@ -1506,8 +1506,11 @@ int process_genmsg_command(struct sphcs *sphcs,
 		if (!channel) {
 			/* This is a protocol error - should not happen!!! */
 			sph_log_err(SERVICE_LOG, "Got packet with no card, card_client_id= %u, host_client_id= %u\n", req->card_client_id, req->host_client_id);
-			if (cmd_chan)
+			if (cmd_chan) {
+				if (!req->hangup)
+					sphcs_cmd_chan_update_cmd_head(cmd_chan, 0, SPH_PAGE_SIZE);
 				sphcs_cmd_chan_put(cmd_chan);
+			}
 			return 0;
 		}
 		dma_data.channel = channel;
@@ -1524,8 +1527,12 @@ int process_genmsg_command(struct sphcs *sphcs,
 			 * cmd_chan pointer already in the channel struct, no
 			 * need to keep it in the pending packet
 			 */
-			if (cmd_chan)
+			if (cmd_chan) {
 				sphcs_cmd_chan_put(cmd_chan);
+				/* Do not process two hangup messages - may happen when cmd_chan is destroyed after hangup */
+				if (channel->hanging_up)
+					return 0;
+			}
 
 			pend = kzalloc(sizeof(*pend), GFP_NOWAIT);
 			if (!pend) {
@@ -1574,6 +1581,8 @@ int process_genmsg_command(struct sphcs *sphcs,
 					  &dma_addr);
 	if (ret) {
 		sph_log_err(SERVICE_LOG, "Failed to get free page (err: %d)\n", ret);
+		if (cmd_chan && !req->hangup)
+			sphcs_cmd_chan_update_cmd_head(cmd_chan, 0, SPH_PAGE_SIZE);
 		return ret;
 	}
 

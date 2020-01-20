@@ -41,6 +41,7 @@ static struct ice_drv_config drv_config_param = {
 	.sph_soc = 0,
 	.ice_power_off_delay_ms = 1000,
 	.enable_sph_b_step = false,
+	.enable_sph_c_step = false,
 	.ice_sch_preemption = 1,
 	.iccp_throttling = 1,
 	.initial_iccp_config[0] = INITIAL_CDYN_VAL,
@@ -782,6 +783,7 @@ void ice_set_driver_config_param(struct ice_drv_config *param)
 	drv_config_param.sph_soc = param->sph_soc;
 	drv_config_param.ice_power_off_delay_ms = param->ice_power_off_delay_ms;
 	drv_config_param.enable_sph_b_step = param->enable_sph_b_step;
+	drv_config_param.enable_sph_c_step = param->enable_sph_c_step;
 	drv_config_param.ice_sch_preemption = param->ice_sch_preemption;
 	drv_config_param.iccp_throttling = param->iccp_throttling;
 	drv_config_param.initial_iccp_config[0] = param->initial_iccp_config[0];
@@ -790,11 +792,12 @@ void ice_set_driver_config_param(struct ice_drv_config *param)
 	drv_config_param.enable_mmu_pmon = param->enable_mmu_pmon;
 
 	cve_os_log(CVE_LOGLEVEL_INFO,
-			"DriverConfig: enable_llc_config_via_axi_reg:%d sph_soc:%d ice_power_off_delay_ms:%d, is_b_step_enabled: %d Preemption:%d is_iccp_throttling_enabled:%d initial_cdyn:0x%x reset_cdyn:0x%x blocked_cdyn:0x%x MmuPmon:%d\n",
+			"DriverConfig: enable_llc_config_via_axi_reg:%d sph_soc:%d ice_power_off_delay_ms:%d, is_b_step_enabled: %d is_c_step_enabled: %d Preemption:%d is_iccp_throttling_enabled:%d initial_cdyn:0x%x reset_cdyn:0x%x blocked_cdyn:0x%x MmuPmon:%d\n",
 			drv_config_param.enable_llc_config_via_axi_reg,
 			drv_config_param.sph_soc,
 			drv_config_param.ice_power_off_delay_ms,
 			drv_config_param.enable_sph_b_step,
+			drv_config_param.enable_sph_c_step,
 			drv_config_param.ice_sch_preemption,
 			drv_config_param.iccp_throttling,
 			drv_config_param.initial_iccp_config[0],
@@ -820,7 +823,8 @@ int ice_get_power_off_delay_param(void)
 
 int ice_get_a_step_enable_flag(void)
 {
-	if (drv_config_param.enable_sph_b_step)
+	if (drv_config_param.enable_sph_c_step ||
+		drv_config_param.enable_sph_b_step)
 		return false;
 	else
 		return true;
@@ -829,6 +833,20 @@ int ice_get_a_step_enable_flag(void)
 int ice_get_b_step_enable_flag(void)
 {
 	return drv_config_param.enable_sph_b_step;
+}
+
+int ice_get_c_step_enable_flag(void)
+{
+	return drv_config_param.enable_sph_c_step;
+}
+
+int ice_check_b_or_c_step_enable_flag(void)
+{
+	if (drv_config_param.enable_sph_c_step ||
+		drv_config_param.enable_sph_b_step)
+		return true;
+	else
+		return false;
 }
 
 int ice_get_iccp_throttling_flag(void)

@@ -359,7 +359,6 @@ void ice_di_tlb_invalidate_full(struct cve_device *cve_dev);
 
 uint16_t cve_di_get_cdyn_val(cve_di_job_handle_t hjob);
 
-void ice_di_is_shared_read_error(struct ice_network *ntw,
-			struct cve_device *dev, int bo_id);
+u32 ice_di_is_shared_read_error(struct cve_device *dev);
 
 #endif /* _DEVICE_INTERFACE_H_ */

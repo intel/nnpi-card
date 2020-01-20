@@ -1053,6 +1053,7 @@ static ssize_t show_dso_filter(struct kobject *kobj,
 	u8 reg_index = MAX_DSO_CONFIG_REG;
 	struct cve_device *ice_dev;
 	u32 value;
+	u32 cached_value;
 	u16 croffset;
 
 	ret = sscanf(kobj->name, "ice%d", &dev_index);
@@ -1089,13 +1090,17 @@ static ssize_t show_dso_filter(struct kobject *kobj,
 
 	croffset = ice_dev->dso.reg_offsets[reg_index].croffset;
 	value = ice_dev->dso.reg_readback_vals[reg_index];
+	cached_value = ice_dev->dso.reg_vals[reg_index];
 
 	cve_os_log(CVE_LOGLEVEL_DEBUG,
-			"DSO readback value 0x%x\n",
-			value);
+			"DSO readback value 0x%x, DSO cached vale 0x%x\n",
+			value, cached_value);
 
 	ret += sprintf((buf + ret),
-			"0x%x\n",
+			"Cached value:0x%x,",
+			cached_value);
+	ret += sprintf((buf + ret),
+			" Last update:0x%x\n",
 			value);
 	cve_os_unlock(&g_cve_driver_biglock);
 

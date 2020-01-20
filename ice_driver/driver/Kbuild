@@ -78,6 +78,7 @@ subdir-ccflags-y += -I$(src)/../null_device/nulldev_kmd_ring0
 endif
 
 $(MODULE_NAME)-y := cve_driver.o
+$(MODULE_NAME)-y += c_step_regs.o
 $(MODULE_NAME)-y += b_step_regs.o
 $(MODULE_NAME)-y += a_step_regs.o
 $(MODULE_NAME)-y += ../automation/version/version.o
