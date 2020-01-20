@@ -1496,7 +1496,14 @@ int cve_probe_common(struct cve_os_device *linux_device, int dev_ind)
 	cve_os_log(CVE_LOGLEVEL_ERROR,
 				"CVE KMD version: %s\n"
 				, KMD_VERSION);
-	if (ice_get_b_step_enable_flag()) {
+	if (ice_get_c_step_enable_flag()) {
+		memcpy(&cfg_default, &cfg_c, sizeof(cfg_c));
+		if (ice_fw_select == 1)
+			ice_fw_update_path(RTL_DEBUG_C_STEP_FW_PATH);
+		else
+			ice_fw_update_path(RTL_RELEASE_C_STEP_FW_PATH);
+		cve_os_log(CVE_LOGLEVEL_INFO, "C STEP ENABLED\n");
+	} else if (ice_get_b_step_enable_flag()) {
 		memcpy(&cfg_default, &cfg_b, sizeof(cfg_b));
 		if (ice_fw_select == 1)
 			ice_fw_update_path(RTL_DEBUG_B_STEP_FW_PATH);
@@ -1509,7 +1516,7 @@ int cve_probe_common(struct cve_os_device *linux_device, int dev_ind)
 			ice_fw_update_path(RTL_DEBUG_A_STEP_FW_PATH);
 		else
 			ice_fw_update_path(RTL_RELEASE_A_STEP_FW_PATH);
-		cve_os_log(CVE_LOGLEVEL_INFO, "B STEP DISABLED\n");
+		cve_os_log(CVE_LOGLEVEL_INFO, "A STEP ENABLED\n");
 	}
 
 	icemask_reg = ice_di_get_icemask(&linux_device->idc_dev);
@@ -1589,8 +1596,7 @@ int cve_probe_common(struct cve_os_device *linux_device, int dev_ind)
 				"Unable to register sph power balancer\n");
 	}
 
-#if 0
-	if (ice_get_b_step_enable_flag()) {
+	if (!ice_get_a_step_enable_flag()) {
 		retval = ice_iccp_levels_init(dg);
 		if (retval) {
 			cve_os_log(CVE_LOGLEVEL_ERROR,
@@ -1598,7 +1604,6 @@ int cve_probe_common(struct cve_os_device *linux_device, int dev_ind)
 			retval = 0;
 		}
 	}
-#endif
 
 create_idc:
 	/* create cve_x directory */
@@ -2178,7 +2183,11 @@ static int __init cve_init(void)
 			boot_cpu_data.x86_stepping);
 
 	param.enable_sph_b_step = false;
-	if (boot_cpu_data.x86_stepping == 1) {
+	param.enable_sph_c_step = false;
+	if (boot_cpu_data.x86_stepping == 2) {
+		param.enable_sph_c_step = true;
+		param.iccp_throttling = iccp_throttling;
+	} else if (boot_cpu_data.x86_stepping == 1) {
 		param.enable_sph_b_step = true;
 		param.iccp_throttling = iccp_throttling;
 	} else {

@@ -1,5 +1,5 @@
 /********************************************
- * Copyright (C) 2019 Intel Corporation
+ * Copyright (C) 2019-2020 Intel Corporation
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  ********************************************/
@@ -18,6 +18,10 @@
 #include "ioctl_inf.h"
 #include "sphcs_trace.h"
 #include "sphcs_sw_counters.h"
+#include "sphcs_ibecc.h"
+
+static struct inf_devres *devres_for_err_inj;
+static void *addr_for_err_inj;
 
 static int infreq_req_sched(struct inf_exec_req *req);
 static bool inf_req_ready(struct inf_exec_req *req);
@@ -28,6 +32,8 @@ static void send_infreq_report(struct inf_exec_req *req,
 static int inf_req_infreq_put(struct inf_exec_req *req);
 static int inf_req_migrate_priority(struct inf_exec_req *req, uint8_t priority);
 static void inf_req_release(struct kref *kref);
+static void ibecc_inject_error(struct inf_devnet *);
+static void ibecc_clean_error(void);
 
 struct func_table const s_req_funcs = {
 	.schedule = infreq_req_sched,
@@ -219,15 +225,12 @@ static void release_infreq(struct kref *kref)
 	kfree(infreq);
 }
 
-inline void inf_req_get(struct inf_req *infreq)
+int inf_req_get(struct inf_req *infreq)
 {
-	int ret;
-
-	ret = kref_get_unless_zero(&infreq->ref);
-	SPH_ASSERT(ret != 0);
+	return kref_get_unless_zero(&infreq->ref);
 }
 
-inline int inf_req_put(struct inf_req *infreq)
+int inf_req_put(struct inf_req *infreq)
 {
 	return kref_put(&infreq->ref, release_infreq);
 }
@@ -435,6 +438,50 @@ unsigned long inf_req_read_exec_command(char __user *buf,
 	return ret;
 }
 
+static void ibecc_inject_error(struct inf_devnet *devnet)
+{
+	u32 usage;
+	struct page *page;
+
+	if (likely(!ibecc_error_injection_requested))
+		return;
+
+	if (sphcs_ibecc_correctable_error_requested())
+		usage = IOCTL_INF_RES_ECC;
+	else
+		usage = sphcs_ibecc_get_uc_severity_ctxt_requested() ? IOCTL_INF_RES_ECC : (IOCTL_INF_RES_ECC | IOCTL_INF_RES_FORCE_4G_ALLOC);
+
+	/* Device resource for error injection must be :
+	 * - allocated from the ECC protected region
+	 * - at least 64 byte size (cache line size)
+	 * - aligned on cache line boundary
+	 */
+	devres_for_err_inj = inf_devnet_find_ecc_devres(devnet, usage);
+
+	if ((devres_for_err_inj == NULL) || (devres_for_err_inj->dma_map == NULL)) {
+		sph_log_info(EXECUTE_COMMAND_LOG, "IBECC error injection - no appropriate device resource found\n");
+		return;
+	}
+
+	page = sg_page(devres_for_err_inj->dma_map->sgl);
+	addr_for_err_inj = vm_map_ram(&page, 1, -1, PAGE_KERNEL);
+	sphcs_ibecc_inject_ctxt_err(sg_phys(devres_for_err_inj->dma_map->sgl), addr_for_err_inj);
+
+}
+
+static void ibecc_clean_error(void)
+{
+	if (likely(!ibecc_error_injection_requested))
+		return;
+
+	if (addr_for_err_inj)
+		sphcs_ibecc_clean_ctxt_err(addr_for_err_inj);
+
+	vm_unmap_ram(addr_for_err_inj, 1);
+	devres_for_err_inj = NULL;
+	addr_for_err_inj = NULL;
+}
+
 static int inf_req_execute(struct inf_exec_req *req)
 {
 	struct inf_req *infreq;
@@ -518,6 +565,7 @@ static int inf_req_execute(struct inf_exec_req *req)
 	if (unlikely(inf_context_get_state(infreq->devnet->context) != CONTEXT_OK)) {
 		ret = -SPHER_CONTEXT_BROKEN;
 	} else {
+		ibecc_inject_error(infreq->devnet);
 		ret = inf_cmd_queue_add(&infreq->devnet->context->cmdq,
 					SPHCS_RUNTIME_CMD_EXECUTE_INFREQ,
 					NULL,
@@ -630,7 +678,7 @@ static void inf_req_complete(struct inf_exec_req *req, int err)
 	SPH_SPIN_LOCK_IRQSAVE(&context->sw_counters_lock_irq, flags);
 	context->infreq_counter--;
 	last_completed = (context->infreq_counter == 0);
-	SPH_SW_COUNTER_INC(g_sph_sw_counters, SPHCS_SW_COUNTERS_INFERENCE_COMPLETED_INF_REQ);
+	SPH_SW_COUNTER_ATOMIC_INC(g_sph_sw_counters, SPHCS_SW_COUNTERS_INFERENCE_COMPLETED_INF_REQ);
 	SPH_SW_COUNTER_INC(context->sw_counters, CTX_SPHCS_SW_COUNTERS_INFERENCE_COMPLETED_INF_REQ);
 
 	if (last_completed &&
@@ -744,7 +792,7 @@ static void inf_req_complete(struct inf_exec_req *req, int err)
 		// for schedule
 		inf_cmd_put(cmd);
 	}
-
+	ibecc_clean_error();
 	inf_exec_req_put(req);
 }
 

@@ -1,5 +1,5 @@
 /********************************************
- * Copyright (C) 2019 Intel Corporation
+ * Copyright (C) 2019-2020 Intel Corporation
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  ********************************************/
@@ -14,6 +14,7 @@
 #include "sph_log.h"
 #include "ipc_protocol.h"
 #include "inf_context.h"
+#include "inf_exec_req.h"
 #include "sph_error.h"
 #include "sphcs_trace.h"
 
@@ -361,6 +362,7 @@ int inf_copy_create(uint16_t protocolCopyID,
 		if (unlikely(hostres_map == NULL)) {
 			sph_log_err(CREATE_COMMAND_LOG, "hostres map id not found chan %d map id %lld\n",
 				    context->chan->protocolID, hostDmaAddr);
+			res = -ENOENT;
 			goto put_copy;
 		}
 
@@ -428,15 +430,12 @@ static void sched_release_copy(struct kref *kref)
 		queue_work(copy->context->wq, &copy->work);
 }
 
-inline void inf_copy_get(struct inf_copy *copy)
+int inf_copy_get(struct inf_copy *copy)
 {
-	int ret;
-
-	ret = kref_get_unless_zero(&copy->ref);
-	SPH_ASSERT(ret != 0);
+	return kref_get_unless_zero(&copy->ref);
 }
 
-inline int inf_copy_put(struct inf_copy *copy)
+int inf_copy_put(struct inf_copy *copy)
 {
 	return kref_put(&copy->ref, sched_release_copy);
 }
@@ -516,7 +515,7 @@ static int inf_copy_req_sched(struct inf_exec_req *req)
 	spin_lock_init(&req->lock_irq);
 	inf_context_seq_id_init(copy->context, &req->seq);
 
-	DO_TRACE(trace_copy(SPH_TRACE_OP_STATUS_QUEUED,
+	DO_TRACE_IF(!copy->subres_copy, trace_copy(SPH_TRACE_OP_STATUS_QUEUED,
 					 copy->context->protocolID,
 					 copy->protocolID,
 					 req->cmd ? req->cmd->protocolID : -1,
@@ -569,7 +568,7 @@ static int inf_copy_req_execute(struct inf_exec_req *req)
 	SPH_ASSERT(req->in_progress);
 
 	copy = req->copy;
-	DO_TRACE(trace_copy(SPH_TRACE_OP_STATUS_START,
+	DO_TRACE_IF(!copy->subres_copy, trace_copy(SPH_TRACE_OP_STATUS_START,
 		 copy->context->protocolID,
 		 copy->protocolID,
 		 req->cmd ? req->cmd->protocolID : -1,
@@ -685,7 +684,7 @@ static void inf_copy_req_complete(struct inf_exec_req *req, int err)
 	cmd = req->cmd;
 	is_d2d_copy = copy->d2d;
 
-	 DO_TRACE(trace_copy(SPH_TRACE_OP_STATUS_COMPLETE,
+	 DO_TRACE_IF(!copy->subres_copy, trace_copy(SPH_TRACE_OP_STATUS_COMPLETE,
 					 copy->context->protocolID,
 					 copy->protocolID,
 					 cmd ? cmd->protocolID : -1,

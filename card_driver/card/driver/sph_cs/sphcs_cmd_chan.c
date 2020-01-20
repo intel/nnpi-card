@@ -1,5 +1,5 @@
 /********************************************
- * Copyright (C) 2019 Intel Corporation
+ * Copyright (C) 2019-2020 Intel Corporation
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  ********************************************/
@@ -181,6 +181,7 @@ static void sphcs_host_rb_init(struct sphcs_host_rb *rb,
 	rb->size = (uint32_t)size;
 	rb->head = 0;
 	rb->tail = 0;
+	rb->is_full = false;
 	init_waitqueue_head(&rb->waitq);
 	spin_lock_init(&rb->lock_bh);
 }
@@ -260,7 +261,7 @@ int host_rb_wait_free_space(struct sphcs_host_rb *rb,
 			    uint32_t             *size_array)
 {
 	int ret;
-	u32 left;
+	u32 left = 0;
 	int n;
 
 	ret = wait_event_interruptible(rb->waitq,
@@ -287,6 +288,8 @@ void host_rb_update_free_space(struct sphcs_host_rb *rb,
 {
 	SPH_SPIN_LOCK_BH(&rb->lock_bh);
 	rb->tail = (rb->tail + size) % rb->size;
+	if (rb->tail == rb->head)
+		rb->is_full = true;
 	SPH_SPIN_UNLOCK_BH(&rb->lock_bh);
 }
 
@@ -297,7 +300,7 @@ int host_rb_get_avail_space(struct sphcs_host_rb *rb,
 			    uint32_t             *size_addr)
 {
 	u32 avail = host_rb_avail_bytes(rb);
-	u32 left;
+	u32 left = 0;
 	int n;
 
 	if (avail < size)
@@ -322,6 +325,7 @@ void host_rb_update_avail_space(struct sphcs_host_rb *rb,
 {
 	SPH_SPIN_LOCK_BH(&rb->lock_bh);
 	rb->head = (rb->head + size) % rb->size;
+	rb->is_full = false;
 	SPH_SPIN_UNLOCK_BH(&rb->lock_bh);
 	wake_up_all(&rb->waitq);
 }
@@ -511,6 +515,7 @@ static int remove_hostres(struct sphcs_cmd_chan *chan, uint16_t protocolID)
 		return -ENXIO;
 	}
 
+	sg_free_table(&hostres->host_sgt);
 	kfree(hostres);
 
 	return 0;

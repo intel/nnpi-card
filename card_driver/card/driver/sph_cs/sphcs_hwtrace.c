@@ -1,5 +1,5 @@
 /********************************************
- * Copyright (C) 2019 Intel Corporation
+ * Copyright (C) 2019-2020 Intel Corporation
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  ********************************************/
@@ -1336,6 +1336,7 @@ void sphcs_hwtrace_add_resource_2(struct sphcs *sphcs,
 		r = kzalloc(sizeof(*r), GFP_NOWAIT);
 		if (unlikely(r == NULL)) {
 			hwtrace_err = SPH_HWTRACE_ERR_NO_MEMORY;
+			kfree(res_info);
 			goto reply_message;
 		}
 

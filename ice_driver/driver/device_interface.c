@@ -2618,11 +2618,11 @@ static void __dump_mmu_pmon(struct cve_device *ice)
 }
 
 /* Update network's shared read error if exists */
-void ice_di_is_shared_read_error(struct ice_network *ntw,
-					struct cve_device *dev, int bo_id)
+u32 ice_di_is_shared_read_error(struct cve_device *dev)
 {
 	AXI_SHARED_READ_STATUS_T err_reg;
-	u32 offset, icebo_offset;
+	u32 offset, icebo_offset, ret = 0;
+	int bo_id = (dev->dev_index / 2);
 
 	icebo_offset = ICEDC_ICEBO_OFFSET(bo_id);
 	offset = icebo_offset + cfg_default.axi_shared_read_status_offset;
@@ -2630,17 +2630,11 @@ void ice_di_is_shared_read_error(struct ice_network *ntw,
 
 	if (err_reg.field.error_flag) {
 
-		cve_os_dev_log_default(CVE_LOGLEVEL_ERROR,
-			dev->dev_index,
-			"Error: NtwID:0x%llx, shared_read_status value:%x\n",
-			ntw->network_id, err_reg.val);
-
-		ntw->shared_read_err_status = err_reg.field.error_flag;
+		ret = err_reg.val;
 		err_reg.field.error_flag = 0;
 		cve_os_write_idc_mmio(dev, offset, err_reg.val);
-
-		ice_di_set_shared_read_reg(dev, ntw, 1);
 	}
 
+	return ret;
 }
 

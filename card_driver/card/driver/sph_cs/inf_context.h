@@ -1,5 +1,5 @@
 /********************************************
- * Copyright (C) 2019 Intel Corporation
+ * Copyright (C) 2019-2020 Intel Corporation
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  ********************************************/
@@ -24,6 +24,7 @@
 #include "sphcs_cs.h"
 #include "sphcs_sw_counters.h"
 #include "sphcs_cmd_chan.h"
+#include "inf_exec_req.h"
 
 struct sph_device;
 struct inf_subres_load_session;
@@ -93,66 +94,6 @@ struct inf_subres_load_session {
 	struct list_head node;
 };
 
-struct func_table {
-	int (*schedule)(struct inf_exec_req *req);
-	bool (*is_ready)(struct inf_exec_req *req);
-	int (*execute)(struct inf_exec_req *req);
-	void (*send_report)(struct inf_exec_req *req,
-			    enum event_val       eventVal);
-	void (*complete)(struct inf_exec_req *req, int err);
-	int (*obj_put)(struct inf_exec_req *req);
-	int (*migrate_priority)(struct inf_exec_req *req, uint8_t priority);
-
-	/* This function should not be called directly, use inf_exec_req_put instead */
-	void (*release)(struct kref *kref);
-};
-
-struct inf_exec_req {
-	bool                      in_progress;
-	enum CmdListCommandType   cmd_type;
-	spinlock_t                lock_irq;
-	struct kref               in_use;
-	struct inf_req_sequence   seq;
-	u64                       time; // queued or start execute time
-
-	struct inf_context *context;
-	u32                 last_sched_tick;
-
-	struct inf_cmd_list *cmd;
-	struct func_table const *f;
-
-	size_t               size;
-	//priority 0 == normal, 1 == high
-	uint8_t              priority;
-
-	union {
-		struct {
-			struct inf_cpylst *cpylst;
-			dma_addr_t         lli_addr;
-			uint16_t           num_opt_depend_devres;
-			struct inf_devres **opt_depend_devres;
-		};
-		struct {
-			struct inf_copy *copy;
-
-			/* following fields are used for "dynamic copy" only */
-			struct sphcs_hostres_map *hostres_map;
-			uint64_t devres_offset;
-		};
-		struct {
-			struct inf_req   *infreq;
-			uint16_t          i_num_opt_depend_devres;
-			uint16_t          o_num_opt_depend_devres;
-			struct inf_devres **i_opt_depend_devres;
-			struct inf_devres **o_opt_depend_devres;
-			bool              sched_params_is_null;
-			uint8_t           debugOn : 1;
-			uint8_t           collectInfo : 1;
-			uint8_t           reserved : 6;
-		};
-	};
-};
-
 int inf_context_create(uint16_t             protocolID,
 		       struct sphcs_cmd_chan *chan,
 		       struct inf_context **out_context);
@@ -164,7 +105,7 @@ void inf_context_runtime_detach(struct inf_context *context);
 int is_inf_context_ptr(void *ptr);
 
 void inf_context_destroy_objects(struct inf_context *context);
-void inf_context_get(struct inf_context *context);
+int inf_context_get(struct inf_context *context);
 int inf_context_put(struct inf_context *context);
 
 void inf_context_seq_id_init(struct inf_context      *context,
@@ -187,6 +128,7 @@ int inf_context_create_devres(struct inf_context *context,
 			      uint16_t            protocolID,
 			      uint64_t            byte_size,
 			      uint8_t             depth,
+			      uint64_t            align,
 			      uint32_t            usage_flags,
 			      struct inf_devres **out_devres);
 
@@ -194,7 +136,8 @@ int inf_context_find_and_destroy_devres(struct inf_context *context,
 					uint16_t            devresID);
 struct inf_devres *inf_context_find_devres(struct inf_context *context,
 					   uint16_t            protocolID);
-
+struct inf_devres *inf_context_find_and_get_devres(struct inf_context *context,
+						   uint16_t            protocolID);
 int inf_context_create_cmd(struct inf_context   *context,
 			   uint16_t              protocolID,
 			   struct inf_cmd_list **out_devres);
@@ -204,21 +147,21 @@ int inf_context_find_and_destroy_cmd(struct inf_context *context,
 struct inf_cmd_list *inf_context_find_cmd(struct inf_context *context,
 					  uint16_t            protocolID);
 
-int inf_context_create_devnet(struct inf_context *context,
-			      uint16_t protocolID,
-			      struct inf_devnet **out_devnet);
 int inf_context_find_and_destroy_devnet(struct inf_context *context,
 					uint16_t            devnetID);
 struct inf_devnet *inf_context_find_devnet(struct inf_context *context,
 					   uint16_t            protocolID);
+struct inf_devnet *inf_context_find_and_get_devnet(struct inf_context *context,
+						   uint16_t            protocolID,
+						   bool                alive,
+						   bool                created);
 
 struct inf_copy *inf_context_find_copy(struct inf_context *context, uint16_t protocolID);
+struct inf_copy *inf_context_find_and_get_copy(struct inf_context *context, uint16_t protocolID);
 
 void destroy_copy_on_create_failed(struct inf_copy *copy);
 int inf_context_find_and_destroy_copy(struct inf_context *context,
 				      uint16_t            copyID);
-
-void inf_req_try_execute(struct inf_exec_req *req);
 
 struct inf_subres_load_session *inf_context_create_subres_load_session(struct inf_context *context,
 								       struct inf_devres *devres,
@@ -227,13 +170,5 @@ struct inf_subres_load_session *inf_context_create_subres_load_session(struct in
 struct inf_subres_load_session *inf_context_get_subres_load_session(struct inf_context *context, uint16_t sessionID);
 
 void inf_context_remove_subres_load_session(struct inf_context *context, uint16_t sessionID);
-
-int inf_exec_req_get(struct inf_exec_req *req);
-int inf_exec_req_put(struct inf_exec_req *req);
-
-int inf_update_priority(struct inf_exec_req *req,
-			uint8_t priority,
-			bool card2host,
-			dma_addr_t lli_addr);
 
 #endif

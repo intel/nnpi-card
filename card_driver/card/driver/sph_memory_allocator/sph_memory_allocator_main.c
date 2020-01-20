@@ -1,5 +1,5 @@
 /********************************************
- * Copyright (C) 2019 Intel Corporation
+ * Copyright (C) 2019-2020 Intel Corporation
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  ********************************************/
@@ -12,10 +12,6 @@
 #include <linux/highmem.h>
 #include <linux/pfn.h>
 #include <linux/vmalloc.h>
-#include <asm/page.h>
-#include <linux/pci.h>
-#include <linux/pci_ids.h>
-#include <asm/processor.h>
 #include <linux/bitops.h>
 #include <linux/workqueue.h>
 #include <linux/cpumask.h>
@@ -24,6 +20,7 @@
 #include "sph_version.h"
 #include "sph_mem_alloc_defs.h"
 #include "sw_counters.h"
+#include "sph_ibecc.h"
 
 /* The sph_mem module parameter defines physically contiguous
  * memory regions that will be managed by Memory Allocator
@@ -38,36 +35,6 @@ module_param(test, int, 0400);
 #ifdef CARD_PLATFORM_BR
 
 #include <linux/ion_exp.h>
-
-#define DID_ICLI_SKU8 0x4581
-#define DID_ICLI_SKU10 0x4585
-#define DID_ICLI_SKU11 0x4589
-#define DID_ICLI_SKU12 0x458d
-#define CAPID0_C_OFF 0xEC
-#define MCHBAR_HI_OFF 0x4c
-#define MCHBAR_LO_OFF 0x48
-#define MCHBAR_EN BIT_ULL(0)
-#define MCHBAR_MASK GENMASK_ULL(38, 16)
-#define MCHBAR_SIZE BIT_ULL(16)
-
-/* IBECC registers */
-#define IBECC_BASE 0xd800
-#define IBECC_ACTIVATE_OFF IBECC_BASE
-#define IBECC_PROTECTED_RANGE_0_OFF (IBECC_BASE + 0xC)
-#define IBECC_PROTECTED_RANGE_1_OFF (IBECC_BASE + 0x10)
-#define IBECC_PROTECTED_RANGE_2_OFF (IBECC_BASE + 0x14)
-#define IBECC_PROTECTED_RANGE_3_OFF (IBECC_BASE + 0x18)
-#define IBECC_PROTECTED_RANGE_4_OFF (IBECC_BASE + 0x1C)
-#define IBECC_PROTECTED_RANGE_5_OFF (IBECC_BASE + 0x20)
-#define IBECC_PROTECTED_RANGE_6_OFF (IBECC_BASE + 0x24)
-#define IBECC_PROTECTED_RANGE_7_OFF (IBECC_BASE + 0x28)
-
-/* IBECC_PROTECTED_RANGE register layout */
-#define IBECC_PROTECTED_RANGE_EN BIT(31)
-#define IBECC_PROTECTED_RANGE_BASE_OFF 0
-#define IBECC_PROTECTED_RANGE_BASE_MASK GENMASK(13, 0)
-#define IBECC_PROTECTED_RANGE_MASK_OFF 16
-#define IBECC_PROTECTED_RANGE_MASK_MASK GENMASK(29, 16)
 
 /* SW counters */
 static const struct sph_sw_counters_group_info sw_counters_groups_info[] = {
@@ -494,12 +461,6 @@ err:
 
 static int create_protected_regions(void)
 {
-	u32 capid0;
-	u32 mchbar_addr_lo;
-	u32 mchbar_addr_hi;
-	u64 mchbar_addr;
-	struct pci_dev *dev0;
-	u32 icli_dids[] = {DID_ICLI_SKU8, DID_ICLI_SKU10, DID_ICLI_SKU11, DID_ICLI_SKU12};
 	u32 region_offs[] = {IBECC_PROTECTED_RANGE_0_OFF,
 			     IBECC_PROTECTED_RANGE_1_OFF,
 			     IBECC_PROTECTED_RANGE_2_OFF,
@@ -512,53 +473,25 @@ static int create_protected_regions(void)
 	u32 val;
 	u32 base_field, mask_field;
 	void __iomem *mchbar;
+	struct pci_dev *dev0 = NULL;
 	int rc;
 	struct mem_region *reg;
 
-	/* check stepping first */
-	if (boot_cpu_data.x86_stepping < 1) {
-		sph_log_info(START_UP_LOG, "IBECC is not supported in step A\n");
-		goto out;
-	}
-	/* get device object of device 0 */
-	i = 0;
-	do {
-		dev0 = pci_get_device(PCI_VENDOR_ID_INTEL, icli_dids[i], NULL);
-		i++;
-	} while ((dev0 == NULL) && (i < ARRAY_SIZE(icli_dids)));
-	if (dev0 == NULL) {
-		sph_log_err(START_UP_LOG, "DID isn't supported\n");
-		rc = -ENODEV;
-		goto err;
-	}
+	/* IBECC enabled? */
+	dev0 = is_ibecc_enabled();
+	if (!dev0)
+		return 0;
 
-	/* check that bit 15 of CAPID0 is 0 */
-	pci_read_config_dword(dev0, CAPID0_C_OFF, &capid0);
-	if (capid0 & BIT(15)) {
-		sph_log_info(START_UP_LOG, "IBECC is not supported\n");
-		goto out;
-	}
-
-	/* Map MCHBAR */
-	pci_read_config_dword(dev0, MCHBAR_LO_OFF, &mchbar_addr_lo);
-	pci_read_config_dword(dev0, MCHBAR_HI_OFF, &mchbar_addr_hi);
-
-	mchbar_addr = ((u64)mchbar_addr_hi << 32) | mchbar_addr_lo;
-
-	if (!(mchbar_addr & MCHBAR_EN)) {
-		sph_log_info(START_UP_LOG, "MCHBAR is disabled\n");
-		goto out;
-	}
-
-	mchbar = ioremap_nocache(mchbar_addr & MCHBAR_MASK, MCHBAR_SIZE);
+	/* Map mchbar */
+	mchbar = ibecc_map_mchbar(dev0);
 	if (!mchbar) {
 		sph_log_err(START_UP_LOG, "Failed to map mchbar\n");
 		rc = -EIO;
 		goto err;
 	}
 
-	/* Check whether IBECC is enabled */
-	if (!(ioread32(mchbar + IBECC_ACTIVATE_OFF) & BIT(0))) {
+	/* IBECC activated? */
+	if (!is_ibecc_activated(mchbar)) {
 		sph_log_info(START_UP_LOG, "IBECC disabled\n");
 		goto unmap_and_out;
 	}
@@ -594,12 +527,11 @@ static int create_protected_regions(void)
 	} while (i < ARRAY_SIZE(region_offs));
 
 unmap_and_out:
-	iounmap(mchbar);
-out:
+	ibecc_unmap_mchbar(mchbar);
 	return 0;
 
 failed_to_alloc:
-	iounmap(mchbar);
+	ibecc_unmap_mchbar(mchbar);
 	release_list(&protected_regions);
 err:
 	return rc;

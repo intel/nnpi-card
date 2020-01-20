@@ -1,5 +1,5 @@
 /********************************************
- * Copyright (C) 2019 Intel Corporation
+ * Copyright (C) 2019-2020 Intel Corporation
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  ********************************************/
@@ -45,7 +45,7 @@ SPH_STATIC_ASSERT(SPH_PAGE_SHIFT <= PAGE_SHIFT, "SPH_PAGE_SIZE is bigger than PA
 					     ((minor) & 0x1f) << 5 | \
 					     ((dot) & 0x1f))
 
-#define SPH_IPC_PROTOCOL_VERSION SPH_MAKE_VERSION(2, 9, 0)
+#define SPH_IPC_PROTOCOL_VERSION SPH_MAKE_VERSION(2, 11, 0)
 
 /* Maximumum of free pages, which device can hold at any time */
 #define MAX_HOST_RESPONSE_PAGES 32
@@ -401,7 +401,8 @@ union h2c_InferenceResourceOp {
 		u64 is_p2p_dst  : 1;
 		u64 is_p2p_src  : 1;
 		u64 depth       : 8;
-		u64 reserved    : 18;
+		u64 align       : 16;
+		u64 reserved    : 2;
 
 		u64 size        : 64;
 	};
@@ -804,10 +805,13 @@ enum sph_c2h_opcode {
 	case (val):                   \
 	return #name;
 
+#define OPCODE_MASK ((1 << 6) - 1)
+
 static inline const char *H2C_HWQ_MSG_STR(u8 x)
 {
 	switch (x) {
 	#include "ipc_h2c_opcodes.h"
+	#include "ipc_chan_h2c_opcodes.h"
 	default:
 		return "not found";
 	}
@@ -822,6 +826,7 @@ static inline const char *C2H_HWQ_MSG_STR(u8 x)
 {
 	switch (x) {
 	#include "ipc_c2h_opcodes.h"
+	#include "ipc_chan_c2h_opcodes.h"
 	default:
 		return "not found";
 	}
@@ -927,12 +932,16 @@ struct sph_c2h_system_info {
 #define SPH_BIOS_VERSION_LEN    (sizeof(struct sph_c2h_bios_version) / sizeof(u16))
 #define SPH_BOARD_NAME_LEN      72
 #define SPH_IMAGE_VERSION_LEN   128
+#define SPH_PRD_SERIAL_LEN      16
+#define SPH_PART_NUM_LEN        12
 
 struct sph_sys_info {
 	uint32_t ice_mask;
 	char bios_version[SPH_BIOS_VERSION_LEN];
 	char board_name[SPH_BOARD_NAME_LEN];
 	char image_version[SPH_IMAGE_VERSION_LEN];
+	char prd_serial[SPH_PRD_SERIAL_LEN];
+	char brd_part_no[SPH_PART_NUM_LEN];
 	u16  fpga_rev;
 	uint64_t totalUnprotectedMemory;
 	uint64_t totalEccMemory;

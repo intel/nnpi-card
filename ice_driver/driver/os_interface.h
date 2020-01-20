@@ -62,6 +62,7 @@ typedef u32 cve_virtual_address_t;
 typedef u32 pt_entry_t;
 extern struct config cfg_a;
 extern struct config cfg_b;
+extern struct config cfg_c;
 extern struct config cfg_default;
 
 #ifdef RING3_VALIDATION

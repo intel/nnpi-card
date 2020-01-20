@@ -1,5 +1,5 @@
 /********************************************
- * Copyright (C) 2019 Intel Corporation
+ * Copyright (C) 2019-2020 Intel Corporation
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  ********************************************/
@@ -7,7 +7,7 @@
 #define __SPH_SW_COUNTERS_H
 
 //
-// INTEL CORPORATION CONFIDENTIAL Copyright(c) 2018 Intel Corporation. All Rights Reserved.
+// INTEL CORPORATION CONFIDENTIAL Copyright(c) 2018-2020 Intel Corporation. All Rights Reserved.
 //
 
 

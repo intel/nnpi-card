@@ -1,5 +1,5 @@
 /********************************************
- * Copyright (C) 2019 Intel Corporation
+ * Copyright (C) 2019-2020 Intel Corporation
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  ********************************************/
@@ -88,8 +88,8 @@ union h2c_ChanInferenceResourceOp {
 		u64 is_ecc      : 1;
 		u64 is_p2p_dst  : 1;
 		u64 is_p2p_src  : 1;
-		u64 depth       : 8;
-		u64 reserved    : 15;
+		u64 depth       : 7;
+		u64 align       : 16;
 
 		u64 size        : 64;
 	};

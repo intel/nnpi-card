@@ -18,6 +18,10 @@ include $(src)/Kbuild
 
 else
 
+ifndef DEBUG
+KBUILD_CFLAGS += -O3
+endif
+
 mkfile_path := $(abspath $(lastword $(MAKEFILE_LIST)))
 mkfile_dir := $(dir $(mkfile_path))
 

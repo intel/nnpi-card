@@ -1,5 +1,5 @@
 /********************************************
- * Copyright (C) 2019 Intel Corporation
+ * Copyright (C) 2019-2020 Intel Corporation
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  ********************************************/
@@ -147,11 +147,14 @@ int inf_context_runtime_attach(struct inf_context *context)
 		SPH_SPIN_UNLOCK(&context->lock);
 		return -EBUSY;
 	}
+	SPH_SPIN_LOCK_BH(&g_the_sphcs->inf_data->lock_bh);
 	if (unlikely(context->destroyed)) {
+		SPH_SPIN_UNLOCK_BH(&g_the_sphcs->inf_data->lock_bh);
 		SPH_SPIN_UNLOCK(&context->lock);
 		return -EPERM;
 	}
 	context->attached = 1;
+	SPH_SPIN_UNLOCK_BH(&g_the_sphcs->inf_data->lock_bh);
 	SPH_SPIN_UNLOCK(&context->lock);
 
 	/* Take kref, dedicated to runtime */
@@ -356,17 +359,17 @@ void inf_context_destroy_objects(struct inf_context *context)
 	SPH_SPIN_UNLOCK(&context->lock);
 }
 
-inline void inf_context_get(struct inf_context *context)
+int inf_context_get(struct inf_context *context)
 {
-	int ret;
+	return kref_get_unless_zero(&context->ref);
+}
 
-	ret = kref_get_unless_zero(&context->ref);
-	SPH_ASSERT(ret != 0);
-};
-
-inline int inf_context_put(struct inf_context *context)
+int inf_context_put(struct inf_context *context)
 {
 	bool send_runtime = false;
+
+	if (!context)
+		return 0;
 
 	/*
 	 * send runtime detach request to runtime
@@ -573,14 +576,14 @@ void del_all_active_create_and_inf_requests(struct inf_context *context)
 		} while (found);
 		SPH_SPIN_UNLOCK(&devnet->lock);
 	}
-	// Destroy not fully created devnets
+	// Destroy not fully created devnets / devnets with not added resources
 	do {
 		found = false;
 		hash_for_each(context->devnet_hash, i, devnet, hash_node) {
 			if (devnet->edit_status != CREATED) {
 				SPH_SPIN_UNLOCK(&context->lock);
 				found = true;
-				destroy_devnet_on_create_failed(devnet);
+				inf_devnet_on_create_or_add_res_failed(devnet);
 				SPH_SPIN_LOCK(&context->lock);
 				break;
 			}
@@ -658,6 +661,7 @@ int inf_context_create_devres(struct inf_context *context,
 			      uint16_t            protocolID,
 			      uint64_t            byte_size,
 			      uint8_t             depth,
+			      uint64_t            align,
 			      uint32_t            usage_flags,
 			      struct inf_devres **out_devres)
 {
@@ -669,6 +673,7 @@ int inf_context_create_devres(struct inf_context *context,
 				context,
 				byte_size,
 				depth,
+				align,
 				usage_flags,
 				&devres);
 	if (unlikely(ret < 0))
@@ -677,6 +682,7 @@ int inf_context_create_devres(struct inf_context *context,
 	/* place a create device resource command for the runtime */
 	cmd_args.drv_handle = (uint64_t)(uintptr_t)devres;
 	cmd_args.size = byte_size * depth;
+	cmd_args.align = align;
 	cmd_args.usage_flags = usage_flags;
 
 	SPH_SPIN_LOCK(&context->lock);
@@ -753,7 +759,28 @@ struct inf_devres *inf_context_find_devres(struct inf_context *context,
 			       protocolID)
 		if (devres->protocolID == protocolID) {
 			SPH_ASSERT(devres->status == CREATED);
-			SPH_ASSERT(!devres->destroyed);
+			SPH_SPIN_UNLOCK(&context->lock);
+			return devres;
+		}
+	SPH_SPIN_UNLOCK(&context->lock);
+
+	return NULL;
+}
+
+struct inf_devres *inf_context_find_and_get_devres(struct inf_context *context,
+						   uint16_t            protocolID)
+{
+	struct inf_devres *devres;
+
+	SPH_SPIN_LOCK(&context->lock);
+	hash_for_each_possible(context->devres_hash,
+			       devres,
+			       hash_node,
+			       protocolID)
+		if (devres->protocolID == protocolID) {
+			SPH_ASSERT(devres->status == CREATED);
+			if (unlikely(devres->destroyed || inf_devres_get(devres) == 0))
+				break; //destroyed
 			SPH_SPIN_UNLOCK(&context->lock);
 			return devres;
 		}
@@ -822,29 +849,14 @@ struct inf_cmd_list *inf_context_find_cmd(struct inf_context *context,
 	SPH_SPIN_LOCK(&context->lock);
 	hash_for_each_possible(context->cmd_hash, cmd, hash_node, protocolID)
 		if (cmd->protocolID == protocolID) {
-			SPH_ASSERT(!cmd->destroyed);
+			if (cmd->destroyed)
+				break; //destroyed
 			SPH_SPIN_UNLOCK(&context->lock);
 			return cmd;
 		}
 	SPH_SPIN_UNLOCK(&context->lock);
 
 	return NULL;
-}
-
-int inf_context_create_devnet(struct inf_context *context,
-			      uint16_t protocolID,
-			      struct inf_devnet **out_devnet)
-{
-	struct inf_devnet *devnet;
-	int ret;
-
-	ret = inf_devnet_create(protocolID, context, &devnet);
-	if (unlikely(ret < 0))
-		return ret;
-
-	*out_devnet = devnet;
-
-	return 0;
 }
 
 int inf_context_find_and_destroy_devnet(struct inf_context *context,
@@ -896,6 +908,27 @@ struct inf_devnet *inf_context_find_devnet(struct inf_context *context, uint16_t
 	return NULL;
 }
 
+struct inf_devnet *inf_context_find_and_get_devnet(struct inf_context *context, uint16_t protocolID, bool alive, bool created)
+{
+	struct inf_devnet *devnet;
+
+	SPH_SPIN_LOCK(&context->lock);
+	hash_for_each_possible(context->devnet_hash, devnet, hash_node, protocolID)
+		if (devnet->protocolID == protocolID) {
+			if (created && !devnet->created)
+				break;
+			if (alive && devnet->destroyed)
+				break;
+			if (unlikely(inf_devnet_get(devnet) == 0))
+				break;
+			SPH_SPIN_UNLOCK(&context->lock);
+			return devnet;
+		}
+	SPH_SPIN_UNLOCK(&context->lock);
+
+	return NULL;
+}
+
 struct inf_copy *inf_context_find_copy(struct inf_context *context, uint16_t protocolID)
 {
 	struct inf_copy *copy;
@@ -903,6 +936,24 @@ struct inf_copy *inf_context_find_copy(struct inf_context *context, uint16_t pro
 	SPH_SPIN_LOCK(&context->lock);
 	hash_for_each_possible(context->copy_hash, copy, hash_node, protocolID) {
 		if (copy->protocolID == protocolID) {
+			SPH_SPIN_UNLOCK(&context->lock);
+			return copy;
+		}
+	}
+	SPH_SPIN_UNLOCK(&context->lock);
+
+	return NULL;
+}
+
+struct inf_copy *inf_context_find_and_get_copy(struct inf_context *context, uint16_t protocolID)
+{
+	struct inf_copy *copy;
+
+	SPH_SPIN_LOCK(&context->lock);
+	hash_for_each_possible(context->copy_hash, copy, hash_node, protocolID) {
+		if (copy->protocolID == protocolID) {
+			if (unlikely(copy->destroyed || inf_copy_get(copy) == 0))
+				break;
 			SPH_SPIN_UNLOCK(&context->lock);
 			return copy;
 		}
@@ -954,41 +1005,6 @@ int inf_context_find_and_destroy_copy(struct inf_context *context,
 	inf_copy_put(copy);
 
 	return 0;
-}
-
-void inf_req_try_execute(struct inf_exec_req *req)
-{
-	int err;
-	unsigned long flags;
-	u32 curr_sched_tick;
-
-	SPH_ASSERT(req != NULL);
-
-	SPH_SPIN_LOCK_IRQSAVE(&req->lock_irq, flags);
-	curr_sched_tick = atomic_read(&req->context->sched_tick);
-	if (req->in_progress || req->last_sched_tick == curr_sched_tick) {
-		SPH_SPIN_UNLOCK_IRQRESTORE(&req->lock_irq, flags);
-		return;
-	}
-	req->last_sched_tick = curr_sched_tick;
-	SPH_SPIN_UNLOCK_IRQRESTORE(&req->lock_irq, flags);
-
-	if (!req->f->is_ready(req))
-		return;
-
-	SPH_SPIN_LOCK_IRQSAVE(&req->lock_irq, flags);
-	if (req->in_progress) {
-		SPH_SPIN_UNLOCK_IRQRESTORE(&req->lock_irq, flags);
-		return;
-	}
-	req->in_progress = true;
-	SPH_SPIN_UNLOCK_IRQRESTORE(&req->lock_irq, flags);
-
-	err = req->f->execute(req);
-
-	if (unlikely(err < 0))
-		req->f->complete(req, err);
-
 }
 
 static struct inf_subres_load_session *create_subres_load_session(struct inf_context *context, uint16_t sessionID, struct inf_devres *devres)
@@ -1072,41 +1088,4 @@ void inf_context_remove_subres_load_session(struct inf_context *context, uint16_
 		}
 	}
 	SPH_SPIN_UNLOCK(&context->lock);
-}
-
-int inf_exec_req_get(struct inf_exec_req *req)
-{
-	return kref_get_unless_zero(&req->in_use);
-}
-
-int inf_exec_req_put(struct inf_exec_req *req)
-{
-	return kref_put(&req->in_use, req->f->release);
-}
-
-int inf_update_priority(struct inf_exec_req *req,
-			uint8_t priority,
-			bool card2host,
-			dma_addr_t lli_addr)
-{
-	unsigned long flags;
-	int ret = 0;
-
-	SPH_SPIN_LOCK_IRQSAVE(&req->lock_irq, flags);
-	if (!req->in_progress) {
-		//Request didn't reached HW yet , just update priority here
-		req->priority = priority;
-	} else {
-		//Call Dma scheduler for update
-		ret = sphcs_dma_sched_update_priority(g_the_sphcs->dmaSched,
-							sph_dma_direction(card2host),
-							req->priority,
-							sph_dma_priority(priority),
-							lli_addr);
-		if (ret == 0)
-			req->priority = priority;
-	}
-	SPH_SPIN_UNLOCK_IRQRESTORE(&req->lock_irq, flags);
-
-	return ret;
 }

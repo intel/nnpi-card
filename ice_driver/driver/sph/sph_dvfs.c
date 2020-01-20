@@ -39,13 +39,17 @@ static int sphpb_get_icebo_ring_ratio(struct ice_sphmbox *sphmb,
 							uint16_t *value)
 {
 	union PCODE_MAILBOX_INTERFACE iface;
+	uint32_t ratio_value;
+	int ret;
 
 	iface.InterfaceData = 0;
 	iface.BitField.Command = ICEDRV_PCU_MAILBOX_ICE2RING_RATIO_READ;
 
-	return write_icedriver_mailbox(sphmb, iface,
+	ret =  write_icedriver_mailbox(sphmb, iface,
 				       0x0, 0x0,
-				       (uint32_t *)value, NULL);
+				       &ratio_value, NULL);
+	*value = ratio_value;
+	return ret;
 }
 
 int icedrv_set_icebo_to_ring_ratio(uint16_t value)
@@ -76,6 +80,11 @@ int icedrv_get_icebo_to_ring_ratio(uint16_t *value)
 	struct cve_device_group *dg;
 	struct ice_sphmbox *sphmb = NULL;
 
+	if (!value) {
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+			"null ratio value pointer (%d) !!\n", -EINVAL);
+		return -EINVAL;
+	}
 	dg = cve_dg_get();
 	if (!dg) {
 		cve_os_log(CVE_LOGLEVEL_ERROR,
@@ -128,6 +137,11 @@ int icedrv_get_icebo_frequency(uint32_t icebo_num, uint32_t *freq)
 	struct ice_sphmbox *sphmb = NULL;
 	union icedrv_pcu_mailbox_icebo_frequency_read freq_vol;
 
+	if (!freq) {
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+			"null freq pointer (%d) !!\n", -EINVAL);
+		return -EINVAL;
+	}
 	dg = cve_dg_get();
 	if (!dg) {
 		cve_os_log(CVE_LOGLEVEL_ERROR,

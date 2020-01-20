@@ -1,5 +1,5 @@
 /********************************************
- * Copyright (C) 2019 Intel Corporation
+ * Copyright (C) 2019-2020 Intel Corporation
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  ********************************************/
@@ -161,7 +161,7 @@ static void release_cmd(struct kref *kref)
 	kfree(cmd);
 }
 
-inline void inf_cmd_get(struct inf_cmd_list *cmd)
+void inf_cmd_get(struct inf_cmd_list *cmd)
 {
 	int ret;
 
@@ -169,7 +169,7 @@ inline void inf_cmd_get(struct inf_cmd_list *cmd)
 	SPH_ASSERT(ret != 0);
 }
 
-inline int inf_cmd_put(struct inf_cmd_list *cmd)
+int inf_cmd_put(struct inf_cmd_list *cmd)
 {
 	return kref_put(&cmd->ref, release_cmd);
 }
@@ -340,6 +340,8 @@ static struct id_set *id_set_intersect(struct id_set *set0, struct id_set *set1)
 		return NULL;
 
 	isect = id_set_create(false);
+	if (!isect)
+		return NULL;
 
 	if (id_range_intersect(&isect->ranges, &set0->ranges, &set1->ranges) == 0) {
 		kfree(isect);
@@ -403,7 +405,7 @@ static void id_set_free(struct id_set *set)
 	kfree(set);
 }
 
-static void inf_cmd_clear_group_deves_optimization(struct inf_cmd_list *cmd)
+static void inf_cmd_clear_group_devres_optimization(struct inf_cmd_list *cmd)
 {
 	struct inf_exec_req *req;
 	uint16_t i;
@@ -550,7 +552,7 @@ void inf_cmd_optimize_group_devres(struct inf_cmd_list *cmd)
 				       &cmd->devres_id_ranges,
 				       &c->devres_id_ranges) > 0) {
 			SPH_SPIN_UNLOCK(&cmd->context->lock);
-			inf_cmd_clear_group_deves_optimization(c);
+			inf_cmd_clear_group_devres_optimization(c);
 			cmd->context->num_optimized_cmd_lists--;
 			if (build_access_group_sets(c, &sets) != 0)
 				goto done;

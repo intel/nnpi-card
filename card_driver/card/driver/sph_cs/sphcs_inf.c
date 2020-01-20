@@ -1,5 +1,5 @@
 /********************************************
- * Copyright (C) 2019 Intel Corporation
+ * Copyright (C) 2019-2020 Intel Corporation
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  ********************************************/
@@ -42,7 +42,7 @@ static inline uint32_t getFreeMem(void)
 	struct sysinfo i;
 
 	si_meminfo(&i);
-	return  i.freeram;
+	return  i.freeram * (i.mem_unit >> 10);
 }
 
 static inline bool check_memory_threshold(void)
@@ -52,7 +52,7 @@ static inline bool check_memory_threshold(void)
 	if (mem_thr) {
 		freeRam = getFreeMem();
 		if (freeRam < mem_thr) {
-			sph_log_debug(CREATE_COMMAND_LOG, "free memory below the threshold (%u) freeRam (%u)", mem_thr, freeRam);
+			sph_log_info(CREATE_COMMAND_LOG, "free memory below the threshold (%u) freeRam (%u)", mem_thr, freeRam);
 			return false;
 		}
 	}
@@ -231,7 +231,7 @@ static void fini_daemon(struct inf_data *inf_data)
 	mutex_unlock(&inf_data->io_lock);
 }
 
-static struct inf_context *find_context(struct inf_data *inf_data, uint16_t protocolID)
+static struct inf_context *find_and_get_context(struct inf_data *inf_data, uint16_t protocolID)
 {
 	struct inf_context *context;
 
@@ -241,6 +241,8 @@ static struct inf_context *find_context(struct inf_data *inf_data, uint16_t prot
 			       hash_node,
 			       protocolID)
 		if (context->protocolID == protocolID) {
+			if (unlikely(inf_context_get(context) == 0))
+				break; //release is in progress
 			SPH_SPIN_UNLOCK_BH(&inf_data->lock_bh);
 			return context;
 		}
@@ -281,7 +283,7 @@ static void recover_context(struct sphcs *sphcs, struct inf_context *context)
 	sphcs_send_event_report(sphcs, event, val, context->protocolID, -1);
 }
 
-static void destroy_context_on_create_failed(struct sphcs *sphcs, struct inf_context *context)
+static inline void destroy_context_on_create_failed(struct sphcs *sphcs, struct inf_context *context)
 {
 	SPH_SPIN_LOCK_BH(&sphcs->inf_data->lock_bh);
 	SPH_ASSERT(context->attached == 0);
@@ -289,12 +291,13 @@ static void destroy_context_on_create_failed(struct sphcs *sphcs, struct inf_con
 		SPH_SPIN_UNLOCK_BH(&sphcs->inf_data->lock_bh);
 		return;
 	}
+	context->destroyed = -1;
 	SPH_SPIN_UNLOCK_BH(&sphcs->inf_data->lock_bh);
 
 	inf_context_put(context);
 }
 
-static int find_and_destroy_context(struct inf_data *inf_data, uint16_t ctxID)
+static inline int find_and_destroy_context(struct inf_data *inf_data, uint16_t ctxID)
 {
 	struct inf_context *iter, *context = NULL;
 
@@ -304,17 +307,19 @@ static int find_and_destroy_context(struct inf_data *inf_data, uint16_t ctxID)
 			context = iter;
 			break;
 		}
-	SPH_SPIN_UNLOCK_BH(&inf_data->lock_bh);
 
-	if (unlikely(context == NULL))
+	if (unlikely(context == NULL)) {
+		SPH_SPIN_UNLOCK_BH(&inf_data->lock_bh);
 		return -ENXIO;
+	}
 
-	if (context->destroyed)
+	if (context->destroyed) {
+		SPH_SPIN_UNLOCK_BH(&inf_data->lock_bh);
 		return 0;
+	}
 
-	SPH_SPIN_LOCK(&context->lock);
 	context->destroyed = 1;
-	SPH_SPIN_UNLOCK(&context->lock);
+	SPH_SPIN_UNLOCK_BH(&inf_data->lock_bh);
 
 	inf_context_put(context);
 
@@ -335,9 +340,6 @@ enum event_val create_context(struct sphcs *sphcs, uint16_t protocolID, uint8_t 
 	struct inf_create_context cmd_args;
 	int ret;
 
-	if (unlikely(!sphcs->inf_data->daemon))
-		return SPH_IPC_NO_DAEMON;
-
 	ret = inf_context_create(protocolID, chan, &context);
 	if (unlikely(ret < 0))
 		return SPH_IPC_NO_MEMORY;
@@ -348,9 +350,14 @@ enum event_val create_context(struct sphcs *sphcs, uint16_t protocolID, uint8_t 
 	cmd_args.contextID = protocolID;
 	cmd_args.flags = flags;
 
+	mutex_lock(&sphcs->inf_data->io_lock);
+	if (unlikely(!sphcs->inf_data->daemon)) {
+		mutex_unlock(&sphcs->inf_data->io_lock);
+		destroy_context_on_create_failed(sphcs, context);
+		return SPH_IPC_NO_DAEMON;
+	}
 	// Take kref, dedicated to daemon
 	inf_context_get(context);
-
 	context->daemon_ref_released = false;
 
 	ret = inf_cmd_queue_add(&sphcs->inf_data->daemon->cmdq,
@@ -361,10 +368,12 @@ enum event_val create_context(struct sphcs *sphcs, uint16_t protocolID, uint8_t 
 
 	if (unlikely(ret < 0)) {
 		destroy_context_on_create_failed(sphcs, context);
-		// release kref dedicated for runtime
+		// release kref dedicated for daemon
 		inf_context_put(context);
+		mutex_unlock(&sphcs->inf_data->io_lock);
 		return SPH_IPC_NO_MEMORY;
 	}
+	mutex_unlock(&sphcs->inf_data->io_lock);
 
 	if (chan != NULL) {
 		chan->destroy_cb = sphcs_inf_context_chan_cleanup;
@@ -378,7 +387,7 @@ static void detach_runtime(struct sphcs *sphcs, struct inf_context *context)
 {
 	if (likely(context->attached > 0)) {
 
-		context->attached = -1;
+		context->attached = -1; //Lock is not needed here
 
 		if (unlikely(!context->destroyed)) {
 			inf_context_set_state(context, CONTEXT_BROKEN_NON_RECOVERABLE);
@@ -387,9 +396,9 @@ static void detach_runtime(struct sphcs *sphcs, struct inf_context *context)
 						0,
 						context->protocolID,
 						-1);
-
-			del_all_active_create_and_inf_requests(context);
 		}
+
+		del_all_active_create_and_inf_requests(context);
 		// no runtime attached anymore, release kref took for runtime
 		inf_context_put(context);
 	}
@@ -407,18 +416,20 @@ void handle_daemon_error(const struct inf_error_ioctl *err_ioctl)
 			sph_log_err(GENERAL_LOG, "got daemon error %d val=%d\n",
 					err_ioctl->errorCode, err_ioctl->errorVal);
 
-		context = find_context(g_the_sphcs->inf_data,
+		context = find_and_get_context(g_the_sphcs->inf_data,
 							   err_ioctl->errorVal);
 		if (unlikely(context == NULL)) {
 			sph_log_err(GENERAL_LOG, "Got error(%u) for not existing context(%u)\n",
 					err_ioctl->errorCode, err_ioctl->errorVal);
 			return;
 		}
+		SPH_ASSERT(!context->daemon_ref_released);
+		inf_context_put(context);
 
 		/* if the failure happened during context creation phase
 		 * (have not yet attached or detached) destroy the context
 		 */
-		if (!context->attached) {
+		if (context->attached == 0) {
 
 			enum event_val val;
 
@@ -436,14 +447,12 @@ void handle_daemon_error(const struct inf_error_ioctl *err_ioctl)
 					-1);
 			destroy_context_on_create_failed(g_the_sphcs, context);
 		}
-		// Always release kref dedicated for daemon
-		if (!context->daemon_ref_released) {
-			context->daemon_ref_released = true;
-			inf_context_put(context);
-		}
-	} else
+		context->daemon_ref_released = true;
+		inf_context_put(context);
+	} else {
 		sph_log_err(GENERAL_LOG, "Got unknown error code from daemon %u\n",
 			    err_ioctl->errorCode);
+	}
 }
 
 void handle_runtime_error(struct inf_context *context,
@@ -622,21 +631,22 @@ static long sphcs_inf_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 		if (unlikely(ret != 0))
 			return -EIO;
 
-		context = find_context(g_the_sphcs->inf_data, contextID);
+		context = find_and_get_context(g_the_sphcs->inf_data, contextID);
 		if (unlikely(context == NULL))
 			return -ENXIO;
 
 		ret = inf_context_runtime_attach(context);
 		if (unlikely(ret < 0)) {
 			if (ret == -EPERM) {
+				SPH_ASSERT(context->destroyed == 1);//This can happen only if user canceled create
 				destroy_context_on_create_failed(g_the_sphcs, context);
-				// runtime was not attached, put kref dedicated for it
-				inf_context_put(context);
 			} else {
 				sph_log_debug(GENERAL_LOG, "Context %u was tried to be attached more than once\n", contextID);
 			}
+			inf_context_put(context);
 			return ret;
 		}
+		inf_context_put(context);
 
 		f->private_data = context;
 
@@ -804,7 +814,7 @@ failed_devres:
 		break;
 
 failed_devnet:
-		destroy_devnet_on_create_failed(devnet);
+		inf_devnet_on_create_or_add_res_failed(devnet);
 
 		break;
 	}
@@ -1088,19 +1098,23 @@ static void context_op_work_handler(struct work_struct *work)
 		if (op->chan)
 			sphcs_cmd_chan_put(op->chan);
 	} else {
-		context = find_context(sphcs->inf_data, op->cmd.ctxID);
+		context = find_and_get_context(sphcs->inf_data, op->cmd.ctxID);
 		if (op->cmd.recover) {
-			if (unlikely(context == NULL)) {
+			if (unlikely(context == NULL || context->destroyed != 0)) {
+				if (context != NULL)
+					inf_context_put(context);
 				event = SPH_IPC_RECOVER_CONTEXT_FAILED;
 				val = SPH_IPC_NO_SUCH_CONTEXT;
 				goto send_error;
 			}
 
 			recover_context(sphcs, context);
+			inf_context_put(context);
 			if (op->chan)
 				sphcs_cmd_chan_put(op->chan);
 		} else {
 			if (unlikely(context != NULL)) {
+				inf_context_put(context);
 				event = SPH_IPC_CREATE_CONTEXT_FAILED;
 				val = SPH_IPC_ALREADY_EXIST;
 				goto send_error;
@@ -1211,8 +1225,10 @@ void IPC_OPCODE_HANDLER(SYNC)(struct sphcs   *sphcs,
 
 	DO_TRACE(trace_infer_create(SPH_TRACE_INF_CREATE_INF_SYNC, cmd->contextID, cmd->syncSeq, SPH_TRACE_OP_STATUS_QUEUED, -1, -1));
 
-	context = find_context(sphcs->inf_data, cmd->contextID);
-	if (unlikely(context == NULL)) {
+	context = find_and_get_context(sphcs->inf_data, cmd->contextID);
+	if (unlikely(context == NULL || context->destroyed != 0)) {
+		if (context != NULL)
+			inf_context_put(context);
 		sphcs_send_event_report(sphcs,
 					SPH_IPC_CREATE_SYNC_FAILED,
 					SPH_IPC_NO_SUCH_CONTEXT,
@@ -1222,6 +1238,7 @@ void IPC_OPCODE_HANDLER(SYNC)(struct sphcs   *sphcs,
 	}
 
 	inf_context_add_sync_point(context, cmd->syncSeq);
+	inf_context_put(context);
 
 	DO_TRACE(trace_infer_create(SPH_TRACE_INF_CREATE_INF_SYNC, cmd->contextID, cmd->syncSeq, SPH_TRACE_OP_STATUS_COMPLETE, -1, -1));
 }
@@ -1233,8 +1250,10 @@ void IPC_OPCODE_HANDLER(CHAN_SYNC)(struct sphcs   *sphcs,
 
 	DO_TRACE(trace_infer_create(SPH_TRACE_INF_CREATE_INF_SYNC, cmd->chanID, cmd->syncSeq, SPH_TRACE_OP_STATUS_QUEUED, -1, -1));
 
-	context = find_context(sphcs->inf_data, cmd->chanID);
-	if (unlikely(context == NULL || context->chan == NULL)) {
+	context = find_and_get_context(sphcs->inf_data, cmd->chanID);
+	if (unlikely(context == NULL || context->chan == NULL || context->destroyed != 0)) {
+		if (context != NULL)
+			inf_context_put(context);
 		sphcs_send_event_report(sphcs,
 					SPH_IPC_CREATE_SYNC_FAILED,
 					SPH_IPC_NO_SUCH_CONTEXT,
@@ -1244,6 +1263,7 @@ void IPC_OPCODE_HANDLER(CHAN_SYNC)(struct sphcs   *sphcs,
 	}
 
 	inf_context_add_sync_point(context, cmd->syncSeq);
+	inf_context_put(context);
 
 	DO_TRACE(trace_infer_create(SPH_TRACE_INF_CREATE_INF_SYNC, cmd->chanID, cmd->syncSeq, SPH_TRACE_OP_STATUS_COMPLETE, -1, -1));
 }
@@ -1280,9 +1300,13 @@ static void resource_op_work_handler(struct work_struct *work)
 			goto send_error;
 		}
 	} else {
+		event = SPH_IPC_CREATE_DEVRES_FAILED;
+		if (unlikely(op->context->destroyed != 0)) {
+			val = SPH_IPC_NO_SUCH_CONTEXT;
+			goto send_error;
+		}
 		devres = inf_context_find_devres(op->context, op->cmd.resID);
 		if (unlikely(devres != NULL)) {
-			event = SPH_IPC_CREATE_DEVRES_FAILED;
 			val = SPH_IPC_ALREADY_EXIST;
 			goto send_error;
 		}
@@ -1309,10 +1333,10 @@ static void resource_op_work_handler(struct work_struct *work)
 						op->cmd.resID,
 						op->cmd.size,
 						op->cmd.depth,
+						op->cmd.align << SPH_PAGE_SHIFT,
 						usage_flags,
 						&devres);
 		if (unlikely(ret < 0)) {
-			event = SPH_IPC_CREATE_DEVRES_FAILED;
 			val = SPH_IPC_NO_MEMORY;
 			goto send_error;
 		}
@@ -1323,6 +1347,7 @@ static void resource_op_work_handler(struct work_struct *work)
 send_error:
 	sphcs_send_event_report(g_the_sphcs, event, val, op->cmd.ctxID,	op->cmd.resID);
 done:
+	inf_context_put(op->context);
 	kfree(op);
 }
 
@@ -1339,7 +1364,7 @@ void IPC_OPCODE_HANDLER(INF_RESOURCE)(struct sphcs                  *sphcs,
 	else
 		event = SPH_IPC_CREATE_DEVRES_FAILED;
 
-	context = find_context(sphcs->inf_data, cmd->ctxID);
+	context = find_and_get_context(sphcs->inf_data, cmd->ctxID);
 	if (unlikely(context == NULL)) {
 		val = SPH_IPC_NO_SUCH_CONTEXT;
 		goto send_error;
@@ -1347,6 +1372,7 @@ void IPC_OPCODE_HANDLER(INF_RESOURCE)(struct sphcs                  *sphcs,
 
 	work = kzalloc(sizeof(*work), GFP_NOWAIT);
 	if (unlikely(work == NULL)) {
+		inf_context_put(context);
 		val = SPH_IPC_NO_MEMORY;
 		goto send_error;
 	}
@@ -1377,19 +1403,21 @@ void IPC_OPCODE_HANDLER(CHAN_INF_RESOURCE)(struct sphcs                  *sphcs,
 	else
 		event = SPH_IPC_CREATE_DEVRES_FAILED;
 
-	context = find_context(sphcs->inf_data, cmd->chanID);
+	context = find_and_get_context(sphcs->inf_data, cmd->chanID);
 	if (unlikely(context == NULL)) {
 		val = SPH_IPC_NO_SUCH_CONTEXT;
 		goto send_error;
 	}
 
 	if (unlikely(context->chan == NULL || context->chan->protocolID != cmd->chanID)) {
+		inf_context_put(context);
 		val = SPH_IPC_NO_SUCH_CONTEXT;
 		goto send_error;
 	}
 
 	work = kzalloc(sizeof(*work), GFP_NOWAIT);
 	if (unlikely(work == NULL)) {
+		inf_context_put(context);
 		val = SPH_IPC_NO_MEMORY;
 		goto send_error;
 	}
@@ -1407,6 +1435,7 @@ void IPC_OPCODE_HANDLER(CHAN_INF_RESOURCE)(struct sphcs                  *sphcs,
 	work->cmd.is_p2p_src = cmd->is_p2p_src;
 	work->cmd.depth = cmd->depth;
 	work->cmd.size = cmd->size;
+	work->cmd.align = cmd->align;
 	work->context = context;
 	INIT_WORK(&work->work, resource_op_work_handler);
 	queue_work(context->chan->wq, &work->work);
@@ -1508,7 +1537,7 @@ static int cmdlist_create_dma_complete(struct sphcs *sphcs,
 		switch (cmd_type) {
 		case CMDLIST_CMD_COPY:
 			POP_VALUE(data->vptr, uint16_t, &protID);
-			copy = inf_context_find_copy(cmd->context, protID);
+			copy = inf_context_find_and_get_copy(cmd->context, protID);
 			if (copy == NULL) {
 				val = SPH_IPC_NO_SUCH_COPY;
 				ret = -ENOENT;
@@ -1517,25 +1546,26 @@ static int cmdlist_create_dma_complete(struct sphcs *sphcs,
 			POP_VALUE(data->vptr, uint8_t, &priority);
 			POP_VALUE(data->vptr, uint64_t, &size);
 			if (cmd->num_left == 0) {// standalone copy
-				inf_copy_get(copy);
+				//kref is taken in find
 				inf_copy_req_init(&cmd->req_list[cmd->num_reqs], copy, cmd, size, priority);
 				++cmd->num_reqs;
 			} else { // copy in cpylst
 				ret = inf_cpylst_add_copy(cmd->req_list[cmd->num_reqs].cpylst, copy, size, priority);
+				inf_copy_put(copy);
 				if (ret < 0)
 					goto destroy_cmd;
 
 				DO_TRACE(trace_infer_create(SPH_TRACE_INF_ADD_TO_COPY_LIST,
 						copy->context->protocolID,
-						copy->protocolID, SPH_TRACE_OP_STATUS_QUEUED, cmd->protocolID, cpylst->idx_in_cmd));
+						copy->protocolID, SPH_TRACE_OP_STATUS_QUEUED, cmd->protocolID, cmd->num_reqs));
 
 				DO_TRACE(trace_infer_create(SPH_TRACE_INF_ADD_TO_COPY_LIST,
 						copy->context->protocolID,
-						copy->protocolID, SPH_TRACE_OP_STATUS_START, cmd->protocolID, cpylst->idx_in_cmd));
+						copy->protocolID, SPH_TRACE_OP_STATUS_START, cmd->protocolID, cmd->num_reqs));
 
 				DO_TRACE(trace_infer_create(SPH_TRACE_INF_ADD_TO_COPY_LIST,
 						copy->context->protocolID,
-						copy->protocolID, SPH_TRACE_OP_STATUS_COMPLETE, cmd->protocolID, cpylst->idx_in_cmd));
+						copy->protocolID, SPH_TRACE_OP_STATUS_COMPLETE, cmd->protocolID, cmd->num_reqs));
 
 				//TODO CPYLST treat different priorities
 				if (priority != 0 && cmd->req_list[cmd->num_reqs].priority == 0)
@@ -1548,7 +1578,7 @@ static int cmdlist_create_dma_complete(struct sphcs *sphcs,
 					++cmd->num_reqs;
 
 					DO_TRACE(trace_cpylist_create(SPH_TRACE_OP_STATUS_COMPLETE,
-							 cmd->context->protocolID, cmd->protocolID, cpylst->idx_in_cmd));
+							 cmd->context->protocolID, cmd->protocolID, cmd->num_reqs));
 				}
 			}
 			++cmd->edits_idx;//count max edits possible
@@ -1556,20 +1586,20 @@ static int cmdlist_create_dma_complete(struct sphcs *sphcs,
 		case CMDLIST_CMD_INFREQ:
 			SPH_ASSERT(cmd->num_left == 0);
 			POP_VALUE(data->vptr, uint16_t, &protID);
-			devnet = inf_context_find_devnet(cmd->context, protID);
-			if (devnet == NULL) {
+			devnet = inf_context_find_and_get_devnet(cmd->context, protID, true, true);
+			if (unlikely(devnet == NULL)) {
 				val = SPH_IPC_NO_SUCH_NET;
 				ret = -ENOENT;
 				goto destroy_cmd;
 			}
 			POP_VALUE(data->vptr, uint16_t, &protID);
-			infreq = inf_devnet_find_infreq(devnet, protID);
+			infreq = inf_devnet_find_and_get_infreq(devnet, protID);
+			inf_devnet_put(devnet);
 			if (infreq == NULL) {
 				val = SPH_IPC_NO_SUCH_INFREQ;
 				ret = -ENOENT;
 				goto destroy_cmd;
 			}
-			inf_req_get(infreq);
 			POP_VALUE(data->vptr, uint8_t, &sched_params_are_null);
 			if (sched_params_are_null == 0) {
 				POP_VALUE(data->vptr, uint16_t, &batchSize);
@@ -1700,7 +1730,31 @@ static void cmdlist_op_work_handler(struct work_struct *work)
 		}
 		goto done;
 	}
+
+	if (op->context->chan != NULL) {
+		struct sphcs_host_rb *cmd_data_rb = &op->context->chan->h2c_rb[0];
+		u32 host_chunk_size;
+		int n;
+
+		/* need to advance h2c ring buffer by one page */
+		host_rb_update_free_space(cmd_data_rb, SPH_PAGE_SIZE);
+		n = host_rb_get_avail_space(cmd_data_rb,
+					    SPH_PAGE_SIZE,
+					    1,
+					    &host_dma_addr,
+					    &host_chunk_size);
+
+		SPH_ASSERT(n == 1);
+		SPH_ASSERT((host_dma_addr & SPH_IPC_DMA_ADDR_ALIGN_MASK) == 0);
+
+		host_rb_update_avail_space(cmd_data_rb, SPH_PAGE_SIZE);
+	}
+
 	event = SPH_IPC_CREATE_CMD_FAILED;
+	if (unlikely(op->context->destroyed != 0)) {
+		val = SPH_IPC_NO_SUCH_CONTEXT;
+		goto send_error;
+	}
 	cmd = inf_context_find_cmd(op->context, op->cmd.cmdID);
 	if (op->cmd.is_first) {
 		if (unlikely(cmd != NULL)) {
@@ -1756,23 +1810,6 @@ static void cmdlist_op_work_handler(struct work_struct *work)
 	if (op->context->chan == NULL) {
 		host_dma_addr = SPH_IPC_DMA_PFN_TO_ADDR(op->cmd.host_pfn);
 		dma_data->host_page_hdl = op->cmd.host_page_hndl;
-	} else {
-		struct sphcs_host_rb *cmd_data_rb = &op->context->chan->h2c_rb[0];
-		u32 host_chunk_size;
-		int n;
-
-		/* need to advance h2c ring buffer by one page */
-		host_rb_update_free_space(cmd_data_rb, SPH_PAGE_SIZE);
-		n = host_rb_get_avail_space(cmd_data_rb,
-					    SPH_PAGE_SIZE,
-					    1,
-					    &host_dma_addr,
-					    &host_chunk_size);
-
-		SPH_ASSERT(n == 1);
-		SPH_ASSERT((host_dma_addr & SPH_IPC_DMA_ADDR_ALIGN_MASK) == 0);
-
-		host_rb_update_avail_space(cmd_data_rb, SPH_PAGE_SIZE);
 	}
 
 	ret = sphcs_dma_sched_start_xfer_single(g_the_sphcs->dmaSched,
@@ -1803,8 +1840,11 @@ destroy_cmd:
 	// put kref for DMA
 	inf_cmd_put(cmd);
 send_error:
+	if (op->context->chan != NULL)
+		sphcs_cmd_chan_update_cmd_head(op->context->chan, 0, PAGE_SIZE);
 	sphcs_send_event_report(g_the_sphcs, event, val, op->cmd.ctxID,	op->cmd.cmdID);
 done:
+	inf_context_put(op->context);
 	kfree(op);
 }
 
@@ -1821,7 +1861,7 @@ void IPC_OPCODE_HANDLER(INF_CMDLIST)(struct sphcs                  *sphcs,
 	else
 		event = SPH_IPC_CREATE_CMD_FAILED;
 
-	context = find_context(sphcs->inf_data, cmd->ctxID);
+	context = find_and_get_context(sphcs->inf_data, cmd->ctxID);
 	if (unlikely(context == NULL)) {
 		val = SPH_IPC_NO_SUCH_CONTEXT;
 		goto send_error;
@@ -1829,6 +1869,7 @@ void IPC_OPCODE_HANDLER(INF_CMDLIST)(struct sphcs                  *sphcs,
 
 	work = kzalloc(sizeof(*work), GFP_NOWAIT);
 	if (unlikely(work == NULL)) {
+		inf_context_put(context);
 		val = SPH_IPC_NO_MEMORY;
 		goto send_error;
 	}
@@ -1859,7 +1900,7 @@ void IPC_OPCODE_HANDLER(CHAN_INF_CMDLIST)(struct sphcs                      *sph
 	else
 		event = SPH_IPC_CREATE_CMD_FAILED;
 
-	context = find_context(sphcs->inf_data, cmd->chanID);
+	context = find_and_get_context(sphcs->inf_data, cmd->chanID);
 	if (unlikely(context == NULL || context->chan == NULL)) {
 		val = SPH_IPC_NO_SUCH_CONTEXT;
 		goto send_error;
@@ -1867,6 +1908,7 @@ void IPC_OPCODE_HANDLER(CHAN_INF_CMDLIST)(struct sphcs                      *sph
 
 	work = kzalloc(sizeof(*work), GFP_NOWAIT);
 	if (unlikely(work == NULL)) {
+		inf_context_put(context);
 		val = SPH_IPC_NO_MEMORY;
 		goto send_error;
 	}
@@ -1918,7 +1960,7 @@ struct network_dma_data {
 };
 
 struct network_edit_data {
-	struct inf_create_network cmd; //should be last field
+	struct inf_create_network cmd;
 };
 
 static int network_op_dma_complete(struct sphcs *sphcs,
@@ -1932,13 +1974,12 @@ static int network_op_dma_complete(struct sphcs *sphcs,
 	enum event_val val;
 	int ret;
 	uint16_t *packet_ptr;
-	unsigned int i, j;
 	struct inf_devnet *devnet = data->devnet;
 	struct network_edit_data *edit_data = (struct network_edit_data *)devnet->edit_data;
 	struct inf_devres *devres;
 	uint32_t cmd_size;
 	uint64_t *int64ptr;
-	uint32_t max_entries_per_page = data->chained ? (SPH_PAGE_SIZE - sizeof(u64)) / sizeof(uint16_t) : data->num_res;
+	uint32_t j, max_entries_per_page = data->chained ? (SPH_PAGE_SIZE - sizeof(u64)) / sizeof(uint16_t) : data->num_res;
 
 
 	if (devnet->context->chan != NULL) {
@@ -1963,8 +2004,8 @@ static int network_op_dma_complete(struct sphcs *sphcs,
 	packet_ptr = (uint16_t *)data->vptr;
 	int64ptr = (uint64_t *)(&edit_data->cmd + 1);
 	int64ptr = int64ptr + data->curr_num_res;
-	for (i = data->curr_num_res, j = 0; i < data->num_res && j < max_entries_per_page; i++, j++) {
-		devres = inf_context_find_devres(devnet->context,
+	for (j = 0; data->curr_num_res < data->num_res && j < max_entries_per_page; ++j) {
+		devres = inf_context_find_and_get_devres(devnet->context,
 							  *(packet_ptr++));
 		if (unlikely(devres == NULL)) {
 			val = SPH_IPC_NO_SUCH_DEVRES;
@@ -1973,6 +2014,7 @@ static int network_op_dma_complete(struct sphcs *sphcs,
 		}
 
 		ret = inf_devnet_add_devres(devnet, devres);
+		inf_devres_put(devres);
 		if (unlikely(ret)) {
 			val = SPH_IPC_NO_MEMORY;
 			goto delete_devnet;
@@ -2062,7 +2104,7 @@ static int network_op_dma_complete(struct sphcs *sphcs,
 	goto done;
 
 delete_devnet:
-	destroy_devnet_on_create_failed(data->devnet);
+	inf_devnet_on_create_or_add_res_failed(data->devnet);
 send_error:
 	if (data->create)
 		event = SPH_IPC_CREATE_DEVNET_FAILED;
@@ -2095,16 +2137,10 @@ static void network_op_work_handler(struct work_struct *work)
 	struct network_dma_data *dma_data;
 	struct inf_devnet *devnet;
 	uint16_t config_data_size;
+	dma_addr_t host_dma_addr;
 	uint8_t event;
 	enum event_val val;
 	int ret;
-
-	if (op->cmd.create)
-		if (!check_memory_threshold()) {
-			event = SPH_IPC_CREATE_DEVNET_FAILED;
-			val = SPH_IPC_NO_MEMORY;
-			goto send_error;
-		}
 
 	if (op->cmd.destroy) {
 		ret = inf_context_find_and_destroy_devnet(op->context, op->cmd.netID);
@@ -2114,12 +2150,47 @@ static void network_op_work_handler(struct work_struct *work)
 			goto send_error;
 		}
 		goto done;
+	} else {
+		if (op->context->chan == NULL)
+			host_dma_addr = SPH_IPC_DMA_PFN_TO_ADDR(op->cmd.host_pfn);
+		else {
+			struct sphcs_host_rb *cmd_data_rb = &op->context->chan->h2c_rb[op->rbID];
+			u32 host_chunk_size;
+			int n;
+
+			/* need to advance h2c ring buffer by one page */
+			host_rb_update_free_space(cmd_data_rb, SPH_PAGE_SIZE);
+			n = host_rb_get_avail_space(cmd_data_rb,
+						    SPH_PAGE_SIZE,
+						    1,
+						    &host_dma_addr,
+						    &host_chunk_size);
+
+			SPH_ASSERT(n == 1);
+			SPH_ASSERT((host_dma_addr & SPH_IPC_DMA_ADDR_ALIGN_MASK) == 0);
+
+			host_rb_update_avail_space(cmd_data_rb, SPH_PAGE_SIZE);
+		}
+
+		if (!check_memory_threshold()) {
+			event = SPH_IPC_CREATE_DEVNET_FAILED;
+			val = SPH_IPC_NO_MEMORY;
+			goto send_error;
+		}
 	}
 
-	devnet = inf_context_find_devnet(op->context, op->cmd.netID);
-	if (op->cmd.create && op->start_res_idx == 0) {
+	if (op->cmd.create)
 		event = SPH_IPC_CREATE_DEVNET_FAILED;
+	else
+		event = SPH_IPC_DEVNET_ADD_RES_FAILED;
 
+	if (unlikely(op->context->destroyed != 0)) {
+		val = SPH_IPC_NO_SUCH_CONTEXT;
+		goto send_error;
+	}
+
+	if (op->cmd.create && op->start_res_idx == 0) {
+		devnet = inf_context_find_devnet(op->context, op->cmd.netID);
 		if (unlikely(devnet != NULL)) {
 			val = SPH_IPC_ALREADY_EXIST;
 			goto send_error;
@@ -2129,38 +2200,30 @@ static void network_op_work_handler(struct work_struct *work)
 			 op->cmd.ctxID, op->cmd.netID,
 			 SPH_TRACE_OP_STATUS_START, -1, -1));
 
-		ret = inf_context_create_devnet(op->context,
-						op->cmd.netID,
-						&devnet);
+		ret = inf_devnet_create(op->cmd.netID,
+					op->context,
+					&devnet);
 		if (unlikely(ret)) {
 			val = SPH_IPC_NO_MEMORY;
 			goto send_error;
 		}
 	} else {
-		if (op->cmd.create)
-			event = SPH_IPC_CREATE_DEVNET_FAILED;
-		else
-			event = SPH_IPC_DEVNET_ADD_RES_FAILED;
-
+		devnet = inf_context_find_and_get_devnet(op->context, op->cmd.netID, true, false);
 		if (unlikely(devnet == NULL)) {
 			val = SPH_IPC_NO_SUCH_NET;
+			goto send_error;
+		}
+
+		if (unlikely(op->cmd.create && devnet->created)) {
+			val = SPH_IPC_ALREADY_EXIST;
 			goto send_error;
 		}
 	}
 
 	SPH_SPIN_LOCK(&devnet->lock);
 	devnet->edit_status = CREATE_STARTED;
-	// get kref for DMA
-	inf_devnet_get(devnet);
+	// kref for DMA is taken in find or in create
 	SPH_SPIN_UNLOCK(&devnet->lock);
-
-	if (!devnet->created) {
-		SPH_SPIN_LOCK(&devnet->context->lock);
-		hash_add(devnet->context->devnet_hash,
-			 &devnet->hash_node,
-			 devnet->protocolID);
-		SPH_SPIN_UNLOCK(&devnet->context->lock);
-	}
 
 	config_data_size = op->cmd.size + 1
 			   - (op->cmd.num_res * sizeof(uint16_t));
@@ -2195,6 +2258,7 @@ static void network_op_work_handler(struct work_struct *work)
 	dma_data->curr_num_res = op->start_res_idx;
 	dma_data->config_data_size = config_data_size;
 	dma_data->chained = op->cmd.chained;
+	dma_data->host_dma_addr = host_dma_addr;
 
 	ret = dma_page_pool_get_free_page(g_the_sphcs->dma_page_pool,
 					  &dma_data->dma_page_hndl,
@@ -2205,29 +2269,15 @@ static void network_op_work_handler(struct work_struct *work)
 		goto free_dma_data;
 	}
 
-	if (op->context->chan == NULL) {
+	if (op->context->chan == NULL)
 		dma_data->host_dma_page_hndl = op->cmd.dma_page_hndl;
-		dma_data->host_dma_addr = SPH_IPC_DMA_PFN_TO_ADDR(op->cmd.host_pfn);
-	} else {
-		struct sphcs_host_rb *cmd_data_rb = &op->context->chan->h2c_rb[op->rbID];
-		u32 host_chunk_size;
-		int n;
-
-		/* need to advance h2c ring buffer by one page */
-		host_rb_update_free_space(cmd_data_rb, SPH_PAGE_SIZE);
-		n = host_rb_get_avail_space(cmd_data_rb,
-					    SPH_PAGE_SIZE,
-					    1,
-					    &dma_data->host_dma_addr,
-					    &host_chunk_size);
-
-		SPH_ASSERT(n == 1);
-		SPH_ASSERT((dma_data->host_dma_addr & SPH_IPC_DMA_ADDR_ALIGN_MASK) == 0);
-
+	else
 		dma_data->rbID = op->rbID;
-		host_rb_update_avail_space(cmd_data_rb, SPH_PAGE_SIZE);
-	}
 
+	if (unlikely(devnet->destroyed)) { // RT died
+		val = SPH_IPC_CONTEXT_BROKEN;
+		goto free_page;
+	}
 	ret = sphcs_dma_sched_start_xfer_single(g_the_sphcs->dmaSched,
 						op->context->chan ? &op->context->chan->h2c_dma_desc :
 								    &g_dma_desc_h2c_normal,
@@ -2252,13 +2302,18 @@ free_page:
 free_dma_data:
 	kfree(dma_data);
 destroy_devnet:
-	destroy_devnet_on_create_failed(devnet);
+	inf_devnet_on_create_or_add_res_failed(devnet);
 	// put kref for DMA
 	inf_devnet_put(devnet);
 send_error:
+	if (!op->cmd.destroy && op->context->chan != NULL)
+		sphcs_cmd_chan_update_cmd_head(op->context->chan,
+					       op->rbID,
+					       SPH_PAGE_SIZE);
 	sphcs_send_event_report(g_the_sphcs, event, val,
 				op->cmd.ctxID, op->cmd.netID);
 done:
+	inf_context_put(op->context);
 	kfree(op);
 }
 
@@ -2276,7 +2331,7 @@ void IPC_OPCODE_HANDLER(INF_NETWORK)(struct sphcs *sphcs, union h2c_InferenceNet
 	else
 		event = SPH_IPC_DEVNET_ADD_RES_FAILED;
 
-	context = find_context(sphcs->inf_data, cmd->ctxID);
+	context = find_and_get_context(sphcs->inf_data, cmd->ctxID);
 	if (unlikely(context == NULL)) {
 		val = SPH_IPC_NO_SUCH_CONTEXT;
 		goto send_error;
@@ -2284,6 +2339,7 @@ void IPC_OPCODE_HANDLER(INF_NETWORK)(struct sphcs *sphcs, union h2c_InferenceNet
 
 	work = kzalloc(sizeof(*work), GFP_NOWAIT);
 	if (unlikely(work == NULL)) {
+		inf_context_put(context);
 		val = SPH_IPC_NO_MEMORY;
 		goto send_error;
 	}
@@ -2315,7 +2371,7 @@ void IPC_OPCODE_HANDLER(CHAN_INF_NETWORK)(struct sphcs *sphcs, union h2c_ChanInf
 	else
 		event = SPH_IPC_DEVNET_ADD_RES_FAILED;
 
-	context = find_context(sphcs->inf_data, cmd->chanID);
+	context = find_and_get_context(sphcs->inf_data, cmd->chanID);
 	if (unlikely(context == NULL || context->chan == NULL)) {
 		val = SPH_IPC_NO_SUCH_CONTEXT;
 		goto send_error;
@@ -2323,6 +2379,7 @@ void IPC_OPCODE_HANDLER(CHAN_INF_NETWORK)(struct sphcs *sphcs, union h2c_ChanInf
 
 	work = kzalloc(sizeof(*work), GFP_NOWAIT);
 	if (unlikely(work == NULL)) {
+		inf_context_put(context);
 		val = SPH_IPC_NO_MEMORY;
 		goto send_error;
 	}
@@ -2387,7 +2444,12 @@ static void copy_op_work_handler(struct work_struct *work)
 	} else { // Create copy
 		event = SPH_IPC_CREATE_COPY_FAILED;
 
-		devres = inf_context_find_devres(op->context, op->cmd.protResID);
+		if (unlikely(op->context->destroyed != 0)) {
+			val = SPH_IPC_NO_SUCH_CONTEXT;
+			goto send_error;
+		}
+
+		devres = inf_context_find_and_get_devres(op->context, op->cmd.protResID);
 		if (unlikely(devres == NULL)) {
 			val = SPH_IPC_NO_SUCH_DEVRES;
 			goto send_error;
@@ -2395,6 +2457,7 @@ static void copy_op_work_handler(struct work_struct *work)
 
 		copy = inf_context_find_copy(op->context, op->cmd.protCopyID);
 		if (unlikely(copy != NULL)) {
+			inf_devres_put(devres);
 			val = SPH_IPC_ALREADY_EXIST;
 			goto send_error;
 		}
@@ -2417,8 +2480,12 @@ static void copy_op_work_handler(struct work_struct *work)
 						      op->is_subres_copy,
 						      &copy);
 		}
+		inf_devres_put(devres);
 		if (unlikely(ret < 0)) {
-			val = SPH_IPC_NO_MEMORY;
+			if (ret == -ENOENT)
+				val = SPH_IPC_NO_SUCH_HOSTRES;
+			else
+				val = SPH_IPC_NO_MEMORY;
 			goto send_error;
 		}
 	}
@@ -2428,6 +2495,7 @@ static void copy_op_work_handler(struct work_struct *work)
 send_error:
 	sphcs_send_event_report(g_the_sphcs, event, val, op->cmd.ctxID, op->cmd.protCopyID);
 done:
+	inf_context_put(op->context);
 	kfree(op);
 }
 
@@ -2444,7 +2512,7 @@ void IPC_OPCODE_HANDLER(COPY_OP)(struct sphcs                  *sphcs,
 	else
 		event = SPH_IPC_CREATE_COPY_FAILED;
 
-	context = find_context(g_the_sphcs->inf_data, cmd->ctxID);
+	context = find_and_get_context(g_the_sphcs->inf_data, cmd->ctxID);
 	if (unlikely(context == NULL)) {
 		val = SPH_IPC_NO_SUCH_CONTEXT;
 		goto send_error;
@@ -2452,6 +2520,7 @@ void IPC_OPCODE_HANDLER(COPY_OP)(struct sphcs                  *sphcs,
 
 	work = kzalloc(sizeof(*work), GFP_NOWAIT);
 	if (unlikely(work == NULL)) {
+		inf_context_put(context);
 		val = SPH_IPC_NO_MEMORY;
 		goto send_error;
 	}
@@ -2484,13 +2553,14 @@ void IPC_OPCODE_HANDLER(CHAN_COPY_OP)(struct sphcs                  *sphcs,
 	else
 		event = SPH_IPC_CREATE_COPY_FAILED;
 
-	context = find_context(g_the_sphcs->inf_data, cmd->chanID);
+	context = find_and_get_context(g_the_sphcs->inf_data, cmd->chanID);
 	if (unlikely(context == NULL)) {
 		val = SPH_IPC_NO_SUCH_CONTEXT;
 		goto send_error;
 	}
 
 	if (unlikely(context->chan == NULL || context->chan->protocolID != cmd->chanID)) {
+		inf_context_put(context);
 		val = SPH_IPC_NO_SUCH_CONTEXT;
 		goto send_error;
 	}
@@ -2530,10 +2600,10 @@ void IPC_OPCODE_HANDLER(SCHEDULE_COPY)(struct sphcs                 *sphcs,
 	struct inf_context *context;
 	struct inf_copy *copy;
 	struct inf_exec_req *req;
-	enum event_val val;
+	enum event_val val = SPH_IPC_NO_MEMORY;
 	int ret;
 
-	context = find_context(sphcs->inf_data, cmd->ctxID);
+	context = find_and_get_context(sphcs->inf_data, cmd->ctxID);
 	if (unlikely(context == NULL)) {
 		val = SPH_IPC_NO_SUCH_CONTEXT;
 		goto send_error;
@@ -2541,37 +2611,41 @@ void IPC_OPCODE_HANDLER(SCHEDULE_COPY)(struct sphcs                 *sphcs,
 
 	if (unlikely(inf_context_get_state(context) != CONTEXT_OK)) {
 		val = SPH_IPC_CONTEXT_BROKEN;
-		goto send_error;
+		goto put_ctx;
 	}
 
 	if (unlikely(context->num_optimized_cmd_lists > 0)) {
 		val = SPH_IPC_NOT_SUPPORTED;
-		goto send_error;
+		goto put_ctx;
 	}
 
-	copy = inf_context_find_copy(context, cmd->protCopyID);
+	copy = inf_context_find_and_get_copy(context, cmd->protCopyID);
 	if (unlikely(copy == NULL)) {
 		val = SPH_IPC_NO_SUCH_COPY;
-		goto send_error;
+		goto put_ctx;
 	}
 
 	req = kmem_cache_alloc(copy->context->exec_req_slab_cache, GFP_NOWAIT);
-	if (unlikely(req == NULL)) {
-		val = SPH_IPC_NO_MEMORY;
-		goto send_error;
-	}
+	if (unlikely(req == NULL))
+		goto put_copy;
 
 	inf_copy_req_init(req, copy, NULL, cmd->copySize, cmd->priority);
 
 	ret = req->f->schedule(req);
 	if (unlikely(ret < 0)) {
 		kmem_cache_free(copy->context->exec_req_slab_cache, req);
-		val = SPH_IPC_NO_MEMORY;
-		goto send_error;
+		goto put_copy;
 	}
+
+	inf_copy_put(copy);
+	inf_context_put(context);
 
 	return;
 
+put_copy:
+	inf_copy_put(copy);
+put_ctx:
+	inf_context_put(context);
 send_error:
 	sphcs_send_event_report(sphcs, SPH_IPC_EXECUTE_COPY_FAILED, val,
 				cmd->ctxID, cmd->protCopyID);
@@ -2586,7 +2660,7 @@ void IPC_OPCODE_HANDLER(CHAN_SCHEDULE_COPY)(struct sphcs                 *sphcs,
 	enum event_val val;
 	int ret;
 
-	context = find_context(sphcs->inf_data, cmd->chanID);
+	context = find_and_get_context(sphcs->inf_data, cmd->chanID);
 	if (unlikely(context == NULL)) {
 		val = SPH_IPC_NO_SUCH_CONTEXT;
 		goto send_error;
@@ -2594,29 +2668,29 @@ void IPC_OPCODE_HANDLER(CHAN_SCHEDULE_COPY)(struct sphcs                 *sphcs,
 
 	if (unlikely(context->chan == NULL || context->chan->protocolID != cmd->chanID)) {
 		val = SPH_IPC_NO_SUCH_CONTEXT;
-		goto send_error;
+		goto put_ctx;
 	}
 
 	if (unlikely(inf_context_get_state(context) != CONTEXT_OK)) {
 		val = SPH_IPC_CONTEXT_BROKEN;
-		goto send_error;
+		goto put_ctx;
 	}
 
 	if (unlikely(context->num_optimized_cmd_lists > 0)) {
 		val = SPH_IPC_NOT_SUPPORTED;
-		goto send_error;
+		goto put_ctx;
 	}
 
-	copy = inf_context_find_copy(context, cmd->protCopyID);
+	copy = inf_context_find_and_get_copy(context, cmd->protCopyID);
 	if (unlikely(copy == NULL)) {
 		val = SPH_IPC_NO_SUCH_COPY;
-		goto send_error;
+		goto put_ctx;
 	}
 
 	req = kmem_cache_alloc(copy->context->exec_req_slab_cache, GFP_NOWAIT);
 	if (unlikely(req == NULL)) {
 		val = SPH_IPC_NO_MEMORY;
-		goto send_error;
+		goto put_copy;
 	}
 
 	inf_copy_req_init(req, copy, NULL, cmd->copySize, cmd->priority);
@@ -2625,11 +2699,18 @@ void IPC_OPCODE_HANDLER(CHAN_SCHEDULE_COPY)(struct sphcs                 *sphcs,
 	if (unlikely(ret < 0)) {
 		kmem_cache_free(copy->context->exec_req_slab_cache, req);
 		val = SPH_IPC_NO_MEMORY;
-		goto send_error;
+		goto put_copy;
 	}
+
+	inf_copy_put(copy);
+	inf_context_put(context);
 
 	return;
 
+put_copy:
+	inf_copy_put(copy);
+put_ctx:
+	inf_context_put(context);
 send_error:
 	sphcs_send_event_report(sphcs, SPH_IPC_EXECUTE_COPY_FAILED, val,
 				cmd->chanID, cmd->protCopyID);
@@ -2644,7 +2725,7 @@ void IPC_OPCODE_HANDLER(CHAN_SCHEDULE_COPY_LARGE)(struct sphcs                 *
 	enum event_val val;
 	int ret;
 
-	context = find_context(sphcs->inf_data, cmd->chanID);
+	context = find_and_get_context(sphcs->inf_data, cmd->chanID);
 	if (unlikely(context == NULL)) {
 		val = SPH_IPC_NO_SUCH_CONTEXT;
 		goto send_error;
@@ -2652,29 +2733,29 @@ void IPC_OPCODE_HANDLER(CHAN_SCHEDULE_COPY_LARGE)(struct sphcs                 *
 
 	if (unlikely(context->chan == NULL || context->chan->protocolID != cmd->chanID)) {
 		val = SPH_IPC_NO_SUCH_CONTEXT;
-		goto send_error;
+		goto put_ctx;
 	}
 
 	if (unlikely(inf_context_get_state(context) != CONTEXT_OK)) {
 		val = SPH_IPC_CONTEXT_BROKEN;
-		goto send_error;
+		goto put_ctx;
 	}
 
 	if (unlikely(context->num_optimized_cmd_lists > 0)) {
 		val = SPH_IPC_NOT_SUPPORTED;
-		goto send_error;
+		goto put_ctx;
 	}
 
-	copy = inf_context_find_copy(context, cmd->protCopyID);
+	copy = inf_context_find_and_get_copy(context, cmd->protCopyID);
 	if (unlikely(copy == NULL)) {
 		val = SPH_IPC_NO_SUCH_COPY;
-		goto send_error;
+		goto put_ctx;
 	}
 
 	req = kmem_cache_alloc(copy->context->exec_req_slab_cache, GFP_NOWAIT);
 	if (unlikely(req == NULL)) {
 		val = SPH_IPC_NO_MEMORY;
-		goto send_error;
+		goto put_copy;
 	}
 
 	inf_copy_req_init(req, copy, NULL, cmd->copySize, cmd->priority);
@@ -2683,11 +2764,18 @@ void IPC_OPCODE_HANDLER(CHAN_SCHEDULE_COPY_LARGE)(struct sphcs                 *
 	if (unlikely(ret < 0)) {
 		kmem_cache_free(copy->context->exec_req_slab_cache, req);
 		val = SPH_IPC_NO_MEMORY;
-		goto send_error;
+		goto put_copy;
 	}
+
+	inf_copy_put(copy);
+	inf_context_put(context);
 
 	return;
 
+put_copy:
+	inf_copy_put(copy);
+put_ctx:
+	inf_context_put(context);
 send_error:
 	sphcs_send_event_report(sphcs, SPH_IPC_EXECUTE_COPY_FAILED, val,
 				cmd->chanID, cmd->protCopyID);
@@ -2702,7 +2790,7 @@ void IPC_OPCODE_HANDLER(CHAN_SCHEDULE_COPY_SUBRES)(struct sphcs                 
 	enum event_val val;
 	int ret;
 
-	context = find_context(sphcs->inf_data, cmd->chanID);
+	context = find_and_get_context(sphcs->inf_data, cmd->chanID);
 	if (unlikely(context == NULL)) {
 		val = SPH_IPC_NO_SUCH_CONTEXT;
 		goto send_error;
@@ -2710,24 +2798,24 @@ void IPC_OPCODE_HANDLER(CHAN_SCHEDULE_COPY_SUBRES)(struct sphcs                 
 
 	if (unlikely(context->chan == NULL || context->chan->protocolID != cmd->chanID)) {
 		val = SPH_IPC_NO_SUCH_CONTEXT;
-		goto send_error;
+		goto put_ctx;
 	}
 
 	if (unlikely(inf_context_get_state(context) != CONTEXT_OK)) {
 		val = SPH_IPC_CONTEXT_BROKEN;
-		goto send_error;
+		goto put_ctx;
 	}
 
-	copy = inf_context_find_copy(context, cmd->protCopyID);
+	copy = inf_context_find_and_get_copy(context, cmd->protCopyID);
 	if (unlikely(copy == NULL)) {
 		val = SPH_IPC_NO_SUCH_COPY;
-		goto send_error;
+		goto put_ctx;
 	}
 
 	req = kmem_cache_alloc(copy->context->exec_req_slab_cache, GFP_NOWAIT);
 	if (unlikely(req == NULL)) {
 		val = SPH_IPC_NO_MEMORY;
-		goto send_error;
+		goto put_copy;
 	}
 
 	ret = inf_copy_req_init_subres_copy(req,
@@ -2737,18 +2825,25 @@ void IPC_OPCODE_HANDLER(CHAN_SCHEDULE_COPY_SUBRES)(struct sphcs                 
 					    cmd->copySize);
 	if (ret) {
 		val = SPH_IPC_NO_MEMORY;
-		goto send_error;
+		goto put_copy;
 	}
 
 	ret = req->f->schedule(req);
 	if (unlikely(ret < 0)) {
 		kmem_cache_free(copy->context->exec_req_slab_cache, req);
 		val = SPH_IPC_NO_MEMORY;
-		goto send_error;
+		goto put_copy;
 	}
+
+	inf_copy_put(copy);
+	inf_context_put(context);
 
 	return;
 
+put_copy:
+	inf_copy_put(copy);
+put_ctx:
+	inf_context_put(context);
 send_error:
 	sphcs_send_event_report(sphcs, SPH_IPC_EXECUTE_COPY_FAILED, val,
 				cmd->chanID, cmd->protCopyID);
@@ -3005,24 +3100,26 @@ void IPC_OPCODE_HANDLER(SCHEDULE_CMDLIST)(struct sphcs                 *sphcs,
 	enum event_val val = 0;
 	int ret;
 
-	context = find_context(sphcs->inf_data, cmd->ctxID);
+	context = find_and_get_context(sphcs->inf_data, cmd->ctxID);
 	if (unlikely(context == NULL)) {
 		val = SPH_IPC_NO_SUCH_CONTEXT;
 		goto send_error;
 	}
 
 	if (unlikely(inf_context_get_state(context) != CONTEXT_OK)) {
+		inf_context_put(context);
 		val = SPH_IPC_CONTEXT_BROKEN;
 		goto send_error;
 	}
 
 	cmdlist = inf_context_find_cmd(context, cmd->cmdID);
 	if (unlikely(cmdlist == NULL)) {
+		inf_context_put(context);
 		val = SPH_IPC_NO_SUCH_CMD;
 		goto send_error;
 	}
 	SPH_ASSERT(cmdlist->status == CREATED);
-
+	inf_context_put(context);
 
 	if (cmd->is_first == 0 || cmd->is_last == 0) { //TODO Add support to overwrite parameters for more than 1 page
 		val = SPH_IPC_RUNTIME_NOT_SUPPORTED;
@@ -3077,23 +3174,26 @@ void IPC_OPCODE_HANDLER(SCHEDULE_CMDLIST_NO_OW)(struct sphcs                    
 	struct inf_cmd_list *cmdlist;
 	enum event_val val = 0;
 
-	context = find_context(sphcs->inf_data, cmd->ctxID);
+	context = find_and_get_context(sphcs->inf_data, cmd->ctxID);
 	if (unlikely(context == NULL)) {
 		val = SPH_IPC_NO_SUCH_CONTEXT;
 		goto send_error;
 	}
 
 	if (unlikely(inf_context_get_state(context) != CONTEXT_OK)) {
+		inf_context_put(context);
 		val = SPH_IPC_CONTEXT_BROKEN;
 		goto send_error;
 	}
 
 	cmdlist = inf_context_find_cmd(context, cmd->cmdID);
 	if (unlikely(cmdlist == NULL)) {
+		inf_context_put(context);
 		val = SPH_IPC_NO_SUCH_CMD;
 		goto send_error;
 	}
 	SPH_ASSERT(cmdlist->status == CREATED);
+	inf_context_put(context);
 
 
 	SPH_ASSERT(cmdlist->edits_idx == 0);
@@ -3119,23 +3219,43 @@ void IPC_OPCODE_HANDLER(CHAN_SCHEDULE_CMDLIST)(struct sphcs                    *
 	u32 host_chunk_size;
 	int ret;
 
-	context = find_context(sphcs->inf_data, cmd->chanID);
+	context = find_and_get_context(sphcs->inf_data, cmd->chanID);
 	if (unlikely(context == NULL || context->chan == NULL)) {
 		val = SPH_IPC_NO_SUCH_CONTEXT;
 		goto send_error;
 	}
 
+	if (cmd->size > 0) {
+		cmd_data_rb = &context->chan->h2c_rb[0];
+		/* need to advance h2c ring buffer by one page */
+		host_rb_update_free_space(cmd_data_rb, SPH_PAGE_SIZE);
+		ret = host_rb_get_avail_space(cmd_data_rb,
+					      SPH_PAGE_SIZE,
+					      1,
+					      &host_dma_addr,
+					      &host_chunk_size);
+
+		SPH_ASSERT(ret == 1);
+		SPH_ASSERT((host_dma_addr & SPH_IPC_DMA_ADDR_ALIGN_MASK) == 0);
+
+		host_rb_update_avail_space(cmd_data_rb, SPH_PAGE_SIZE);
+	}
+
+
 	if (unlikely(inf_context_get_state(context) != CONTEXT_OK)) {
+		inf_context_put(context);
 		val = SPH_IPC_CONTEXT_BROKEN;
 		goto send_error;
 	}
 
 	cmdlist = inf_context_find_cmd(context, cmd->cmdID);
 	if (unlikely(cmdlist == NULL)) {
+		inf_context_put(context);
 		val = SPH_IPC_NO_SUCH_CMD;
 		goto send_error;
 	}
 	SPH_ASSERT(cmdlist->status == CREATED);
+	inf_context_put(context);
 
 	if (cmd->is_first == 0 || cmd->is_last == 0) { //TODO Add support to overwrite parameters for more than 1 page
 		val = SPH_IPC_RUNTIME_NOT_SUPPORTED;
@@ -3158,19 +3278,6 @@ void IPC_OPCODE_HANDLER(CHAN_SCHEDULE_CMDLIST)(struct sphcs                    *
 	// for DMA
 	inf_cmd_get(cmdlist);
 
-	cmd_data_rb = &context->chan->h2c_rb[0];
-	/* need to advance h2c ring buffer by one page */
-	host_rb_update_free_space(cmd_data_rb, SPH_PAGE_SIZE);
-	ret = host_rb_get_avail_space(cmd_data_rb,
-					SPH_PAGE_SIZE,
-					1,
-					&host_dma_addr,
-					&host_chunk_size);
-
-	SPH_ASSERT(ret == 1);
-	SPH_ASSERT((host_dma_addr & SPH_IPC_DMA_ADDR_ALIGN_MASK) == 0);
-
-	host_rb_update_avail_space(cmd_data_rb, SPH_PAGE_SIZE);
 
 	ret = sphcs_dma_sched_start_xfer_single(g_the_sphcs->dmaSched,
 						&context->chan->h2c_dma_desc,//TODO: consider use high priority
@@ -3193,6 +3300,8 @@ fail:
 	// put kref for DMA
 	inf_cmd_put(cmdlist);
 send_error:
+	if (context != NULL)
+		sphcs_cmd_chan_update_cmd_head(context->chan, 0, PAGE_SIZE);
 	sphcs_send_event_report(sphcs, SPH_IPC_EXECUTE_CMD_COMPLETE, val,
 				cmd->chanID, cmd->cmdID);
 }
@@ -3222,6 +3331,7 @@ static void subres_load_op_work_handler(struct work_struct *work)
 	}
 
 free_op:
+	inf_context_put(op->context);
 	kfree(op);
 }
 
@@ -3232,7 +3342,7 @@ void IPC_OPCODE_HANDLER(INF_SUBRES_LOAD)(struct sphcs *sphcs,
 	struct inf_context *context;
 	enum event_val val;
 
-	context = find_context(sphcs->inf_data, cmd->contextID);
+	context = find_and_get_context(sphcs->inf_data, cmd->contextID);
 	if (unlikely(context == NULL)) {
 		val = SPH_IPC_NO_SUCH_CONTEXT;
 		goto send_error;
@@ -3240,6 +3350,7 @@ void IPC_OPCODE_HANDLER(INF_SUBRES_LOAD)(struct sphcs *sphcs,
 
 	work = kzalloc(sizeof(*work), GFP_NOWAIT);
 	if (unlikely(work == NULL)) {
+		inf_context_put(context);
 		val = SPH_IPC_NO_MEMORY;
 		goto send_error;
 	}
@@ -3303,6 +3414,7 @@ send_error:
 	sphcs_send_event_report(g_the_sphcs, SPH_IPC_ERROR_SUB_RESOURCE_LOAD_FAILED,
 				val, op->cmd.contextID, op->cmd.resID);
 done:
+	inf_context_put(op->context);
 	kfree(op);
 }
 
@@ -3313,7 +3425,7 @@ void IPC_OPCODE_HANDLER(INF_SUBRES_LOAD_CREATE_REMOVE_SESSION)(struct sphcs     
 	struct inf_context *context;
 	enum event_val val;
 
-	context = find_context(sphcs->inf_data, cmd->contextID);
+	context = find_and_get_context(sphcs->inf_data, cmd->contextID);
 	if (unlikely(context == NULL)) {
 		val = SPH_IPC_NO_SUCH_CONTEXT;
 		goto send_error;
@@ -3321,6 +3433,7 @@ void IPC_OPCODE_HANDLER(INF_SUBRES_LOAD_CREATE_REMOVE_SESSION)(struct sphcs     
 
 	work = kzalloc(sizeof(*work), GFP_NOWAIT);
 	if (unlikely(work == NULL)) {
+		inf_context_put(context);
 		val = SPH_IPC_NO_MEMORY;
 		goto send_error;
 	}
@@ -3364,61 +3477,68 @@ static void inf_req_op_work_handler(struct work_struct *work)
 	else
 		event = SPH_IPC_CREATE_INFREQ_FAILED;
 
-	if (!op->cmd.destroy)
+	if (!op->cmd.destroy) {
+		if (op->context->chan != NULL) {
+			struct sphcs_host_rb *cmd_data_rb = &op->context->chan->h2c_rb[op->rbID];
+			u32 host_chunk_size;
+			int n;
+
+			/* need to advance h2c ring buffer by one page */
+			host_rb_update_free_space(cmd_data_rb, SPH_PAGE_SIZE);
+			n = host_rb_get_avail_space(cmd_data_rb,
+						    SPH_PAGE_SIZE,
+						    1,
+						    &host_dma_addr,
+						    &host_chunk_size);
+
+			SPH_ASSERT(n == 1);
+			SPH_ASSERT((host_dma_addr & SPH_IPC_DMA_ADDR_ALIGN_MASK) == 0);
+
+			host_rb_update_avail_space(cmd_data_rb, SPH_PAGE_SIZE);
+		} else {
+			host_dma_addr = SPH_IPC_DMA_PFN_TO_ADDR(op->cmd.host_pfn);
+		}
+
 		if (!check_memory_threshold()) {
 			val = SPH_IPC_NO_MEMORY;
 			goto send_error;
 		}
+	}
 
-	devnet = inf_context_find_devnet(op->context, op->cmd.netID);
+	devnet = inf_context_find_and_get_devnet(op->context, op->cmd.netID, false, true);
 	if (unlikely(devnet == NULL)) {
 		val = SPH_IPC_NO_SUCH_NET;
 		goto send_error;
 	}
 
-
 	if (op->cmd.destroy) {
 		ret = inf_devnet_find_and_destroy_infreq(devnet, op->cmd.infreqID);
 		if (unlikely(ret < 0)) {
 			val = SPH_IPC_NO_SUCH_INFREQ;
-			goto send_error;
+			goto error_put_devnet;
 		}
+		inf_devnet_put(devnet);
 		goto done;
+	}
+
+	if (unlikely(devnet->destroyed)) {
+		val = SPH_IPC_NO_SUCH_NET;
+		goto error_put_devnet;
 	}
 
 	infreq = inf_devnet_find_infreq(devnet, op->cmd.infreqID);
 	if (unlikely(infreq != NULL)) {
 		val = SPH_IPC_ALREADY_EXIST;
-		goto send_error;
+		goto error_put_devnet;
 	}
 
 	DO_TRACE(trace_infer_create(SPH_TRACE_INF_CREATE_INF_REQ, op->cmd.ctxID, op->cmd.infreqID, SPH_TRACE_OP_STATUS_START, -1, -1));
 
 	if (unlikely(op->cmd.size > SPH_PAGE_SIZE)) {
 		val = SPH_IPC_DMA_ERROR;
-		goto send_error;
+		goto error_put_devnet;
 	}
 
-	if (op->context->chan != NULL) {
-		struct sphcs_host_rb *cmd_data_rb = &op->context->chan->h2c_rb[op->rbID];
-		u32 host_chunk_size;
-		int n;
-
-		/* need to advance h2c ring buffer by one page */
-		host_rb_update_free_space(cmd_data_rb, SPH_PAGE_SIZE);
-		n = host_rb_get_avail_space(cmd_data_rb,
-					    SPH_PAGE_SIZE,
-					    1,
-					    &host_dma_addr,
-					    &host_chunk_size);
-
-		SPH_ASSERT(n == 1);
-		SPH_ASSERT((host_dma_addr & SPH_IPC_DMA_ADDR_ALIGN_MASK) == 0);
-
-		host_rb_update_avail_space(cmd_data_rb, SPH_PAGE_SIZE);
-	} else {
-		host_dma_addr = SPH_IPC_DMA_PFN_TO_ADDR(op->cmd.host_pfn);
-	}
 
 	ret = inf_devnet_create_infreq(devnet,
 				       op->cmd.infreqID,
@@ -3427,17 +3547,23 @@ static void inf_req_op_work_handler(struct work_struct *work)
 				       op->cmd.size);
 	if (unlikely(ret < 0)) {
 		val = SPH_IPC_NO_MEMORY;
-		goto send_error;
+		goto error_put_devnet;
 	}
 
+	inf_devnet_put(devnet);
 	goto done;
 
+error_put_devnet:
+	inf_devnet_put(devnet);
 send_error:
+	if (!op->cmd.destroy && op->context->chan != NULL)
+		sphcs_cmd_chan_update_cmd_head(op->context->chan, 0, SPH_PAGE_SIZE);
 	sphcs_send_event_report_ext(g_the_sphcs, event, val,
 				op->cmd.ctxID,
 				op->cmd.infreqID,
 				op->cmd.netID);
 done:
+	inf_context_put(op->context);
 	kfree(op);
 }
 
@@ -3454,7 +3580,7 @@ void IPC_OPCODE_HANDLER(INF_REQ_OP)(struct sphcs             *sphcs,
 	else
 		event = SPH_IPC_CREATE_INFREQ_FAILED;
 
-	context = find_context(g_the_sphcs->inf_data, cmd->ctxID);
+	context = find_and_get_context(g_the_sphcs->inf_data, cmd->ctxID);
 	if (unlikely(context == NULL)) {
 		val = SPH_IPC_NO_SUCH_CONTEXT;
 		goto send_error;
@@ -3462,6 +3588,7 @@ void IPC_OPCODE_HANDLER(INF_REQ_OP)(struct sphcs             *sphcs,
 
 	work = kzalloc(sizeof(*work), GFP_NOWAIT);
 	if (unlikely(work == NULL)) {
+		inf_context_put(context);
 		val = SPH_IPC_NO_MEMORY;
 		goto send_error;
 	}
@@ -3493,7 +3620,7 @@ void IPC_OPCODE_HANDLER(CHAN_INF_REQ_OP)(struct sphcs             *sphcs,
 	else
 		event = SPH_IPC_CREATE_INFREQ_FAILED;
 
-	context = find_context(g_the_sphcs->inf_data, cmd->chanID);
+	context = find_and_get_context(g_the_sphcs->inf_data, cmd->chanID);
 	if (unlikely(context == NULL || context->chan == NULL)) {
 		val = SPH_IPC_NO_SUCH_CONTEXT;
 		goto send_error;
@@ -3501,6 +3628,7 @@ void IPC_OPCODE_HANDLER(CHAN_INF_REQ_OP)(struct sphcs             *sphcs,
 
 	work = kzalloc(sizeof(*work), GFP_NOWAIT);
 	if (unlikely(work == NULL)) {
+		inf_context_put(context);
 		val = SPH_IPC_NO_MEMORY;
 		goto send_error;
 	}
@@ -3536,7 +3664,7 @@ void IPC_OPCODE_HANDLER(SCHEDULE_INF_REQ)(struct sphcs                   *sphcs,
 	int ret;
 	enum event_val val;
 
-	context = find_context(sphcs->inf_data, cmd->ctxID);
+	context = find_and_get_context(sphcs->inf_data, cmd->ctxID);
 	if (unlikely(context == NULL)) {
 		val = SPH_IPC_NO_SUCH_CONTEXT;
 		goto send_error;
@@ -3544,21 +3672,23 @@ void IPC_OPCODE_HANDLER(SCHEDULE_INF_REQ)(struct sphcs                   *sphcs,
 
 	if (unlikely(inf_context_get_state(context) != CONTEXT_OK)) {
 		val = SPH_IPC_CONTEXT_BROKEN;
-		goto send_error;
+		goto put_ctx;
 	}
 
 	if (unlikely(context->num_optimized_cmd_lists > 0)) {
 		val = SPH_IPC_NOT_SUPPORTED;
-		goto send_error;
+		goto put_ctx;
 	}
 
-	devnet = inf_context_find_devnet(context, cmd->netID);
+	devnet = inf_context_find_and_get_devnet(context, cmd->netID, false, true);
 	if (unlikely(devnet == NULL)) {
 		val = SPH_IPC_NO_SUCH_NET;
-		goto send_error;
+		goto put_ctx;
 	}
+	inf_context_put(context);
 
-	infreq = inf_devnet_find_infreq(devnet, cmd->infreqID);
+	infreq = inf_devnet_find_and_get_infreq(devnet, cmd->infreqID);
+	inf_devnet_put(devnet);
 	if (unlikely(infreq == NULL)) {
 		val = SPH_IPC_NO_SUCH_INFREQ;
 		goto send_error;
@@ -3566,6 +3696,7 @@ void IPC_OPCODE_HANDLER(SCHEDULE_INF_REQ)(struct sphcs                   *sphcs,
 
 	req = kmem_cache_alloc(context->exec_req_slab_cache, GFP_NOWAIT);
 	if (unlikely(req == NULL)) {
+		inf_req_put(infreq);
 		val = SPH_IPC_NO_MEMORY;
 		goto send_error;
 	}
@@ -3580,6 +3711,7 @@ void IPC_OPCODE_HANDLER(SCHEDULE_INF_REQ)(struct sphcs                   *sphcs,
 			cmd->collectInfo);
 
 	ret = req->f->schedule(req);
+	inf_req_put(infreq);
 	if (unlikely(ret < 0)) {
 		kmem_cache_free(context->exec_req_slab_cache, req);
 		val = SPH_IPC_NO_MEMORY;
@@ -3588,6 +3720,8 @@ void IPC_OPCODE_HANDLER(SCHEDULE_INF_REQ)(struct sphcs                   *sphcs,
 
 	return;
 
+put_ctx:
+	inf_context_put(context);
 send_error:
 	sphcs_send_event_report_ext(sphcs,
 				SPH_IPC_SCHEDULE_INFREQ_FAILED,
@@ -3607,7 +3741,7 @@ void IPC_OPCODE_HANDLER(CHAN_SCHEDULE_INF_REQ)(struct sphcs                   *s
 	int ret;
 	enum event_val val;
 
-	context = find_context(sphcs->inf_data, cmd->chanID);
+	context = find_and_get_context(sphcs->inf_data, cmd->chanID);
 	if (unlikely(context == NULL || context->chan == NULL)) {
 		val = SPH_IPC_NO_SUCH_CONTEXT;
 		goto send_error;
@@ -3615,21 +3749,23 @@ void IPC_OPCODE_HANDLER(CHAN_SCHEDULE_INF_REQ)(struct sphcs                   *s
 
 	if (unlikely(inf_context_get_state(context) != CONTEXT_OK)) {
 		val = SPH_IPC_CONTEXT_BROKEN;
-		goto send_error;
+		goto put_ctx;
 	}
 
 	if (unlikely(context->num_optimized_cmd_lists > 0)) {
 		val = SPH_IPC_NOT_SUPPORTED;
-		goto send_error;
+		goto put_ctx;
 	}
 
-	devnet = inf_context_find_devnet(context, cmd->netID);
+	devnet = inf_context_find_and_get_devnet(context, cmd->netID, false, true);
 	if (unlikely(devnet == NULL)) {
 		val = SPH_IPC_NO_SUCH_NET;
-		goto send_error;
+		goto put_ctx;
 	}
+	inf_context_put(context);
 
-	infreq = inf_devnet_find_infreq(devnet, cmd->infreqID);
+	infreq = inf_devnet_find_and_get_infreq(devnet, cmd->infreqID);
+	inf_devnet_put(devnet);
 	if (unlikely(infreq == NULL)) {
 		val = SPH_IPC_NO_SUCH_INFREQ;
 		goto send_error;
@@ -3637,6 +3773,7 @@ void IPC_OPCODE_HANDLER(CHAN_SCHEDULE_INF_REQ)(struct sphcs                   *s
 
 	req = kmem_cache_alloc(context->exec_req_slab_cache, GFP_NOWAIT);
 	if (unlikely(req == NULL)) {
+		inf_req_put(infreq);
 		val = SPH_IPC_NO_MEMORY;
 		goto send_error;
 	}
@@ -3651,6 +3788,7 @@ void IPC_OPCODE_HANDLER(CHAN_SCHEDULE_INF_REQ)(struct sphcs                   *s
 			cmd->collectInfo);
 
 	ret = req->f->schedule(req);
+	inf_req_put(infreq);
 	if (unlikely(ret < 0)) {
 		kmem_cache_free(context->exec_req_slab_cache, req);
 		val = SPH_IPC_NO_MEMORY;
@@ -3659,6 +3797,8 @@ void IPC_OPCODE_HANDLER(CHAN_SCHEDULE_INF_REQ)(struct sphcs                   *s
 
 	return;
 
+put_ctx:
+	inf_context_put(context);
 send_error:
 	sphcs_send_event_report_ext(sphcs,
 				SPH_IPC_SCHEDULE_INFREQ_FAILED,
@@ -3695,7 +3835,7 @@ static void network_reservation_op_work_handler(struct work_struct *work)
 	else
 		event = SPH_IPC_DEVNET_RESOURCES_RELEASE_FAILED;
 
-	devnet = inf_context_find_devnet(op->context, op->cmd.netID);
+	devnet = inf_context_find_and_get_devnet(op->context, op->cmd.netID, true, true);
 	if (unlikely(devnet == NULL)) {
 		sphcs_send_event_report(g_the_sphcs,
 				event,
@@ -3712,8 +3852,7 @@ static void network_reservation_op_work_handler(struct work_struct *work)
 	if (cmd_args.reserve_resource)
 		cmd_args.timeout = op->cmd.timeout;
 
-	// get kref for RT
-	inf_devnet_get(devnet);
+	// kref for RT is taken in find
 
 	ret = inf_cmd_queue_add(&devnet->context->cmdq,
 			SPHCS_RUNTIME_CMD_DEVNET_RESOURCES_RESERVATION,
@@ -3730,6 +3869,7 @@ static void network_reservation_op_work_handler(struct work_struct *work)
 	}
 
 free_op:
+	inf_context_put(op->context);
 	kfree(op);
 }
 
@@ -3745,7 +3885,7 @@ void IPC_OPCODE_HANDLER(INF_NETWORK_RESOURCE_RESERVATION)(struct sphcs *sphcs,
 	else
 		event = SPH_IPC_DEVNET_RESOURCES_RELEASE_FAILED;
 
-	context = find_context(sphcs->inf_data, cmd->ctxID);
+	context = find_and_get_context(sphcs->inf_data, cmd->ctxID);
 	if (unlikely(context == NULL)) {
 		val = SPH_IPC_NO_SUCH_CONTEXT;
 		goto send_error;
@@ -3753,6 +3893,7 @@ void IPC_OPCODE_HANDLER(INF_NETWORK_RESOURCE_RESERVATION)(struct sphcs *sphcs,
 
 	work = kzalloc(sizeof(*work), GFP_NOWAIT);
 	if (unlikely(work == NULL)) {
+		inf_context_put(context);
 		val = SPH_IPC_NO_MEMORY;
 		goto send_error;
 	}
@@ -3776,7 +3917,7 @@ static void network_property_op_work_handler(struct work_struct *work)
 	struct inf_devnet *devnet;
 	enum event_val event_val = 0;
 
-	devnet = inf_context_find_devnet(op->context, op->cmd.netID);
+	devnet = inf_context_find_and_get_devnet(op->context, op->cmd.netID, true, true);
 	if (unlikely(devnet == NULL)) {
 		sphcs_send_event_report(g_the_sphcs,
 				SPH_IPC_DEVNET_SET_PROPERTY_FAILED,
@@ -3792,12 +3933,15 @@ static void network_property_op_work_handler(struct work_struct *work)
 		devnet->serial_infreq_exec = op->cmd.property_val;
 		SPH_SPIN_UNLOCK(&devnet->lock);
 
+		inf_devnet_put(devnet);
+
 		sphcs_send_event_report(g_the_sphcs,
-				SPH_IPC_DEVNET_SET_PROPERTY_SUCCESS,
-						event_val,
-						op->cmd.ctxID,
-						op->cmd.netID);
-	} break;
+					SPH_IPC_DEVNET_SET_PROPERTY_SUCCESS,
+					event_val,
+					op->cmd.ctxID,
+					op->cmd.netID);
+		break;
+	}
 	case SPH_NETWORK_RESOURCES_RESERVATION: {
 		struct inf_devnet_resource_reserve cmd_args;
 		int ret;
@@ -3809,33 +3953,35 @@ static void network_property_op_work_handler(struct work_struct *work)
 		if (op->cmd.property_val)
 			cmd_args.timeout = op->cmd.timeout;
 
-		// get kref for RT
-		inf_devnet_get(devnet);
+		// kref for RT is taken in find
 
 		ret = inf_cmd_queue_add(&devnet->context->cmdq,
-				SPHCS_RUNTIME_CMD_DEVNET_RESOURCES_RESERVATION,
-				&cmd_args,
-				sizeof(cmd_args),
-				NULL, NULL);
+					SPHCS_RUNTIME_CMD_DEVNET_RESOURCES_RESERVATION,
+					&cmd_args,
+					sizeof(cmd_args),
+					NULL, NULL);
 		if (unlikely(ret < 0)) {
 			sphcs_send_event_report(g_the_sphcs,
-					op->cmd.property_val ? SPH_IPC_DEVNET_RESOURCES_RESERVATION_FAILED : SPH_IPC_DEVNET_RESOURCES_RELEASE_FAILED,
-					SPH_IPC_NO_MEMORY,
-					op->cmd.ctxID,
-					op->cmd.netID);
-			inf_devnet_put(devnet);
-		}
-	} break;
-	default:
-		sph_log_err(CREATE_COMMAND_LOG, "unexpected network property (%u)\n", op->cmd.property);
-		sphcs_send_event_report(g_the_sphcs,
-						SPH_IPC_DEVNET_SET_PROPERTY_FAILED,
-						SPH_IPC_NO_SUCH_CMD,
+						op->cmd.property_val ? SPH_IPC_DEVNET_RESOURCES_RESERVATION_FAILED : SPH_IPC_DEVNET_RESOURCES_RELEASE_FAILED,
+						SPH_IPC_NO_MEMORY,
 						op->cmd.ctxID,
 						op->cmd.netID);
+			inf_devnet_put(devnet);
+		}
+		break;
+	}
+	default:
+		inf_devnet_put(devnet);
+		sph_log_err(CREATE_COMMAND_LOG, "unexpected network property (%u)\n", op->cmd.property);
+		sphcs_send_event_report(g_the_sphcs,
+					SPH_IPC_DEVNET_SET_PROPERTY_FAILED,
+					SPH_IPC_NOT_SUPPORTED,
+					op->cmd.ctxID,
+					op->cmd.netID);
 	}
 
 free_op:
+	inf_context_put(op->context);
 	kfree(op);
 }
 
@@ -3843,12 +3989,9 @@ void IPC_OPCODE_HANDLER(NETWORK_PROPERTY)(struct sphcs *sphcs,
 		union h2c_InferenceNetworkProperty *cmd) {
 	struct network_property_op_work *work;
 	struct inf_context *context;
-	uint8_t event;
 	enum event_val val;
 
-	event = SPH_IPC_DEVNET_SET_PROPERTY_FAILED;
-
-	context = find_context(sphcs->inf_data, cmd->ctxID);
+	context = find_and_get_context(sphcs->inf_data, cmd->ctxID);
 	if (unlikely(context == NULL)) {
 		val = SPH_IPC_NO_SUCH_CONTEXT;
 		goto send_error;
@@ -3856,6 +3999,7 @@ void IPC_OPCODE_HANDLER(NETWORK_PROPERTY)(struct sphcs *sphcs,
 
 	work = kzalloc(sizeof(*work), GFP_NOWAIT);
 	if (unlikely(work == NULL)) {
+		inf_context_put(context);
 		val = SPH_IPC_NO_MEMORY;
 		goto send_error;
 	}
@@ -3868,19 +4012,17 @@ void IPC_OPCODE_HANDLER(NETWORK_PROPERTY)(struct sphcs *sphcs,
 	return;
 
 send_error:
-	sphcs_send_event_report(sphcs, event, val, cmd->ctxID, cmd->netID);
+	sphcs_send_event_report(sphcs, SPH_IPC_DEVNET_SET_PROPERTY_FAILED,
+				val, cmd->ctxID, cmd->netID);
 }
 
 void IPC_OPCODE_HANDLER(CHAN_NETWORK_PROPERTY)(struct sphcs *sphcs,
 		union h2c_ChanInferenceNetworkSetProperty *cmd) {
 	struct network_property_op_work *work;
 	struct inf_context *context;
-	uint8_t event;
 	enum event_val val;
 
-	event = SPH_IPC_DEVNET_SET_PROPERTY_FAILED;
-
-	context = find_context(sphcs->inf_data, cmd->chanID);
+	context = find_and_get_context(sphcs->inf_data, cmd->chanID);
 	if (unlikely(context == NULL || context->chan == NULL)) {
 		val = SPH_IPC_NO_SUCH_CONTEXT;
 		goto send_error;
@@ -3888,6 +4030,7 @@ void IPC_OPCODE_HANDLER(CHAN_NETWORK_PROPERTY)(struct sphcs *sphcs,
 
 	work = kzalloc(sizeof(*work), GFP_NOWAIT);
 	if (unlikely(work == NULL)) {
+		inf_context_put(context);
 		val = SPH_IPC_NO_MEMORY;
 		goto send_error;
 	}
@@ -3905,7 +4048,8 @@ void IPC_OPCODE_HANDLER(CHAN_NETWORK_PROPERTY)(struct sphcs *sphcs,
 	return;
 
 send_error:
-	sphcs_send_event_report(sphcs, event, val, cmd->chanID, cmd->netID);
+	sphcs_send_event_report(sphcs, SPH_IPC_DEVNET_SET_PROPERTY_FAILED,
+				val, cmd->chanID, cmd->netID);
 }
 
 void IPC_OPCODE_HANDLER(CHAN_INF_NETWORK_RESOURCE_RESERVATION)(struct sphcs *sphcs,
@@ -3922,7 +4066,7 @@ void IPC_OPCODE_HANDLER(CHAN_INF_NETWORK_RESOURCE_RESERVATION)(struct sphcs *sph
 	else
 		event = SPH_IPC_DEVNET_RESOURCES_RELEASE_FAILED;
 
-	context = find_context(sphcs->inf_data, cmd->chanID);
+	context = find_and_get_context(sphcs->inf_data, cmd->chanID);
 	if (unlikely(context == NULL || context->chan == NULL)) {
 		val = SPH_IPC_NO_SUCH_CONTEXT;
 		goto send_error;
@@ -3930,6 +4074,7 @@ void IPC_OPCODE_HANDLER(CHAN_INF_NETWORK_RESOURCE_RESERVATION)(struct sphcs *sph
 
 	work = kzalloc(sizeof(*work), GFP_NOWAIT);
 	if (unlikely(work == NULL)) {
+		inf_context_put(context);
 		val = SPH_IPC_NO_MEMORY;
 		goto send_error;
 	}
@@ -3986,13 +4131,17 @@ int sphcs_alloc_resource(struct sphcs                 *sphcs,
 	if (unlikely(sphcs->inf_data == NULL))
 		return -ENODEV;
 
-	if (unlikely(sphcs->inf_data->daemon == NULL))
+	mutex_lock(&sphcs->inf_data->io_lock);
+	if (unlikely(sphcs->inf_data->daemon == NULL)) {
+		mutex_unlock(&sphcs->inf_data->io_lock);
 		return -ENODEV;
+	}
 
 	alloc_req = kzalloc(sizeof(*alloc_req), GFP_KERNEL);
-	if (unlikely(alloc_req == NULL))
+	if (unlikely(alloc_req == NULL)) {
+		mutex_unlock(&sphcs->inf_data->io_lock);
 		return -ENOMEM;
-
+	}
 	alloc_req->cb = cb;
 	alloc_req->context = ctx;
 
@@ -4014,8 +4163,11 @@ int sphcs_alloc_resource(struct sphcs                 *sphcs,
 		SPH_SPIN_LOCK(&sphcs->inf_data->daemon->lock);
 		list_del(&alloc_req->node);
 		SPH_SPIN_UNLOCK(&sphcs->inf_data->daemon->lock);
+		mutex_unlock(&sphcs->inf_data->io_lock);
 		kfree(alloc_req);
 	}
+
+	mutex_unlock(&sphcs->inf_data->io_lock);
 
 	return rc;
 }
@@ -4032,8 +4184,11 @@ int sphcs_free_resource(struct sphcs  *sphcs,
 	if (unlikely(sphcs->inf_data == NULL))
 		return -ENODEV;
 
-	if (unlikely(sphcs->inf_data->daemon == NULL))
+	mutex_lock(&sphcs->inf_data->io_lock);
+	if (unlikely(sphcs->inf_data->daemon == NULL)) {
+		mutex_unlock(&sphcs->inf_data->io_lock);
 		return -ENODEV;
+	}
 
 	cmd_args.buf_fd = dmabuf_fd;
 
@@ -4042,6 +4197,8 @@ int sphcs_free_resource(struct sphcs  *sphcs,
 			       &cmd_args,
 			       sizeof(cmd_args),
 			       NULL, NULL);
+
+	mutex_unlock(&sphcs->inf_data->io_lock);
 
 	return rc;
 }
@@ -4081,7 +4238,7 @@ static struct sphcs_p2p_cbs s_p2p_cbs = {
 
 int inference_init(struct sphcs *sphcs)
 {
-	struct inf_data *inf_data;
+	struct inf_data *inf_data = NULL;
 	int ret;
 
 	ret = alloc_chrdev_region(&s_devnum, 0, 1, SPHCS_INF_DEV_NAME);
@@ -4158,7 +4315,7 @@ free_cdev:
 	cdev_del(&s_cdev);
 unreg:
 	unregister_chrdev_region(s_devnum, 1);
-	kfree(sphcs->inf_data);
+	kfree(inf_data);
 
 	return ret;
 }
@@ -4182,9 +4339,12 @@ int inference_fini(struct sphcs *sphcs)
 static void release_pending_create_context_reuquests(void *cmd_args)
 {
 	struct inf_create_context *ctx_cmd_args = cmd_args;
-	struct inf_context *context = find_context(g_the_sphcs->inf_data, ctx_cmd_args->contextID);
+	struct inf_context *context = find_and_get_context(g_the_sphcs->inf_data, ctx_cmd_args->contextID);
 
 	SPH_ASSERT(context != NULL);
+	SPH_ASSERT(!context->daemon_ref_released);
+	inf_context_put(context);
+
 	sph_log_debug(START_UP_LOG, "Release pending create context requests ID %d\n", ctx_cmd_args->contextID);
 	sphcs_send_event_report(g_the_sphcs,
 				SPH_IPC_CREATE_CONTEXT_FAILED,
@@ -4193,6 +4353,8 @@ static void release_pending_create_context_reuquests(void *cmd_args)
 				-1);
 
 	destroy_context_on_create_failed(g_the_sphcs, context);
+	context->daemon_ref_released = true;
+	inf_context_put(context);
 }
 
 static int sched_status_show(struct seq_file *m, void *v)
@@ -4205,6 +4367,7 @@ static int sched_status_show(struct seq_file *m, void *v)
 	u64 curr_time;
 	int i;
 	int num_contexts = 0;
+	struct sysinfo sinfo;
 
 	if (!g_the_sphcs)
 		return -1;
@@ -4234,26 +4397,26 @@ static int sched_status_show(struct seq_file *m, void *v)
 						  req->infreq->protocolID,
 						  req->infreq->devnet->protocolID);
 					if (req->cmd != NULL)
-						seq_printf(m, "\tcommand list %d\n", req->cmd->protocolID);
-					seq_printf(m, "\tin_progress: %d\n", req->in_progress);
-					seq_printf(m, "\tpriority: %d\n", req->priority);
-					seq_printf(m, "\ttime: %lld\n", curr_time - req->time);
+						seq_printf(m, "\t\tcommand list %d\n", req->cmd->protocolID);
+					seq_printf(m, "\t\tin_progress: %d\n", req->in_progress);
+					seq_printf(m, "\t\tpriority: %d\n", req->priority);
+					seq_printf(m, "\t\ttime: %lld\n", curr_time - req->time);
 				} else if (req->cmd_type == CMDLIST_CMD_COPY) {
 					seq_printf(m, "\tcopy command %d\n", req->copy->protocolID);
 					if (req->cmd != NULL)
-						seq_printf(m, "\tcommand list %d\n", req->cmd->protocolID);
-					seq_printf(m, "\tin_progress: %d\n", req->in_progress);
-					seq_printf(m, "\tpriority: %d\n", req->priority);
-					seq_printf(m, "\ttime: %lld\n", curr_time - req->time);
+						seq_printf(m, "\t\tcommand list %d\n", req->cmd->protocolID);
+					seq_printf(m, "\t\tin_progress: %d\n", req->in_progress);
+					seq_printf(m, "\t\tpriority: %d\n", req->priority);
+					seq_printf(m, "\t\ttime: %lld\n", curr_time - req->time);
 				} else if (req->cmd_type == CMDLIST_CMD_COPYLIST) {
 					seq_printf(m, "\tcopy list command idx=%d, n_copies=%d\n",
 						   req->cpylst->idx_in_cmd,
 						   req->cpylst->n_copies);
 					if (req->cmd != NULL)
-						seq_printf(m, "\tcommand list %d\n", req->cmd->protocolID);
-					seq_printf(m, "\tin_progress: %d\n", req->in_progress);
-					seq_printf(m, "\tpriority: %d\n", req->priority);
-					seq_printf(m, "\ttime: %lld\n", curr_time - req->time);
+						seq_printf(m, "\t\tcommand list %d\n", req->cmd->protocolID);
+					seq_printf(m, "\t\tin_progress: %d\n", req->in_progress);
+					seq_printf(m, "\t\tpriority: %d\n", req->priority);
+					seq_printf(m, "\t\ttime: %lld\n", curr_time - req->time);
 				} else {
 					seq_printf(m, "\tUNKNWON COMMAND TYPE %d !!!\n", req->cmd_type);
 				}
@@ -4265,6 +4428,11 @@ static int sched_status_show(struct seq_file *m, void *v)
 
 	if (num_contexts == 0)
 		seq_puts(m, "No active contexts\n");
+
+	si_meminfo(&sinfo);
+	seq_puts(m, "\nMemory Info:\n");
+	seq_printf(m, "TotalRam: %lu KB\n", sinfo.totalram * (sinfo.mem_unit >> 10));
+	seq_printf(m, "FreeRam: %lu KB\n", sinfo.freeram * (sinfo.mem_unit >> 10));
 
 	return 0;
 }

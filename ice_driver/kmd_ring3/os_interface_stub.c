@@ -375,7 +375,18 @@ int cve_os_interface_init(void)
 	/* For RING3, ice_power_off_delay is 1000 ms */
 
 	param.ice_power_off_delay_ms = 1000;
-	if(getenv("ENABLE_B_STEP") != NULL) {
+	if(getenv("ENABLE_C_STEP") != NULL) {
+		param.enable_sph_b_step = false;
+		param.enable_sph_c_step = true;
+		cve_os_log(CVE_LOGLEVEL_INFO, "C STEP ENABLED\n");
+		if(getenv("ICCP_THROTTLING")!= NULL) {
+			throttling = getenv("ICCP_THROTTLING");
+			param.iccp_throttling = atoi(throttling);
+		} else {
+			param.iccp_throttling = 1;
+		}
+	} else if(getenv("ENABLE_B_STEP") != NULL) {
+		param.enable_sph_c_step = false;
 		param.enable_sph_b_step = true;
 		cve_os_log(CVE_LOGLEVEL_INFO, "B STEP ENABLED\n");
 		if(getenv("ICCP_THROTTLING")!= NULL) {
@@ -387,13 +398,17 @@ int cve_os_interface_init(void)
 
 	} else {
 		param.enable_sph_b_step = false;
-		cve_os_log(CVE_LOGLEVEL_INFO, "B STEP DISABLED\n");
+		param.enable_sph_c_step = false;
+		cve_os_log(CVE_LOGLEVEL_INFO, "A STEP ENABLED\n");
 		param.iccp_throttling = 0;
 	}
 
 	ice_set_driver_config_param(&param);
 
-	if (ice_get_b_step_enable_flag()) {
+	if (ice_get_c_step_enable_flag()) {
+		sscanf("ice_2.9_hw_n0", "%s", hw_folder);
+		memcpy(&cfg_default, &cfg_c, sizeof(cfg_c));
+	} else if (ice_get_b_step_enable_flag()) {
 		sscanf("ice_2.9_hw_m0", "%s", hw_folder);
 		memcpy(&cfg_default, &cfg_b, sizeof(cfg_b));
 	} else {

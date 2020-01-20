@@ -1,5 +1,5 @@
 /********************************************
- * Copyright (C) 2019 Intel Corporation
+ * Copyright (C) 2019-2020 Intel Corporation
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  ********************************************/
@@ -238,10 +238,10 @@ TRACE_EVENT(SPH_TRACE_IPC,
 		       __entry->size = size;
 		       __entry->dir = dir
 	),
-	SPH_TP_printk("dir=%s op=%s size=%u payload=0x%llx,0x%llx,0x%llx,0x%llx\n",
+	SPH_TP_printk("dir=%s op=%s size=%u payload=0x%llx,0x%llx,0x%llx,0x%llx",
 		  __entry->dir == 0 ? "command" : "response",
-		  __entry->dir == 0 ? H2C_HWQ_MSG_STR(__entry->msg[0] & 0x1f) :
-				      C2H_HWQ_MSG_STR(__entry->msg[0] & 0x1f),
+		  __entry->dir == 0 ? H2C_HWQ_MSG_STR(__entry->msg[0] & OPCODE_MASK) :
+				      C2H_HWQ_MSG_STR(__entry->msg[0] & OPCODE_MASK),
 		  __entry->size,
 		  __entry->msg[0],
 		  __entry->msg[1],
@@ -262,7 +262,7 @@ TRACE_EVENT(SPH_TRACE_IPC,
 			__entry->offset = offset;
 			__entry->val    = val
 	),
-	SPH_TP_printk("op=%c off=0x%x val=0x%x\n",
+	SPH_TP_printk("op=%c off=0x%x val=0x%x",
 		__entry->op,
 		__entry->offset,
 		__entry->val)

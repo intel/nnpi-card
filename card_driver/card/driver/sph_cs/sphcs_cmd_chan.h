@@ -1,5 +1,5 @@
 /********************************************
- * Copyright (C) 2019 Intel Corporation
+ * Copyright (C) 2019-2020 Intel Corporation
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  ********************************************/
@@ -26,6 +26,7 @@ struct sphcs_host_rb {
 	uint32_t size;
 	uint32_t head;
 	uint32_t tail;
+	bool is_full;
 };
 
 struct sphcs_hostres_map {
@@ -101,7 +102,12 @@ static inline u32 host_rb_free_bytes(struct sphcs_host_rb *rb)
 	u32 ret;
 
 	SPH_SPIN_LOCK_BH(&rb->lock_bh);
-	ret = (rb->head + rb->size - 1 - rb->tail) % rb->size;
+	if (rb->is_full)
+		ret = 0;
+	else if (rb->tail >= rb->head)
+		ret = (rb->head + rb->size - rb->tail);
+	else
+		ret = (rb->head - rb->tail);
 	SPH_SPIN_UNLOCK_BH(&rb->lock_bh);
 
 	return ret;
@@ -112,7 +118,12 @@ static inline u32 host_rb_avail_bytes(struct sphcs_host_rb *rb)
 	u32 ret;
 
 	SPH_SPIN_LOCK_BH(&rb->lock_bh);
-	ret = (rb->tail + rb->size - rb->head) % rb->size;
+	if (rb->is_full)
+		ret = rb->size;
+	else if (rb->head > rb->tail)
+		ret = (rb->tail + rb->size - rb->head);
+	else
+		ret = (rb->tail - rb->head);
 	SPH_SPIN_UNLOCK_BH(&rb->lock_bh);
 
 	return ret;

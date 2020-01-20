@@ -1,5 +1,5 @@
 /********************************************
- * Copyright (C) 2019 Intel Corporation
+ * Copyright (C) 2019-2020 Intel Corporation
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  ********************************************/
@@ -32,6 +32,7 @@ struct inf_devres {
 
 	enum dma_data_direction dir;
 	uint64_t                size;
+	uint64_t                align;
 	uint8_t                 depth;
 	uint32_t                usage_flags;
 
@@ -53,6 +54,7 @@ int inf_devres_create(uint16_t            protocolID,
 		      struct inf_context *context,
 		      uint64_t            size,
 		      uint8_t             depth,
+		      uint64_t            align,
 		      uint32_t            usage_flags,
 		      struct inf_devres **out_devres);
 void destroy_devres_on_create_failed(struct inf_devres *devres);
@@ -64,7 +66,7 @@ void send_runtime_destroy_devres(struct inf_devres *devres);
 
 int is_inf_devres_ptr(void *ptr);
 
-void inf_devres_get(struct inf_devres *devres);
+int inf_devres_get(struct inf_devres *devres);
 int inf_devres_put(struct inf_devres *devres);
 
 void inf_devres_migrate_priority_to_req_queue(struct inf_devres *devres, struct inf_exec_req *exec_infreq, bool read);

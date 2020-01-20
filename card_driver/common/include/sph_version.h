@@ -1,5 +1,5 @@
 /*******************************************************************************
- * INTEL CORPORATION CONFIDENTIAL Copyright(c) 2017-2019 Intel Corporation. All Rights Reserved.
+ * INTEL CORPORATION CONFIDENTIAL Copyright(c) 2017-2020 Intel Corporation. All Rights Reserved.
  *
  * The source code contained or described herein and all documents related to the
  * source code ("Material") are owned by Intel Corporation or its suppliers or
@@ -28,7 +28,7 @@
 #define SPH_PATCH 2
 
 #define SPH_VERSION  STR(VERSION: v.SPH_MAJOR.SPH_MINOR.SPH_PATCH)
-#define AUTHOR_STR   STR(AUTHOR: Intel Corporation 2018)
+#define AUTHOR_STR   STR(AUTHOR: Intel Corporation 2018-2020)
 #define SPH_GIT_HASH STR(gh.GIT_HASH)
 
 #ident SPH_VERSION
