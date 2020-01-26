@@ -1,6 +1,12 @@
 #SPH_PLATFORM_START_EP
 #loading components required for EP mode
 
+#initializing SPH card driver
+echo "initializing SPH security lib"
+insmod /opt/intel_nnpi/modules/sph_safec.ko
+
+error_check "insmod sph_safec.ko"
+
 echo "sph_platform_start_ep Enter..."
 
 echo "sph_platform_start_ep Exit..."

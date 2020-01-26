@@ -26,7 +26,6 @@
 #include "ice_debug_event.h"
 
 
-
 int cve_device_init(struct cve_device *dev, int index, u64 pe_value)
 {
 	/* struct hw_revision_t hw_rev; */
@@ -146,6 +145,8 @@ int cve_device_init(struct cve_device *dev, int index, u64 pe_value)
 		cve_os_log(CVE_LOGLEVEL_ERROR, "() failed: in iccp init %d\n",
 									retval);
 	}
+	configure_pmon_names(dev);
+
 	/* success */
 	return 0;
 

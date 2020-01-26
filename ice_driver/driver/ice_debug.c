@@ -32,6 +32,10 @@ const char *get_cve_jobs_group_status_str(uint32_t status)
 		return "JOBSGROUPSTATUS_COMPLETED";
 	case CVE_JOBSGROUPSTATUS_ABORTED:
 		return "JOBSGROUPSTATUS_ABORTED";
+	case CVE_JOBSGROUPSTATUS_NORESOURCE:
+		return "CVE_JOBSGROUPSTATUS_NORESOURCE";
+	case CVE_JOBSGROUPSTATUS_ERROR:
+		return "CVE_JOBSGROUPSTATUS_ERROR";
 	default:
 		return "Unknown";
 	}

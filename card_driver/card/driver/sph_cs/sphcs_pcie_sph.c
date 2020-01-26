@@ -209,6 +209,9 @@ struct sph_pci_device {
 	u32               host_status;
 	wait_queue_head_t host_status_wait;
 
+	u32               host_doorbell_val;
+	u32               card_doorbell_val;
+
 	bool              bus_master_en;
 
 	spinlock_t      dma_lock_irq;
@@ -702,8 +705,14 @@ static irqreturn_t interrupt_handler(int irq, void *data)
 		if (val & SPH_HOST_DRV_REQUEST_SELF_RESET_MASK) {
 			sph_log_err(GENERAL_LOG, "Self reset requested from host !!\n");
 			sph_warm_reset();
+		} else if ((val & SPH_HOST_KEEP_ALIVE_MASK) !=
+			   (sph_pci->host_doorbell_val & SPH_HOST_KEEP_ALIVE_MASK)) {
+			sph_pci->card_doorbell_val &= ~(SPH_CARD_KEEP_ALIVE_MASK);
+			sph_pci->card_doorbell_val |= (val & SPH_HOST_KEEP_ALIVE_MASK);
+			sph_mmio_write(sph_pci, ELBI_HOST_PCI_DOORBELL_VALUE, sph_pci->card_doorbell_val);
 		}
 
+		sph_pci->host_doorbell_val = val;
 		s_callbacks->host_doorbell_value_changed(sph_pci->sphcs, val);
 	}
 
@@ -1510,6 +1519,13 @@ static u32 sph_get_host_doorbell_value(void *hw_handle)
 static int sph_set_card_doorbell_value(void *hw_handle, u32 value)
 {
 	struct sph_pci_device *sph_pci = (struct sph_pci_device *)hw_handle;
+	unsigned long flags;
+
+	SPH_SPIN_LOCK_IRQSAVE(&sph_pci->irq_lock, flags);
+	value &= ~(SPH_CARD_KEEP_ALIVE_MASK);
+	value |= (sph_pci->host_doorbell_val & SPH_HOST_KEEP_ALIVE_MASK);
+	sph_pci->card_doorbell_val = value;
+	SPH_SPIN_UNLOCK_IRQRESTORE(&sph_pci->irq_lock, flags);
 
 	sph_mmio_write(sph_pci, ELBI_HOST_PCI_DOORBELL_VALUE, value);
 
@@ -1767,6 +1783,7 @@ static int sph_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 
 	/* Update sphcs with current host doorbell value */
 	doorbell_val = sph_mmio_read(sph_pci, ELBI_PCI_HOST_DOORBELL_VALUE);
+	sph_pci->host_doorbell_val = doorbell_val;
 	s_callbacks->host_doorbell_value_changed(sph_pci->sphcs, doorbell_val);
 	status = sph_mmio_read(sph_pci, ELBI_IOSF_STATUS);
 	if (status & ELBI_IOSF_STATUS_DOORBELL_MASK)

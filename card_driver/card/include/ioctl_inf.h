@@ -46,6 +46,7 @@
 #define IOCTL_INF_ALLOC_RESOURCE_REPLY    _IOW('I', 7, struct inf_alloc_resource_reply)
 #define IOCTL_INF_DEVNET_RESOURCES_RESERVATION_REPLY _IOW('I', 8, struct inf_devnet_resource_reserve_reply)
 #define IOCTL_INF_GET_ALLOC_PGT          _IOWR('I', 10, struct inf_get_alloc_pgt)
+#define IOCTL_INF_DEVNET_RESET_REPLY      _IOW('I', 11, struct inf_devnet_reset_reply)
 #ifdef ULT
 #define IOCTL_INF_SWITCH_DAEMON            _IO('I', 9)
 #endif
@@ -84,6 +85,7 @@ struct inf_sched_params {
 #define SPHCS_RUNTIME_CMD_EXECUTE_INFREQ    9
 #define SPHCS_RUNTIME_CMD_DESTROY_INFREQ    10
 #define SPHCS_RUNTIME_CMD_DEVNET_RESOURCES_RESERVATION  11
+#define SPHCS_RUNTIME_CMD_DEVNET_RESET  12
 
 /* IoctlSphcsError should be EQUAL to SphcsError!! */
 typedef enum {
@@ -104,6 +106,10 @@ typedef enum {
 	IOCTL_SPHCS_NO_MEMORY                         = 14,
 	IOCTL_SPHCS_INSUFFICIENT_RESOURCES            = 15,
 	IOCTL_SPHCS_ECC_ALLOC_FAILED                  = 16,
+	IOCTL_SPHCS_FILE_WAS_NOT_FOUND                = 17,
+	IOCTL_SPHCS_INFER_ICEDRV_ERROR                = 18,
+	IOCTL_SPHCS_INFER_ICEDRV_ERROR_RESET          = 19,
+	IOCTL_SPHCS_INFER_ICEDRV_ERROR_CARD_RESET     = 20,
 } IoctlSphcsError;
 
 /* Resource usage_flags bits */
@@ -193,6 +199,8 @@ struct inf_exec_infreq {
 struct inf_infreq_exec_done {
 	uint64_t	infreq_drv_handle;
 	uint32_t	infreq_ctx_id;
+	const void     *i_error_msg;
+	int32_t         i_error_msg_size;
 	IoctlSphcsError i_sphcs_err;
 };
 
@@ -234,6 +242,19 @@ struct inf_get_alloc_pgt {
 	int                         buf_fd;
 	struct inf_alloc_pgt_entry *entries;
 	uint32_t                    num_entries;
+};
+
+struct inf_devnet_reset {
+	uint64_t devnet_drv_handle;
+	uint64_t cmdlist_drv_handle;
+	uint64_t devnet_rt_handle;
+	uint32_t flags;
+};
+
+struct inf_devnet_reset_reply {
+	uint64_t devnet_drv_handle;
+	uint64_t cmdlist_drv_handle;
+	IoctlSphcsError i_sphcs_err;
 };
 
 #endif

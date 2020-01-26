@@ -46,6 +46,7 @@ int inf_cmd_create(uint16_t              protocolID,
 	cmd->num_reqs = 0;
 	cmd->num_left = 0;
 
+	inf_exec_error_list_init(&cmd->error_list, context);
 	INIT_LIST_HEAD(&cmd->devres_id_ranges);
 
 	if (context->chan == NULL) {
@@ -148,6 +149,8 @@ static void release_cmd(struct kref *kref)
 			  SPH_PAGE_SIZE,
 			  cmd->vptr,
 			  cmd->dma_addr);
+
+	inf_exec_error_list_fini(&cmd->error_list);
 
 	if (likely(cmd->destroyed == 1))
 		sphcs_send_event_report(g_the_sphcs,

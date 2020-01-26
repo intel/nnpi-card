@@ -32,7 +32,7 @@ struct inf_cmd_queue {
 	struct list_head  pending_commands;
 	int               hangup;
 	wait_queue_head_t waitq;
-	spinlock_t        lock;
+	spinlock_t        lock_irq;
 };
 
 void inf_cmd_queue_init(struct inf_cmd_queue *cmdq);

@@ -120,6 +120,7 @@ $(MODULE_NAME)-$(CONFIG_SPH) += sph/icedrv_uncore.o
 $(MODULE_NAME)-$(CONFIG_SPH) += sph/sph_mailbox.o
 $(MODULE_NAME)-$(CONFIG_SPH) += sph/sph_dvfs.o
 $(MODULE_NAME)-$(CONFIG_SPH) += sph/sph_iccp.o
+$(MODULE_NAME)-$(CONFIG_SPH) += sph/sph_ice_error_status.o
 
 # feature specified based on project settings
 subdir-ccflags-$(CVE_PCI_SUPPORT) += -I$(src)/linux/pci

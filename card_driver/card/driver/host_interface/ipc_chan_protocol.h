@@ -15,6 +15,19 @@
 
 #pragma pack(push, 1)
 
+//
+// Command execution error list buffer sent from card to host
+// is an array of ipc_exec_error_desc, where error_msg_size bytes of
+// the error message follows each element.
+//
+struct ipc_exec_error_desc {
+	uint8_t                 cmd_type;
+	uint16_t                obj_id;
+	uint16_t                devnet_id;
+	uint16_t                eventVal;
+	int32_t                 error_msg_size;
+};
+
 /***************************************************************************
  * IPC messages layout definition
  ***************************************************************************/
@@ -107,10 +120,9 @@ union h2c_ChanInferenceCopyOp {
 		u64 d2d        :  1;
 		u64 c2h        :  1; /* if d2d = 0, c2h defines the copy direction */
 		u64 destroy    :  1;
-		u64 reserved1  : 13;
-		u64 hostresID  : 16;
+		u64 hostres    : SPH_IPC_DMA_PFN_BITS;
 		u64 subres_copy : 1;
-		u64 reserved2  : 47;
+		u64 reserved2  : 18;
 	};
 
 	u64 value[2];
@@ -229,19 +241,6 @@ union h2c_ChanSync {
 };
 CHECK_MESSAGE_SIZE(union h2c_Sync, 1);
 
-union h2c_ChanInferenceNetworkResourceReservation {
-	struct {
-		u64 opcode        : 6; /* SPH_IPC_H2C_OP_CHAN_INF_NETWORK_RESOURCE_RESERVATION */
-		u64 chanID        : SPH_IPC_CHANNEL_BITS;
-		u64 netID         : SPH_IPC_INF_DEVNET_BITS;
-		u64 reserve       : 1; //reserve or release
-		u64 timeout       : 31;
-	};
-
-	u64 value[1];
-};
-CHECK_MESSAGE_SIZE(union h2c_ChanInferenceNetworkResourceReservation, 1);
-
 union h2c_ChanInferenceNetworkSetProperty {
 	struct {
 		u64 opcode        : 6; /* SPH_IPC_H2C_OP_CHAN_NETWORK_PROPERTY */
@@ -274,6 +273,20 @@ union h2c_ChanInferenceCmdListOp {
 	u64 value;
 };
 CHECK_MESSAGE_SIZE(union h2c_ChanInferenceCmdListOp, 1);
+
+union h2c_ExecErrorList {
+	struct {
+		u64 opcode      : 6; /* SPH_IPC_H2C_OP_CHAN_EXEC_ERROR_LIST */
+		u64 chanID      : SPH_IPC_CHANNEL_BITS;
+		u64 cmdID       : SPH_IPC_INF_CMDS_BITS;
+		u64 cmdID_valid : 1;
+		u64 clear       : 1;
+		u64 reserved    : 30;
+	};
+
+	u64 value;
+};
+CHECK_MESSAGE_SIZE(union h2c_ExecErrorList, 1);
 
 union c2h_ChanMsgHeader {
 	struct {
@@ -357,6 +370,23 @@ union c2h_ChanInfReqFailed {
 };
 CHECK_MESSAGE_SIZE(union c2h_ChanInfReqFailed, 2);
 
+union c2h_ExecErrorList {
+	struct {
+		u64 opcode      : 6; /* SPH_IPC_C2H_OP_CHAN_EXEC_ERROR_LIST */
+		u64 chanID      : SPH_IPC_CHANNEL_BITS;
+		u64 cmdID       : SPH_IPC_INF_CMDS_BITS;
+		u64 cmdID_valid : 1;
+		u64 clear_status: 2;
+		u64 pkt_size    : 12;
+		u64 total_size  : 16;  /* total buffer size of error eventVal if is_error */
+		u64 is_error    : 1;
+	};
+
+	u64 value;
+};
+CHECK_MESSAGE_SIZE(union c2h_ExecErrorList, 1);
+
+
 union h2c_ChanHwTraceAddResource {
 	struct {
 		u64 opcode          : 6;  /* SPH_IPC_H2C_OP_CHAN_HWTRACE_ADD_RESOURCE */
@@ -398,6 +428,51 @@ union h2c_ChanHwTraceState {
 	u64 value;
 };
 CHECK_MESSAGE_SIZE(union h2c_ChanHwTraceState, 1);
+
+union h2c_ChanGetCrFIFO {
+	struct {
+		u64 opcode      : 6;  /* SPH_IPC_H2C_OP_CHAN_GET_CR_FIFO */
+		u64 chanID      : SPH_IPC_CHANNEL_BITS;
+		u64 p2p_tr_id   : 16;
+		u64 peer_id     : 5;
+		u64 fw_fifo     : 1;/* fw fifo or relase fifo */
+		u64 reserved    : 26;
+	};
+
+	u64 value;
+};
+CHECK_MESSAGE_SIZE(union h2c_ChanGetCrFIFO, 1);
+
+union h2c_ChanConnectPeers {
+	struct {
+		u64 opcode      : 6;  /* SPH_IPC_H2C_OP_CHAN_P2P_CONNECT_PEERS */
+		u64 chanID      : SPH_IPC_CHANNEL_BITS;
+		u64 p2p_tr_id   : 16;
+		u64 buf_id      : 5;
+		u64 is_src_buf  : 1;
+		u64 peer_dev_id : 5;
+		u64 peer_buf_id : 5;
+		u64 reserved    : 16;
+	};
+
+	u64 value;
+};
+CHECK_MESSAGE_SIZE(union h2c_ChanGetCrFIFO, 1);
+
+union h2c_ChanUpdatePeerDev {
+	struct {
+		u64 opcode		: 6;  /* SPH_IPC_H2C_OP_CHAN_P2P_UPDATE_PEER_DEV */
+		u64 chanID		: SPH_IPC_CHANNEL_BITS;
+		u64 p2p_tr_id		: 16;
+		u64 dev_id		: 5;
+		u64 is_producer		: 1;
+		u64 db_addr		: 57;
+		u64 cr_fifo_addr	: SPH_IPC_DMA_PFN_BITS;
+		u64 reserved		: 52;
+	};
+	u64 value[3];
+};
+CHECK_MESSAGE_SIZE(union h2c_ChanUpdatePeerDev, 3);
 
 #ifdef ULT
 union ult2_message {

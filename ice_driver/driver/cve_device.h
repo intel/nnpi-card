@@ -32,7 +32,11 @@
 #define INVALID_CONTEXT_ID 0
 #define INVALID_NETWORK_ID 0
 #define ICE_MAX_PMON_CONFIG 32
+#define ICE_MAX_MMU_PMON 10
+#define ICE_MAX_DELPHI_PMON 10
+#define ICE_MAX_A_STEP_DELPHI_PMON 2
 #define EXE_ORDER_MAX 0xFFFFFFFFFFFFFFFF
+
 
 enum CVE_DEVICE_STATE {
 	CVE_DEVICE_IDLE = 0,
@@ -196,6 +200,10 @@ struct ice_perf_counter_config {
 	bool is_default_config;
 };
 
+struct ice_pmon_config {
+	const char *pmon_name;
+	u32 pmon_value;
+};
 struct cve_device {
 	/* device index */
 	u32 dev_index;
@@ -263,10 +271,13 @@ struct cve_device {
 	/* Freq sysfs related field */
 	struct kobject *ice_config_kobj;
 #endif
+	struct timespec db_time;
 	struct timespec idle_start_time;
 	struct timespec busy_start_time;
 	/* Is ICE in free pool */
 	bool in_free_pool;
+	struct ice_pmon_config mmu_pmon[ICE_MAX_MMU_PMON];
+	struct ice_pmon_config delphi_pmon[ICE_MAX_DELPHI_PMON];
 };
 struct llc_pmon_config {
 	/*LLC PMON config reg 0 value */
@@ -481,6 +492,7 @@ struct cve_device_group {
 	 */
 	u32 ice_max_freq;
 	struct debug_dump_conf dump_conf;
+	bool dump_ice_pmon;
 };
 
 /* Holds all the relevant IDs required for maintaining a map between
@@ -550,6 +562,10 @@ struct job_descriptor {
 	/* contains mirror image of patch point for counters*/
 	/* TODO: Move it to Ntw level and do just like InferBuffer patching */
 	struct ice_pp_copy *job_cntr_pp_list;
+	/* List of MMU Config registers */
+	u32 *mmu_cfg_list;
+	/* Number of MMU Config registers */
+	u32 num_mmu_cfg_regs;
 };
 
 /* hold information about a job group */
@@ -807,6 +823,9 @@ struct ice_network {
 
 	/* Ice error status*/
 	u64 ice_err_status;
+	u32 ice_error_status[MAX_CVE_DEVICES_NR];
+	bool reset_ntw;
+	bool reserved_on_error;
 
 	/* Shared read error status */
 	u32 shared_read_err_status;
@@ -1054,6 +1073,10 @@ struct cve_completion_event {
 	u64 ice_err_status;
 	/* Shared read error status */
 	u32 shared_read_err_status;
+	/* Ice error status*/
+	u32 ice_error_status[MAX_CVE_DEVICES_NR];
+	/* Ntw reset / Card Reset / No Reset */
+	enum ice_error_severity err_severity;
 };
 
 struct ice_debug_event_bp {

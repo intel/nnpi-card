@@ -53,6 +53,7 @@
 #include "project_device_interface.h"
 #include "cve_firmware.h"
 #include "sph_iccp.h"
+#include "sph_ice_error_status.h"
 
 #ifdef IDC_ENABLE
 /* For ssleep() */
@@ -338,7 +339,8 @@ void ice_os_set_clos(void *pmclos)
 	/* CLOS 0 */
 	lo = (1 << mclos->clos_size[ICE_CLOS_0]) - 1;
 	hi = 0;
-	native_write_msr(CLOS0_MSR, lo, hi);
+	if (lo)
+		native_write_msr(CLOS0_MSR, lo, hi);
 	val = native_read_msr(CLOS0_MSR);
 	cve_os_log(CVE_LOGLEVEL_INFO, "CLOS0: Write=0x%x, Read=0x%llx\n",
 		lo, val);
@@ -347,7 +349,8 @@ void ice_os_set_clos(void *pmclos)
 	clos_shift = (24 - mclos->clos_size[ICE_CLOS_1]);
 	lo = ((1 << mclos->clos_size[ICE_CLOS_1]) - 1) << clos_shift;
 	hi = 0;
-	native_write_msr(CLOS1_MSR, lo, hi);
+	if (lo)
+		native_write_msr(CLOS1_MSR, lo, hi);
 	val = native_read_msr(CLOS1_MSR);
 	cve_os_log(CVE_LOGLEVEL_INFO, "CLOS1: Write=0x%x, Read=0x%llx\n",
 		lo, val);
@@ -356,7 +359,8 @@ void ice_os_set_clos(void *pmclos)
 	clos_shift = mclos->clos_size[ICE_CLOS_0];
 	lo = ((1 << mclos->clos_size[ICE_CLOS_2]) - 1) << clos_shift;
 	hi = 0;
-	native_write_msr(CLOS2_MSR, lo, hi);
+	if (lo)
+		native_write_msr(CLOS2_MSR, lo, hi);
 	val = native_read_msr(CLOS2_MSR);
 	cve_os_log(CVE_LOGLEVEL_INFO, "CLOS2: Write=0x%x, Read=0x%llx\n",
 		lo, val);
@@ -379,21 +383,24 @@ void ice_os_reset_clos(void *pmclos)
 
 	lo = mclos->clos_default[ICE_CLOS_0] & 0xFFFFFFFF;
 	hi = (mclos->clos_default[ICE_CLOS_0] >> 32) & 0xFFFFFFFF;
-	native_write_msr(CLOS0_MSR, lo, hi);
+	if (lo || hi)
+		native_write_msr(CLOS0_MSR, lo, hi);
 	val = native_read_msr(CLOS0_MSR);
 	cve_os_log(CVE_LOGLEVEL_INFO, "CLOS0: Write=0x%llx, Read=0x%llx\n",
 		mclos->clos_default[ICE_CLOS_0], val);
 
 	lo = mclos->clos_default[ICE_CLOS_1] & 0xFFFFFFFF;
 	hi = (mclos->clos_default[ICE_CLOS_1] >> 32) & 0xFFFFFFFF;
-	native_write_msr(CLOS1_MSR, lo, hi);
+	if (lo || hi)
+		native_write_msr(CLOS1_MSR, lo, hi);
 	val = native_read_msr(CLOS1_MSR);
 	cve_os_log(CVE_LOGLEVEL_INFO, "CLOS1: Write=0x%llx, Read=0x%llx\n",
 		mclos->clos_default[ICE_CLOS_1], val);
 
 	lo = mclos->clos_default[ICE_CLOS_2] & 0xFFFFFFFF;
 	hi = (mclos->clos_default[ICE_CLOS_2] >> 32) & 0xFFFFFFFF;
-	native_write_msr(CLOS2_MSR, lo, hi);
+	if (lo || hi)
+		native_write_msr(CLOS2_MSR, lo, hi);
 	val = native_read_msr(CLOS2_MSR);
 	cve_os_log(CVE_LOGLEVEL_INFO, "CLOS2: Write=0x%llx, Read=0x%llx\n",
 		mclos->clos_default[ICE_CLOS_2], val);
@@ -794,7 +801,8 @@ static int cve_os_alloc_non_ctg_pages(
 		struct device *dev,
 		u32 pages_nr,
 		struct page **pages,
-		struct cve_dma_alloc_pages_desc **out_desc_list)
+		struct cve_dma_alloc_pages_desc **out_desc_list,
+		bool is_single_contig_mem)
 {
 	int ret = CVE_DEFAULT_ERROR_CODE;
 	int order;
@@ -852,6 +860,17 @@ static int cve_os_alloc_non_ctg_pages(
 		 * using the GFP_DMA32.
 		 */
 		if (!page) {
+			/* If user has requested for a single contiguous memory
+			 * block then do not retry.
+			 */
+			if (is_single_contig_mem) {
+				ret = -ICEDRV_KERROR_NO_MEM_PHY_CONTIGUOUS;
+				cve_os_log(CVE_LOGLEVEL_ERROR,
+						"Failed to allocate single contiguous memory of %d pages and order %d\n",
+						pages_nr, order);
+				goto alloc_failure;
+			}
+
 			cve_os_log(CVE_LOGLEVEL_WARNING,
 					"alloc_pages_node failed for order :%d\n",
 					order);
@@ -934,7 +953,8 @@ static u32 align_to_nearest_power_of_2(u32 size)
 int __cve_os_alloc_dma_sg(struct cve_device *cve_dev,
 		u32 size_of_elem,
 		u32 num_of_elem,
-		struct cve_dma_handle *out_dma_handle)
+		struct cve_dma_handle *out_dma_handle,
+		bool is_single_contig_mem)
 {
 	int ret = CVE_DEFAULT_ERROR_CODE;
 	struct sg_table *sgt = NULL;
@@ -1000,7 +1020,8 @@ int __cve_os_alloc_dma_sg(struct cve_device *cve_dev,
 			dev,
 			pages_nr,
 			priv_data->pages,
-			&priv_data->desc_list);
+			&priv_data->desc_list,
+			is_single_contig_mem);
 	if (ret != 0) {
 		cve_os_log(CVE_LOGLEVEL_ERROR,
 				"cve_os_alloc_non_ctg_pages failed %d\n",
@@ -2142,6 +2163,19 @@ static long cve_ioctl_misc(
 			retval = ice_set_hw_config(p);
 		}
 		break;
+	case ICE_IOCTL_RESET_NETWORK:
+		{
+			struct ice_reset_network_params *p =
+							&kparam.reset_network;
+
+			cve_os_log(CVE_LOGLEVEL_DEBUG,
+					    "ICE_IOCTL_RESET_NETWORK\n");
+			retval = ice_ds_reset_network(
+					context_pid,
+					p->contextid,
+					p->networkid);
+		}
+		break;
 	default:
 		retval = -ENOENT;
 		goto out;
@@ -2247,6 +2281,8 @@ static int __init cve_init(void)
 		goto cleanup_driver_init;
 	}
 
+	ice_flow_debug_init();
+
 	ice_di_activate_driver();
 
 	/* success */
@@ -2326,6 +2362,8 @@ static void __exit cve_exit(void)
 	misc_deregister(&cve_misc_device);
 
 	ice_swc_fini();
+
+	ice_flow_debug_term();
 #ifdef ENABLE_MEM_DETECT
 	__dump_leak();
 #endif

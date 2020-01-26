@@ -197,16 +197,21 @@ out:
 
 int ice_trace_config(struct ice_hw_trace_config *cfg)
 {
+#define __max_u32 0xFFFFFFFF
+
 	unsigned int i;
 	int ret;
-	unsigned int obs_sz = 0;
-	unsigned int cntr_sz = 0;
-	unsigned int daemon_sz = 0;
+	u32 obs_sz = 0;
+	u32 cntr_sz = 0;
+	u32 daemon_sz = 0;
 	struct ice_observer_config *k_observers = NULL;
 	struct ice_perf_counter_setup *k_counter_setups = NULL;
 	struct ice_register_reader_daemon *k_reg_daemons = NULL;
 	u32 device_mask = 0;
 	u32 dev_index;
+	u32 obs_trunc;
+	u32 cntr_trunc;
+	u32 daemon_trunc;
 
 	FUNC_ENTER();
 
@@ -225,12 +230,20 @@ int ice_trace_config(struct ice_hw_trace_config *cfg)
 				goto unlock;
 		}
 	} else {
+		obs_trunc = __max_u32 / sizeof(struct ice_observer_config);
+		if (cfg->ice_observer_count > obs_trunc) {
+			cve_os_log(CVE_LOGLEVEL_WARNING,
+			    "ice observer count exceeds the Maximum limit and it can lead to integer overflow. So, count is truncated from %d to %d\n",
+			    cfg->ice_observer_count, obs_trunc);
+			cfg->ice_observer_count = obs_trunc;
+		}
+
 		obs_sz = sizeof(struct ice_observer_config) *
 			cfg->ice_observer_count;
 		ret = OS_ALLOC_ZERO(obs_sz, (void **)&k_observers);
 		if (ret < 0) {
 			cve_os_log(CVE_LOGLEVEL_ERROR,
-			      "observer alloc failed:%d SZ:%d\n", ret, obs_sz);
+			     "observer alloc failed:%d SZ:%d\n", ret, obs_sz);
 			goto unlock;
 		}
 		ret = cve_os_read_user_memory(cfg->observer_list,
@@ -259,7 +272,7 @@ int ice_trace_config(struct ice_hw_trace_config *cfg)
 		}
 		for (i = 0; i < NUM_ICE_UNIT; i++) {
 			if ((~device_mask) & (1 << i)) {
-				ice_trace_set_ice_observers(NULL, i);
+				ret = ice_trace_set_ice_observers(NULL, i);
 				if (ret)
 					goto obs_free;
 			}
@@ -269,8 +282,19 @@ int ice_trace_config(struct ice_hw_trace_config *cfg)
 	if (cfg->ice_perf_counter_setup_count == 0) {
 		/*Reset to default setting*/
 	} else {
+		cntr_trunc = __max_u32 /
+				sizeof(struct ice_perf_counter_setup);
+		if (cfg->ice_perf_counter_setup_count > cntr_trunc) {
+			cve_os_log(CVE_LOGLEVEL_WARNING,
+				"ice performance counter setup count exceeds the Maximum limit and it can lead to integer overflow. So, it is truncated from %d to %d\n",
+				cfg->ice_perf_counter_setup_count,
+				cntr_trunc);
+			cfg->ice_perf_counter_setup_count = cntr_trunc;
+		}
+
 		cntr_sz = sizeof(struct ice_perf_counter_setup) *
 			cfg->ice_perf_counter_setup_count;
+
 		ret = OS_ALLOC_ZERO(cntr_sz, (void **)&k_counter_setups);
 		if (ret < 0) {
 			cve_os_log(CVE_LOGLEVEL_ERROR,
@@ -301,6 +325,15 @@ int ice_trace_config(struct ice_hw_trace_config *cfg)
 		for (i = 0; i < NUM_ICE_UNIT; i++)
 			ice_trace_set_reg_reader_daemon(NULL, i);
 	} else {
+		daemon_trunc = __max_u32 /
+				sizeof(struct ice_register_reader_daemon);
+		if (cfg->ice_reg_daemon_count > daemon_trunc) {
+			cve_os_log(CVE_LOGLEVEL_WARNING,
+				"ice register dameon count exceeds the Maximum limit and it can lead to integer overflow. So, it is truncated from %d to %d\n",
+				cfg->ice_reg_daemon_count, daemon_trunc);
+			cfg->ice_reg_daemon_count = daemon_trunc;
+		}
+
 		daemon_sz = sizeof(struct ice_register_reader_daemon) *
 			cfg->ice_reg_daemon_count;
 		ret = OS_ALLOC_ZERO(daemon_sz, (void **)&k_reg_daemons);

@@ -59,4 +59,34 @@ enum dso_reg_index {
 		 DSO_FILTER_MASK_HIGH_CH1_REG_INDEX = 12,
 		 DSO_FILTER_INV_CH1_REG_INDEX = 13
 		};
+
+const char* ice_pmon_strings[] = {
+	"ATU0_Misses",
+	"ATU1_Misses",
+	"ATU2_Misses",
+	"ATU3_Misses",
+	"ATU0_Transactions",
+	"ATU1_Transactions",
+	"ATU2_Transactions",
+	"ATU3_Transactions",
+	"Read_Issued",
+	"Write_Issued",
+	"Gecoe_dec_partial_access",
+	"Gecoe_enc_partial_access",
+	"Gecoe_dec_meta_miss",
+	"Gecoe_enc_uncom_mode",
+	"Gecoe_enc_null_mode",
+	"Gecoe_enc_sm_mode",
+	"Per_Layer_Cycles",
+	"Total_Cycles",
+	"Cycles_Cnt_Staurated",
+	"Gemm_CNN_Starup",
+	"Gemm_Compute_Cycles",
+	"Gemm_Output_Write_Cycles",
+	"CNN_Compute_Cycles",
+	"CNN_Output_Write_Cycles",
+	"Config_Credit_Latency",
+	"Overflow_Indication"
+	};
+
 #endif /*_SPH_TRACE_HW_REGS_H_*/

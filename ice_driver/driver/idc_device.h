@@ -34,8 +34,9 @@ struct dev_isr_status {
 	uint64_t idc_status;
 	uint32_t ice_isr_status[NUM_ICE_UNIT];
 	int8_t valid;
+	/* To discard outdated interrupts */
+	struct timespec cur_ts;
 };
-
 
 struct idc_device {
 	/* ICEDC error interrupt enable */

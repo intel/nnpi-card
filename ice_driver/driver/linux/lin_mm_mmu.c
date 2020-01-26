@@ -714,10 +714,11 @@ static void __do_mmu_config(struct cve_lin_mm_domain *domain,
 		mmu_config = &domain->mmu_config[partition];
 		switch (partition) {
 		case ICE_MEM_BASE_PARTITION:
-			if (ICE_ENABLE_EXTENDED_VA_MODE)
-				__mmu_config_35bit_va_page_32K(mmu_config);
-			else
-				__mmu_config_32bit_va_page_4K(mmu_config);
+#ifdef ICE_ENABLE_EXTENDED_VA_MODE
+			__mmu_config_35bit_va_page_32K(mmu_config);
+#else
+			__mmu_config_32bit_va_page_4K(mmu_config);
+#endif
 			break;
 		case MEM_PARTITION_LOW_32KB_HW:
 			__mmu_config_35bit_va_page_32K_hw(mmu_config);

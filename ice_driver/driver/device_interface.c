@@ -32,6 +32,7 @@
 #include "ice_debug.h"
 #include "sph_device_regs.h"
 #include "dev_context.h"
+#include "sph_ice_error_status.h"
 
 #ifdef RING3_VALIDATION
 #include "coral.h"
@@ -57,7 +58,6 @@
 
 #define PART_SUBMISSION_STEP (CVE_FIFO_ENTRIES_NR/2)
 
-#define ENABLE_CARD_RESET_FEATURE 0
 /* We expect 5 because the same value has been programmed in ECB */
 #define ECB_SUCCESS_STATUS 5
 /* Use: To avoid spurious interrupt */
@@ -142,6 +142,7 @@ struct di_job {
 #define TLC_ATU_MAPPING 3
 
 static void __dump_mmu_pmon(struct cve_device *ice);
+static void __dump_delphi_pmon(struct cve_device *ice);
 
 
 /* INTERNAL FUNCTIONS */
@@ -584,6 +585,8 @@ static void dispatch_next_subjobs(struct di_job *job,
 	 cfg_default.mmio_cbd_base_addr_offset,
 	 iceva);
 
+	getnstimeofday(&dev->db_time);
+
 	/* ring the doorbell once with the last descriptor */
 	cve_os_write_mmio_32(dev,
 		cfg_default.mmio_cb_doorbell_offset, db);
@@ -1011,12 +1014,10 @@ void cve_di_reset_device(struct cve_device *cve_dev)
 
 	cve_os_dev_log(CVE_LOGLEVEL_DEBUG,
 			cve_dev->dev_index,
-			"Perform Reset Device Reason=0x%08x, Ntw=%d, IceErr=%d, Job=%d, Timeout=%d, Power=%d\n",
+			"Perform Reset Device Reason=0x%08x, Ntw=%d, Job=%d, Timeout=%d, Power=%d\n",
 			cve_dev->di_cve_needs_reset,
 			((cve_dev->di_cve_needs_reset &
 				CVE_DI_RESET_DUE_NTW_SWITCH) != 0),
-			((cve_dev->di_cve_needs_reset &
-				CVE_DI_RESET_DUE_CVE_ERROR) != 0),
 			((cve_dev->di_cve_needs_reset &
 				CVE_DI_RESET_DUE_JOB_NOT_COMP) != 0),
 			((cve_dev->di_cve_needs_reset &
@@ -1037,9 +1038,17 @@ static inline void di_enable_interrupts(struct cve_device *cve_dev)
 	mask.field.TLC_FIFO_EMPTY = 1;
 
 	/*Disable Single ECC error as its recoverable. In BH, sw counters
-	 * can be updated based Single ECC status in interrupt status
+	 * can be updated based on Single ECC status in interrupt status.
+	 */
+	/*
+	 * Disabling these three errors because during execution these errors
+	 * are generated multiple times. For these errors our approach is to get
+	 * either Completion or WD event. Post this we will check following
+	 * fields and take action accordingly.
 	 */
 	mask.field.DSRAM_SINGLE_ERR_INTERRUPT = 1;
+	mask.field.DSRAM_DOUBLE_ERR_INTERRUPT = 1;
+	mask.field.SRAM_PARITY_ERR_INTERRUPT = 1;
 
 	/*TODO HACK:
 	 * For parity errors, mask TLC parity error interrupt as
@@ -1055,7 +1064,7 @@ static inline void di_enable_interrupts(struct cve_device *cve_dev)
 }
 static inline void enable_dsp_clock_gating(struct cve_device *cve_dev)
 {
-	if (ice_get_b_step_enable_flag()) {
+	if (!ice_get_a_step_enable_flag()) {
 		union mmio_hub_mem_cve_dpcg_control_reg_t reg;
 
 		reg.val = 0;
@@ -1405,14 +1414,13 @@ int cve_di_interrupt_handler(struct idc_device *idc_dev)
 	int index;
 	int need_dpc = 0;
 	u32 status_32 = 0;
-	u64 status64;
+	u64 status64, userIDCIntStatus;
 	u32 status_lo = 0, status_hi = 0, status_hl = 0;
 	struct cve_device *cve_dev = NULL;
 
 	u32 head = atomic_read(&idc_dev->status_q_head);
 	u32 tail = atomic_read(&idc_dev->status_q_tail);
 	struct dev_isr_status *isr_status_node;
-	struct timespec cur_ts;
 
 	DO_TRACE(trace__icedrvTopHalf(
 				SPH_TRACE_OP_STATE_START,
@@ -1439,11 +1447,13 @@ int cve_di_interrupt_handler(struct idc_device *idc_dev)
 
 	status64 = idc_mmio_read64(idc_dev->cve_dev,
 			cfg_default.bar0_mem_idcintst_offset);
-	isr_status_node->idc_status = status64;
+	userIDCIntStatus = ice_os_get_user_idc_intst();
+	userIDCIntStatus |= status64;
+	isr_status_node->idc_status = userIDCIntStatus;
 	idc_mmio_write64(idc_dev->cve_dev,
 			cfg_default.bar0_mem_idcintst_offset, status64);
 
-	if (status64) {
+	if (userIDCIntStatus) {
 		cve_os_log(CVE_LOGLEVEL_DEBUG,
 			"Received IceDC error interrupt\n");
 		need_dpc = 1;
@@ -1455,8 +1465,10 @@ int cve_di_interrupt_handler(struct idc_device *idc_dev)
 	isr_status_node->ice_status = status64;
 
 	cve_os_log(CVE_LOGLEVEL_INFO,
-			"IsrQNode[%d]:0x%p Current ICE Status=0x%llx\n",
-			head, isr_status_node, isr_status_node->ice_status);
+			"IsrQNode[%d]:0x%p IDC_Status=0x%llx, ICE_Status=0x%llx\n",
+			head, isr_status_node,
+			isr_status_node->idc_status,
+			isr_status_node->ice_status);
 
 	idc_mmio_write64(idc_dev->cve_dev,
 			cfg_default.bar0_mem_iceintst_offset,
@@ -1472,7 +1484,7 @@ int cve_di_interrupt_handler(struct idc_device *idc_dev)
 		goto exit;
 	}
 
-	getnstimeofday(&cur_ts);
+	getnstimeofday(&isr_status_node->cur_ts);
 
 	/* Currently only serving ICE Int Request, not Ice Error request */
 	status_lo = (status64 & 0x0000FFF0);
@@ -1483,8 +1495,10 @@ int cve_di_interrupt_handler(struct idc_device *idc_dev)
 
 		cve_dev = &idc_dev->cve_dev[index];
 
-		cve_dev->idle_start_time.tv_sec = cur_ts.tv_sec;
-		cve_dev->idle_start_time.tv_nsec = cur_ts.tv_nsec;
+		cve_dev->idle_start_time.tv_sec =
+			isr_status_node->cur_ts.tv_sec;
+		cve_dev->idle_start_time.tv_nsec =
+			isr_status_node->cur_ts.tv_nsec;
 
 		ice_swc_counter_set(cve_dev->hswc,
 			ICEDRV_SWC_DEVICE_COUNTER_IDLE_START_TIME,
@@ -1499,6 +1513,7 @@ int cve_di_interrupt_handler(struct idc_device *idc_dev)
 
 		status_32 = cve_os_read_mmio_32(cve_dev,
 				cfg_default.mmio_intr_status_offset);
+		status_32 |= ice_os_get_user_intst(cve_dev->dev_index);
 		isr_status_node->ice_isr_status[index] = status_32;
 		cve_os_dev_log(CVE_LOGLEVEL_INFO,
 			index,
@@ -1534,7 +1549,7 @@ static inline void __read_isr_q(struct idc_device *dev,
 	u32 tail = atomic_read(&dev->status_q_tail);
 	struct dev_isr_status *qnode;
 	struct cve_device *ice = NULL;
-	u32 status_lo = 0, status_hi = 0, status_hl = 0, index = 0, status;
+	u32 status_lo = 0, status_hi = 0, status_hl = 0, index = 0;
 
 	while (tail != head) {
 		index = 0;
@@ -1554,12 +1569,28 @@ static inline void __read_isr_q(struct idc_device *dev,
 			while (status_hl && index < NUM_ICE_UNIT) {
 				if (status_hl & 0x1) {
 					ice = &dev->cve_dev[index];
-					status = qnode->ice_isr_status[index];
-					ice->interrupts_status = status;
-					cve_os_log(CVE_LOGLEVEL_DEBUG,
-							"IsrQNode[%d] ice%d status:0x%x\n",
-							tail, index,
-							ice->interrupts_status);
+
+					if (ice_get_usec_timediff(
+						&qnode->cur_ts,
+						&ice->db_time)) {
+
+						ice->interrupts_status |=
+						qnode->ice_isr_status[index];
+
+						cve_os_log(CVE_LOGLEVEL_DEBUG,
+						"IsrQNode[%d] ice%d status:0x%x\n",
+						tail, index,
+						ice->interrupts_status);
+					} else {
+					 cve_os_log_default(CVE_LOGLEVEL_INFO,
+						"Discarding outdated interrupt of ICE%d status:0x%x DB_time=%lu.%lu Int_time=%lu.%lu\n",
+						index,
+						qnode->ice_isr_status[index],
+						ice->db_time.tv_sec,
+						ice->db_time.tv_nsec,
+						qnode->cur_ts.tv_sec,
+						qnode->cur_ts.tv_nsec);
+					}
 				}
 				status_hl = (status_hl >> 1);
 				index++;
@@ -1569,7 +1600,6 @@ static inline void __read_isr_q(struct idc_device *dev,
 	}
 	*q_tail = tail;
 }
-
 
 void cve_di_interrupt_handler_deferred_proc(struct idc_device *dev)
 {
@@ -1631,8 +1661,6 @@ void cve_di_interrupt_handler_deferred_proc(struct idc_device *dev)
 
 
 	if (idc_err_status.val) {
-		uint8_t cntr_overflow = idc_err_status.field.cntr_oflow_err;
-		uint8_t pool_viol = idc_err_status.field.cntr_err;
 
 		cve_os_log_default(CVE_LOGLEVEL_ERROR,
 				"ICEDC Errro Interrupt Status = %llu, ILGACC:%x ICERERR:%x ICEWERR:%x ASF_ICE1_ERR:%x ASF_ICE0_ERR:%x ICECNERR:%x ICESEERR:%x ICEARERR:%x CTROVFERR:%x IACNTNOT:%x SEMFREE:%x\n",
@@ -1649,22 +1677,33 @@ void cve_di_interrupt_handler_deferred_proc(struct idc_device *dev)
 		idc_err_status.field.ia_cntr_not,
 		idc_err_status.field.ia_sem_free_not);
 
-		if ((!pool_viol) && (cntr_overflow)) {
+		if (idc_err_status.field.illegal_access ||
+			idc_err_status.field.sem_err ||
+			idc_err_status.field.ice_write_err ||
+			idc_err_status.field.ice_read_err) {
+
+			/* TODO: Disable rmmod based on this */
+			dg->icedc_state = ICEDC_STATE_CARD_RESET_REQUIRED;
+
+		} else if (idc_err_status.field.cntr_err ||
+			idc_err_status.field.cntr_oflow_err) {
+
 			struct ice_network *ntw;
 
 			/* Affects all Networks that are using counter */
-
 			for (i = 0; i < MAX_HW_COUNTER_NR; i++) {
 				ntw = __get_ntw_of_overflowed_cntr(i, dev);
-				if (ntw)
+				if (ntw) {
 					ntw->icedc_err_status =
 							idc_err_status.val;
+					ntw->reset_ntw = true;
+				}
 			}
-		} else {
+		} else if (idc_err_status.field.attn_err) {
+
 			struct ice_network *ntw, *ntw_head;
 
 			/* Affects all networks */
-
 			ntw_head = dg->ntw_with_resources;
 			ntw = ntw_head;
 
@@ -1673,14 +1712,12 @@ void cve_di_interrupt_handler_deferred_proc(struct idc_device *dev)
 
 			do {
 				ntw->icedc_err_status = idc_err_status.val;
+				/* TODO: Segregate IDC error */
+				ntw->reset_ntw = true;
 
 				ntw = cve_dle_next(ntw, resource_list);
 			} while (ntw != ntw_head);
 		}
-
-#if ENABLE_CARD_RESET_FEATURE
-		dg->icedc_state = ICEDC_STATE_CARD_RESET_REQUIRED;
-#endif
 	}
 
 	status_hl = status_lo | status_hi;
@@ -1692,6 +1729,7 @@ void cve_di_interrupt_handler_deferred_proc(struct idc_device *dev)
 		goto end;
 
 	while (1) {
+
 		index = identify_ice_and_clear(&status_hl);
 		if (index < 0) {
 			cve_os_log(CVE_LOGLEVEL_INFO,
@@ -1712,6 +1750,7 @@ void cve_di_interrupt_handler_deferred_proc(struct idc_device *dev)
 		 */
 
 		status = cve_dev->interrupts_status;
+		cve_dev->interrupts_status = 0;
 		cve_os_dev_log(CVE_LOGLEVEL_INFO,
 			index,
 			"Received interrupt[BH] from IDC. Status=0x%x\n",
@@ -1728,8 +1767,10 @@ void cve_di_interrupt_handler_deferred_proc(struct idc_device *dev)
 				cve_dev->dev_index,
 				"device IDLE interrupt out of context status= 0x%08x",
 				 status);
+
 			cve_di_set_device_reset_flag(cve_dev,
 				CVE_DI_RESET_DUE_CVE_ERROR);
+
 			continue;
 		}
 
@@ -1757,9 +1798,13 @@ void cve_di_interrupt_handler_deferred_proc(struct idc_device *dev)
 				cve_os_log_default(CVE_LOGLEVEL_ERROR,
 			"Interrupt Status = 0x%08x Embedded CB Error = %d\n",
 			status, is_embedded_cb_error(cve_dev));
+
 				job_status = CVE_JOBSTATUS_ABORTED;
+
+				/* Error Handling ??? */
 				cve_di_set_device_reset_flag(cve_dev,
 					CVE_DI_RESET_DUE_CVE_ERROR);
+
 				goto handle_interrupt_check_completion;
 			}
 		}
@@ -1767,6 +1812,7 @@ void cve_di_interrupt_handler_deferred_proc(struct idc_device *dev)
 		/* If dsram error detected store error count in SW counter */
 		/* TODO: card level reset for fatal errors */
 		if (is_dsram_error(status)) {
+
 			store_ecc_err_count(cve_dev);
 			/* Ignore single bit error*/
 			status = unset_single_ecc_err(status);
@@ -1802,6 +1848,7 @@ void cve_di_interrupt_handler_deferred_proc(struct idc_device *dev)
 		}
 
 		if (is_wd_error(status)) {
+
 			if (get_ice_dump(cve_dev)) {
 				status = status |
 				cfg_default.
@@ -1810,9 +1857,11 @@ void cve_di_interrupt_handler_deferred_proc(struct idc_device *dev)
 		}
 		/*If error detected and recovery enabled*/
 		if (ice_err) {
+
+			ice_ds_block_network(job->ds_hjob, cve_dev, status);
+
 			job_status = CVE_JOBSTATUS_ABORTED;
-			cve_di_set_device_reset_flag(cve_dev,
-				CVE_DI_RESET_DUE_CVE_ERROR);
+
 			cve_os_dev_log(CVE_LOGLEVEL_ERROR,
 					cve_dev->dev_index,
 					"It seems that some errors occurred or ICE_DUMP_COMPLETED because of some TLC error\n");
@@ -1851,9 +1900,15 @@ void cve_di_interrupt_handler_deferred_proc(struct idc_device *dev)
 			cve_os_log(CVE_LOGLEVEL_DEBUG,
 					"job completed\n");
 			job_status = CVE_JOBSTATUS_COMPLETED;
-			if (ice_dump_mmu_pmon())
-				__dump_mmu_pmon(cve_dev);
 
+		}
+		if (ice_dump_mmu_pmon() || dg->dump_ice_pmon) {
+			get_ice_mmu_pmon_regs(cve_dev);
+			__dump_mmu_pmon(cve_dev);
+		}
+		if (dg->dump_ice_pmon) {
+			get_ice_delphi_pmon_regs(cve_dev);
+			__dump_delphi_pmon(cve_dev);
 		}
 
 handle_interrupt_check_completion:
@@ -2014,6 +2069,13 @@ int cve_di_handle_submit_job(
 			goto err;
 		}
 
+		retval = cve_mm_map_kva(buffer->ntw_buf_alloc);
+		if (retval < 0) {
+			cve_os_log(CVE_LOGLEVEL_ERROR,
+					"cve_mm_map_kva failed %d\n", retval);
+			goto err;
+		}
+
 		retval = cve_mm_get_buffer_addresses(buffer->ntw_buf_alloc,
 				&cve_vaddr, &offset, &address);
 
@@ -2127,6 +2189,7 @@ void cve_di_get_debugfs_regs_list(const struct debugfs_reg32 **regs,
 void cve_di_set_hw_counters(struct cve_device *cve_dev)
 {
 	union ice_mmu_inner_mem_mmu_config_t reg;
+	struct cve_device_group *dg = cve_dg_get();
 	u32 offset_bytes = cfg_default.mmu_base + cfg_default.mmu_cfg_offset;
 
 	/* validate that we are 32bit aligned */
@@ -2136,7 +2199,7 @@ void cve_di_set_hw_counters(struct cve_device *cve_dev)
 	reg.val = cve_os_read_mmio_32(cve_dev, offset_bytes);
 
 	/* Enable/Disable HW counters */
-	if (ice_dump_mmu_pmon())
+	if (ice_dump_mmu_pmon() || dg->dump_ice_pmon)
 		reg.field. ACTIVATE_PERFORMANCE_COUNTERS = 1;
 	else
 		reg.field.ACTIVATE_PERFORMANCE_COUNTERS =
@@ -2222,246 +2285,6 @@ void ice_di_set_mmu_address_mode(struct cve_device *ice)
 		reg.field.ATU_WITH_LARGER_LINEAR_ADDRESS = 0x0;
 
 	cve_os_write_mmio_32(ice, offset_bytes, reg.val);
-}
-
-static void __configure_atu_dse_mapping(struct cve_device *ice,
-		u32 offset_bytes)
-{
-	union ice_mmu_inner_stream_mapping_config_t reg;
-	bool bZero = ((cfg_default.mmu_base +
-			cfg_default.mmu_dse_surf_0_3_stream_mapping_offset) ==
-			offset_bytes);
-
-	reg.val = cve_os_read_mmio_32(ice, offset_bytes);
-	/* reg.dse_stream_mapping.ATU0 = DSE_ATU_MAPPING; */
-	/*Disable address based ATU selection */
-	reg.dse_stream_mapping.READ_IS_ADDRESS_BASED0 = bZero ? 1 : 0;
-	reg.dse_stream_mapping.ATU_AND_STREAM_ARE_ADDRESS_BASED0 = 0;
-
-	/* reg.dse_stream_mapping.ATU1 = DSE_ATU_MAPPING; */
-	/*Disable address based ATU selection */
-	reg.dse_stream_mapping.READ_IS_ADDRESS_BASED1 = bZero ? 1 : 0;
-	reg.dse_stream_mapping.ATU_AND_STREAM_ARE_ADDRESS_BASED1 = 0;
-
-	/* reg.dse_stream_mapping.ATU2 = DSE_ATU_MAPPING; */
-	/*Disable address based ATU selection */
-	reg.dse_stream_mapping.READ_IS_ADDRESS_BASED2 = bZero ? 1 : 0;
-	reg.dse_stream_mapping.ATU_AND_STREAM_ARE_ADDRESS_BASED2 = 0;
-
-	/* reg.dse_stream_mapping.ATU3 = DSE_ATU_MAPPING; */
-	/*Disable address based ATU selection */
-	reg.dse_stream_mapping.READ_IS_ADDRESS_BASED3 = bZero ? 1 : 0;
-	reg.dse_stream_mapping.ATU_AND_STREAM_ARE_ADDRESS_BASED3 = 0;
-	cve_os_write_mmio_32(ice, offset_bytes, reg.val);
-}
-
-void ice_di_configure_atu_cbb_mapping(struct cve_device *ice)
-{
-	union ice_mmu_inner_stream_mapping_config_t reg;
-	u32 offset_bytes;
-
-	offset_bytes = cfg_default.mmu_base +
-		cfg_default.mmu_tlc_ivp_stream_mapping_offset;
-
-	/* read current register value */
-	reg.val = cve_os_read_mmio_32(ice, offset_bytes);
-	reg.tlc_ivp_stream_mapping.TLC_ATU = TLC_ATU_MAPPING;
-	reg.tlc_ivp_stream_mapping.DSP_ATU = IVP_ATU_MAPPING;
-	cve_os_write_mmio_32(ice, offset_bytes, reg.val);
-
-	offset_bytes = cfg_default.mmu_base +
-		cfg_default.mmu_dse_surf_0_3_stream_mapping_offset;
-	__configure_atu_dse_mapping(ice, offset_bytes);
-
-	offset_bytes = cfg_default.mmu_base +
-		cfg_default.mmu_dse_surf_4_7_stream_mapping_offset;
-	__configure_atu_dse_mapping(ice, offset_bytes);
-
-	offset_bytes = cfg_default.mmu_base +
-		cfg_default.mmu_dse_surf_8_11_stream_mapping_offset;
-	__configure_atu_dse_mapping(ice, offset_bytes);
-
-	offset_bytes = cfg_default.mmu_base +
-		cfg_default.mmu_dse_surf_12_15_stream_mapping_offset;
-	__configure_atu_dse_mapping(ice, offset_bytes);
-
-	offset_bytes = cfg_default.mmu_base +
-		cfg_default.mmu_dse_surf_16_19_stream_mapping_offset;
-	__configure_atu_dse_mapping(ice, offset_bytes);
-
-	offset_bytes = cfg_default.mmu_base +
-		cfg_default.mmu_dse_surf_20_23_stream_mapping_offset;
-	__configure_atu_dse_mapping(ice, offset_bytes);
-
-	offset_bytes = cfg_default.mmu_base +
-		cfg_default.mmu_dse_surf_24_27_stream_mapping_offset;
-	__configure_atu_dse_mapping(ice, offset_bytes);
-
-	offset_bytes = cfg_default.mmu_base +
-		cfg_default.mmu_delphi_stream_mapping_offset;
-	reg.delphi_stream_mapping.ATU = DELPHI_ATU_MAPPING;
-	/*Disable address based ATU selection */
-	reg.delphi_stream_mapping.READ_IS_ADDRESS_BASED = 0;
-	reg.delphi_stream_mapping.ATU_AND_STREAM_ARE_ADDRESS_BASED = 0;
-	cve_os_write_mmio_32(ice, offset_bytes, reg.val);
-}
-
-static void __disable_dyanmic_dse_atu_selection(struct cve_device *ice,
-		u32 offset_bytes)
-{
-	union ice_mmu_inner_stream_mapping_config_t reg;
-
-	reg.val = cve_os_read_mmio_32(ice, offset_bytes);
-	/*Disable address based ATU selection */
-	reg.dse_stream_mapping.READ_IS_ADDRESS_BASED0 = 0;
-	reg.dse_stream_mapping.ATU_AND_STREAM_ARE_ADDRESS_BASED0 = 0;
-
-	/*Disable address based ATU selection */
-	reg.dse_stream_mapping.READ_IS_ADDRESS_BASED1 = 0;
-	reg.dse_stream_mapping.ATU_AND_STREAM_ARE_ADDRESS_BASED1 = 0;
-
-	/*Disable address based ATU selection */
-	reg.dse_stream_mapping.READ_IS_ADDRESS_BASED2 = 0;
-	reg.dse_stream_mapping.ATU_AND_STREAM_ARE_ADDRESS_BASED2 = 0;
-
-	/*Disable address based ATU selection */
-	reg.dse_stream_mapping.READ_IS_ADDRESS_BASED3 = 0;
-	reg.dse_stream_mapping.ATU_AND_STREAM_ARE_ADDRESS_BASED3 = 0;
-	cve_os_write_mmio_32(ice, offset_bytes, reg.val);
-}
-
-void ice_di_disable_dynamic_atu_selection(struct cve_device *ice)
-{
-#define __MAX_DSE_STRM_REG_SET 8
-	union ice_mmu_inner_stream_mapping_config_t reg;
-	u32 offset_bytes, iter;
-
-	for (iter = 0; iter < __MAX_DSE_STRM_REG_SET; iter++) {
-		offset_bytes = (cfg_default.mmu_base +
-			cfg_default.mmu_dse_surf_0_3_stream_mapping_offset +
-				(iter * 4));
-		__disable_dyanmic_dse_atu_selection(ice, offset_bytes);
-
-	}
-
-	offset_bytes = cfg_default.mmu_base +
-		cfg_default.mmu_delphi_stream_mapping_offset;
-	/*Disable address based ATU selection */
-	reg.delphi_stream_mapping.READ_IS_ADDRESS_BASED = 0;
-	reg.delphi_stream_mapping.ATU_AND_STREAM_ARE_ADDRESS_BASED = 0;
-	cve_os_write_mmio_32(ice, offset_bytes, reg.val);
-}
-
-static void __l1_stream_mapping(struct cve_device *ice)
-{
-#define __large_surface_reserved_atu  3
-
-	u32 i, val = 0, atu_base, offset_bytes;
-
-	for (i = 0; i < MAX_ATU_COUNT; i++) {
-		atu_base = cfg_default.mmu_atu0_base + (i *
-				(cfg_default.mmu_atu1_base -
-				 cfg_default.mmu_atu0_base));
-
-		offset_bytes = atu_base +
-			cfg_default.ice_mmu_1_system_map_stream_id_l1_0;
-		val = 0;
-		cve_os_write_mmio_32(ice, offset_bytes, val);
-
-		offset_bytes = atu_base +
-			cfg_default.ice_mmu_1_system_map_stream_id_l1_1;
-		val = 8;
-		cve_os_write_mmio_32(ice, offset_bytes, val);
-
-		offset_bytes = atu_base +
-			cfg_default.ice_mmu_1_system_map_stream_id_l1_2;
-		val = 11;
-		cve_os_write_mmio_32(ice, offset_bytes, val);
-
-		offset_bytes = atu_base +
-			cfg_default.ice_mmu_1_system_map_stream_id_l1_3;
-		val = (i == __large_surface_reserved_atu) ? 12 : 13;
-		cve_os_write_mmio_32(ice, offset_bytes, val);
-
-		offset_bytes = atu_base +
-			cfg_default.ice_mmu_1_system_map_stream_id_l1_4;
-		val = (i == __large_surface_reserved_atu) ? 13 : 14;
-		cve_os_write_mmio_32(ice, offset_bytes, val);
-
-		offset_bytes = atu_base +
-			cfg_default.ice_mmu_1_system_map_stream_id_l1_5;
-		val = (i == __large_surface_reserved_atu) ? 13 : 14;
-		cve_os_write_mmio_32(ice, offset_bytes, val);
-
-		offset_bytes = atu_base +
-			cfg_default.ice_mmu_1_system_map_stream_id_l1_6;
-		val = (i == __large_surface_reserved_atu) ? 13 : 14;
-		cve_os_write_mmio_32(ice, offset_bytes, val);
-
-		offset_bytes = atu_base +
-			cfg_default.ice_mmu_1_system_map_stream_id_l1_7;
-		val = 15;
-		cve_os_write_mmio_32(ice, offset_bytes, val);
-	}
-}
-
-static void __l2_stream_mapping(struct cve_device *ice)
-{
-#define __large_surface_reserved_atu  3
-
-	u32 i, val = 0, atu_base, offset_bytes;
-
-	for (i = 0; i < MAX_ATU_COUNT; i++) {
-		atu_base = cfg_default.mmu_atu0_base + (i *
-				(cfg_default.mmu_atu1_base -
-				 cfg_default.mmu_atu0_base));
-
-		offset_bytes = atu_base +
-			cfg_default.ice_mmu_1_system_map_stream_id_l2_0;
-		val = 0;
-		cve_os_write_mmio_32(ice, offset_bytes, val);
-
-		offset_bytes = atu_base +
-			cfg_default.ice_mmu_1_system_map_stream_id_l2_1;
-		val = 8;
-		cve_os_write_mmio_32(ice, offset_bytes, val);
-
-		offset_bytes = atu_base +
-			cfg_default.ice_mmu_1_system_map_stream_id_l2_2;
-		val = 11;
-		cve_os_write_mmio_32(ice, offset_bytes, val);
-
-		offset_bytes = atu_base +
-			cfg_default.ice_mmu_1_system_map_stream_id_l2_3;
-		val = (i == __large_surface_reserved_atu) ? 12 : 13;
-		cve_os_write_mmio_32(ice, offset_bytes, val);
-
-		offset_bytes = atu_base +
-			cfg_default.ice_mmu_1_system_map_stream_id_l2_4;
-		val = (i == __large_surface_reserved_atu) ? 13 : 14;
-		cve_os_write_mmio_32(ice, offset_bytes, val);
-
-		offset_bytes = atu_base +
-			cfg_default.ice_mmu_1_system_map_stream_id_l2_5;
-		val = (i == __large_surface_reserved_atu) ? 13 : 14;
-		cve_os_write_mmio_32(ice, offset_bytes, val);
-
-		offset_bytes = atu_base +
-			cfg_default.ice_mmu_1_system_map_stream_id_l2_6;
-		val = (i == __large_surface_reserved_atu) ? 13 : 14;
-		cve_os_write_mmio_32(ice, offset_bytes, val);
-
-		offset_bytes = atu_base +
-			cfg_default.ice_mmu_1_system_map_stream_id_l2_7;
-		val = 15;
-		cve_os_write_mmio_32(ice, offset_bytes, val);
-	}
-}
-
-void ice_di_configure_pt_caching_reg(struct cve_device *ice)
-{
-	__l1_stream_mapping(ice);
-	__l2_stream_mapping(ice);
 }
 
 u8 ice_di_is_cold_run(cve_di_job_handle_t hjob)
@@ -2580,42 +2403,103 @@ uint16_t cve_di_get_cdyn_val(cve_di_job_handle_t hjob)
 	return job->cdyn_val;
 }
 
-static void __dump_mmu_atu_pmon(struct cve_device *ice, u8 atu_index)
-{
-	u32 offset = 0, base;
-	u32 atu_ops, atu_miss;
-
-	base = cfg_default.mmu_base + (atu_index * 4);
-	offset = base + cfg_default.mmu_atu_misses_offset;
-	atu_miss = cve_os_read_mmio_32(ice, offset);
-
-	offset = base + cfg_default.mmu_atu_transactions_offset;
-	atu_ops = cve_os_read_mmio_32(ice, offset);
-
-	cve_os_dev_log_default(CVE_LOGLEVEL_INFO,
-			ice->dev_index,
-			"ATU%d_TRANSACTION:%u ATU%d_MISS:%u\n",
-			atu_index, atu_ops, atu_index, atu_miss);
-}
-
 static void __dump_mmu_pmon(struct cve_device *ice)
 {
-	u8 atu_index;
-	u32 reads, writes;
-	u32 offset;
+	int i = 0;
 
-	for (atu_index = 0; atu_index < MAX_ATU_COUNT; atu_index++)
-		__dump_mmu_atu_pmon(ice, atu_index);
-
-	offset = cfg_default.mmu_base + cfg_default.mmu_read_issued_offset;
-	reads = cve_os_read_mmio_32(ice, offset);
-
-	offset = cfg_default.mmu_base + cfg_default.mmu_write_issued_offset;
-	writes = cve_os_read_mmio_32(ice, offset);
-	cve_os_dev_log_default(CVE_LOGLEVEL_INFO,
-			ice->dev_index,
-			"MMU Reads:%u Writes:%u\n", reads, writes);
+	for (i = 0; i < ICE_MAX_MMU_PMON; i++) {
+		cve_os_dev_log_default(CVE_LOGLEVEL_INFO,
+		ice->dev_index,
+		"%s\t:%u\n",
+		ice->mmu_pmon[i].pmon_name,
+		ice->mmu_pmon[i].pmon_value);
+	}
 }
+static void __dump_delphi_pmon(struct cve_device *ice)
+{
+	int i = 0;
+	ICE_PMON_DELPHI_GEMM_CNN_STARTUP_COUNTER startup_cnt_reg;
+	ICE_PMON_DELPHI_CFG_CREDIT_LATENCY latency_cnt_reg;
+	ICE_PMON_DELPHI_OVERFLOW_INDICATION ovr_flow_reg;
+	ICE_PMON_DELPHI_DBG_PERF_STATUS_REG_T perf_status_reg;
+
+	for (i = 0; i < ICE_MAX_DELPHI_PMON; i++) {
+		if (ice_get_a_step_enable_flag()) {
+			if (i >= ICE_MAX_A_STEP_DELPHI_PMON)
+				break;
+		}
+		switch (i) {
+
+		case ICE_DELPHI_PMON_PER_LAYER_CYCLES:
+		case ICE_DELPHI_PMON_TOTAL_CYCLES:
+		case ICE_DELPHI_PMON_GEMM_COMPUTE_CYCLES:
+		case ICE_DELPHI_PMON_GEMM_OUTPUT_WRITE_CYCLES:
+		case ICE_DELPHI_PMON_CNN_COMPUTE_CYCLES:
+		case ICE_DELPHI_PMON_CNN_OUTPUT_WRITE_CYCLES:
+
+			cve_os_dev_log_default(CVE_LOGLEVEL_INFO,
+				ice->dev_index,
+				"%s\t:%u\n",
+				ice->delphi_pmon[i].pmon_name,
+				ice->delphi_pmon[i].pmon_value);
+		break;
+
+		case ICE_DELPHI_PMON_CYCLES_COUNT_OVERFLOW:
+			perf_status_reg.val = ice->delphi_pmon[i].pmon_value;
+
+				cve_os_dev_log_default(CVE_LOGLEVEL_INFO,
+					ice->dev_index,
+				"Per_Layer_Cycles_Overflow\t:%u\nTotal_Cycles_Overflow\t:%u\n",
+				perf_status_reg.field.per_lyr_cyc_cnt_saturated,
+				perf_status_reg.field.total_cyc_cnt_saturated);
+		break;
+
+		case ICE_DELPHI_PMON_GEMM_CNN_STARTUP:
+			startup_cnt_reg.val = ice->delphi_pmon[i].pmon_value;
+
+				cve_os_dev_log_default(CVE_LOGLEVEL_INFO,
+					ice->dev_index,
+				"CNN_Startup_Count\t:%u\nGemm_Startup_Count\t:%u\n",
+				startup_cnt_reg.field.pe_startup_perf_cnt,
+				startup_cnt_reg.field.gemm_startup_perf_cnt);
+
+		break;
+
+		case ICE_DELPHI_PMON_CONFIG_CREDIT_LATENCY:
+			latency_cnt_reg.val = ice->delphi_pmon[i].pmon_value;
+
+				cve_os_dev_log_default(CVE_LOGLEVEL_INFO,
+					ice->dev_index,
+				"Credit_Reset_Latency_Count\t:%u\nCfg_Latency_Count\t:%u\n",
+				latency_cnt_reg.field.
+						credit_reset_latency_perf_cnt,
+				latency_cnt_reg.field.cfg_latency_perf_cnt);
+		break;
+
+		case ICE_DELPHI_PMON_PERF_COUNTERS_OVR_FLW:
+			ovr_flow_reg.val = ice->delphi_pmon[i].pmon_value;
+
+				cve_os_dev_log_default(CVE_LOGLEVEL_INFO,
+					ice->dev_index,
+				"CNN_Startup_Overflow\t:%u\nGemm_Startup_Overflow\t:%u\nGemm_Compute_Overflow\t:%u\nGemm_Teardown_Overflow\t:%u\nCNN_Compute_Overflow\t:%u\nCNN_Teardown_Overflow\t:%u\nCredit_Reset_latency_Overflow\t:%u\nCfg_Latency_Overflow\t:%u\n",
+			ovr_flow_reg.field.pe_startup_perf_cnt_ovr_flow,
+			ovr_flow_reg.field.gemm_startup_perf_cnt_ovr_flow,
+			ovr_flow_reg.field.gemm_compute_perf_cnt_ovr_flow,
+			ovr_flow_reg.field.gemm_teardown_perf_cnt_ovr_flow,
+			ovr_flow_reg.field.pe_compute_perf_cnt_ovr_flow,
+			ovr_flow_reg.field.pe_teardown_perf_cnt_ovr_flow,
+			ovr_flow_reg.field.
+					credit_reset_latency_perf_cnt_ovr_flow,
+			ovr_flow_reg.field.cfg_latency_perf_cnt_ovr_flow);
+		break;
+
+		default:
+			cve_os_log(CVE_LOGLEVEL_ERROR,
+				"__dump_delphi_pmon index error\n");
+		}
+	}
+}
+
 
 /* Update network's shared read error if exists */
 u32 ice_di_is_shared_read_error(struct cve_device *dev)
@@ -2636,5 +2520,58 @@ u32 ice_di_is_shared_read_error(struct cve_device *dev)
 	}
 
 	return ret;
+}
+
+int ice_di_check_mmu_regs(u32 *reg_list, u32 num_regs)
+{
+	int ret = 0;
+	u32 i, offset;
+	u32 mmu_last_reg = cfg_default.mmu_axi_tbl_pt_idx_bits_offset;
+	u32 atu0_first_reg = cfg_default.mmu_atu0_base - cfg_default.mmu_base;
+	u32 atu0_last_reg = atu0_first_reg +
+				cfg_default.ice_mmu_1_system_map_stream_id_l2_7;
+	u32 atu1_first_reg = cfg_default.mmu_atu1_base - cfg_default.mmu_base;
+	u32 atu1_last_reg = atu1_first_reg +
+				cfg_default.ice_mmu_1_system_map_stream_id_l2_7;
+	u32 atu2_first_reg = cfg_default.mmu_atu2_base - cfg_default.mmu_base;
+	u32 atu2_last_reg = atu2_first_reg +
+				cfg_default.ice_mmu_1_system_map_stream_id_l2_7;
+	u32 atu3_first_reg = cfg_default.mmu_atu3_base - cfg_default.mmu_base;
+	u32 atu3_last_reg = atu3_first_reg +
+				cfg_default.ice_mmu_1_system_map_stream_id_l2_7;
+
+	for (i = 0; i < num_regs; i++) {
+
+		offset = reg_list[2 * i];
+
+		if (offset & 0x3)
+			ret = -ICEDRV_KERROR_INVALID_MMU_REG_OFFSET;
+		else if ((offset > mmu_last_reg) && (offset < atu0_first_reg))
+			ret = -ICEDRV_KERROR_INVALID_MMU_REG_OFFSET;
+		else if ((offset > atu0_last_reg) && (offset < atu1_first_reg))
+			ret = -ICEDRV_KERROR_INVALID_MMU_REG_OFFSET;
+		else if ((offset > atu1_last_reg) && (offset < atu2_first_reg))
+			ret = -ICEDRV_KERROR_INVALID_MMU_REG_OFFSET;
+		else if ((offset > atu2_last_reg) && (offset < atu3_first_reg))
+			ret = -ICEDRV_KERROR_INVALID_MMU_REG_OFFSET;
+		else if (offset > atu3_last_reg)
+			ret = -ICEDRV_KERROR_INVALID_MMU_REG_OFFSET;
+
+		if (ret < 0)
+			break;
+	}
+
+	return ret;
+}
+
+void ice_di_config_mmu_regs(struct cve_device *ice, u32 *reg_list,
+		u32 num_regs)
+{
+	u32 i, offset;
+
+	for (i = 0; i < num_regs; i++) {
+		offset = cfg_default.mmu_base + reg_list[2 * i];
+		cve_os_write_mmio_32(ice, offset, reg_list[(2 * i) + 1]);
+	}
 }
 

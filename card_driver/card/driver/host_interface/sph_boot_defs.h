@@ -7,7 +7,7 @@
 #define _SPH_DOORBELL_H
 
 /*
- * Value fields of card->host doorbell status register PCI_HOST_DOORBELL_VALUE
+ * Value fields of card->host doorbell status register HOST_PCI_DOORBELL_VALUE
  */
 #define SPH_CARD_BOOT_STATE_MASK            0xf
 #define SPH_CARD_BOOT_STATE_SHIFT           0
@@ -17,6 +17,8 @@
 #define SPH_CARD_BIOS_UPDATE_COUNTER_SHIFT  8
 #define SPH_CARD_ERROR_MASK                 0xf000
 #define SPH_CARD_ERROR_SHIFT                12
+#define SPH_CARD_KEEP_ALIVE_MASK            0x00f00000
+#define SPH_CARD_KEEP_ALIVE_SHIFT           20
 
 /* Possible values for card boot state */
 #define SPH_CARD_BOOT_STATE_NOT_READY       0  /* bios has not yet initialized */
@@ -35,7 +37,7 @@
 
 
 /*
- * Value fields of host->card doorbell status register HOST_PCI_DOORBELL_VALUE
+ * Value fields of host->card doorbell status register PCI_HOST_DOORBELL_VALUE
  */
 #define SPH_HOST_BOOT_STATE_MASK            0xf
 #define SPH_HOST_BOOT_STATE_SHIFT           0
@@ -45,6 +47,10 @@
 #define SPH_HOST_DRV_STATE_SHIFT            8
 #define SPH_HOST_DRV_REQUEST_SELF_RESET_MASK  0x10000  /* set by the host driver to request card to reset itself (not through FLR flow) */
 #define SPH_HOST_DRV_REQUEST_SELF_RESET_SHIFT 16
+#define SPH_HOST_KEEP_ALIVE_MASK            0x00f00000
+#define SPH_HOST_KEEP_ALIVE_SHIFT           20
+#define SPH_HOSY_P2P_POKE_MASK              0xff000000
+#define SPH_HOSY_P2P_POKE_SHIFT             24
 
 /* Possible values for host boot state */
 #define SPH_HOST_BOOT_STATE_IMAGE_NOT_READY         0             /* boot/bios image is not loaded yet to memory */

@@ -120,7 +120,15 @@ enum ice_kerror_type {
 	/** Invalid ICE id */
 	ICEDRV_KERROR_ICE_NODEV, /*[1142]*/
 	/** trying to load fw after exIR */
-	ICEDRV_KERROR_FW_FROZEN /*[1143]*/
+	ICEDRV_KERROR_FW_FROZEN, /*[1143]*/
+	/** ICE Frequency request has invalid values */
+	ICEDRV_KERROR_INVAL_ICE_FREQ, /* [1144] */
+	/** 2^order pages not available*/
+	ICEDRV_KERROR_NO_MEM_PHY_CONTIGUOUS, /*[1145]*/
+	/** Invalid MMU Conf reg offset */
+	ICEDRV_KERROR_INVALID_MMU_REG_OFFSET, /*[1146]*/
+	/** Network Reset not required */
+	ICEDRV_KERROR_NTW_RESET_NA /*[1147]*/
 };
 
 #endif /* _ICE_DRIVER_ERROR_H_ */

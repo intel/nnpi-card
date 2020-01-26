@@ -7,7 +7,9 @@
 #define _SPHCS_INF_TYPES_H
 
 #include <linux/list.h>
+#include <linux/spinlock.h>
 #include "sph_types.h"
+#include "ipc_protocol.h"
 
 struct inf_req_sequence {
 	u32              seq_id;
@@ -20,4 +22,28 @@ enum create_status {
 	CREATED		= 2
 };
 
+struct inf_exec_error_details {
+	struct list_head        node;
+	enum CmdListCommandType cmd_type;
+	uint16_t                obj_id;
+	uint16_t                devnet_id;
+	uint16_t                eventVal;
+	int32_t                 error_msg_size;
+	void                   *error_msg;
+};
+
+struct inf_context;
+
+struct inf_exec_error_list {
+	struct list_head    list;
+	struct inf_context *context;
+	uint16_t            cmdlist_id;
+	bool                is_cmdlist;
+	spinlock_t          lock;
+	bool                need_card_reset;
+	bool                clear_started;
+
+	uint16_t           *failed_devnets;
+	uint16_t            num_failed_devnets;
+};
 #endif

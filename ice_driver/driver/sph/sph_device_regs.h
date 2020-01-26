@@ -61,6 +61,14 @@ struct config {
 	uint32_t ice_delphi_base;
 	uint32_t ice_delphi_dbg_perf_cnt_1_reg_offset;
 	uint32_t ice_delphi_dbg_perf_cnt_2_reg_offset;
+	uint32_t ice_delphi_dbg_perf_status_reg_offset;
+	uint32_t ice_delphi_gemm_cnn_startup_counter_offset;
+	uint32_t ice_delphi_gemm_compute_cycle_offset;
+	uint32_t ice_delphi_gemm_output_write_cycle_offset;
+	uint32_t ice_delphi_cnn_compute_cycles_offset;
+	uint32_t ice_delphi_cnn_output_write_cycles_offset;
+	uint32_t ice_delphi_credit_cfg_latency_offset;
+	uint32_t ice_delphi_perf_cnt_ovr_flw_indication_offset;
 	uint32_t ice_mmu_1_system_map_mem_invalidate_offset;
 	uint32_t ice_mmu_1_system_map_mem_pt_base_addr_offset;
 	uint32_t ice_mmu_1_system_map_stream_id_l1_0;
@@ -304,6 +312,8 @@ struct config {
 	uint32_t a2i_icebo_pmon_counter_2_offset;
 	uint32_t a2i_icebo_pmon_counter_3_offset;
 	uint32_t a2i_icebo_pmon_status_offset;
+	uint32_t ice_delphi_dbg_perf_status_total_cyc_cnt_saturated_mask;
+	uint32_t ice_delphi_bdg_perf_status_per_lyr_cyc_cnt_saturated_mask;
 };
 
 typedef union {
@@ -564,6 +574,45 @@ union CVE_SHARED_CB_DESCRIPTOR {
 	};
 };
 
+typedef union {
+   struct {
+	uint32_t gemm_teardown_perf_cnt_ovr_flow            :   1;
+	uint32_t gemm_startup_perf_cnt_ovr_flow             :   1;
+	uint32_t gemm_compute_perf_cnt_ovr_flow             :   1;
+	uint32_t pe_startup_perf_cnt_ovr_flow               :   1;
+	uint32_t pe_compute_perf_cnt_ovr_flow               :   1;
+	uint32_t pe_teardown_perf_cnt_ovr_flow              :   1;
+	uint32_t cfg_latency_perf_cnt_ovr_flow              :   1;
+	uint32_t credit_reset_latency_perf_cnt_ovr_flow     :   1;
+	uint32_t RSVD                                       :   24;
+     }                            field;
+     uint32_t                     val;
+} ICE_PMON_DELPHI_OVERFLOW_INDICATION;
+
+typedef union {
+    struct {
+	uint32_t cfg_latency_perf_cnt            :   16;
+	uint32_t credit_reset_latency_perf_cnt   :   16;
+    }                               field;
+    uint32_t                        val;
+} ICE_PMON_DELPHI_CFG_CREDIT_LATENCY;
+
+typedef union {
+    struct {
+        uint32_t gemm_startup_perf_cnt       :   16;
+        uint32_t pe_startup_perf_cnt         :   16;
+    }                               field;
+    uint32_t                        val;
+} ICE_PMON_DELPHI_GEMM_CNN_STARTUP_COUNTER;
+
+typedef union {
+	struct {
+	uint32_t  total_cyc_cnt_saturated    :   1;
+	uint32_t  per_lyr_cyc_cnt_saturated  :   1;
+	uint32_t  RSVD                       :  30;
+	}                                field;
+uint32_t                         val;
+} ICE_PMON_DELPHI_DBG_PERF_STATUS_REG_T;
 
 typedef union {
     struct {
@@ -633,7 +682,22 @@ uint32_t  RSVD_1               :  16;
 	}                                field;
 uint32_t                         val;
 };
+
 union mmio_hub_mem_dtf_control_t_b_step {
+	struct {
+uint32_t  DTF_ON               :   1;
+uint32_t  DTF_HEADER_PACK_MODE :   1;
+uint32_t  DTF_FILTER_AND_MODE  :   1;
+uint32_t  DTF_VTUNE_MODE       :   1;
+uint32_t  DTF_VTUNE2_MODE      :   1;
+uint32_t  RSVD_0               :   3;
+uint32_t  DTF_WAIT_CYCLES      :   8;
+uint32_t  RSVD_1               :  16;
+	}                                field;
+uint32_t                         val;
+};
+
+union mmio_hub_mem_dtf_control_t_c_step {
 	struct {
 uint32_t  DTF_ON               :   1;
 uint32_t  DTF_HEADER_PACK_MODE :   1;

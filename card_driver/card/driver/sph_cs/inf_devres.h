@@ -46,9 +46,15 @@ struct inf_devres {
 	enum create_status status;
 	int                destroyed;
 
-	bool is_p2p_buf;
+	bool is_p2p_src;
+	bool is_p2p_dst;
 	struct sphcs_p2p_buf p2p_buf;
 };
+
+static inline bool inf_devres_is_p2p(struct inf_devres *devres)
+{
+	return (devres->is_p2p_src || devres->is_p2p_dst);
+}
 
 int inf_devres_create(uint16_t            protocolID,
 		      struct inf_context *context,

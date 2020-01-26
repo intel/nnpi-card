@@ -26,7 +26,10 @@ static void *addr_for_err_inj;
 static int infreq_req_sched(struct inf_exec_req *req);
 static bool inf_req_ready(struct inf_exec_req *req);
 static int inf_req_execute(struct inf_exec_req *req);
-static void inf_req_complete(struct inf_exec_req *req, int err);
+static void inf_req_complete(struct inf_exec_req *req,
+			     int                  err,
+			     const void          *error_msg,
+			     int32_t              error_msg_size);
 static void send_infreq_report(struct inf_exec_req *req,
 			       enum event_val       eventVal);
 static int inf_req_infreq_put(struct inf_exec_req *req);
@@ -658,7 +661,10 @@ static void send_infreq_report(struct inf_exec_req *req,
 		infreq_send_req_fail(req, eventVal);
 }
 
-static void inf_req_complete(struct inf_exec_req *req, int err)
+static void inf_req_complete(struct inf_exec_req *req,
+			     int                  err,
+			     const void          *error_msg,
+			     int32_t              error_msg_size)
 {
 	struct inf_req *infreq;
 	struct inf_context *context;
@@ -667,6 +673,8 @@ static void inf_req_complete(struct inf_exec_req *req, int err)
 	unsigned long flags;
 	uint16_t eventVal;
 	bool last_completed;
+	struct inf_exec_error_details *err_details;
+	int rc;
 
 	SPH_ASSERT(req->cmd_type == CMDLIST_CMD_INFREQ);
 	SPH_ASSERT(req->in_progress);
@@ -678,7 +686,6 @@ static void inf_req_complete(struct inf_exec_req *req, int err)
 	SPH_SPIN_LOCK_IRQSAVE(&context->sw_counters_lock_irq, flags);
 	context->infreq_counter--;
 	last_completed = (context->infreq_counter == 0);
-	SPH_SW_COUNTER_ATOMIC_INC(g_sph_sw_counters, SPHCS_SW_COUNTERS_INFERENCE_COMPLETED_INF_REQ);
 	SPH_SW_COUNTER_INC(context->sw_counters, CTX_SPHCS_SW_COUNTERS_INFERENCE_COMPLETED_INF_REQ);
 
 	if (last_completed &&
@@ -691,6 +698,7 @@ static void inf_req_complete(struct inf_exec_req *req, int err)
 		context->runtime_busy_starttime = 0;
 	}
 	SPH_SPIN_UNLOCK_IRQRESTORE(&context->sw_counters_lock_irq, flags);
+	SPH_SW_COUNTER_ATOMIC_INC(g_sph_sw_counters, SPHCS_SW_COUNTERS_INFERENCE_COMPLETED_INF_REQ);
 
 	 DO_TRACE(trace_infreq(SPH_TRACE_OP_STATUS_COMPLETE,
 				  infreq->devnet->context->protocolID,
@@ -759,6 +767,18 @@ static void inf_req_complete(struct inf_exec_req *req, int err)
 			eventVal = SPH_IPC_RUNTIME_INFER_EXEC_ERROR;
 			break;
 		}
+		case -SPHER_INFER_ICEDRV_ERROR: {
+			eventVal = SPH_IPC_ICEDRV_INFER_EXEC_ERROR;
+			break;
+		}
+		case -SPHER_INFER_ICEDRV_ERROR_RESET: {
+			eventVal = SPH_IPC_ICEDRV_INFER_EXEC_ERROR_NEED_RESET;
+			break;
+		}
+		case -SPHER_INFER_ICEDRV_ERROR_CARD_RESET: {
+			eventVal = SPH_IPC_ICEDRV_INFER_EXEC_ERROR_NEED_CARD_RESET;
+			break;
+		}
 		case -SPHER_INFER_SCHEDULE_ERROR: {
 			eventVal = SPH_IPC_RUNTIME_INFER_SCHEDULE_ERROR;
 			break;
@@ -766,12 +786,48 @@ static void inf_req_complete(struct inf_exec_req *req, int err)
 		default:
 			eventVal = SPH_IPC_RUNTIME_FAILED;
 		}
+
 		sph_log_err(EXECUTE_COMMAND_LOG, "Got Error. errno: %d, eventVal=%u\n", err, eventVal);
+
+		rc = inf_exec_error_details_alloc(CMDLIST_CMD_INFREQ,
+						  infreq->protocolID,
+						  infreq->devnet->protocolID,
+						  eventVal,
+						  error_msg_size < 0 ? -error_msg_size : error_msg_size,
+						  &err_details);
+		if (rc == 0) {
+			if (error_msg_size != 0) {
+				if (error_msg_size < 0) {
+					rc = copy_from_user(err_details->error_msg,
+							    error_msg,
+							    err_details->error_msg_size);
+					if (rc)
+						kfree(err_details);
+				} else
+					memcpy(err_details->error_msg, error_msg, error_msg_size);
+			}
+
+			if (rc == 0)
+				inf_exec_error_list_add(cmd != NULL ? &cmd->error_list :
+								      &context->error_list,
+							err_details);
+		}
+
 		req->f->send_report(req, eventVal);
 
-		//TODO GLEB: decide according to error if brake the context, brake the card or do nothing
-		inf_context_set_state(infreq->devnet->context,
-				      CONTEXT_BROKEN_RECOVERABLE);
+		if (eventVal == SPH_IPC_ICEDRV_INFER_EXEC_ERROR_NEED_CARD_RESET) {
+			sphcs_send_event_report(g_the_sphcs,
+						SPH_IPC_ERROR_FATAL_ICE_ERROR,
+						infreq->devnet->context->protocolID,
+						-1,
+						-1);
+
+			inf_context_set_state(infreq->devnet->context,
+					      CONTEXT_BROKEN_NON_RECOVERABLE);
+		} else if (cmd == NULL) {
+			inf_context_set_state(infreq->devnet->context,
+					      CONTEXT_BROKEN_RECOVERABLE);
+		}
 	}
 
 	if (cmd != NULL) {

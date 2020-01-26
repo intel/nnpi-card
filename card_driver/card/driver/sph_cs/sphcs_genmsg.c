@@ -984,6 +984,7 @@ static long process_register_service(struct file *f, void __user *arg)
 	int ret;
 	char *service_name;
 	struct service_data *service;
+	size_t size;
 
 	/* Fail of the command streamer object has not been created yet */
 	if (unlikely(g_the_sphcs == NULL))
@@ -996,7 +997,10 @@ static long process_register_service(struct file *f, void __user *arg)
 	if (unlikely(req.name_len == 0 || req.name_len > SPH_MAX_GENERIC_SERVICES))
 		return -EINVAL;
 
-	service_name = kmalloc(req.name_len+1, GFP_KERNEL);
+	/* Avoid integer ovf using size_t */
+	size = req.name_len;
+	size = size + 1;
+	service_name = kmalloc(size, GFP_KERNEL);
 	if (unlikely(service_name == NULL))
 		return -ENOMEM;
 

@@ -22,7 +22,7 @@ u32 dma_calc_and_gen_lli(struct sg_table *srcSgt,
 	void *lliBuf = lliPtr;
 	struct scatterlist *next_srcSgl = srcSgt->sgl;
 	struct scatterlist *next_dstSgl = dstSgt->sgl;
-	unsigned int curr_dst_offset;
+	uint64_t curr_dst_offset;
 	uint64_t total_size = 0;
 	struct region {
 		dma_addr_t   dma_address;

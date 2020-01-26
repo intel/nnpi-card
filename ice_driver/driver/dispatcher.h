@@ -192,6 +192,12 @@ int cve_ds_get_version(cve_context_process_id_t context_pid,
  *  icemask - [out] bitmap of masked ICEs
  */
 int cve_ds_get_metadata(u32 *icemask);
+
+int ice_ds_reset_network(
+		cve_context_process_id_t context_pid,
+		cve_context_id_t context_id,
+		cve_network_id_t ntw_id);
+
 #define _no_op_return_zero 0
 #ifdef RING3_VALIDATION
 void *cve_ds_get_di_context(cve_context_id_t context_id);
@@ -225,8 +231,12 @@ int ice_ds_dispatch_jg(struct jobgroup_descriptor *jobgroup);
 
 int ice_set_hw_config(struct ice_set_hw_config_params *set_hw_config);
 
-int ice_ds_raise_event(struct ice_network *ntw, bool reschedule);
+int ice_ds_raise_event(struct ice_network *ntw,
+	enum cve_jobs_group_status status,
+	bool reschedule);
 
 int ice_iccp_license_request(struct cve_device *dev, bool throttling,
 				uint16_t license_value);
+void ice_ds_block_network(cve_ds_job_handle_t ds_job_handle,
+	struct cve_device *dev, u32 status);
 #endif /* _DISPATCHER_H_ */

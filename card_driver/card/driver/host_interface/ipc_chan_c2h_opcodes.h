@@ -38,6 +38,7 @@ C2H_OPCODE(CHAN_SERVICE_LIST, 34, union c2h_ChanServiceListMsg)
 C2H_OPCODE(CHAN_SYNC_DONE, 35, union c2h_ChanSyncDone)
 C2H_OPCODE(CHAN_INFREQ_FAILED, 36, union c2h_ChanInfReqFailed)
 C2H_OPCODE(CHAN_HWTRACE_STATE, 37, union c2h_ChanHwTraceState)
+C2H_OPCODE(CHAN_EXEC_ERROR_LIST, 38, union c2h_ExecErrorList)
 
 #ifdef ULT
 C2H_OPCODE(ULT2_OP,              63, union ult_message)

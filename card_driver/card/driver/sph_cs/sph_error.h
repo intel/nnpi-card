@@ -31,5 +31,8 @@
 #define	SPHER_INFER_EXEC_ERROR			(SPH_ERRNO_BASE + 3)	/* Infer exec error */
 #define	SPHER_INFER_SCHEDULE_ERROR		(SPH_ERRNO_BASE + 4)	/* Infer schedule error */
 #define	SPHER_DMA_ERROR				(SPH_ERRNO_BASE + 5)	/* DMA Error */
+#define SPHER_INFER_ICEDRV_ERROR                (SPH_ERRNO_BASE + 6)    /* Infer failed on icedrv error */
+#define SPHER_INFER_ICEDRV_ERROR_RESET          (SPH_ERRNO_BASE + 7)    /* Infer failed on icedrv error network reset needed */
+#define SPHER_INFER_ICEDRV_ERROR_CARD_RESET     (SPH_ERRNO_BASE + 8)    /* Infer failed on icedrv error card reset needed */
 
 #endif

@@ -28,6 +28,8 @@ struct inf_cmd_list {
 	uint16_t             num_reqs;
 	uint16_t             num_left;
 
+	struct inf_exec_error_list  error_list;
+
 	//for edit params
 	struct req_params   *edits;
 	uint16_t             edits_idx;

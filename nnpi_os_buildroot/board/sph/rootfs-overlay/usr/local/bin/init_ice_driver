@@ -29,15 +29,37 @@ is_simics() {
 check_cpu_stepping() {
         a=`cat /proc/cpuinfo | grep stepping | awk '{print $3}' `
         A="$(echo $a | cut -d' ' -f2)"
-        if [ $A == 0 ]; then STEP='a_step'; else STEP='b_step'; fi
-}
+        if [ $A -eq 0 ]
+        then
+            echo "this is NNPI A step SOC"
+            STEP='a_step'
+        elif [ $A -eq 1 ]
+        then
+            echo "this is NNPI B step SOC"
+            STEP='b_step'
+        elif [ $A -eq 2 ]
+        then
+            echo "this is NNPI C step SOC"
+            STEP='c_step'
+        else
+            echo "Not a valid SOC step"
+            STEP='NO_Step'
+        fi
+}        
 
 #############################
 # Enumerate ICEs to check for faulty cores
 #############################
 check_ices() {
         echo "Start " > /tmp/Test_all_ICEs.log
-	check_cpu_stepping
+	      check_cpu_stepping
+        if [ $STEP != 'a_step' ] && [ $STEP != 'b_step' ]
+        then
+            echo "*********************************************"
+            echo "*        skiping ice screening test         *" 
+            echo "*********************************************"
+            return 0
+        fi 
         i=0
         while [ $i -le 11 ]
         do

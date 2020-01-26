@@ -170,15 +170,20 @@ void ice_debug_create_event_node(struct cve_device *dev,
 	struct ice_network *ntw;
 	struct ice_debug_event_bp *evt_info;
 	struct ice_debug_event_info_bp evt;
+	int retval;
 
 	job = (struct job_descriptor *)ds_job_handle;
 	jobgroup = job->jobgroup;
 	ntw = jobgroup->network;
 
 	if (ntw->ntw_enable_bp) {
-		OS_ALLOC_ZERO(sizeof(struct ice_debug_event_bp),
+		retval = OS_ALLOC_ZERO(sizeof(struct ice_debug_event_bp),
 			(void **)&evt_info);
-
+		if (retval != 0) {
+			cve_os_log(CVE_LOGLEVEL_ERROR,
+				"ice debug event bp failed %d\n", retval);
+			return;
+		}
 		evt_info->network_id = ntw->network_id;
 		evt_info->ice_index = dev->dev_index;
 
