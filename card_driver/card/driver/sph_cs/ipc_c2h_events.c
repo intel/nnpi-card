@@ -138,6 +138,10 @@ const char *event_code_name(u32 eventCode)
 		return "SPH_IPC_CTX_DRAM_ECC_UNCORRECTABLE";
 	case SPH_IPC_ERROR_DRAM_ECC_CORRECTABLE:
 		return "SPH_IPC_ERROR_DRAM_ECC_CORRECTABLE";
+	case SPH_IPC_CONTEXT_EXEC_ERROR:
+		return "SPH_IPC_CONTEXT_EXEC_ERROR";
+	case SPH_IPC_ERROR_FATAL_ICE_ERROR:
+		return "SPH_IPC_ERROR_FATAL_ICE_ERROR";
 	default:
 		return "Unknown event code";
 	}

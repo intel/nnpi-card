@@ -362,7 +362,19 @@ static void configure_axi_max_inflight(struct cve_device *cve_dev)
 static void configure_dtf(struct cve_device *cve_dev)
 {
 #ifdef FPGA
-	if (ice_get_b_step_enable_flag()) {
+	if (ice_get_a_step_enable_flag()) {
+		union mmio_hub_mem_dtf_control_t_a_step dtf_control;
+
+		/* Set control register in cve top */
+		dtf_control.val = 0;
+		dtf_control.field.DTF_VTUNE_MODE = 1;
+		dtf_control.field.DTF_ON = 1;
+		cve_os_write_mmio_32(cve_dev,
+			cfg_default.mmio_dtf_ctrl_offset,
+			dtf_control.val);
+
+	} else if (ice_get_b_step_enable_flag()) {
+
 		union mmio_hub_mem_dtf_control_t_b_step dtf_control;
 
 		/* Set control register in cve top */
@@ -372,8 +384,9 @@ static void configure_dtf(struct cve_device *cve_dev)
 		cve_os_write_mmio_32(cve_dev,
 			cfg_default.mmio_dtf_ctrl_offset,
 			dtf_control.val);
+
 	} else {
-		union mmio_hub_mem_dtf_control_t_a_step dtf_control;
+		union mmio_hub_mem_dtf_control_t_c_step dtf_control;
 
 		/* Set control register in cve top */
 		dtf_control.val = 0;
@@ -897,6 +910,8 @@ int set_ice_freq(void *ice_freq_config)
 	struct cve_device *dev;
 	u32 offset;
 	u64 value;
+	u32 max_freq_allowed;
+
 
 	/* the ice value is in range of 0-11 so obtained thread num
 	 * is in range of 4 - 15
@@ -916,6 +931,19 @@ int set_ice_freq(void *ice_freq_config)
 		cve_os_log(CVE_LOGLEVEL_ERROR,
 				"Error:%d ICE%d does not exist\n",
 				retval, ice_index);
+
+		return retval;
+	}
+
+	max_freq_allowed = get_ice_max_freq();
+	if ((freq_config->ice_freq < MIN_ICE_FREQ_PARAM) ||
+	   (freq_config->ice_freq > max_freq_allowed ||
+	   (freq_config->ice_freq % ICE_FREQ_DIVIDER_FACTOR != 0))) {
+		retval = -ICEDRV_KERROR_INVAL_ICE_FREQ;
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+		"ERROR:%d ice freq param should be in range of %d-%d , multiple of 25 ( freq:%u)\n",
+			retval, MIN_ICE_FREQ_PARAM, max_freq_allowed,
+			freq_config->ice_freq);
 
 		return retval;
 	}
@@ -961,8 +989,7 @@ out:
 	return retval;
 }
 
-void project_hook_interrupt_handler_exit(struct cve_device *cve_dev,
-		u32 status)
+void project_hook_interrupt_handler_exit(struct cve_device *cve_dev)
 {
 	union mmio_hub_mem_cve_config_t cve_config;
 
@@ -1077,8 +1104,14 @@ void cve_di_set_cve_dump_control_register(struct cve_device *cve_dev,
 		uint8_t dumpTrigger, struct di_cve_dump_buffer ice_dump_buf)
 {
 	union tlc_hi_mem_tlc_dump_control_reg_t reg;
-	u32 offset_bytes = cfg_default.ice_tlc_low_base +
+	u32 offset_bytes;
+
+	if (dumpTrigger == cfg_default.ice_dump_now)
+		offset_bytes = cfg_default.ice_tlc_low_base +
 			cfg_default.ice_tlc_hi_dump_control_offset;
+	else
+		offset_bytes = cfg_default.ice_tlc_hi_base +
+			cfg_default.ice_tlc_hi_dump_buf_offset;
 
 	if (ice_dump_buf.is_allowed_tlc_dump) {
 		/* validate that we are 32bit aligned */
@@ -1186,7 +1219,7 @@ void ice_di_configure_clk_squashing(struct cve_device *dev, bool disable)
 	u32 read_val, write_val = 0, mask = 0;
 	u8 bo_id = (dev->dev_index / 2);
 
-	if (ice_get_b_step_enable_flag())
+	if (!ice_get_a_step_enable_flag())
 		return;
 
 	offset = (ICEDC_ICEBO_OFFSET(bo_id) + ICEBO_GPSB_OFFSET
@@ -1470,9 +1503,7 @@ static ssize_t store_ice_freq(struct kobject *kobj,
 	u32 freq_to_set;
 	struct ice_hw_config_ice_freq freq_conf;
 	int ret = 0;
-	u32 max_freq_allowed;
 
-	max_freq_allowed = get_ice_max_freq();
 	ret = sscanf(kobj->name, "ice%d", &dev_index);
 	if (ret < 1) {
 		cve_os_log(CVE_LOGLEVEL_ERROR, "failed getting ice id %s\n",
@@ -1490,17 +1521,6 @@ static ssize_t store_ice_freq(struct kobject *kobj,
 		return -EFAULT;
 
 	ret = kstrtoint(freqset_s, 10, &freq_to_set);
-	if (ret < 0)
-		return ret;
-
-	if (freq_to_set < MIN_ICE_FREQ_PARAM ||
-			freq_to_set > max_freq_allowed ||
-				freq_to_set % ICE_FREQ_DIVIDER_FACTOR != 0) {
-		cve_os_log_default(CVE_LOGLEVEL_ERROR,
-			"ice freq required has to be in range of %d-%d, multiple of 25\n",
-			MIN_ICE_FREQ_PARAM, max_freq_allowed);
-		return -EINVAL;
-	}
 	if (ret < 0)
 		return ret;
 

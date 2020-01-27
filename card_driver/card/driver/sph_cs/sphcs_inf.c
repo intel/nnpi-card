@@ -565,7 +565,6 @@ static long sphcs_inf_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 	long ret;
 	uint32_t            contextID;
 	struct inf_context *context;
-	u16 off = 0;
 
 	if (unlikely(!is_inf_file(f)))
 		return -EINVAL;
@@ -664,6 +663,9 @@ static long sphcs_inf_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 		struct inf_create_resource_reply reply;
 		struct inf_devres *devres;
 		enum event_val eventVal;
+		u16 event_val;
+		int obj_id_1;
+		int obj_id_2;
 
 		ret = copy_from_user(&reply,
 				     (void __user *)arg,
@@ -700,23 +702,28 @@ static long sphcs_inf_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 		DO_TRACE(trace_infer_create(SPH_TRACE_INF_CREATE_DEVRES, devres->context->protocolID,
 			devres->protocolID, SPH_TRACE_OP_STATUS_COMPLETE, -1, -1));
 
-		/* If the resource is for p2p */
-		if (devres->is_p2p_buf) {
-			off = (sg_dma_address(&devres->dma_map->sgl[0]) - g_the_sphcs->inbound_mem_dma_addr) >> PAGE_SHIFT;
+		/* Register buffer with p2p infrastructure */
+		if (inf_devres_is_p2p(devres))
 			inf_devres_add_to_p2p(devres);
-			sphcs_send_event_report_ext(g_the_sphcs,
-						    SPH_IPC_CREATE_DEVRES_SUCCESS,
-						    devres->p2p_buf.buf_id,
-						    devres->context->protocolID,
-						    devres->protocolID,
-						    off);
 
-		} else
-			sphcs_send_event_report(g_the_sphcs,
-						SPH_IPC_CREATE_DEVRES_SUCCESS,
-						0,
-						devres->context->protocolID,
-						devres->protocolID);
+		/* Send event */
+		event_val = 0;
+		obj_id_1 = devres->protocolID;
+		obj_id_2 = -1;
+
+		if (devres->is_p2p_dst)
+			obj_id_2 = (sg_dma_address(&devres->dma_map->sgl[0]) - g_the_sphcs->inbound_mem_dma_addr) >> PAGE_SHIFT;
+
+		if (inf_devres_is_p2p(devres))
+			event_val = devres->p2p_buf.buf_id;
+
+		sphcs_send_event_report_ext(g_the_sphcs,
+					    SPH_IPC_CREATE_DEVRES_SUCCESS,
+					    event_val,
+					    devres->context->protocolID,
+					    obj_id_1,
+					    obj_id_2);
+
 
 		// put kref, taken for waiting for runtime response
 		inf_devres_put(devres);
@@ -782,8 +789,10 @@ failed_devres:
 						devnet->protocolID);
 			goto failed_devnet;
 		}
-
+		SPH_SPIN_LOCK(&devnet->lock);
 		devnet->edit_status = CREATED;
+		SPH_SPIN_UNLOCK(&devnet->lock);
+
 		// If create was canceled (devnet->destroyed is 1,
 		// it can be canceled only by the host at this stage),
 		// continue regularly.
@@ -908,6 +917,9 @@ failed_infreq:
 		if (unlikely(!is_inf_req_ptr(infreq)))
 			return -EINVAL;
 
+		if (reply.i_error_msg_size > 2*SPH_PAGE_SIZE)
+			return -EINVAL;
+
 		req = infreq->active_req;
 		SPH_ASSERT(req != NULL);
 
@@ -932,6 +944,18 @@ failed_infreq:
 			err = -SPHER_INFER_EXEC_ERROR;
 			break;
 		}
+		case IOCTL_SPHCS_INFER_ICEDRV_ERROR: {
+			err = -SPHER_INFER_ICEDRV_ERROR;
+			break;
+		}
+		case IOCTL_SPHCS_INFER_ICEDRV_ERROR_RESET: {
+			err = -SPHER_INFER_ICEDRV_ERROR_RESET;
+			break;
+		}
+		case IOCTL_SPHCS_INFER_ICEDRV_ERROR_CARD_RESET: {
+			err = -SPHER_INFER_ICEDRV_ERROR_CARD_RESET;
+			break;
+		}
 		case IOCTL_SPHCS_INFER_SCHEDULE_ERROR: {
 			err = -SPHER_INFER_SCHEDULE_ERROR;
 			break;
@@ -939,7 +963,9 @@ failed_infreq:
 		default:
 			err = -EFAULT;
 		}
-		req->f->complete(req, err);
+		req->f->complete(req, err,
+				 reply.i_error_msg,
+				 (reply.i_error_msg_size > 0 ? -reply.i_error_msg_size : 0));
 
 		break;
 	}
@@ -974,6 +1000,10 @@ failed_infreq:
 		if (unlikely(!is_inf_devnet_ptr(devnet)))
 			return -EINVAL;
 
+		SPH_SPIN_LOCK(&devnet->lock);
+		devnet->edit_status = CREATED;
+		SPH_SPIN_UNLOCK(&devnet->lock);
+
 		if (unlikely(reply.i_sphcs_err != IOCTL_SPHCS_NO_ERROR)) {
 			switch (reply.i_sphcs_err) {
 			case IOCTL_SPHCS_INSUFFICIENT_RESOURCES: {
@@ -1005,6 +1035,40 @@ failed_infreq:
 
 		// put kref, taken for waiting for runtime response
 		inf_devnet_put(devnet);
+		break;
+	}
+	case IOCTL_INF_DEVNET_RESET_REPLY: {
+		struct inf_devnet_reset_reply reply;
+		struct inf_devnet *devnet;
+		struct inf_cmd_list *cmdlist;
+
+		ret = copy_from_user(&reply,
+				(void __user *)arg,
+				sizeof(reply));
+		if (unlikely(ret != 0))
+			return -EIO;
+
+		devnet = (struct inf_devnet *) (uintptr_t) reply.devnet_drv_handle;
+		if (unlikely(!is_inf_devnet_ptr(devnet)))
+			return -EINVAL;
+
+		if (reply.cmdlist_drv_handle != 0) {
+			cmdlist = (struct inf_cmd_list *)(uintptr_t)reply.cmdlist_drv_handle;
+			if (unlikely(!is_inf_cmd_ptr(cmdlist)))
+				return -EINVAL;
+			inf_exec_error_list_devnet_reset_done(&cmdlist->error_list,
+							      devnet->protocolID,
+							      cmdlist,
+							      reply.i_sphcs_err != IOCTL_SPHCS_NO_ERROR);
+		} else {
+			context = (struct inf_context *)f->private_data;
+			if (unlikely(!is_inf_context_ptr(f->private_data)))
+				return -EINVAL;
+			inf_exec_error_list_devnet_reset_done(&context->error_list,
+							      devnet->protocolID,
+							      NULL,
+							      reply.i_sphcs_err != IOCTL_SPHCS_NO_ERROR);
+		}
 		break;
 	}
 	case IOCTL_INF_GET_ALLOC_PGT:
@@ -2216,11 +2280,19 @@ static void network_op_work_handler(struct work_struct *work)
 
 		if (unlikely(op->cmd.create && devnet->created)) {
 			val = SPH_IPC_ALREADY_EXIST;
+			inf_devnet_put(devnet);
 			goto send_error;
 		}
 	}
 
 	SPH_SPIN_LOCK(&devnet->lock);
+	/* Add resource operation cannot run while network editing still in progress */
+	if (unlikely((!op->cmd.create) && (devnet->edit_status != CREATED))) {
+		SPH_SPIN_UNLOCK(&devnet->lock);
+		inf_devnet_put(devnet);
+		val = SPH_IPC_NOT_SUPPORTED;
+		goto send_error;
+	}
 	devnet->edit_status = CREATE_STARTED;
 	// kref for DMA is taken in find or in create
 	SPH_SPIN_UNLOCK(&devnet->lock);
@@ -2469,7 +2541,7 @@ static void copy_op_work_handler(struct work_struct *work)
 			ret = inf_d2d_copy_create(op->cmd.protCopyID,
 						  op->context,
 						  devres,
-						  op->context->chan == NULL ? SPH_IPC_DMA_PFN_TO_ADDR(op->cmd.hostPtr) : op->cmd.hostPtr,
+						  SPH_IPC_DMA_PFN_TO_ADDR(op->cmd.hostPtr),
 						  &copy);
 		} else {
 			ret = inf_copy_create(op->cmd.protCopyID,
@@ -2579,7 +2651,7 @@ void IPC_OPCODE_HANDLER(CHAN_COPY_OP)(struct sphcs                  *sphcs,
 	work->cmd.d2d = cmd->d2d;
 	work->cmd.c2h = cmd->c2h;
 	work->cmd.destroy = cmd->destroy;
-	work->cmd.hostPtr = cmd->hostresID;
+	work->cmd.hostPtr = cmd->hostres;
 	work->context = context;
 	work->is_subres_copy = cmd->subres_copy;
 	INIT_WORK(&work->work, copy_op_work_handler);
@@ -2592,6 +2664,256 @@ void IPC_OPCODE_HANDLER(CHAN_COPY_OP)(struct sphcs                  *sphcs,
 
 send_error:
 	sphcs_send_event_report(g_the_sphcs, event, val, cmd->chanID, cmd->protCopyID);
+}
+
+static void send_exec_error_cmd_error(union h2c_ExecErrorList   *cmd,
+				      uint16_t                   error_val,
+				      uint16_t                   pkt_size)
+{
+	union c2h_ExecErrorList msg;
+
+	msg.value = 0;
+	msg.opcode = SPH_IPC_C2H_OP_CHAN_EXEC_ERROR_LIST;
+	msg.chanID = cmd->chanID;
+	msg.cmdID = cmd->cmdID;
+	msg.cmdID_valid = cmd->cmdID_valid;
+	msg.is_error = 1;
+	msg.pkt_size = pkt_size;
+	msg.total_size = error_val;
+
+	sphcs_msg_scheduler_queue_add_msg(g_the_sphcs->public_respq, &msg.value, 1);
+}
+
+struct error_list_work {
+	struct work_struct           work;
+	struct inf_context          *context;
+	union h2c_ExecErrorList      cmd;
+	struct inf_cmd_list         *cmdlist;
+	void                        *err_buffer;
+	uint16_t                     err_buffer_size;
+	uint32_t                     total_sent;
+	page_handle                  dma_page_hndl;
+	dma_addr_t                   dma_page_addr;
+	void                        *dma_page_vptr;
+	uint32_t                     curr_xfer_size;
+};
+
+static int error_list_send_next_packet(struct error_list_work *op);
+
+static int error_list_dma_completed(struct sphcs *sphcs, void *ctx, const void *user_data, int status, u32 timeUS)
+{
+	struct error_list_work *op = (struct error_list_work *)ctx;
+	union c2h_ExecErrorList reply;
+	int ret;
+
+	reply.value = 0;
+	reply.opcode = SPH_IPC_C2H_OP_CHAN_EXEC_ERROR_LIST;
+	reply.chanID = op->cmd.chanID;
+	reply.cmdID = op->cmd.cmdID;
+	reply.cmdID_valid = op->cmd.cmdID_valid;
+	reply.pkt_size = (op->curr_xfer_size - 1);
+
+	if (status == SPHCS_DMA_STATUS_FAILED) {
+		reply.is_error = 1;
+		reply.total_size = SPH_IPC_DMA_ERROR;
+	} else {
+		reply.total_size = op->err_buffer_size;
+	}
+
+	sphcs_msg_scheduler_queue_add_msg(g_the_sphcs->public_respq, &reply.value, 1);
+
+	if (!reply.is_error && op->total_sent < op->err_buffer_size) {
+		op->curr_xfer_size = 0;
+		ret = error_list_send_next_packet(op);
+		if (ret == 0)
+			return 0;
+	}
+
+	dma_page_pool_set_page_free(sphcs->dma_page_pool, op->dma_page_hndl);
+	if (op->cmdlist != NULL)
+		inf_cmd_put(op->cmdlist);
+	inf_context_put(op->context);
+	kfree(op);
+
+	return 0;
+}
+
+static int error_list_send_next_packet(struct error_list_work *op)
+{
+	dma_addr_t host_dma_page_addr;
+	struct sphcs_host_rb *resp_data_rb = &op->context->chan->c2h_rb[0];
+	uint32_t chunk_size;
+	enum event_val err_val;
+	int n;
+	int ret;
+
+	if (op->total_sent >= op->err_buffer_size)
+		return -EINVAL;
+
+	n = host_rb_wait_free_space(resp_data_rb,
+				    SPH_PAGE_SIZE,
+				    1,
+				    &host_dma_page_addr,
+				    &chunk_size);
+	if (n != 1 || chunk_size != SPH_PAGE_SIZE) {
+		err_val = SPH_IPC_NOT_SUPPORTED;
+		goto send_error;
+	}
+	host_rb_update_free_space(resp_data_rb, SPH_PAGE_SIZE);
+
+	op->curr_xfer_size = op->err_buffer_size - op->total_sent;
+	if (op->curr_xfer_size > SPH_PAGE_SIZE)
+		op->curr_xfer_size = SPH_PAGE_SIZE;
+
+	memcpy(op->dma_page_vptr,
+	       (void *)((uintptr_t)op->err_buffer + op->total_sent),
+	       op->curr_xfer_size);
+
+	op->total_sent += op->curr_xfer_size;
+
+	ret = sphcs_dma_sched_start_xfer_single(g_the_sphcs->dmaSched,
+						&op->context->chan->c2h_dma_desc,
+						op->dma_page_addr,
+						host_dma_page_addr,
+						op->curr_xfer_size,
+						error_list_dma_completed,
+						op,
+						NULL, 0);
+	if (ret != 0) {
+		err_val = SPH_IPC_NO_MEMORY;
+		goto send_error;
+	}
+
+	return 0;
+
+send_error:
+	send_exec_error_cmd_error(&op->cmd, err_val, op->curr_xfer_size);
+	return -1;
+}
+
+static void error_list_work_handler(struct work_struct *work)
+{
+	struct error_list_work *op = container_of(work,
+						  struct error_list_work,
+						  work);
+	enum event_val err_val;
+	int ret;
+
+	if (op->cmd.cmdID_valid) {
+		op->cmdlist = inf_context_find_cmd(op->context, op->cmd.cmdID);
+		if (unlikely(op->cmdlist == NULL)) {
+			err_val = SPH_IPC_NO_SUCH_CMD;
+			goto send_error;
+		}
+		inf_cmd_get(op->cmdlist);
+	} else
+		op->cmdlist = NULL;
+
+	if (op->cmd.clear) {
+		if (op->cmdlist == NULL) {
+			if (op->context->destroyed != 0) {
+				err_val = SPH_IPC_NO_SUCH_CONTEXT;
+				goto send_error;
+			}
+
+			switch (inf_context_get_state(op->context)) {
+			case CONTEXT_BROKEN_NON_RECOVERABLE:
+				err_val = SPH_IPC_CONTEXT_BROKEN;
+				goto send_error;
+			case CONTEXT_OK:
+				sph_log_info(CREATE_COMMAND_LOG, "Got request to recover non-broken context: 0x%x\n",
+					     op->context->protocolID);
+			default:
+				break;
+			}
+		} else if (op->cmdlist->destroyed != 0) {
+			err_val = SPH_IPC_NO_SUCH_CMD;
+			goto send_error;
+		}
+
+		inf_exec_error_list_clear(op->cmdlist != NULL ? &op->cmdlist->error_list :
+								&op->context->error_list,
+					  op->cmdlist);
+		goto done;
+	}
+
+	ret = inf_exec_error_list_buffer_pack(op->cmdlist != NULL ? &op->cmdlist->error_list :
+								    &op->context->error_list,
+					      &op->err_buffer,
+					      &op->err_buffer_size);
+
+	if (ret != 0) {
+		switch (ret) {
+		case -ENOENT:
+			err_val = SPH_IPC_NO_EXEC_ERRORS;
+			break;
+
+		case -ENOSPC:
+		case -ENOMEM:
+		default:
+			err_val = SPH_IPC_NO_MEMORY;
+		}
+		goto send_error;
+	}
+
+	ret = dma_page_pool_get_free_page(g_the_sphcs->dma_page_pool,
+					  &op->dma_page_hndl,
+					  &op->dma_page_vptr,
+					  &op->dma_page_addr);
+	if (unlikely(ret < 0)) {
+		err_val = SPH_IPC_NO_MEMORY;
+		goto send_error;
+	}
+
+	op->total_sent = 0;
+	op->curr_xfer_size = 0;
+	error_list_send_next_packet(op);
+	return;
+
+send_error:
+	send_exec_error_cmd_error(&op->cmd, err_val, 0);
+done:
+	if (op->cmdlist != NULL)
+		inf_cmd_put(op->cmdlist);
+	inf_context_put(op->context);
+	kfree(op);
+}
+
+void IPC_OPCODE_HANDLER(CHAN_EXEC_ERROR_LIST)(struct sphcs              *sphcs,
+					      union h2c_ExecErrorList   *cmd)
+{
+	struct error_list_work *work;
+	struct inf_context *context;
+	enum event_val error_val;
+
+	context = find_and_get_context(g_the_sphcs->inf_data, cmd->chanID);
+	if (unlikely(context == NULL)) {
+		error_val = SPH_IPC_NO_SUCH_CONTEXT;
+		goto send_error;
+	}
+
+	if (unlikely(context->chan == NULL || context->chan->protocolID != cmd->chanID)) {
+		inf_context_put(context);
+		error_val = SPH_IPC_NO_SUCH_CONTEXT;
+		goto send_error;
+	}
+
+	work = kzalloc(sizeof(*work), GFP_NOWAIT);
+	if (unlikely(work == NULL)) {
+		inf_context_put(context);
+		error_val = SPH_IPC_NO_MEMORY;
+		goto send_error;
+	}
+
+	work->cmd.value = cmd->value;
+	work->context = context;
+	INIT_WORK(&work->work, error_list_work_handler);
+	queue_work(context->chan->wq, &work->work);
+
+	return;
+
+send_error:
+	send_exec_error_cmd_error(cmd, error_val, 0);
 }
 
 void IPC_OPCODE_HANDLER(SCHEDULE_COPY)(struct sphcs                 *sphcs,
@@ -3845,6 +4167,25 @@ static void network_reservation_op_work_handler(struct work_struct *work)
 		goto free_op;
 	}
 
+	/* Network reservation operation cannot run while network editing still in progress */
+	SPH_SPIN_LOCK(&devnet->lock);
+	if (unlikely(devnet->edit_status != CREATED)) {
+		SPH_SPIN_UNLOCK(&devnet->lock);
+		inf_devnet_put(devnet);
+		sphcs_send_event_report(g_the_sphcs,
+				event,
+				SPH_IPC_NOT_SUPPORTED,
+				op->cmd.ctxID,
+				op->cmd.netID);
+		goto free_op;
+	}
+	/* Change edit_status of the network to DMA_COMPLETED
+	 * in case runtime crashed before finish handling the network reservation,
+	 * we need to be able to release the network ref count acquired.
+	 */
+	devnet->edit_status = DMA_COMPLETED;
+	SPH_SPIN_UNLOCK(&devnet->lock);
+
 	memset(&cmd_args, 0, sizeof(cmd_args));
 	cmd_args.devnet_drv_handle = (uint64_t)devnet;
 	cmd_args.devnet_rt_handle = (uint64_t)devnet->rt_handle;
@@ -3945,6 +4286,25 @@ static void network_property_op_work_handler(struct work_struct *work)
 	case SPH_NETWORK_RESOURCES_RESERVATION: {
 		struct inf_devnet_resource_reserve cmd_args;
 		int ret;
+
+		/* Network reservation operation cannot run while network editing still in progress */
+		SPH_SPIN_LOCK(&devnet->lock);
+		if (unlikely(devnet->edit_status != CREATED)) {
+			SPH_SPIN_UNLOCK(&devnet->lock);
+			inf_devnet_put(devnet);
+			sphcs_send_event_report(g_the_sphcs,
+					SPH_IPC_DEVNET_SET_PROPERTY_FAILED,
+					SPH_IPC_NOT_SUPPORTED,
+					op->cmd.ctxID,
+					op->cmd.netID);
+			goto free_op;
+		}
+		/* Change edit_status of the network to DMA_COMPLETED
+		 * in case runtime crashed before finish handling the network reservation,
+		 * we need to be able to release the network ref count acquired.
+		 */
+		devnet->edit_status = DMA_COMPLETED;
+		SPH_SPIN_UNLOCK(&devnet->lock);
 
 		memset(&cmd_args, 0, sizeof(cmd_args));
 		cmd_args.devnet_drv_handle = (uint64_t)devnet;
@@ -4050,54 +4410,6 @@ void IPC_OPCODE_HANDLER(CHAN_NETWORK_PROPERTY)(struct sphcs *sphcs,
 send_error:
 	sphcs_send_event_report(sphcs, SPH_IPC_DEVNET_SET_PROPERTY_FAILED,
 				val, cmd->chanID, cmd->netID);
-}
-
-void IPC_OPCODE_HANDLER(CHAN_INF_NETWORK_RESOURCE_RESERVATION)(struct sphcs *sphcs,
-							       union h2c_ChanInferenceNetworkResourceReservation *cmd)
-{
-	struct network_reservation_op_work *work;
-	struct inf_context *context;
-	uint8_t event;
-	enum event_val val;
-	uint32_t tout;
-
-	if (cmd->reserve)
-		event = SPH_IPC_DEVNET_RESOURCES_RESERVATION_FAILED;
-	else
-		event = SPH_IPC_DEVNET_RESOURCES_RELEASE_FAILED;
-
-	context = find_and_get_context(sphcs->inf_data, cmd->chanID);
-	if (unlikely(context == NULL || context->chan == NULL)) {
-		val = SPH_IPC_NO_SUCH_CONTEXT;
-		goto send_error;
-	}
-
-	work = kzalloc(sizeof(*work), GFP_NOWAIT);
-	if (unlikely(work == NULL)) {
-		inf_context_put(context);
-		val = SPH_IPC_NO_MEMORY;
-		goto send_error;
-	}
-
-	tout = (uint32_t)cmd->timeout << 1;
-	if (cmd->timeout == 0x7fffffff)
-		tout |= 1;
-
-	memcpy(work->cmd.value, cmd->value, sizeof(work->cmd.value));
-	work->cmd.opcode = cmd->opcode;
-	work->cmd.ctxID = cmd->chanID;
-	work->cmd.netID = cmd->netID;
-	work->cmd.reserve = cmd->reserve;
-	work->cmd.timeout = tout;
-	work->context = context;
-
-	INIT_WORK(&work->work, network_reservation_op_work_handler);
-	queue_work(context->chan->wq, &work->work);
-
-	return;
-
-send_error:
-	sphcs_send_event_report(sphcs, event, val, cmd->chanID, cmd->netID);
 }
 
 static const struct file_operations sphcs_inf_fops = {

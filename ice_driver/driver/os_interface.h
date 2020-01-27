@@ -359,10 +359,10 @@ struct ice_drv_memleak {
 		vaddr); \
 })
 
-#define OS_ALLOC_DMA_SG(cve_dev, size_of_elem, num_of_elem, \
-		out_dma_addr) ({ \
+#define OS_ALLOC_DMA_SG(cve_dev, size_of_elem, num_of_elem, out_dma_addr, \
+		is_single_contig_mem) ({ \
 	int ret = __cve_os_alloc_dma_sg(cve_dev, size_of_elem, \
-		num_of_elem, out_dma_addr); \
+		num_of_elem, out_dma_addr, is_single_contig_mem); \
 	if (mem_detect_en) \
 		cve_os_log(CVE_LOGLEVEL_ERROR, \
 		"Allocated sg dma block. size=%u dma_addr=%p\n", \
@@ -403,9 +403,10 @@ struct ice_drv_memleak {
 		vaddr, dma_addr, aligned); \
 })
 
-#define OS_ALLOC_DMA_SG(cve_dev, size_of_elem, num_of_elem, out_dma_addr) ({ \
+#define OS_ALLOC_DMA_SG(cve_dev, size_of_elem, num_of_elem, out_dma_addr, \
+		is_single_contig_mem) ({ \
 	int ret = __cve_os_alloc_dma_sg(cve_dev, size_of_elem, \
-			num_of_elem, out_dma_addr); \
+			num_of_elem, out_dma_addr, is_single_contig_mem); \
 	ret; \
 })
 
@@ -537,6 +538,7 @@ int __cve_os_free(void *base_address,
  * allocate scatter gather pages in physical memory and mapped them to DMA.
  * inputs : num_of_elem - number of pages to allocate
  * size_of_elem - size of element
+ * is_single_contig_mem - Is a single contiguous physical memory needed?
  * outputs:
  *	out_vaddr - the address of the newly allocated buffer
  *		will be written to this address
@@ -549,7 +551,8 @@ int __cve_os_free(void *base_address,
 int __cve_os_alloc_dma_sg(struct cve_device *cve_dev,
 		u32 size_of_elem,
 		u32 num_of_elem,
-		struct cve_dma_handle *out_dma_handle);
+		struct cve_dma_handle *out_dma_handle,
+		bool is_single_contig_mem);
 
 /*
  * free contig physical memory that was allocated with cve_os_alloc_dma_sg
@@ -818,6 +821,9 @@ void *cve_os_vmap_dma_handle(struct cve_dma_handle *dma_handle);
 void cve_os_vunmap_dma_handle(void *vaddr);
 
 uint32_t get_process_pid(void);
+
+u32 ice_os_get_user_intst(int dev_id);
+u64 ice_os_get_user_idc_intst(void);
 
 void ice_os_read_clos(void *pmclos);
 void ice_os_set_clos(void *pmclos);

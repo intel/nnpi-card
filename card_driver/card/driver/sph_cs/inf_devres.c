@@ -54,10 +54,11 @@ int inf_devres_create(uint16_t            protocolID,
 		devres->dir = DMA_NONE;
 	devres->status = CREATE_STARTED;
 	devres->destroyed = 0;
-	devres->is_p2p_buf = (devres->usage_flags & IOCTL_INF_RES_P2P_SRC) || (devres->usage_flags & IOCTL_INF_RES_P2P_DST);
+	devres->is_p2p_src = (devres->usage_flags & IOCTL_INF_RES_P2P_SRC) ? true : false;
+	devres->is_p2p_dst = (devres->usage_flags & IOCTL_INF_RES_P2P_DST) ? true : false;
 
-	if (devres->is_p2p_buf)
-		sphcs_p2p_init_p2p_buf(devres->usage_flags & IOCTL_INF_RES_P2P_SRC, &devres->p2p_buf);
+	if (inf_devres_is_p2p(devres))
+		sphcs_p2p_init_p2p_buf(devres->is_p2p_src, &devres->p2p_buf);
 
 	SPH_SW_COUNTER_ADD(context->sw_counters, CTX_SPHCS_SW_COUNTERS_INFERENCE_DEVICE_RESOURCE_SIZE, size);
 
@@ -188,7 +189,7 @@ static void release_devres(struct kref *kref)
 	hash_del(&devres->hash_node);
 	SPH_SPIN_UNLOCK(&devres->context->lock);
 
-	if (devres->is_p2p_buf)
+	if (inf_devres_is_p2p(devres))
 		inf_devres_remove_from_p2p(devres);
 
 	if (likely(devres->status == CREATED)) {
@@ -282,9 +283,9 @@ void inf_devres_del_req_from_queue(struct inf_devres   *devres,
 	list_del(&pos->node);
 	++devres->queue_version;
 
-	if (devres->is_p2p_buf) {
+	if (inf_devres_is_p2p(devres)) {
 		/* Notify src device */
-		if (devres->usage_flags & IOCTL_INF_RES_P2P_DST) {
+		if (devres->is_p2p_dst) {
 			sphcs_p2p_send_rel_cr(&devres->p2p_buf);
 			sphcs_p2p_ring_doorbell(&devres->p2p_buf);
 		}
@@ -357,7 +358,7 @@ bool inf_devres_req_ready(struct inf_devres *devres, struct inf_exec_req *req, b
 			break;
 	}
 
-	if (ready && devres->is_p2p_buf && for_read) {
+	if (ready && inf_devres_is_p2p(devres) && for_read) {
 		if (devres->p2p_buf.ready)
 			sph_log_debug(GENERAL_LOG, "p2p buffer ready\n");
 		else

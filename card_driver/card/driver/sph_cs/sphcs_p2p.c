@@ -241,6 +241,7 @@ int sphcs_p2p_send_rel_cr(struct sphcs_p2p_buf *buf)
 
 }
 
+
 void IPC_OPCODE_HANDLER(P2P_DEV)(struct sphcs *sphcs, union h2c_P2PDev *cmd)
 {
 	if (cmd->destroy) {
@@ -295,6 +296,58 @@ void IPC_OPCODE_HANDLER(GET_CR_FIFO)(struct sphcs *sphcs, union h2c_GetCrFIFO *c
 				-1,
 				(sg_dma_address(fifo->sgt->sgl) - sphcs->inbound_mem_dma_addr) >> PAGE_SHIFT);
 }
+
+
+void IPC_OPCODE_HANDLER(CHAN_P2P_GET_CR_FIFO)(struct sphcs *sphcs, union h2c_ChanGetCrFIFO *cmd)
+{
+	struct sphcs_p2p_cr_fifo *fifo;
+
+	sph_log_debug(GENERAL_LOG, "tr id %u, peer_id %u fw_fifo %u\n", cmd->p2p_tr_id, cmd->peer_id, cmd->fw_fifo);
+
+	fifo = cmd->fw_fifo ? &fw_fifos[cmd->peer_id] : &rel_fifos[cmd->peer_id];
+
+	sphcs_send_event_report_ext(sphcs,
+				SPH_IPC_GET_CR_FIFO_REPLY,
+				0,
+				cmd->chanID,
+				cmd->p2p_tr_id,
+				(sg_dma_address(fifo->sgt->sgl) - sphcs->inbound_mem_dma_addr) >> PAGE_SHIFT);
+}
+
+void IPC_OPCODE_HANDLER(CHAN_P2P_CONNECT_PEERS)(struct sphcs *sphcs, union h2c_ChanConnectPeers *cmd)
+{
+	struct sphcs_p2p_buf *buf;
+
+	sph_log_debug(GENERAL_LOG, "is_src_buf %u buf_id %u peer_buf_id %u peer_dev_id %u\n", cmd->is_src_buf, cmd->buf_id, cmd->peer_buf_id, cmd->peer_dev_id);
+
+	buf = (cmd->is_src_buf) ? src_bufs[cmd->buf_id] : dst_bufs[cmd->buf_id];
+	buf->peer_buf_id = cmd->peer_buf_id;
+	buf->peer_dev = (cmd->is_src_buf) ? &p2p_consumers[cmd->peer_dev_id] : &p2p_producers[cmd->peer_dev_id];
+
+	sphcs_send_event_report(sphcs, SPH_IPC_P2P_PEERS_CONNECTED, 0, cmd->chanID, cmd->p2p_tr_id);
+}
+
+void IPC_OPCODE_HANDLER(CHAN_P2P_UPDATE_PEER_DEV)(struct sphcs *sphcs, union h2c_ChanUpdatePeerDev *cmd)
+{
+	if (cmd->is_producer) {
+		p2p_producers[cmd->dev_id].peer_db.dma_addr = cmd->db_addr;
+		p2p_producers[cmd->dev_id].peer_cr_fifo.dma_addr = SPH_IPC_DMA_PFN_TO_ADDR(cmd->cr_fifo_addr);
+		sph_log_debug(GENERAL_LOG, "New producer registered (id - %u, db - %pad, cr fifo - %pad)\n",
+								     cmd->dev_id,
+								     &p2p_producers[cmd->dev_id].peer_db.dma_addr,
+								     &p2p_producers[cmd->dev_id].peer_cr_fifo.dma_addr);
+	} else {
+		p2p_consumers[cmd->dev_id].peer_db.dma_addr = cmd->db_addr;
+		p2p_consumers[cmd->dev_id].peer_cr_fifo.dma_addr = SPH_IPC_DMA_PFN_TO_ADDR(cmd->cr_fifo_addr);
+		sph_log_debug(GENERAL_LOG, "New consumer registered (id - %u, db - %pad, cr fifo - %pad)\n",
+								     cmd->dev_id,
+								     &p2p_consumers[cmd->dev_id].peer_db.dma_addr,
+								     &p2p_consumers[cmd->dev_id].peer_cr_fifo.dma_addr);
+	}
+
+	sphcs_send_event_report(sphcs, SPH_IPC_P2P_PEER_DEV_UPDATED, 0, cmd->chanID, cmd->p2p_tr_id);
+}
+
 
 int sphcs_p2p_new_message_arrived(void)
 {
@@ -368,7 +421,8 @@ int sphcs_p2p_init(struct sphcs *sphcs, struct sphcs_p2p_cbs *p2p_cbs)
 		p2p_producers[i].peer_cr_fifo.depth = CR_FIFO_DEPTH;
 		p2p_producers[i].peer_cr_fifo.wr_ptr = 0;
 		spin_lock_init(&p2p_producers[i].peer_cr_fifo.lock);
-		p2p_producers[i].peer_cr_fifo.elem_size = sizeof(struct sphcs_p2p_fw_cr_fifo_elem);
+		/* We send release credit messages to producers */
+		p2p_producers[i].peer_cr_fifo.elem_size = sizeof(struct sphcs_p2p_rel_cr_fifo_elem);
 		p2p_producers[i].peer_cr_fifo.buf_vaddr = dma_alloc_coherent(sphcs->hw_device,
 									     CR_FIFO_DEPTH * sizeof(struct sphcs_p2p_fw_cr_fifo_elem),
 									     &p2p_producers[i].peer_cr_fifo.buf_dma_addr,
@@ -389,7 +443,8 @@ int sphcs_p2p_init(struct sphcs *sphcs, struct sphcs_p2p_cbs *p2p_cbs)
 		p2p_consumers[i].peer_cr_fifo.depth = CR_FIFO_DEPTH;
 		p2p_consumers[i].peer_cr_fifo.wr_ptr = 0;
 		spin_lock_init(&p2p_consumers[i].peer_cr_fifo.lock);
-		p2p_consumers[i].peer_cr_fifo.elem_size = sizeof(struct sphcs_p2p_rel_cr_fifo_elem);
+		/* We send forward credit messages to consumers */
+		p2p_consumers[i].peer_cr_fifo.elem_size = sizeof(struct sphcs_p2p_fw_cr_fifo_elem);
 		p2p_consumers[i].peer_cr_fifo.buf_vaddr = dma_alloc_coherent(sphcs->hw_device,
 									     CR_FIFO_DEPTH * sizeof(struct sphcs_p2p_rel_cr_fifo_elem),
 									     &p2p_consumers[i].peer_cr_fifo.buf_dma_addr,

@@ -198,7 +198,7 @@ static int cve_fw_load_firmware_from_kernel_mem(struct cve_device *cve_dev,
 	/* hold a pointer to the map file impl sections */
 	struct cve_fw_section_descriptor *sections_impl = NULL;
 	struct cve_dma_handle *dma_handles = NULL;
-	Version *fw_version;
+	Version *fw_version = NULL;
 	u32 i, ignore_section = 0;
 
 	/* read the sections info from the map file */
@@ -256,7 +256,8 @@ static int cve_fw_load_firmware_from_kernel_mem(struct cve_device *cve_dev,
 		retval = OS_ALLOC_DMA_SG(cve_dev,
 				s->size_bytes,
 				1,
-				&dma_handles[i]);
+				&dma_handles[i],
+				true);
 		if (retval != 0) {
 			cve_os_log(CVE_LOGLEVEL_ERROR,
 					"OS_ALLOC_DMA_SG failed: %d\n",
@@ -387,7 +388,7 @@ static int cve_fw_load_firmware_from_user_mem(struct cve_device *cve_dev,
 	/* hold a pointer to the map file impl sections */
 	struct cve_fw_section_descriptor *sections_impl = NULL;
 	struct cve_dma_handle *dma_handles = NULL;
-	Version *fw_version;
+	Version *fw_version = NULL;
 	u32 i;
 
 	/* read the sections info from the map file */
@@ -467,7 +468,8 @@ static int cve_fw_load_firmware_from_user_mem(struct cve_device *cve_dev,
 		retval = OS_ALLOC_DMA_SG(cve_dev,
 				s->size_bytes,
 				1,
-				&dma_handles[i]);
+				&dma_handles[i],
+				true);
 		if (retval != 0) {
 			cve_os_log(CVE_LOGLEVEL_ERROR,
 					"OS_ALLOC_DMA_SG failed: %d\n",
@@ -551,22 +553,35 @@ static int cve_fw_get_cust_fw_type(
 	int retval = CVE_DEFAULT_ERROR_CODE;
 	enum fw_binary_type fw_type;
 
+	/* Sanity check for cve_addr and size_bytes to handle integer overflow
+	 * cve_addr <= MAX(BANK0/1 IVP/ASIP address) i.e. BANK1_ASIP_BASE_ADDR
+	 * size_bytes <= MAX(BANK0/1 IVP/ASIP size) i.e. BANK0_IVP_SIZE
+	 */
+	if (!((section->cve_addr <= BANK1_ASIP_BASE_ADDR) &&
+		(section->size_bytes <= BANK0_IVP_SIZE))) {
+		retval = -ICEDRV_KERROR_FW_PERM;
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+				"ERROR:%d invalid cve_addr address, cve_addr = 0x%x or invalid size, size_bytes = 0x%x\n",
+				retval, section->cve_addr, section->size_bytes);
+		goto out;
+	}
+
 	/*fw_image sanity check*/
 	if ((section->cve_addr >= BANK0_IVP_BASE_ADDR) &&
 			(section->cve_addr + section->size_bytes <
-			BANK0_IVP_BASE_ADDR + BANK0_IVP_SIZE)){
+			BANK0_IVP_BASE_ADDR + BANK0_IVP_SIZE)) {
 		fw_type = CVE_FW_IVP_BANK0_TYPE;
 	} else if ((section->cve_addr >= BANK0_ASIP_BASE_ADDR) &&
 			(section->cve_addr + section->size_bytes <
-			BANK0_ASIP_BASE_ADDR + BANK0_ASIP_SIZE)){
+			BANK0_ASIP_BASE_ADDR + BANK0_ASIP_SIZE)) {
 		fw_type =  CVE_FW_ASIP_BANK0_TYPE;
 	} else if ((section->cve_addr >= BANK1_IVP_BASE_ADDR) &&
 			(section->cve_addr + section->size_bytes <
-			BANK1_IVP_BASE_ADDR + BANK1_IVP_SIZE)){
+			BANK1_IVP_BASE_ADDR + BANK1_IVP_SIZE)) {
 		fw_type =  CVE_FW_IVP_BANK1_TYPE;
 	} else if ((section->cve_addr >= BANK1_ASIP_BASE_ADDR) &&
 			(section->cve_addr + section->size_bytes <
-			BANK1_ASIP_BASE_ADDR + BANK1_ASIP_SIZE)){
+			BANK1_ASIP_BASE_ADDR + BANK1_ASIP_SIZE)) {
 		fw_type =  CVE_FW_ASIP_BANK1_TYPE;
 	} else{
 		retval = -ICEDRV_KERROR_FW_PERM;
@@ -831,7 +846,8 @@ int cve_fw_map_sections(
 			retval = OS_ALLOC_DMA_SG(cve_dev,
 					s->size_bytes,
 					1,
-					&mapped_dma_handles[i]);
+					&mapped_dma_handles[i],
+					false);
 			if (retval != 0) {
 				cve_os_log(CVE_LOGLEVEL_ERROR,
 						"OS_ALLOC_DMA_SG failed: %d\n",
@@ -987,6 +1003,8 @@ out:
 			sections,
 			dma_handles,
 			sections_nr);
+		if (fw_version)
+			OS_FREE(fw_version, sizeof(*fw_version));
 	}
 
 	return retval;

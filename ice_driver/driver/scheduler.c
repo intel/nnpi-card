@@ -78,6 +78,21 @@ static enum sch_status __schedule_node(struct execution_node *node)
 
 		status = SCH_STATUS_DONE;
 		goto out;
+
+	} else if (ntw->reset_ntw) {
+
+		cve_os_log(CVE_LOGLEVEL_DEBUG,
+			"Ntw in error state. Inference will be discarded. NtwID=0x%lx, InfID=0x%lx\n",
+			(uintptr_t)ntw, (uintptr_t)inf);
+
+		ice_sch_del_inf_from_queue(inf);
+
+		ntw->curr_exe = inf;
+
+		ice_ds_raise_event(ntw, CVE_JOBSGROUPSTATUS_ERROR, false);
+
+		status = SCH_STATUS_DISCARD;
+		goto out;
 	}
 
 	res_status = ice_ds_ntw_borrow_resource(ntw);
@@ -95,18 +110,14 @@ static enum sch_status __schedule_node(struct execution_node *node)
 		/* Discard */
 
 		cve_os_log(CVE_LOGLEVEL_DEBUG,
-			"Inference will be discarded. NtwID=0x%lx, InfID=0x%lx\n",
+			"Out of resource. Inference will be discarded. NtwID=0x%lx, InfID=0x%lx\n",
 			(uintptr_t)ntw, (uintptr_t)inf);
 
 		ice_sch_del_inf_from_queue(inf);
 
-		/* Aborting Network without giving reason :( */
-		cur_jg = ntw->jg_list;
-		cur_jg->aborted_jobs_nr++;
-
 		ntw->curr_exe = inf;
 
-		ice_ds_raise_event(ntw, false);
+		ice_ds_raise_event(ntw, CVE_JOBSGROUPSTATUS_NORESOURCE, false);
 
 		status = SCH_STATUS_DISCARD;
 		goto out;

@@ -38,7 +38,7 @@
 
 #define RESET 0
 /*TODO: reg offset should come from hw header files? */
-#define MAX_PMON_DAEMON 19
+#define MAX_PMON_DAEMON 27
 
 #ifndef RING3_VALIDATION
 
@@ -85,7 +85,23 @@ static u32 __get_pmon_config_regoffset(u32 index)
 	(cfg_default.ice_delphi_base +
 			cfg_default.ice_delphi_dbg_perf_cnt_1_reg_offset),
 	(cfg_default.ice_delphi_base +
-			cfg_default.ice_delphi_dbg_perf_cnt_2_reg_offset)
+			cfg_default.ice_delphi_dbg_perf_cnt_2_reg_offset),
+	(cfg_default.ice_delphi_base +
+			cfg_default.ice_delphi_dbg_perf_status_reg_offset),
+	(cfg_default.ice_delphi_base +
+			cfg_default.ice_delphi_gemm_cnn_startup_counter_offset),
+	(cfg_default.ice_delphi_base +
+			cfg_default.ice_delphi_gemm_compute_cycle_offset),
+	(cfg_default.ice_delphi_base +
+			cfg_default.ice_delphi_gemm_output_write_cycle_offset),
+	(cfg_default.ice_delphi_base +
+			cfg_default.ice_delphi_cnn_compute_cycles_offset),
+	(cfg_default.ice_delphi_base +
+			cfg_default.ice_delphi_cnn_output_write_cycles_offset),
+	(cfg_default.ice_delphi_base +
+			cfg_default.ice_delphi_credit_cfg_latency_offset),
+	(cfg_default.ice_delphi_base +
+		cfg_default.ice_delphi_perf_cnt_ovr_flw_indication_offset)
 	};
 
 	return pmon_config_regoffset_array[index];
@@ -233,7 +249,23 @@ static ssize_t show_pmon(struct kobject *kobj,
 				struct kobj_attribute *attr,
 				char *buf);
 
+static ssize_t read_ice_mmu_pmon(struct kobject *kobj,
+				struct kobj_attribute *attr,
+				char *buf);
+
+static ssize_t read_ice_delphi_pmon(struct kobject *kobj,
+				struct kobj_attribute *attr,
+				char *buf);
+
+static ssize_t get_dump_pmon_status(struct kobject *kobj,
+				struct kobj_attribute *attr,
+				char *buf);
+
 static ssize_t store_pmon(struct kobject *kobj,
+				struct kobj_attribute *attr,
+				const char *buf, size_t count);
+
+static ssize_t set_dump_pmon_status(struct kobject *kobj,
 				struct kobj_attribute *attr,
 				const char *buf, size_t count);
 
@@ -243,10 +275,39 @@ __ATTR(pmoninfo, 0444, show_pmoninfo, NULL);
 static struct kobj_attribute pmon_attr =
 __ATTR(pmon, 0664, show_pmon, store_pmon);
 
+static struct kobj_attribute mmu_pmon_attr =
+__ATTR(mmu_pmon, 0444, read_ice_mmu_pmon, NULL);
+
+static struct kobj_attribute delphi_pmon_attr =
+__ATTR(delphi_pmon, 0444, read_ice_delphi_pmon, NULL);
+
+static struct kobj_attribute enable_pmon_attr =
+__ATTR(enable_ice_pmon, 0664, get_dump_pmon_status, set_dump_pmon_status);
+
+static struct attribute *read_ice_pmon_attrs[] = {
+	&mmu_pmon_attr.attr,
+	&delphi_pmon_attr.attr,
+	NULL,	/* need to NULL terminate the list of attributes */
+};
+
 static struct attribute *pmon_attrs[] = {
 	&pmoninfo_attr.attr,
 	&pmon_attr.attr,
 	NULL,	/* need to NULL terminate the list of attributes */
+};
+
+static struct attribute *enable_pmon_attrs[] = {
+	&enable_pmon_attr.attr,
+	NULL,
+};
+
+static struct attribute_group enable_pmon_attr_group = {
+		.attrs = enable_pmon_attrs,
+};
+
+static struct attribute_group read_ice_pmon_attr_group = {
+		.name = "pmon_dump",
+		.attrs = read_ice_pmon_attrs,
 };
 
 static struct attribute_group pmon_attr_group = {
@@ -1225,11 +1286,58 @@ static ssize_t show_pmoninfo(struct kobject *kobj,
 	__PMONINFO(17, (cfg_default.ice_delphi_base +
 			cfg_default.ice_delphi_dbg_perf_cnt_2_reg_offset),
 			ICE_PMON_DELPHI_DBG_PERF_CNT_2_REG, DELPHI,
-						"Total Cycle Counter")
+						"Total Cycle Counter"),
 };
 
+	struct pmoninfo_details pmon_arr_p2[] = {
+	__PMONINFO(18, (cfg_default.ice_delphi_base +
+			cfg_default.ice_delphi_dbg_perf_status_reg_offset),
+			ICE_PMON_DELPHI_DBG_PERF_STATUS_REG, DELPHI,
+					"Inication of Per layer/Total Cycle Counter Staturation"
+	),
 
+	__PMONINFO(19, (cfg_default.ice_delphi_base +
+			cfg_default.ice_delphi_gemm_cnn_startup_counter_offset),
+			ICE_PMON_DELPHI_GEMM_CNN_START_UP_COUNT, DELPHI,
+					"Gemm & CNN Mode - Startup Counter"
+	),
 
+	__PMONINFO(20, (cfg_default.ice_delphi_base +
+			cfg_default.ice_delphi_gemm_compute_cycle_offset),
+			ICE_PMON_DELPHI_GEMM_COMPUTE_COUNT, DELPHI,
+					"Gemm Mode - Compute Cycles Counter"
+	),
+
+	__PMONINFO(21, (cfg_default.ice_delphi_base +
+			cfg_default.ice_delphi_gemm_output_write_cycle_offset),
+			ICE_PMON_DELPHI_GEMM_TEARDOWN_COUNT, DELPHI,
+					"Gemm Mode - Output Write Cycles Counter"
+	),
+
+	__PMONINFO(22, (cfg_default.ice_delphi_base +
+			cfg_default.ice_delphi_cnn_compute_cycles_offset),
+			ICE_PMON_DELPHI_CNN_COMPUTE_COUNT, DELPHI,
+					"Cnn Mode - Compute Cycles Counter"
+	),
+
+	__PMONINFO(23, (cfg_default.ice_delphi_base +
+			cfg_default.ice_delphi_cnn_output_write_cycles_offset),
+			ICE_PMON_DELPHI_CNN_TEARDOWN_COUNT, DELPHI,
+					"Cnn Mode - Output Write Cycles Counter"
+	),
+
+	__PMONINFO(24, (cfg_default.ice_delphi_base +
+			cfg_default.ice_delphi_credit_cfg_latency_offset),
+			ICE_PMON_DELPHI_CONFIG_CREDIT_LATENCY_COUNT, DELPHI,
+					"Delphi Config and Credit Latency Counter"
+	),
+
+	__PMONINFO(25, (cfg_default.ice_delphi_base +
+		cfg_default.ice_delphi_perf_cnt_ovr_flw_indication_offset),
+			ICE_PMON_DELPHI_OVERFLOW_PERF_COUNTER, DELPHI,
+					"Overflow Indication For Perf Counter"
+	)
+};
 
 	size = sizeof(pmon_arr) / sizeof(struct pmoninfo_details);
 
@@ -1243,6 +1351,285 @@ static ssize_t show_pmoninfo(struct kobject *kobj,
 				pmon_arr[i].name, pmon_arr[i].desc);
 	}
 
+	if (!ice_get_a_step_enable_flag()) {
+		size = sizeof(pmon_arr_p2) /
+				sizeof(struct pmoninfo_details);
+		for (i = 0; i < size; i++) {
+			ret += sprintf((buf + ret),
+				"%d, 0x%x, %s, %s, \"%s\"\n",
+				pmon_arr_p2[i].index,
+				pmon_arr_p2[i].reg_offset,
+				pmon_arr_p2[i].group_name,
+				pmon_arr_p2[i].name,
+				pmon_arr_p2[i].desc);
+		}
+	}
+	return ret;
+}
+
+void get_ice_delphi_pmon_regs(struct cve_device *dev)
+{
+	u32 pmon_index, offset;
+	int i = 0;
+
+	for (i = 0; i < ICE_MAX_DELPHI_PMON; i++) {
+		if (ice_get_a_step_enable_flag())
+			if (i >= ICE_MAX_A_STEP_DELPHI_PMON)
+				break;
+
+		pmon_index = ICE_DELPHI_PMON_START_INDEX + i;
+		offset = __get_pmon_config_regoffset(pmon_index);
+
+		dev->delphi_pmon[i].pmon_value =
+				cve_os_read_mmio_32(dev, offset);
+
+	}
+}
+
+void get_ice_mmu_pmon_regs(struct cve_device *dev)
+{
+	u32 pmon_index, offset;
+	int i = 0;
+
+	for (i = 0; i < ICE_MAX_MMU_PMON; i++) {
+		pmon_index = ICE_MMU_PMON_START_INDEX + i;
+		offset = __get_pmon_config_regoffset(pmon_index);
+
+		dev->mmu_pmon[i].pmon_value = cve_os_read_mmio_32(dev, offset);
+
+	}
+}
+
+static ssize_t get_dump_pmon_status(struct kobject *kobj,
+				struct kobj_attribute *attr,
+				char *buf)
+{
+	int ret = 0;
+	struct cve_device_group *device_group = cve_dg_get();
+
+	ret += sprintf((buf + ret), "%d\n",
+		(device_group->dump_ice_pmon)?1:0);
+	return ret;
+}
+
+static ssize_t set_dump_pmon_status(struct kobject *kobj,
+				struct kobj_attribute *attr,
+				const char *buf, size_t count)
+{
+	int ret = 0;
+	char *enable_dump;
+	int dump;
+	struct cve_device_group *device_group = cve_dg_get();
+
+	enable_dump = (char *)buf;
+	enable_dump = strim(enable_dump);
+
+	if (enable_dump == NULL)
+		return -EFAULT;
+
+	ret = kstrtoint(enable_dump, 10, &dump);
+	if (ret < 0)
+		return ret;
+
+	if (dump <= 0)
+		device_group->dump_ice_pmon = false;
+	else
+		device_group->dump_ice_pmon = true;
+
+	return count;
+}
+static int get_ice_id_from_kobj(const char *name, u32 *dev_index)
+{
+	int ret = 0;
+
+	ret = sscanf(name, "ice%d", dev_index);
+	if (ret < 1) {
+		cve_os_log(CVE_LOGLEVEL_ERROR, "failed getting ice id %s\n",
+						name);
+		return -EFAULT;
+	}
+	if (*dev_index >= NUM_ICE_UNIT) {
+		cve_os_log(CVE_LOGLEVEL_ERROR, "wrong ice id %d\n", *dev_index);
+		return -EFAULT;
+	}
+
+	return ret;
+}
+
+static ssize_t read_ice_mmu_pmon(struct kobject *kobj,
+				struct kobj_attribute *attr,
+				char *buf)
+{
+	int ret = 0;
+	int i = 0;
+	u32 dev_index;
+	struct cve_device *dev;
+	struct cve_device_group *device_group = cve_dg_get();
+
+	ret = get_ice_id_from_kobj(kobj->name, &dev_index);
+	if (ret < 0)
+		return ret;
+
+	dev = cve_device_get(dev_index);
+	if (!dev) {
+		cve_os_log(CVE_LOGLEVEL_ERROR, "NULL dev pointer\n");
+		return -ENODEV;
+	}
+
+	if (!dev->dg->dump_ice_pmon) {
+		ret += sprintf((buf + ret),
+			"Error:%d Trying to read PMONs without enabling.\n",
+			-EPERM);
+		return ret;
+	}
+
+	ret = cve_os_lock(&device_group->poweroff_dev_list_lock,
+			CVE_INTERRUPTIBLE);
+	if (ret != 0) {
+		cve_os_log_default(CVE_LOGLEVEL_ERROR,
+			"poweroff_dev_list_lock error\n");
+
+		return ret;
+	}
+	cve_os_log(CVE_LOGLEVEL_DEBUG, "ICE number %d\n",
+						dev_index);
+	cve_os_log(CVE_LOGLEVEL_DEBUG, "attr: %s\n",
+						attr->attr.name);
+
+	if ((dev->power_state == ICE_POWER_ON) ||
+		(dev->power_state == ICE_POWER_OFF_INITIATED)) {
+
+		get_ice_mmu_pmon_regs(dev);
+	}
+	for (i = 0; i < ICE_MAX_MMU_PMON; i++) {
+		ret += sprintf((buf + ret),
+			"%s\t:%u\n",
+			dev->mmu_pmon[i].pmon_name,
+			dev->mmu_pmon[i].pmon_value);
+	}
+
+	cve_os_unlock(&device_group->poweroff_dev_list_lock);
+	return ret;
+}
+
+static ssize_t read_ice_delphi_pmon(struct kobject *kobj,
+				struct kobj_attribute *attr,
+				char *buf)
+{
+	int ret = 0;
+	int i = 0;
+	u32 dev_index;
+	struct cve_device *dev;
+	struct cve_device_group *device_group = cve_dg_get();
+	ICE_PMON_DELPHI_GEMM_CNN_STARTUP_COUNTER startup_cnt_reg;
+	ICE_PMON_DELPHI_CFG_CREDIT_LATENCY latency_cnt_reg;
+	ICE_PMON_DELPHI_OVERFLOW_INDICATION ovr_flow_reg;
+	ICE_PMON_DELPHI_DBG_PERF_STATUS_REG_T perf_status_reg;
+
+	ret = get_ice_id_from_kobj(kobj->name, &dev_index);
+	if (ret < 0)
+		return ret;
+
+	dev = cve_device_get(dev_index);
+	if (!dev) {
+		cve_os_log(CVE_LOGLEVEL_ERROR, "NULL dev pointer\n");
+		return -ENODEV;
+	}
+
+	if (!dev->dg->dump_ice_pmon) {
+		ret += sprintf((buf + ret),
+			"Error:%d Trying to read PMONs without enabling.\n",
+			-EPERM);
+		return ret;
+	}
+
+	ret = cve_os_lock(&device_group->poweroff_dev_list_lock,
+			CVE_INTERRUPTIBLE);
+	if (ret != 0) {
+		cve_os_log_default(CVE_LOGLEVEL_ERROR,
+			"poweroff_dev_list_lock error\n");
+
+		return ret;
+	}
+	cve_os_log(CVE_LOGLEVEL_DEBUG, "ICE number %d\n",
+						dev_index);
+	cve_os_log(CVE_LOGLEVEL_DEBUG, "attr: %s\n",
+						attr->attr.name);
+
+	if ((dev->power_state == ICE_POWER_ON) ||
+		(dev->power_state == ICE_POWER_OFF_INITIATED)) {
+
+		get_ice_delphi_pmon_regs(dev);
+	}
+	for (i = 0; i < ICE_MAX_DELPHI_PMON; i++) {
+		if (ice_get_a_step_enable_flag()) {
+			if (i >= ICE_MAX_A_STEP_DELPHI_PMON)
+				break;
+		}
+		switch (i) {
+
+		case ICE_DELPHI_PMON_PER_LAYER_CYCLES:
+		case ICE_DELPHI_PMON_TOTAL_CYCLES:
+		case ICE_DELPHI_PMON_GEMM_COMPUTE_CYCLES:
+		case ICE_DELPHI_PMON_GEMM_OUTPUT_WRITE_CYCLES:
+		case ICE_DELPHI_PMON_CNN_COMPUTE_CYCLES:
+		case ICE_DELPHI_PMON_CNN_OUTPUT_WRITE_CYCLES:
+
+			ret += sprintf((buf + ret),
+				"%s\t:%u\n",
+				dev->delphi_pmon[i].pmon_name,
+				dev->delphi_pmon[i].pmon_value);
+		break;
+
+		case ICE_DELPHI_PMON_CYCLES_COUNT_OVERFLOW:
+			perf_status_reg.val = dev->delphi_pmon[i].pmon_value;
+
+			ret += sprintf((buf + ret),
+				"Per_Layer_Cycles_Overflow\t:%u\nTotal_Cycles_Overflow\t:%u\n",
+				perf_status_reg.field.per_lyr_cyc_cnt_saturated,
+				perf_status_reg.field.total_cyc_cnt_saturated);
+		break;
+
+		case ICE_DELPHI_PMON_GEMM_CNN_STARTUP:
+			startup_cnt_reg.val = dev->delphi_pmon[i].pmon_value;
+			ret += sprintf((buf + ret),
+				"CNN_Startup_Count\t:%u\nGemm_Startup_Count\t:%u\n",
+				startup_cnt_reg.field.pe_startup_perf_cnt,
+				startup_cnt_reg.field.gemm_startup_perf_cnt);
+
+		break;
+
+		case ICE_DELPHI_PMON_CONFIG_CREDIT_LATENCY:
+			latency_cnt_reg.val = dev->delphi_pmon[i].pmon_value;
+			ret += sprintf((buf + ret),
+				"Credit_Reset_Latency_Count\t:%u\nCfg_Latency_Count\t:%u\n",
+				latency_cnt_reg.field.
+						credit_reset_latency_perf_cnt,
+				latency_cnt_reg.field.cfg_latency_perf_cnt);
+		break;
+
+		case ICE_DELPHI_PMON_PERF_COUNTERS_OVR_FLW:
+			ovr_flow_reg.val = dev->delphi_pmon[i].pmon_value;
+			ret += sprintf((buf + ret),
+				"CNN_Startup_Overflow\t:%u\nGemm_Startup_Overflow\t:%u\nGemm_Compute_Overflow\t:%u\nGemm_Teardown_Overflow\t:%u\nCNN_Compute_Overflow\t:%u\nCNN_Teardown_Overflow\t:%u\nCredit_Reset_latency_Overflow\t:%u\nCfg_Latency_Overflow\t:%u\n",
+			ovr_flow_reg.field.pe_startup_perf_cnt_ovr_flow,
+			ovr_flow_reg.field.gemm_startup_perf_cnt_ovr_flow,
+			ovr_flow_reg.field.gemm_compute_perf_cnt_ovr_flow,
+			ovr_flow_reg.field.gemm_teardown_perf_cnt_ovr_flow,
+			ovr_flow_reg.field.pe_compute_perf_cnt_ovr_flow,
+			ovr_flow_reg.field.pe_teardown_perf_cnt_ovr_flow,
+			ovr_flow_reg.field.
+				credit_reset_latency_perf_cnt_ovr_flow,
+			ovr_flow_reg.field.cfg_latency_perf_cnt_ovr_flow);
+		break;
+
+		default:
+			cve_os_log(CVE_LOGLEVEL_ERROR,
+				"read_ice_delphi_pmon index error\n");
+		}
+	}
+
+	cve_os_unlock(&device_group->poweroff_dev_list_lock);
 	return ret;
 }
 
@@ -1542,6 +1929,13 @@ static int ice_trace_pmon_config_sysfs(u32 daemonfreq, u32 pmonindex,
 		configure_pmon = false;
 		break;
 
+	case 19 ... 26:
+		if (!ice_get_a_step_enable_flag()) {
+			consecutive = 0;
+			configure_pmon = false;
+			break;
+		}
+
 	default:
 		cve_os_dev_log(CVE_LOGLEVEL_ERROR, ice_dev->dev_index,
 						"unsupported ipmon index\n");
@@ -1710,6 +2104,38 @@ static int ice_trace_daemon_sysfs_init(struct cve_device *ice_dev)
 
 	return ret;
 }
+static int ice_trace_enable_pmon_sysfs_init(void)
+{
+	int ret;
+
+	/*Create the enable pmon file associated with hwtrace kobject*/
+	ret = sysfs_create_group(hwtrace_kobj, &enable_pmon_attr_group);
+
+	if (ret)
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+				"enable pmon sysfs group creation failed\n");
+
+	return ret;
+}
+
+static int ice_trace_read_ice_pmon_sysfs_init(struct cve_device *ice_dev)
+{
+	int ret;
+
+	/* Create the read pmon files associated with ice<n> kobject */
+	ret = sysfs_create_group(ice_dev->ice_kobj, &read_ice_pmon_attr_group);
+	if (ret)
+		cve_os_dev_log(CVE_LOGLEVEL_ERROR, ice_dev->dev_index,
+				"read pmon sysfs group creation failed\n");
+
+	return ret;
+}
+
+static void ice_trace_enable_pmon_sysfs_term(void)
+{
+	/*Create the enable pmon file associated with hwtrace kobject*/
+	sysfs_remove_group(hwtrace_kobj, &enable_pmon_attr_group);
+}
 
 static void ice_trace_dso_sysfs_term(struct cve_device *ice_dev)
 {
@@ -1750,6 +2176,13 @@ int ice_trace_sysfs_init(struct cve_device *ice_dev)
 		ret = -ENOMEM;
 		goto out;
 	}
+	ret = ice_trace_enable_pmon_sysfs_init();
+	if (ret) {
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+				"ice_trace_enable_pmon_sysfs_init failed\n");
+
+		goto hwtrace_kobj_free;
+	}
 ice_sysfs:
 	ice_dev->ice_kobj = NULL;
 	snprintf(name, sizeof(name), "ice%d", ice_dev->dev_index);
@@ -1759,7 +2192,7 @@ ice_sysfs:
 				"ice%d kobj creation failed\n",
 				ice_dev->dev_index);
 		ret = -ENOMEM;
-		goto hwtrace_kobj_free;
+		goto enable_pmon_sysfs_free;
 	}
 	ret = ice_trace_dso_sysfs_init(ice_dev);
 	if (ret) {
@@ -1773,17 +2206,23 @@ ice_sysfs:
 		cve_os_dev_log(CVE_LOGLEVEL_ERROR, ice_dev->dev_index,
 				"ice_trace_daemon_sysfs_init failed\n");
 		goto dso_filter_sysfs_free;
-	} else {
-		goto out;
 	}
 
+	ret = ice_trace_read_ice_pmon_sysfs_init(ice_dev);
+	if (ret) {
+		cve_os_dev_log(CVE_LOGLEVEL_ERROR, ice_dev->dev_index,
+				"ice_trace_read_ice_pmon_sysfs_init failed\n");
+	}
 
+	goto out;
 
 dso_filter_sysfs_free:
 	ice_trace_dso_sysfs_term(ice_dev);
 ice_kobj_free:
 	kobject_put(ice_dev->ice_kobj);
 	ice_dev->ice_kobj = NULL;
+enable_pmon_sysfs_free:
+	ice_trace_enable_pmon_sysfs_term();
 hwtrace_kobj_free:
 	kobject_put(hwtrace_kobj);
 	hwtrace_kobj = NULL;
@@ -2012,5 +2451,17 @@ int ice_trace_init_dso(struct cve_device *ice_dev)
 out:
 	FUNC_LEAVE();
 	return ret;
+}
+
+void configure_pmon_names(struct cve_device *dev)
+{
+	int i = 0;
+
+	for (i = 0; i < ICE_MAX_MMU_PMON; i++)
+		dev->mmu_pmon[i].pmon_name =
+			ice_pmon_strings[ICE_MMU_PMON_START_INDEX + i - 1];
+	for (i = 0; i < ICE_MAX_DELPHI_PMON; i++)
+		dev->delphi_pmon[i].pmon_name =
+			ice_pmon_strings[ICE_DELPHI_PMON_START_INDEX + i - 1];
 }
 

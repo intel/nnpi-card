@@ -9,7 +9,7 @@
 
 #include <linux/kernel.h>
 #include <linux/spinlock.h>
-#include "ipc_protocol.h"
+#include "ipc_chan_protocol.h"
 
 struct sphcs;
 struct sphcs_p2p_peer_dev;
@@ -50,6 +50,10 @@ void IPC_OPCODE_HANDLER(P2P_DEV)(struct sphcs *sphcs, union h2c_P2PDev *cmd);
 void IPC_OPCODE_HANDLER(PEER_BUF)(struct sphcs *sphcs, union h2c_PeerBuf *cmd);
 void IPC_OPCODE_HANDLER(GET_CR_FIFO)(struct sphcs *sphcs, union h2c_GetCrFIFO *cmd);
 
+void IPC_OPCODE_HANDLER(CHAN_P2P_GET_CR_FIFO)(struct sphcs *sphcs, union h2c_ChanGetCrFIFO *cmd);
+void IPC_OPCODE_HANDLER(CHAN_P2P_CONNECT_PEERS)(struct sphcs *sphcs, union h2c_ChanConnectPeers *cmd);
+void IPC_OPCODE_HANDLER(CHAN_P2P_UPDATE_PEER_DEV)(struct sphcs *sphcs, union h2c_ChanUpdatePeerDev *cmd);
+
 void sphcs_p2p_init_p2p_buf(bool is_src_buf, struct sphcs_p2p_buf *buf);
 int sphcs_p2p_add_buffer(struct sphcs_p2p_buf *buf);
 void sphcs_p2p_remove_buffer(struct sphcs_p2p_buf *buf);
@@ -79,6 +83,19 @@ static inline void IPC_OPCODE_HANDLER(PEER_BUF)(struct sphcs *sphcs, union h2c_P
 
 }
 static inline void IPC_OPCODE_HANDLER(GET_CR_FIFO)(struct sphcs *sphcs, union h2c_GetCrFIFO *cmd)
+{
+
+}
+
+static inline void IPC_OPCODE_HANDLER(CHAN_P2P_GET_CR_FIFO)(struct sphcs *sphcs, union h2c_ChanGetCrFIFO *cmd)
+{
+
+}
+static inline void IPC_OPCODE_HANDLER(CHAN_P2P_CONNECT_PEERS)(struct sphcs *sphcs, union h2c_ChanConnectPeers *cmd)
+{
+
+}
+static inline void IPC_OPCODE_HANDLER(CHAN_P2P_UPDATE_PEER_DEV)(struct sphcs *sphcs, union h2c_ChanUpdatePeerDev *cmd)
 {
 
 }

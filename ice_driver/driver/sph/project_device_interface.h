@@ -32,6 +32,8 @@
 #define min_llc_ratio(a) (((a) >> 8) & 0x7F)
 #define MAX_LLCPMON_CONFIG 7
 #define MAX_LLCPMON_PREDEF_CONFIG 6
+#define ICE_MMU_PMON_START_INDEX 1
+#define ICE_DELPHI_PMON_START_INDEX 17
 
 /* TODO: These cdyn values are to be confirmed */
 #define RESET_CDYN_VAL 0
@@ -45,8 +47,14 @@ struct hw_revision_t {
 	u16	minor_rev;
 };
 
+enum ice_pmon_reg_index {
+		ICE_MMU_PMON_INDEX = 0,
+		ICE_DELPHI_PMON_INDEX = 1
+};
+
 extern struct kobject *icedrv_kobj;
 
+void configure_pmon_names(struct cve_device *dev);
 int is_wd_error(u32 status);
 void get_hw_revision(struct cve_device *cve_dev,
 				struct hw_revision_t *hw_rev);
@@ -92,8 +100,7 @@ inline void cve_decouple_debugger_reset(void);
 #define project_hook_interrupt_dpc_handler_entry(cve_dev)
 #define project_hook_interrupt_dpc_handler_exit(cve_dev, status)
 
-void project_hook_interrupt_handler_exit(struct cve_device *cve_dev,
-		u32 status);
+void project_hook_interrupt_handler_exit(struct cve_device *cve_dev);
 void project_hook_dispatch_new_job(struct cve_device *cve_dev,
 					struct ice_network *ntw);
 void ice_di_update_page_sz(struct cve_device *cve_dev, u32 *page_sz_array);
@@ -119,6 +126,9 @@ int __restore_llc_max_freq(void);
 u32 __get_llc_max_freq(void);
 void __store_ice_max_freq(void);
 u32 __get_ice_max_freq(void);
+void __get_ice_mmu_pmon_regs(struct cve_device *dev);
+void __get_ice_delphi_pmon_regs(struct cve_device *dev);
+
 #define __no_op_return_success 0
 
 #ifdef RING3_VALIDATION
@@ -135,6 +145,8 @@ u32 __get_ice_max_freq(void);
 #define store_ice_max_freq() __no_op_stub
 #define init_sw_debug_sysfs() __no_op_return_success
 #define term_sw_debug_sysfs() __no_op_stub
+#define get_ice_mmu_pmon_regs(x) __no_op_stub
+#define get_ice_delphi_pmon_regs(x) __no_op_stub
 #else
 #define init_icedrv_sysfs() icedrv_sysfs_init()
 #define term_icedrv_sysfs() icedrv_sysfs_term()
@@ -149,6 +161,8 @@ u32 __get_ice_max_freq(void);
 #define store_ice_max_freq() __store_ice_max_freq()
 #define init_sw_debug_sysfs() sw_debug_sysfs_init()
 #define term_sw_debug_sysfs() sw_debug_sysfs_term()
+#define get_ice_mmu_pmon_regs(x) __get_ice_mmu_pmon_regs(x)
+#define get_ice_delphi_pmon_regs(x) __get_ice_delphi_pmon_regs(x)
 #endif
 
 int ice_di_get_core_blob_sz(void);
@@ -207,5 +221,18 @@ do {\
 #define ICE_OFFSET(i) (0x100000 + (i * 0x40000)) /* 1 MB + 0.25MB per ICE */
 #define ICE_BAR1_OFFSET(ice_id) (ice_id * BAR1_ICE_SPACE)
 #define IDC_ICE_ACCESS_WINDOW_OFFSET __BAR1_IDC_ICE_ACCESS_WINDOW
+
+enum ice_delphi_pmon_indexes {
+	ICE_DELPHI_PMON_PER_LAYER_CYCLES = 0,
+	ICE_DELPHI_PMON_TOTAL_CYCLES = 1,
+	ICE_DELPHI_PMON_CYCLES_COUNT_OVERFLOW = 2,
+	ICE_DELPHI_PMON_GEMM_CNN_STARTUP = 3,
+	ICE_DELPHI_PMON_GEMM_COMPUTE_CYCLES = 4,
+	ICE_DELPHI_PMON_GEMM_OUTPUT_WRITE_CYCLES = 5,
+	ICE_DELPHI_PMON_CNN_COMPUTE_CYCLES = 6,
+	ICE_DELPHI_PMON_CNN_OUTPUT_WRITE_CYCLES = 7,
+	ICE_DELPHI_PMON_CONFIG_CREDIT_LATENCY = 8,
+	ICE_DELPHI_PMON_PERF_COUNTERS_OVR_FLW = 9
+	};
 
 #endif /* _DEVICE_INTERFACE_INTERNAL_H_ */

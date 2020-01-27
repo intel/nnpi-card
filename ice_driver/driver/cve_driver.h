@@ -35,6 +35,7 @@
 #define ICE_FREQ_DIVIDER_FACTOR 25
 #define LLC_FREQ_DIVIDER_FACTOR 100
 #define ICEDRV_VALID_ICE_MASK 0xFFF
+#define MAX_ICE_DUMP_COUNT 0x3F
 
 typedef __u64 cve_bufferid_t;
 
@@ -160,15 +161,22 @@ enum idc_error_status {
 enum ice_error_status {
 	TLC_ERR = 0x01,
 	MMU_ERR = 0x02,
-	PAGE_FAULT = 0x4,
-	BUS_ERR = 0x8,
-	INTERNAL_WD = 0x10,
-	BTRS_WD = 0x20,
-	TLC_PANIC = 0x40,
-	DSRAM_SINGLE_ERR = 0x80,
-	DSRAM_DOUBLE_ERR = 0x100,
-	SRAM_PARITY_ERR = 0x200,
-	DSRAM_UNMAPPED_ADDR = 0x400,
+	MMU_PAGE_NO_WRITE_PERM = 0x04,
+	MMU_PAGE_NO_READ_PERM = 0x08,
+	MMU_PAGE_NO_EXE_PERM = 0x10,
+	MMU_PAGE_NONE_PERM = 0x20,
+	BUS_ERR = 0x40,
+	INTERNAL_WD = 0x80,
+	BTRS_WD = 0x100,
+	INTERNAL_SECONDARY_WD = 0x200,
+	INTERNAL_CNC_WD = 0x400,
+	TLC_PANIC = 0x800,
+	DSRAM_SINGLE_ERR = 0x1000,
+	DSRAM_DOUBLE_ERR = 0x2000,
+	SRAM_PARITY_ERR = 0x4000,
+	DSRAM_UNMAPPED_ADDR = 0x8000,
+	ASIP2HOST_INTR = 0x10000,
+	IVP2HOST_INTR = 0x20000,
 	/*last error so that it doesnt share HW error type*/
 	ICE_READY_BIT_ERR = 0x80000000
 };
@@ -299,6 +307,10 @@ struct cve_job {
 	__u32 ice_to_ice_ratio;
 	/* cdyn budget value required for the job */
 	__u16 cdyn_val;
+	/* List of MMU registers to configure [idx0, val0, idx1, val1, ...] */
+	__u64 mmu_cfg_list;
+	/* num registers in mmu_cfg_list */
+	__u32 num_mmu_cfg_regs;
 };
 
 struct cve_job_group {
@@ -550,6 +562,16 @@ enum cve_jobs_group_status {
 	CVE_JOBSGROUPSTATUS_COMPLETED,
 	/* job group was aborted */
 	CVE_JOBSGROUPSTATUS_ABORTED,
+	/* no resource for execution */
+	CVE_JOBSGROUPSTATUS_NORESOURCE,
+	/* cannot run because of previous error */
+	CVE_JOBSGROUPSTATUS_ERROR
+};
+
+enum ice_error_severity {
+	ERROR_SEVERITY_NONE,
+	ERROR_SEVERITY_ICE_RESET,
+	ERROR_SEVERITY_CARD_RESET
 };
 
 /*
@@ -586,6 +608,10 @@ struct cve_get_event {
 	__u64 ice_err_status;
 	/* Shared read error status */
 	__u32 shared_read_err_status;
+	/* Per ICE error info (Mapped by virtual ID) */
+	__u32 ice_error_status[KMD_NUM_ICE];
+	/* Severity of error */
+	enum ice_error_severity err_severity;
 };
 
 /*
@@ -783,6 +809,13 @@ struct ice_set_hw_config_params {
 	enum hw_config_type config_type;
 };
 
+struct ice_reset_network_params {
+	/* in, id of the context */
+	__u64 contextid;
+	/*in, id of the network */
+	__u64 networkid;
+};
+
 /* a union of all the different parameters */
 struct cve_ioctl_param {
 	union {
@@ -802,6 +835,7 @@ struct cve_ioctl_param {
 		struct ice_get_debug_event get_debug_event;
 		struct ice_debug_control_params debug_control;
 		struct ice_set_hw_config_params set_hw_config;
+		struct ice_reset_network_params reset_network;
 	};
 };
 
@@ -846,4 +880,6 @@ struct cve_ioctl_param {
 	_IOWR(CVE_IOCTL_SEQ_NUM, 19, struct cve_ioctl_param)
 #define ICE_IOCTL_SET_HW_CONFIG \
 	_IOW(CVE_IOCTL_SEQ_NUM, 20, struct cve_ioctl_param)
+#define ICE_IOCTL_RESET_NETWORK \
+	_IOW(CVE_IOCTL_SEQ_NUM, 21, struct cve_ioctl_param)
 #endif /* _CVE_DRIVER_H_ */

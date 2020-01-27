@@ -22,7 +22,10 @@
 static int inf_cpylst_req_sched(struct inf_exec_req *req);
 static bool inf_cpylst_req_ready(struct inf_exec_req *req);
 static int inf_cpylst_req_execute(struct inf_exec_req *req);
-static void inf_cpylst_req_complete(struct inf_exec_req *req, int err);
+static void inf_cpylst_req_complete(struct inf_exec_req *req,
+				    int                  err,
+				    const void          *error_msg,
+				    int32_t              error_msg_size);
 static void send_cpylst_report(struct inf_exec_req *req,
 			       enum event_val       eventVal);
 static int inf_req_cpylst_put(struct inf_exec_req *req);
@@ -83,7 +86,7 @@ static int cpylst_complete_cb(struct sphcs *sphcs, void *ctx, const void *user_d
 	}
 #endif
 
-	req->f->complete(req, err);
+	req->f->complete(req, err, NULL, 0);
 
 	return err;
 }
@@ -563,13 +566,18 @@ static int inf_cpylst_req_execute(struct inf_exec_req *req)
 					  &req, sizeof(req));
 }
 
-static void inf_cpylst_req_complete(struct inf_exec_req *req, int err)
+static void inf_cpylst_req_complete(struct inf_exec_req *req,
+				    int                  err,
+				    const void          *error_msg,
+				    int32_t              error_msg_size)
 {
 	enum event_val eventVal;
 	struct inf_cpylst *cpylst;
 	struct inf_cmd_list *cmd;
 	unsigned long flags;
 	bool send_cmdlist_event_report = false;
+	struct inf_exec_error_details *err_details = NULL;
+	int rc;
 
 	SPH_ASSERT(req->cmd_type == CMDLIST_CMD_COPYLIST);
 	SPH_ASSERT(req->cmd != NULL);
@@ -634,9 +642,22 @@ static void inf_cpylst_req_complete(struct inf_exec_req *req, int err)
 		default:
 			eventVal = SPH_IPC_DMA_ERROR;
 		}
+
+		rc = inf_exec_error_details_alloc(CMDLIST_CMD_COPYLIST,
+						  cpylst->idx_in_cmd,
+						  req->cmd->protocolID,
+						  eventVal,
+						  error_msg_size > 0 ? error_msg_size : 0,
+						  &err_details);
+		if (rc == 0) {
+			if (error_msg_size > 0)
+				memcpy(err_details->error_msg, error_msg, error_msg_size);
+
+			inf_exec_error_list_add(&cmd->error_list,
+						err_details);
+		}
+
 		//TODO GLEB: Decide if copy failed brakes context or cmd or ...
-		inf_context_set_state(cmd->context,
-				      CONTEXT_BROKEN_RECOVERABLE);
 	} else {
 		eventVal = 0;
 	}

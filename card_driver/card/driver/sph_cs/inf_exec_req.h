@@ -15,7 +15,7 @@
 #include "inf_cpylst.h"
 #include "inf_req.h"
 #include "inf_cmd_list.h"
-
+#include "inf_types.h"
 
 struct func_table {
 	int (*schedule)(struct inf_exec_req *req);
@@ -23,7 +23,10 @@ struct func_table {
 	int (*execute)(struct inf_exec_req *req);
 	void (*send_report)(struct inf_exec_req *req,
 			    enum event_val       eventVal);
-	void (*complete)(struct inf_exec_req *req, int err);
+	void (*complete)(struct inf_exec_req *req,
+			 int                  err,
+			 const void          *error_msg,
+			 int32_t              error_msg_size);
 	int (*obj_put)(struct inf_exec_req *req);
 	int (*migrate_priority)(struct inf_exec_req *req, uint8_t priority);
 
@@ -87,4 +90,30 @@ int inf_update_priority(struct inf_exec_req *req,
 			bool card2host,
 			dma_addr_t lli_addr);
 
+void inf_exec_error_list_init(struct inf_exec_error_list *error_list,
+			      struct inf_context         *context);
+
+void inf_exec_error_list_fini(struct inf_exec_error_list *error_list);
+
+void inf_exec_error_list_add(struct inf_exec_error_list    *error_list,
+			     struct inf_exec_error_details *err);
+
+int inf_exec_error_details_alloc(enum CmdListCommandType cmd_type,
+				 uint16_t                obj_id,
+				 uint16_t                devnet_id,
+				 uint16_t                eventVal,
+				 int32_t                 error_msg_size,
+				 struct inf_exec_error_details **out_err);
+
+int inf_exec_error_list_buffer_pack(struct inf_exec_error_list *error_list,
+				    void            **out_buffer,
+				    uint16_t         *out_buffer_size);
+
+void inf_exec_error_list_clear(struct inf_exec_error_list *error_list,
+			       struct inf_cmd_list        *cmdlist);
+
+void inf_exec_error_list_devnet_reset_done(struct inf_exec_error_list *error_list,
+					   uint16_t                    devnet_id,
+					   struct inf_cmd_list        *cmdlist,
+					   bool                        failed);
 #endif

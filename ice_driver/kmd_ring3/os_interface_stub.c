@@ -995,6 +995,13 @@ int cve_ioctl_misc(int fd, int request, struct cve_ioctl_param *param)
 				"Simulation mode - ICE_IOCTL_SET_ICE_FREQ\n");
 		retval = ice_set_hw_config(&param->set_hw_config);
 		break;
+	case ICE_IOCTL_RESET_NETWORK:
+		cve_os_log(CVE_LOGLEVEL_DEBUG,
+				"Simulation mode - ICE_IOCTL_RESET_NETWORK\n");
+		retval = ice_ds_reset_network(context_pid,
+                                param->reset_network.contextid,
+                                param->reset_network.networkid);
+		break;
 	default:
 		cve_os_log(CVE_LOGLEVEL_ERROR, "Unknown ioctl request (%d) was used\n", request);
 		retval = -EINVAL;
@@ -1037,7 +1044,8 @@ void cve_os_memory_barrier(void)
 int __cve_os_alloc_dma_sg(struct cve_device *cve_dev,
 		u32 size_of_elem,
 		u32 num_of_elem,
-		struct cve_dma_handle *out_dma_handle)
+		struct cve_dma_handle *out_dma_handle,
+		bool is_single_contig_mem)
 {
 	int ret;
 	void *tmp;
@@ -1409,7 +1417,7 @@ u32 cve_debug_get(enum cve_debug_config d_config)
 	}
 
 	/* Fixme: Temp WA, disabled WD for B step */
-	if (ice_get_b_step_enable_flag()) {
+	if (!ice_get_a_step_enable_flag()) {
 		cve_os_log(CVE_LOGLEVEL_DEBUG,
 				"WD disabled in B step\n");
 		cve_debug[DEBUG_WD_EN].val = 0;
@@ -1470,4 +1478,14 @@ int cve_sync_sgt_to_llc(struct sg_table *sgt)
 uint32_t get_process_pid(void)
 {
 	return getpid();
+}
+
+u32 ice_os_get_user_intst(int dev_id)
+{
+	return 0;
+}
+
+u64 ice_os_get_user_idc_intst(void)
+{
+	return 0;
 }

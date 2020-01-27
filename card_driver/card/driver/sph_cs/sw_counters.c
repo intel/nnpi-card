@@ -475,8 +475,7 @@ static int create_group_files(struct kobject *kobj,
 			      u32 *buffer)
 {
 	int ret;
-	int i;
-	int j;
+	u32 i, j;
 	const u32 groups_count = sw_counters->counters_set->groups_count;
 
 	sw_counters->groups_kobj = kobject_create_and_add("groups", kobj);
@@ -518,7 +517,7 @@ failed_to_allocate_array:
 
 static void remove_group_files(struct sph_internal_sw_counters *sw_counters)
 {
-	int i;
+	u32 i;
 
 	if (sw_counters->groups_kobj == NULL)
 		return;

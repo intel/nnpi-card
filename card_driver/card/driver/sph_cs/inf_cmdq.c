@@ -11,7 +11,7 @@
 
 void inf_cmd_queue_init(struct inf_cmd_queue *cmdq)
 {
-	spin_lock_init(&cmdq->lock);
+	spin_lock_init(&cmdq->lock_irq);
 	INIT_LIST_HEAD(&cmdq->pending_commands);
 	init_waitqueue_head(&cmdq->waitq);
 }
@@ -19,19 +19,20 @@ void inf_cmd_queue_init(struct inf_cmd_queue *cmdq)
 void inf_cmd_queue_fini(struct inf_cmd_queue *cmdq)
 {
 	struct inf_command *cmd;
+	unsigned long flags;
 
 	// This list normally should be empty, clean it in case runtime crashed
-	SPH_SPIN_LOCK(&cmdq->lock);
+	SPH_SPIN_LOCK_IRQSAVE(&cmdq->lock_irq, flags);
 	while (!list_empty(&cmdq->pending_commands)) {
 		cmd = list_first_entry(&cmdq->pending_commands,
 				       struct inf_command,
 				       node);
 		list_del(&cmd->node);
-		SPH_SPIN_UNLOCK(&cmdq->lock);
+		SPH_SPIN_UNLOCK_IRQRESTORE(&cmdq->lock_irq, flags);
 		kfree(cmd);
-		SPH_SPIN_LOCK(&cmdq->lock);
+		SPH_SPIN_LOCK_IRQSAVE(&cmdq->lock_irq, flags);
 	}
-	SPH_SPIN_UNLOCK(&cmdq->lock);
+	SPH_SPIN_UNLOCK_IRQRESTORE(&cmdq->lock_irq, flags);
 }
 
 int inf_cmd_queue_add(struct inf_cmd_queue *cmdq,
@@ -45,6 +46,7 @@ int inf_cmd_queue_add(struct inf_cmd_queue *cmdq,
 		      void             *read_payload_ctx)
 {
 	struct inf_command *cmd;
+	unsigned long flags;
 	uint32_t extra_size = read_payload == NULL && args_size > 0 ? args_size-1 : 0;
 
 	cmd = kzalloc(sizeof(struct inf_command)+extra_size,
@@ -59,9 +61,9 @@ int inf_cmd_queue_add(struct inf_cmd_queue *cmdq,
 	if (read_payload == NULL && args_size > 0)
 		memcpy(&cmd->cmd_args[0], cmd_args, args_size);
 
-	SPH_SPIN_LOCK(&cmdq->lock);
+	SPH_SPIN_LOCK_IRQSAVE(&cmdq->lock_irq, flags);
 	list_add_tail(&cmd->node, &cmdq->pending_commands);
-	SPH_SPIN_UNLOCK(&cmdq->lock);
+	SPH_SPIN_UNLOCK_IRQRESTORE(&cmdq->lock_irq, flags);
 
 	wake_up_all(&cmdq->waitq);
 
@@ -72,26 +74,29 @@ void inf_cmd_queue_exe(struct inf_cmd_queue *cmdq,
 		      uint32_t opcode,
 		      void (*exe_cmd)(void *cmd_args))
 {
+	unsigned long flags;
 	struct inf_command *cmd = list_first_entry(&cmdq->pending_commands, struct inf_command, node);
 
-	SPH_SPIN_LOCK(&cmdq->lock);
+	SPH_SPIN_LOCK_IRQSAVE(&cmdq->lock_irq, flags);
 	while (&cmd->node != &cmdq->pending_commands) {
 		if (cmd->header.opcode == opcode) {
-			SPH_SPIN_UNLOCK(&cmdq->lock);
+			SPH_SPIN_UNLOCK_IRQRESTORE(&cmdq->lock_irq, flags);
 			exe_cmd(cmd->cmd_args);
-			SPH_SPIN_LOCK(&cmdq->lock);
+			SPH_SPIN_LOCK_IRQSAVE(&cmdq->lock_irq, flags);
 		}
 
 		cmd = list_next_entry(cmd, node);
 	}
-	SPH_SPIN_UNLOCK(&cmdq->lock);
+	SPH_SPIN_UNLOCK_IRQRESTORE(&cmdq->lock_irq, flags);
 }
 
 void inf_cmd_queue_hangup(struct inf_cmd_queue *cmdq)
 {
-	SPH_SPIN_LOCK(&cmdq->lock);
+	unsigned long flags;
+
+	SPH_SPIN_LOCK_IRQSAVE(&cmdq->lock_irq, flags);
 	cmdq->hangup = 1;
-	SPH_SPIN_UNLOCK(&cmdq->lock);
+	SPH_SPIN_UNLOCK_IRQRESTORE(&cmdq->lock_irq, flags);
 
 	wake_up_all(&cmdq->waitq);
 }
@@ -101,12 +106,13 @@ unsigned int inf_cmd_queue_poll(struct inf_cmd_queue *cmdq,
 				struct poll_table_struct *pt)
 {
 	unsigned int mask = 0;
+	unsigned long flags;
 
 	poll_wait(f, &cmdq->waitq, pt);
-	SPH_SPIN_LOCK(&cmdq->lock);
+	SPH_SPIN_LOCK_IRQSAVE(&cmdq->lock_irq, flags);
 	if (!list_empty(&cmdq->pending_commands) || cmdq->hangup)
 		mask |= (POLLIN | POLLRDNORM);
-	SPH_SPIN_UNLOCK(&cmdq->lock);
+	SPH_SPIN_UNLOCK_IRQRESTORE(&cmdq->lock_irq, flags);
 
 	return mask;
 }
@@ -119,6 +125,7 @@ ssize_t inf_cmd_queue_read(struct inf_cmd_queue *cmdq,
 	ssize_t n_to_read, was_read = 0;
 	struct inf_command *cmd;
 	int err;
+	unsigned long flags;
 
 	err = wait_event_interruptible(cmdq->waitq,
 				       !list_empty(&cmdq->pending_commands) || cmdq->hangup);
@@ -128,9 +135,9 @@ ssize_t inf_cmd_queue_read(struct inf_cmd_queue *cmdq,
 	if (cmdq->hangup)
 		return -1;
 
-	SPH_SPIN_LOCK(&cmdq->lock);
+	SPH_SPIN_LOCK_IRQSAVE(&cmdq->lock_irq, flags);
 	cmd = list_first_entry(&cmdq->pending_commands, struct inf_command, node);
-	SPH_SPIN_UNLOCK(&cmdq->lock);
+	SPH_SPIN_UNLOCK_IRQRESTORE(&cmdq->lock_irq, flags);
 
 	if (!cmd->header_read) {
 		if (size < sizeof(cmd->header))
@@ -164,9 +171,9 @@ ssize_t inf_cmd_queue_read(struct inf_cmd_queue *cmdq,
 
 done:
 	if (cmd->offset >= cmd->header.size) {
-		SPH_SPIN_LOCK(&cmdq->lock);
+		SPH_SPIN_LOCK_IRQSAVE(&cmdq->lock_irq, flags);
 		list_del(&cmd->node);
-		SPH_SPIN_UNLOCK(&cmdq->lock);
+		SPH_SPIN_UNLOCK_IRQRESTORE(&cmdq->lock_irq, flags);
 		kfree(cmd);
 	}
 

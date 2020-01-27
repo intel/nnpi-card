@@ -390,6 +390,7 @@ static int create_unprotected_regions(void)
 				sph_log_debug(GENERAL_LOG, "Same region\n");
 				list_del(&unprotected_region->list);
 				vfree(unprotected_region);
+				break;
 			/* Two regions have the same start address */
 			} else if (unprotected_region->start == protected_region->start &&
 					unprotected_region->size > protected_region->size) {

@@ -100,12 +100,12 @@ void IPC_OPCODE_HANDLER(CHAN_SCHEDULE_INF_REQ)(struct sphcs                   *s
 void IPC_OPCODE_HANDLER(INF_NETWORK_RESOURCE_RESERVATION)(struct sphcs                  *sphcs,
 				      union h2c_InferenceNetworkResourceReservation *cmd);
 
-void IPC_OPCODE_HANDLER(CHAN_INF_NETWORK_RESOURCE_RESERVATION)(struct sphcs *sphcs,
-							       union h2c_ChanInferenceNetworkResourceReservation *cmd);
-
 void IPC_OPCODE_HANDLER(NETWORK_PROPERTY)(struct sphcs *sphcs,
 							       union h2c_InferenceNetworkProperty *cmd);
 
 void IPC_OPCODE_HANDLER(CHAN_NETWORK_PROPERTY)(struct sphcs *sphcs,
 							       union h2c_ChanInferenceNetworkSetProperty *cmd);
+
+void IPC_OPCODE_HANDLER(CHAN_EXEC_ERROR_LIST)(struct sphcs              *sphcs,
+					      union h2c_ExecErrorList   *cmd);
 #endif

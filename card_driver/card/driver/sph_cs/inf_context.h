@@ -63,6 +63,8 @@ struct inf_context {
 	atomic_t             sched_tick;
 	u32                  num_optimized_cmd_lists;
 
+	struct inf_exec_error_list error_list;
+
 	struct inf_cmd_queue cmdq;
 
 	struct list_head subresload_sessions;

@@ -94,6 +94,8 @@ int inf_context_create(uint16_t             protocolID,
 	INIT_LIST_HEAD(&context->subresload_sessions);
 	init_waitqueue_head(&context->sched_waitq);
 
+	inf_exec_error_list_init(&context->error_list, context);
+
 	ret = sph_create_sw_counters_values_node(g_hSwCountersInfo_context,
 						 (u32)protocolID,
 						 g_sph_sw_counters,
@@ -242,7 +244,9 @@ static void release_context(struct kref *kref)
 
 	kmem_cache_destroy(context->exec_req_slab_cache);
 
-	if (likely(context->destroyed))
+	inf_exec_error_list_fini(&context->error_list);
+
+	if (likely(context->destroyed == 1))
 		sphcs_send_event_report(g_the_sphcs,
 					SPH_IPC_CONTEXT_DESTROYED,
 					0,
@@ -553,8 +557,11 @@ void del_all_active_create_and_inf_requests(struct inf_context *context)
 					SPH_SPIN_UNLOCK_IRQRESTORE(&infreq->lock_irq, flags);
 					SPH_SPIN_UNLOCK(&devnet->lock);
 					found = true;
+					SPH_SPIN_UNLOCK(&context->lock);
 					active_req->f->complete(active_req,
-							 -SPHER_CONTEXT_BROKEN);
+								-SPHER_CONTEXT_BROKEN,
+								NULL, 0);
+					SPH_SPIN_LOCK(&context->lock);
 					SPH_SPIN_LOCK(&devnet->lock);
 					break;
 				}
