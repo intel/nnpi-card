@@ -22,6 +22,17 @@
 #define USEC_PER_SEC	1000000L
 #define NSEC_PER_SEC	1000000000L
 
+#define __local_builtin_popcount(y, ctr) \
+do { \
+	u32 pos = 0, x = y; \
+	ctr = 0; \
+	while (x) {\
+		pos = __builtin_ctz(x); \
+		x = (x >> (pos + 1)); \
+		ctr++; \
+	}; \
+} while (0)
+
 extern struct cve_device_group *g_cve_dev_group_list;
 
 struct ice_drv_config {
@@ -172,4 +183,20 @@ u32 ice_get_blocked_cdyn_val(void);
 
 /*check if user has requested to dump MMu PMONs after Job completion*/
 u8 ice_dump_mmu_pmon(void);
+
+enum resource_status ice_dg_check_resource_availability(
+		struct ice_network *ntw);
+bool ice_dg_can_lazy_capture_ice(struct ice_network *ntw);
+void ice_dg_borrow_this_ice(struct ice_network *ntw,
+		struct cve_device *dev, bool lazy);
+void ice_dg_borrow_next_pbo(struct ice_network *ntw,
+	struct job_descriptor *job_0,
+	struct job_descriptor *job_1);
+void ice_dg_borrow_next_dice(struct ice_network *ntw,
+	struct job_descriptor *job_0);
+void ice_dg_reserve_this_ice(struct cve_device *dev);
+void ice_dg_release_this_ice(struct cve_device *dev);
+void ice_dg_return_this_ice(struct ice_network *ntw,
+		struct cve_device *dev);
+
 #endif /* CVE_DEVICE_GROUP_H_ */

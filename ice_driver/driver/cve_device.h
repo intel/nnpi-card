@@ -295,10 +295,6 @@ struct llc_pmon_config {
 struct icebo_desc {
 	/* icebo id */
 	u8 bo_id;
-	/* Initial state of BO */
-	enum ICEBO_STATE bo_init_state;
-	/* State of ICEBO */
-	enum ICEBO_STATE bo_curr_state;
 	/* link to the owner picebo/sicebo/dicebo list */
 	struct cve_dle_t owner_list;
 	/* List of devices - static list */
@@ -311,27 +307,19 @@ struct icebo_desc {
 #endif
 	/* ICCP init settings per ICE-BO done */
 	bool iccp_init_done;
+	/* Number of ICEs in free pool */
+	u8 in_pool_ice;
+	/* Number of non reserved ices */
+	u8 non_res_ice;
 };
 
 struct dg_dev_info {
 	/* icebo list with two ICEs available */
 	struct icebo_desc *picebo_list;
-	/* icebo list with one ICE available but in non usable state */
-	struct icebo_desc *sicebo_list;
 	/* icebo list with one ICE available */
 	struct icebo_desc *dicebo_list;
 	/* for reference - static icebo list */
 	struct icebo_desc *icebo_list;
-	/* Number of ICEBO whose both the ICEs are idle, paired ICEBOs=picebo */
-	u8 num_avl_picebo;
-	/* Number of ICEBO whose one ICE is idle but cannot be used by any ntw,
-	 * single ICEBOs=sicebo
-	 */
-	u8 num_avl_sicebo;
-	/* Number of ICEBOs whose one ICE is idle and can be used by any ntw,
-	 * don't care ICEBOs=dicebo
-	 */
-	u8 num_avl_dicebo;
 	/* Number of active devices */
 	u32 active_device_nr;
 };
@@ -427,12 +415,6 @@ struct cve_device_group {
 	u16 num_avl_pool;
 	/* number of non-reserved pool */
 	u16 num_nonres_pool;
-	/* book-keeping for reserved dices in system */
-	u8 dice_res_status[MAX_CVE_DEVICES_NR];
-	/* number of non-reserved (picebo + sicebo) */
-	u8 num_nonres_picebo;
-	/* number of non-reserved dicebo */
-	u8 num_nonres_dicebo;
 	/* List of ntw holding resources */
 	struct ice_network *ntw_with_resources;
 	/* number of running networks */
@@ -493,6 +475,33 @@ struct cve_device_group {
 	u32 ice_max_freq;
 	struct debug_dump_conf dump_conf;
 	bool dump_ice_pmon;
+
+	/* PBO = BO with two ICEs */
+	/* Total PBO in system */
+	u8 total_pbo;
+	/* Num PBO in free pool */
+	u8 in_pool_pbo;
+	/* Num non reserved PBO */
+	u8 non_res_pbo;
+
+	/* DICE = Single ICE in BO */
+	/* Total DICE in system */
+	u8 total_dice;
+	/* Num DICE in free pool */
+	u8 in_pool_dice;
+	/* Num non reserved DICE */
+	u8 non_res_dice;
+
+#if 0
+	/*
+	 * TODO: Enable in future. Not blocking.
+	 * https://jira.devtools.intel.com/browse/ICE-26298
+	 */
+
+	u8 total_cntr;
+	u8 in_pool_cntr;
+	u8 non_res_cntr;
+#endif
 };
 
 /* Holds all the relevant IDs required for maintaining a map between
@@ -549,6 +558,8 @@ struct job_descriptor {
 	struct cve_dle_t list;
 	/* the parent jobgroup */
 	struct jobgroup_descriptor *jobgroup;
+	/* link to paired job */
+	struct job_descriptor *paired_job;
 	/* device interface's job handle */
 	cve_di_job_handle_t di_hjob;
 	/* num of allocations (cb & surfaces) associated with this job */
@@ -647,30 +658,6 @@ struct fifo_descriptor {
 	struct dev_alloc fifo_alloc;
 	/* Above CBDT allocation is associated with this FIFO */
 	struct di_fifo fifo;
-};
-
-struct ntw_pjob_info {
-
-	/* If N is the graph_ice_id then ice_id_map[N] is driver_ice_id  */
-	u8 ice_id_map[MAX_CVE_DEVICES_NR];
-
-	/* If N is the graph_ice_id then num_pjob[N] is the number of
-	 * persistent jobs that are to be executed on this ICE
-	 */
-	u32 num_pjob[MAX_CVE_DEVICES_NR];
-	/* picebo[N] is 1 only if both the ICE of ICEBOn
-	 * belongs to this NTW
-	 */
-	u8 picebo[MAX_NUM_ICEBO];
-	/* sicebo[N] contains index of the ICE which belongs to this NTW
-	 * only if exactly one ICE from ICEBOn belongs to this NTW and the
-	 * other ICE is blocked
-	 */
-	u8 sicebo[MAX_NUM_ICEBO];
-	/* dicebo[N] contains index of the ICE which belongs to this NTW
-	 * only if exactly one ICE from ICEBOn belongs to this NTW
-	 */
-	u8 dicebo[MAX_NUM_ICEBO];
 };
 
 struct ntw_cntr_info {
@@ -796,8 +783,8 @@ struct ice_network {
 	struct cve_hw_cntr_descriptor *cntr_list;
 	/****************************************/
 
-	/* For ICE book-keeping */
-	struct ntw_pjob_info pjob_info;
+	/* To keep track of paired jobs */
+	struct job_descriptor *pjob_list[MAX_CVE_DEVICES_NR];
 
 	/* For Counter book-keeping */
 	struct ntw_cntr_info cntr_info;
@@ -840,21 +827,20 @@ struct ice_network {
 	bool ntw_enable_bp;
 
 	/* paired ICE from ICEBO requirement */
-	u8 num_picebo_req;
-	u8 cached_num_picebo_req;
-	/* single ICE from ICEBO requirement, but the other ICE
-	 * cannot be allocated to some other NTW
-	 */
-	u8 num_sicebo_req;
-	u8 cached_num_sicebo_req;
+	u8 org_pbo_req;
+	u8 temp_pbo_req;
+	u8 given_pbo_req;
 	/* single ICE from ICEBO requirement, the other ICE is free
 	 * to be allocated to other NTW
 	 */
-	u8 num_dicebo_req;
-	u8 cached_num_dicebo_req;
+	u8 org_dice_req;
+	u8 temp_dice_req;
+	u8 given_dice_req;
 	/* icebo requirement type */
-	enum icebo_req_type icebo_req;
-	enum icebo_req_type cached_icebo_req;
+	enum icebo_req_type org_icebo_req;
+	enum icebo_req_type temp_icebo_req;
+	enum icebo_req_type given_icebo_req;
+
 	/* Network type deepsram/normal */
 	enum ice_network_type network_type;
 	u8 max_shared_distance;

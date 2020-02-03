@@ -31,6 +31,7 @@
 #include "sphcs_trace.h"
 #include "sphcs_ctx_uids.h"
 #include "sphcs_cmd_chan.h"
+#include "safe_mem_lib.h"
 #include <linux/module.h>
 
 /* min system memory threshold in KB */
@@ -2468,7 +2469,6 @@ void IPC_OPCODE_HANDLER(CHAN_INF_NETWORK)(struct sphcs *sphcs, union h2c_ChanInf
 	work->cmd.host_pfn = 0;
 	work->rbID = cmd->rbID;
 	work->start_res_idx = cmd->start_res_idx;
-
 	work->context = context;
 	INIT_WORK(&work->work, network_op_work_handler);
 	queue_work(context->chan->wq, &work->work);
