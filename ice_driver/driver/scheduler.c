@@ -45,6 +45,17 @@ enum sch_status {
 	SCH_STATUS_DISCARD
 };
 
+static void __discard_inference(struct ice_infer *inf)
+{
+	struct ice_network *ntw = inf->ntw;
+
+	ice_sch_del_inf_from_queue(inf);
+
+	ntw->curr_exe = inf;
+
+	ice_ds_raise_event(ntw, CVE_JOBSGROUPSTATUS_ERROR, false);
+}
+
 /* Wait, Discard or push to Ntw queue */
 static enum sch_status __schedule_node(struct execution_node *node)
 {
@@ -85,11 +96,7 @@ static enum sch_status __schedule_node(struct execution_node *node)
 			"Ntw in error state. Inference will be discarded. NtwID=0x%lx, InfID=0x%lx\n",
 			(uintptr_t)ntw, (uintptr_t)inf);
 
-		ice_sch_del_inf_from_queue(inf);
-
-		ntw->curr_exe = inf;
-
-		ice_ds_raise_event(ntw, CVE_JOBSGROUPSTATUS_ERROR, false);
+		__discard_inference(inf);
 
 		status = SCH_STATUS_DISCARD;
 		goto out;
@@ -113,11 +120,7 @@ static enum sch_status __schedule_node(struct execution_node *node)
 			"Out of resource. Inference will be discarded. NtwID=0x%lx, InfID=0x%lx\n",
 			(uintptr_t)ntw, (uintptr_t)inf);
 
-		ice_sch_del_inf_from_queue(inf);
-
-		ntw->curr_exe = inf;
-
-		ice_ds_raise_event(ntw, CVE_JOBSGROUPSTATUS_NORESOURCE, false);
+		__discard_inference(inf);
 
 		status = SCH_STATUS_DISCARD;
 		goto out;

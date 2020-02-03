@@ -128,17 +128,13 @@ static int __add_icebo_list(struct cve_device_group *dg)
 	}
 	for (i = 0; i < MAX_NUM_ICEBO; i++) {
 		bo_list[i].bo_id = i;
-		bo_list[i].bo_curr_state = NO_ICE;
-		bo_list[i].bo_init_state = NO_ICE;
 		bo_list[i].dev_list = NULL;
+		bo_list[i].in_pool_ice = NO_ICE;
+		bo_list[i].non_res_ice = NO_ICE;
 	}
 	dg->dev_info.icebo_list = bo_list;
 	dg->dev_info.picebo_list = NULL;
-	dg->dev_info.sicebo_list = NULL;
 	dg->dev_info.dicebo_list = NULL;
-	dg->dev_info.num_avl_picebo = 0;
-	dg->dev_info.num_avl_sicebo = 0;
-	dg->dev_info.num_avl_dicebo = 0;
 	/* indicate success */
 	retval = 0;
 
@@ -151,12 +147,8 @@ static void __remove_icebo_list(struct cve_device_group *dg)
 	OS_FREE(dg->dev_info.icebo_list,
 		sizeof(*dg->dev_info.icebo_list) * MAX_NUM_ICEBO);
 	dg->dev_info.picebo_list = NULL;
-	dg->dev_info.sicebo_list = NULL;
 	dg->dev_info.dicebo_list = NULL;
 	dg->dev_info.icebo_list = NULL;
-	dg->dev_info.num_avl_picebo = 0;
-	dg->dev_info.num_avl_sicebo = 0;
-	dg->dev_info.num_avl_dicebo = 0;
 }
 
 static int cve_ds_create_ds_dev_data(
@@ -495,12 +487,15 @@ int ice_kmd_create_dg(void)
 	device_group->ntw_with_resources = NULL;
 	device_group->num_running_ntw = 0;
 	device_group->clos_state = CLOS_STATE_DEFAULT;
+	device_group->total_pbo = 0;
+	device_group->in_pool_pbo = 0;
+	device_group->non_res_pbo = 0;
+	device_group->total_dice = 0;
+	device_group->in_pool_dice = 0;
+	device_group->non_res_dice = 0;
 
 	device_group->dg_clos_manager.size = MAX_CLOS_SIZE_MB;
 	ice_os_read_clos((void *)&device_group->dg_clos_manager);
-
-	for (i = 0; i < MAX_CVE_DEVICES_NR; i++)
-		device_group->dice_res_status[i] = 0;
 
 	cve_os_log(CVE_LOGLEVEL_DEBUG,
 			"Added device group %d\n",
@@ -579,33 +574,39 @@ int cve_dg_add_device(struct cve_device *cve_dev)
 			cve_dle_add_to_list_before(bo->dev_list,
 					bo_list, cve_dev);
 
-			if (bo->bo_init_state == NO_ICE) {
+			if (bo->in_pool_ice == NO_ICE) {
 
 				cve_dle_add_to_list_before(
 					p->dev_info.dicebo_list, owner_list,
 					bo);
-				p->dev_info.num_avl_dicebo++;
-				bo->bo_init_state = ONE_ICE;
-				bo->bo_curr_state = ONE_ICE;
 				bo->llc_pmon_cfg.disable_llc_pmon = false;
 				bo->iccp_init_done = false;
 				bo->llc_pmon_cfg.pmon0_cfg = LLC_PMON_HIT_ICE_0;
 				bo->llc_pmon_cfg.pmon1_cfg = LLC_PMON_HIT_ICE_1;
+				bo->in_pool_ice = ONE_ICE;
+				bo->non_res_ice = ONE_ICE;
 
-			} else if (bo->bo_init_state == ONE_ICE) {
+				p->total_dice++;
+				p->in_pool_dice++;
+				p->non_res_dice++;
+
+			} else if (bo->in_pool_ice == ONE_ICE) {
 
 				cve_dle_move(p->dev_info.picebo_list,
 					p->dev_info.dicebo_list, owner_list,
 					bo);
-				p->dev_info.num_avl_dicebo--;
-				p->dev_info.num_avl_picebo++;
-				bo->bo_init_state = TWO_ICE;
-				bo->bo_curr_state = TWO_ICE;
+				bo->in_pool_ice = TWO_ICE;
+				bo->non_res_ice = TWO_ICE;
+
+				p->total_dice--;
+				p->in_pool_dice--;
+				p->non_res_dice--;
+
+				p->total_pbo++;
+				p->in_pool_pbo++;
+				p->non_res_pbo++;
 			} else
 				ASSERT(false);
-
-			p->num_nonres_picebo = p->dev_info.num_avl_picebo;
-			p->num_nonres_dicebo = p->dev_info.num_avl_dicebo;
 
 			cve_dev->dg = p;
 			cve_dev->in_free_pool = true;
@@ -899,3 +900,305 @@ u8 ice_dump_mmu_pmon(void)
 {
 	return drv_config_param.enable_mmu_pmon;
 }
+
+enum resource_status ice_dg_check_resource_availability(struct ice_network *ntw)
+{
+	/* TODO: Add debug logs */
+	struct cve_device_group *dg = cve_dg_get();
+	u32 count = 0;
+	enum resource_status tmp_status;
+	enum resource_status status = RESOURCE_INSUFFICIENT;
+
+	if (ntw->temp_icebo_req != ICEBO_DEFAULT) {
+
+		int in_pool_dice = 2 * (dg->in_pool_pbo - ntw->temp_pbo_req) +
+				dg->in_pool_dice;
+		int non_res_dice = 2 * (dg->non_res_pbo - ntw->temp_pbo_req) +
+				dg->non_res_dice;
+
+		if ((ntw->temp_pbo_req <= dg->in_pool_pbo) &&
+			(ntw->temp_dice_req <= in_pool_dice))
+
+			tmp_status = RESOURCE_OK;
+
+		else if ((ntw->temp_pbo_req <= dg->non_res_pbo) &&
+			(ntw->temp_dice_req <= non_res_dice))
+
+			tmp_status = RESOURCE_BUSY;
+
+		else
+			goto out;
+
+	} else {
+
+		int num_ice_req = (2 * ntw->temp_pbo_req) +
+					ntw->temp_dice_req;
+		int num_ice_pool = (2 * dg->in_pool_pbo) +
+					dg->in_pool_dice;
+		int num_ice_non_res = (2 * dg->non_res_pbo) +
+					dg->non_res_dice;
+
+		if (num_ice_req <= num_ice_pool)
+			tmp_status = RESOURCE_OK;
+		else if (num_ice_req <= num_ice_non_res)
+			tmp_status = RESOURCE_BUSY;
+		else
+			goto out;
+
+	}
+
+	__local_builtin_popcount(ntw->cntr_bitmap, count);
+	if (count <= dg->num_avl_cntr)
+		status = tmp_status;
+	else if (count <= dg->num_nonres_cntr)
+		status = RESOURCE_BUSY;
+
+out:
+	return status;
+}
+
+bool ice_dg_can_lazy_capture_ice(struct ice_network *ntw)
+{
+	u32 i;
+	bool lazy_capture = true;
+	struct cve_device *dev;
+	struct job_descriptor *job;
+
+	if (ntw->temp_icebo_req != ntw->given_icebo_req) {
+		lazy_capture = false;
+		goto out;
+	}
+
+	/* Check if previous ICEs are still available */
+	for (i = 0; i < ntw->jg_list->submitted_jobs_nr; i++) {
+		job = &ntw->jg_list->job_list[i];
+
+		if (job->hw_ice_id == INVALID_ICE_ID) {
+			lazy_capture = false;
+			break;
+		}
+
+		dev = cve_device_get(job->hw_ice_id);
+
+		/* ICE must be
+		 *	1. Powered on
+		 *	2. In free list
+		 *	3. Last executing Ntw must be same as this
+		 */
+		if ((dev->power_state == ICE_POWER_OFF) ||
+			(dev->dev_ntw_id != ntw->network_id) ||
+			!dev->in_free_pool) {
+
+			lazy_capture = false;
+			break;
+		}
+	}
+out:
+	return lazy_capture;
+}
+
+void ice_dg_borrow_this_ice(struct ice_network *ntw,
+		struct cve_device *dev, bool lazy)
+{
+	struct cve_device_group *dg = cve_dg_get();
+	struct icebo_desc *bo = &dg->dev_info.icebo_list[dev->dev_index / 2];
+
+	dev->dev_ntw_id = ntw->network_id;
+	cve_os_log(CVE_LOGLEVEL_INFO,
+			"NtwID:0x%llx Reserved ICE%d power_status:%d\n",
+			ntw->network_id, dev->dev_index,
+			ice_dev_get_power_state(dev));
+
+	if (!lazy)
+		cve_di_set_device_reset_flag(dev, CVE_DI_RESET_DUE_NTW_SWITCH);
+
+	cve_dle_add_to_list_before(ntw->ice_list, owner_list, dev);
+	dev->in_free_pool = false;
+
+	if (dev->power_state == ICE_POWER_OFF_INITIATED) {
+
+		ice_dev_set_power_state(dev, ICE_POWER_ON);
+
+		cve_dle_remove_from_list(dg->poweroff_dev_list,
+			poweroff_list, dev);
+
+		ice_swc_counter_set(dev->hswc,
+			ICEDRV_SWC_DEVICE_COUNTER_POWER_STATE,
+			ice_dev_get_power_state(dev));
+	}
+
+	dev->hswc_infer = ntw->dev_hswc[ntw->used_hswc_count++];
+	ice_swc_counter_set(dev->hswc_infer,
+				ICEDRV_SWC_INFER_DEVICE_COUNTER_ID,
+				dev->dev_index);
+
+	if (bo->in_pool_ice == TWO_ICE) {
+
+		ASSERT(dg->in_pool_pbo);
+
+		dg->in_pool_pbo--;
+		dg->in_pool_dice++;
+
+		cve_dle_move(dg->dev_info.dicebo_list,
+			dg->dev_info.picebo_list, owner_list, bo);
+
+	} else if (bo->in_pool_ice == ONE_ICE) {
+
+		ASSERT(dg->in_pool_dice);
+
+		dg->in_pool_dice--;
+
+		cve_dle_remove_from_list(dg->dev_info.dicebo_list,
+			owner_list, bo);
+
+	} else
+		ASSERT(false);
+
+	bo->in_pool_ice--;
+}
+
+void ice_dg_borrow_next_pbo(struct ice_network *ntw,
+	struct job_descriptor *job_0,
+	struct job_descriptor *job_1)
+{
+	struct cve_device_group *dg = cve_dg_get();
+	struct icebo_desc *bo = dg->dev_info.picebo_list;
+	struct cve_device *dev;
+
+	/* add first device of BOn to ntw ice list */
+	dev = bo->dev_list;
+	ice_dg_borrow_this_ice(ntw, dev, false);
+	job_0->hw_ice_id = dev->dev_index;
+
+	dev = cve_dle_next(dev, bo_list);
+	ice_dg_borrow_this_ice(ntw, dev, false);
+	job_1->hw_ice_id = dev->dev_index;
+}
+
+void ice_dg_borrow_next_dice(struct ice_network *ntw,
+	struct job_descriptor *job_0)
+{
+	struct cve_device_group *dg = cve_dg_get();
+	struct icebo_desc *bo;
+	struct cve_device *dev;
+
+	if (dg->dev_info.dicebo_list) {
+		bo = dg->dev_info.dicebo_list;
+		dev = bo->dev_list;
+
+		if (!dev->in_free_pool)
+			dev = cve_dle_next(dev, bo_list);
+
+	} else {
+		bo = dg->dev_info.picebo_list;
+		ASSERT(bo);
+		dev = bo->dev_list;
+
+	}
+
+	ASSERT(dev);
+	ice_dg_borrow_this_ice(ntw, dev, false);
+	job_0->hw_ice_id = dev->dev_index;
+}
+
+void ice_dg_reserve_this_ice(struct cve_device *dev)
+{
+	struct cve_device_group *dg = cve_dg_get();
+	struct icebo_desc *bo = &dg->dev_info.icebo_list[dev->dev_index / 2];
+
+	if (bo->non_res_ice == TWO_ICE) {
+
+		ASSERT(dg->non_res_pbo);
+
+		dg->non_res_pbo--;
+		dg->non_res_dice++;
+
+	} else if (bo->non_res_ice == ONE_ICE) {
+
+		ASSERT(dg->non_res_dice);
+
+		dg->non_res_dice--;
+
+	} else
+		ASSERT(false);
+
+	bo->non_res_ice--;
+}
+
+void ice_dg_release_this_ice(struct cve_device *dev)
+{
+	struct cve_device_group *dg = cve_dg_get();
+	struct icebo_desc *bo = &dg->dev_info.icebo_list[dev->dev_index / 2];
+
+	if (bo->non_res_ice == ONE_ICE) {
+
+		dg->non_res_pbo++;
+		dg->non_res_dice--;
+
+	} else if (bo->non_res_ice == NO_ICE) {
+
+		dg->non_res_dice++;
+
+	} else
+		ASSERT(false);
+
+	bo->non_res_ice++;
+}
+
+void ice_dg_return_this_ice(struct ice_network *ntw,
+		struct cve_device *dev)
+{
+	struct cve_device_group *dg = cve_dg_get();
+	struct icebo_desc *bo = &dg->dev_info.icebo_list[dev->dev_index / 2];
+
+	/* Forced release will ensure correct state */
+	dev->state = CVE_DEVICE_IDLE;
+
+	cve_dle_remove_from_list(ntw->ice_list, owner_list, dev);
+
+	/*Invalidate the ICE ID */
+	ice_swc_counter_set(dev->hswc_infer,
+			ICEDRV_SWC_INFER_DEVICE_COUNTER_ID,
+			0xFFFF);
+	dev->hswc_infer = NULL;
+	ntw->used_hswc_count--;
+	cve_os_log(CVE_LOGLEVEL_INFO,
+			"NtwID:0x%llx ICEBO:%d released ICE%d\n",
+			ntw->network_id, bo->bo_id, dev->dev_index);
+
+	dev->in_free_pool = true;
+
+	if (bo->in_pool_ice == ONE_ICE) {
+
+		dg->in_pool_pbo++;
+		dg->in_pool_dice--;
+
+		cve_dle_move(dg->dev_info.picebo_list,
+			dg->dev_info.dicebo_list, owner_list, bo);
+
+	} else if (bo->in_pool_ice == NO_ICE) {
+
+		dg->in_pool_dice++;
+
+		cve_dle_add_to_list_before(dg->dev_info.dicebo_list,
+			owner_list, bo);
+	} else
+		ASSERT(false);
+
+	bo->in_pool_ice++;
+}
+
+#if 0
+
+/*
+ * TODO: Enable in future. Not blocking.
+ * https://jira.devtools.intel.com/browse/ICE-26298
+ */
+
+ice_dg_can_lazy_capture_cntr()
+ice_dg_borrow_next_cntr()
+ice_dg_borrow_this_cntr()
+ice_dg_reserve_this_cntr()
+ice_dg_release_this_cntr()
+ice_dg_return_this_cntr()
+#endif
