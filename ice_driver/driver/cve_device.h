@@ -558,8 +558,6 @@ struct job_descriptor {
 	struct cve_dle_t list;
 	/* the parent jobgroup */
 	struct jobgroup_descriptor *jobgroup;
-	/* link to paired job */
-	struct job_descriptor *paired_job;
 	/* device interface's job handle */
 	cve_di_job_handle_t di_hjob;
 	/* num of allocations (cb & surfaces) associated with this job */
@@ -658,6 +656,22 @@ struct fifo_descriptor {
 	struct dev_alloc fifo_alloc;
 	/* Above CBDT allocation is associated with this FIFO */
 	struct di_fifo fifo;
+};
+
+struct ntw_pjob_info {
+
+	/* If N is the graph_ice_id then ice_id_map[N] is driver_ice_id  */
+	u8 ice_id_map[MAX_CVE_DEVICES_NR];
+
+	u32 num_pjob[MAX_CVE_DEVICES_NR];
+	/* picebo[N] is 1 only if both the ICE of ICEBOn
+	 * belongs to this NTW
+	 */
+	u8 picebo[MAX_NUM_ICEBO];
+	/* dicebo[N] contains index of the ICE which belongs to this NTW
+	 * only if exactly one ICE from ICEBOn belongs to this NTW
+	 */
+	u8 dicebo[MAX_NUM_ICEBO];
 };
 
 struct ntw_cntr_info {
@@ -783,8 +797,8 @@ struct ice_network {
 	struct cve_hw_cntr_descriptor *cntr_list;
 	/****************************************/
 
-	/* To keep track of paired jobs */
-	struct job_descriptor *pjob_list[MAX_CVE_DEVICES_NR];
+	/* For ICE book-keeping */
+	struct ntw_pjob_info pjob_info;
 
 	/* For Counter book-keeping */
 	struct ntw_cntr_info cntr_info;
@@ -827,20 +841,16 @@ struct ice_network {
 	bool ntw_enable_bp;
 
 	/* paired ICE from ICEBO requirement */
-	u8 org_pbo_req;
-	u8 temp_pbo_req;
-	u8 given_pbo_req;
+	u8 num_picebo_req;
+	u8 cached_num_picebo_req;
 	/* single ICE from ICEBO requirement, the other ICE is free
 	 * to be allocated to other NTW
 	 */
-	u8 org_dice_req;
-	u8 temp_dice_req;
-	u8 given_dice_req;
+	u8 num_dicebo_req;
+	u8 cached_num_dicebo_req;
 	/* icebo requirement type */
-	enum icebo_req_type org_icebo_req;
-	enum icebo_req_type temp_icebo_req;
-	enum icebo_req_type given_icebo_req;
-
+	enum icebo_req_type icebo_req;
+	enum icebo_req_type cached_icebo_req;
 	/* Network type deepsram/normal */
 	enum ice_network_type network_type;
 	u8 max_shared_distance;

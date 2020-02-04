@@ -32,7 +32,6 @@ int cve_device_init(struct cve_device *dev, int index, u64 pe_value)
 
 	u64 pe_mask;
 	int retval = CVE_DEFAULT_ERROR_CODE;
-	u32 max_freq_allowed;
 
 	dev->dev_index = index;
 
@@ -70,11 +69,7 @@ int cve_device_init(struct cve_device *dev, int index, u64 pe_value)
 		ice_dev_set_power_state(dev, ICE_POWER_ON);
 
 	/*set default value for ice freq due to issue in P-Code (ICE-14643)*/
-	max_freq_allowed = get_ice_max_freq();
-	if (max_freq_allowed < ICE_FREQ_DEFAULT)
-		dev->frequency = max_freq_allowed;
-	else
-		dev->frequency = ICE_FREQ_DEFAULT;
+	dev->frequency = ICE_FREQ_DEFAULT;
 
 #if 0
 	get_hw_revision(dev, &hw_rev);
