@@ -820,6 +820,120 @@ static int dealloc_and_unmap_network_fifo(struct ice_network *network)
 	return 0;
 }
 
+static struct cve_device *
+find_idle_device_for_next_job(
+		struct cve_device_group *dg,
+		struct jobgroup_descriptor *jobgroup)
+{
+	struct ice_network *ntw;
+	struct job_descriptor *job;
+	struct cve_device *cve_dev = NULL;
+	struct cve_device *head, *next;
+	int is_complete_bo_required = 0, bo_id = 0;
+	int  temp, ice_id = NUM_ICE_UNIT;
+
+	ntw = jobgroup->network;
+	job = jobgroup->next_dispatch;
+
+	if (job->hw_ice_id < NUM_ICE_UNIT) {
+
+		cve_dev = cve_device_get(job->hw_ice_id);
+		goto out;
+	}
+
+	/* If persistent Job and mapping exist then
+	 * pick that particular ICE else select new
+	 */
+	if ((job->graph_ice_id < NUM_ICE_UNIT) &&
+		(ntw->pjob_info.ice_id_map[job->graph_ice_id] < NUM_ICE_UNIT)) {
+
+		cve_dev = cve_device_get(
+				ntw->pjob_info.ice_id_map[job->graph_ice_id]);
+
+		cve_os_log(CVE_LOGLEVEL_DEBUG,
+			"ICE_SwID:%u already Mapped to ICE_HwID:%u. NtwID:0x%llx\n",
+			job->graph_ice_id, cve_dev->dev_index, ntw->network_id);
+
+		/* If this device is busy => do not schedule */
+		if (cve_dev->state == CVE_DEVICE_BUSY) {
+			/* PJob = Persistent Job */
+			cve_os_log(CVE_LOGLEVEL_DEBUG,
+				"but Device is Busy.\n");
+			cve_dev = NULL;
+		}
+
+		goto out;
+	}
+	if (job->graph_ice_id < NUM_ICE_UNIT)
+		bo_id = job->graph_ice_id / 2;
+	if ((job->graph_ice_id < NUM_ICE_UNIT) &&
+		(ntw->icebo_req == ICEBO_MANDATORY) &&
+		ntw->pjob_info.num_pjob[2 * bo_id] &&
+		ntw->pjob_info.num_pjob[2 * bo_id + 1]) {
+		/* If here then complete ICEBOn is required based on current
+		 * jobs graph_ice_id hence if any one of the graph_ice_id is
+		 * already mapped to driver_ice_id then pick from same ICEBO
+		 */
+		is_complete_bo_required = 1;
+		if (ntw->pjob_info.ice_id_map[2 * bo_id] < NUM_ICE_UNIT) {
+			temp = ntw->pjob_info.ice_id_map[2 * bo_id];
+			ice_id = (temp % 2 == 1) ? (temp - 1) : (temp + 1);
+			cve_os_log(CVE_LOGLEVEL_DEBUG,
+			"Picking ICE_HwID:%u for ICE_SwID:%u because ICE_SwID:%u already Mapped to ICE_HwID:%u. NtwID:0x%llx\n",
+			ice_id, job->graph_ice_id, 2 * bo_id, temp,
+			ntw->network_id);
+		} else if (ntw->pjob_info.ice_id_map[2 * bo_id + 1] <
+			NUM_ICE_UNIT) {
+			temp = ntw->pjob_info.ice_id_map[2 * bo_id + 1];
+			ice_id = (temp % 2 == 1) ? (temp - 1) : (temp + 1);
+			cve_os_log(CVE_LOGLEVEL_DEBUG,
+			"Picking ICE_HwID:%u for ICE_SwID:%u because ICE_SwID:%u already Mapped to ICE_HwID:%u. NtwID:0x%llx\n",
+			ice_id, job->graph_ice_id, 2 * bo_id + 1, temp,
+			ntw->network_id);
+		}
+		if (ice_id < NUM_ICE_UNIT) {
+			cve_dev = cve_device_get(ice_id);
+			if (cve_dev->state == CVE_DEVICE_BUSY) {
+				cve_os_log(CVE_LOGLEVEL_DEBUG,
+					"but Device is Busy.\n");
+				cve_dev = NULL;
+			}
+			goto out;
+		}
+	}
+
+
+	head = ntw->ice_list;
+	next = head;
+	do {
+		if (next->state == CVE_DEVICE_IDLE) {
+
+			if ((ntw->icebo_req == ICEBO_MANDATORY) &&
+			(is_complete_bo_required == 1) &&
+		(ntw->pjob_info.picebo[next->dev_index / 2] == 1)) {
+
+				cve_dev = next;
+				goto out;
+
+			} else if (ntw->icebo_req != ICEBO_MANDATORY) {
+
+				cve_dev = next;
+				goto out;
+			}
+		}
+
+		next = cve_dle_next(next, owner_list);
+
+	} while (head != next);
+
+out:
+
+	ASSERT(cve_dev);
+	job->hw_ice_id = cve_dev->dev_index;
+
+	return cve_dev;
+}
+
 static int __dispatch_single_job(
 		struct cve_device *cve_dev,
 		struct jobgroup_descriptor *jobgroup)
@@ -997,7 +1111,7 @@ int ice_ds_dispatch_jg(struct jobgroup_descriptor *jobgroup)
 		/* If next Job is persistent then scheduler should pick
 		 * the ICE with proper graph_ice_id
 		 */
-		dev = cve_device_get(job->hw_ice_id);
+		dev = find_idle_device_for_next_job(dg, jobgroup);
 		/* At this point it is guaranteed that device will be found */
 
 		ice_mask |= (1 << dev->dev_index);
@@ -1669,7 +1783,6 @@ static int __process_job_list(struct cve_job_group *jg_desc,
 		cur_job->job_cntr_pp_list = NULL;
 		cur_job->jobgroup = jg;
 		cur_job->hw_ice_id = INVALID_ICE_ID;
-		cur_job->paired_job = NULL;
 
 		if (cur_job_desc->graph_ice_id < 0)
 			cur_job->graph_ice_id = INVALID_ICE_ID;
@@ -1679,7 +1792,10 @@ static int __process_job_list(struct cve_job_group *jg_desc,
 			/* If here then this is a Persistent Job.
 			 * So Job count for given ICE should be increased
 			 */
-			ntw->pjob_list[cur_job->graph_ice_id] = cur_job;
+			ntw->pjob_info.num_pjob[cur_job->graph_ice_id]++;
+			cve_os_log(CVE_LOGLEVEL_DEBUG,
+				"Inc PJob count (NtwID:0x%llx, GraphIceId:%d)\n",
+				ntw->network_id, cur_job->graph_ice_id);
 		}
 
 		cve_os_log(CVE_LOGLEVEL_DEBUG,
@@ -1827,35 +1943,25 @@ static int __process_jg_list(struct ice_network *ntw,
 
 	ntw->cntr_bitmap = jg_list->cntr_bitmap;
 
-	if (ntw->org_icebo_req != ICEBO_DEFAULT) {
-
-		struct job_descriptor **pjob_list = ntw->pjob_list;
-
+	/* If both the graph_ice_ids of an ICEBOn have atleast one job
+	 * then increase num_picebo_req else increase num_dicebo_req
+	 */
+	if (ntw->num_ice && (ntw->icebo_req != ICEBO_DEFAULT)) {
 		for (i = 0; i < MAX_NUM_ICEBO; i++) {
-
-			if (pjob_list[2 * i] && pjob_list[2 * i + 1]) {
-
-				ntw->org_pbo_req++;
-
-				pjob_list[2 * i]->paired_job =
-					pjob_list[2 * i + 1];
-				pjob_list[2 * i + 1]->paired_job =
-					pjob_list[2 * i];
-			}
+			if ((ntw->pjob_info.num_pjob[2 * i]) &&
+				(ntw->pjob_info.num_pjob[2 * i + 1]))
+				ntw->num_picebo_req++;
+			else if ((ntw->pjob_info.num_pjob[2 * i]) ||
+				(ntw->pjob_info.num_pjob[2 * i + 1]))
+				ntw->num_dicebo_req++;
 		}
-
-		ntw->org_dice_req = ntw->num_ice - (2 * ntw->org_pbo_req);
-
-	} else {
-
-		ntw->org_pbo_req = 0;
-		ntw->org_dice_req = ntw->num_ice;
+	} else if (ntw->num_ice && (ntw->icebo_req == ICEBO_DEFAULT)) {
+		ntw->num_picebo_req = ntw->num_ice / 2;
+		ntw->num_dicebo_req = ntw->num_ice % 2;
 	}
-
 	cve_os_log(CVE_LOGLEVEL_DEBUG,
 		"ICE requirement: picebo=%d dicebo=%d\n",
-		ntw->org_pbo_req, ntw->org_dice_req);
-
+		ntw->num_picebo_req, ntw->num_dicebo_req);
 	goto out;
 
 error_process_jg:
@@ -2317,9 +2423,9 @@ static int __process_network_desc(
 	ntw->ice_list = NULL;
 	ntw->cntr_list = NULL;
 	ntw->network_id = (u64)ntw;
-	ntw->org_icebo_req = network_desc->icebo_req;
-	ntw->org_pbo_req = 0;
-	ntw->org_dice_req = 0;
+	ntw->icebo_req = network_desc->icebo_req;
+	ntw->num_picebo_req = 0;
+	ntw->num_dicebo_req = 0;
 	ntw->network_type = network_desc->network_type;
 	ntw->shared_read = network_desc->shared_read;
 	ntw->infer_buf_count = network_desc->infer_buf_count;
@@ -2402,9 +2508,14 @@ static int __process_network_desc(
 
 	ntw->num_jg = network_desc->num_jg_desc;
 
-	for (i = 0; i < NUM_ICE_UNIT; i++)
-		ntw->pjob_list[i] = NULL;
-
+	for (i = 0; i < NUM_ICE_UNIT; i++) {
+		ntw->pjob_info.ice_id_map[i] = INVALID_ICE_ID;
+		ntw->pjob_info.num_pjob[i] = 0;
+	}
+	for (i = 0; i < MAX_NUM_ICEBO; i++) {
+		ntw->pjob_info.picebo[i] = INVALID_ENTRY;
+		ntw->pjob_info.dicebo[i] = INVALID_ENTRY;
+	}
 	for (i = 0; i < NUM_COUNTER_REG; i++)
 		ntw->cntr_info.cntr_id_map[i] = INVALID_CTR_ID;
 
@@ -2419,6 +2530,16 @@ static int __process_network_desc(
 
 	if (dg->dump_conf.post_patch_surf_dump)
 		dump_patched_surf(ntw);
+
+	/* cache ICEBO params. Networks without reservation, release resource
+	 * after no more inferences are queued. In case of preferred ICEBO
+	 * policy, scheduler modifies the ICEBO requirement based on current
+	 * free pool status. Cached values are used to restore the modified
+	 * values for future inferences
+	 */
+	ntw->cached_num_picebo_req = ntw->num_picebo_req;
+	ntw->cached_num_dicebo_req = ntw->num_dicebo_req;
+	ntw->cached_icebo_req = ntw->icebo_req;
 
 	ntw->max_cbdt_entries = retval;
 	retval = alloc_and_map_network_fifo(ntw);
@@ -4089,20 +4210,37 @@ static void __delink_resource_and_pool(struct ice_network *ntw)
 	__delink_ices_and_pool(ntw);
 }
 
-/* Move this function to DG */
 static void __lazy_capture_ices(struct ice_network *ntw)
 {
-	u32 i;
+	int i;
+	struct icebo_desc *bo;
+	struct cve_device_group *dg = cve_dg_get();
 	struct cve_device *dev;
-	struct job_descriptor *job;
 
-	for (i = 0; i < ntw->jg_list->submitted_jobs_nr; i++) {
-		job = &ntw->jg_list->job_list[i];
+	ntw->num_picebo_req = 0;
+	ntw->num_dicebo_req = 0;
 
-		ASSERT(job->hw_ice_id != INVALID_ICE_ID);
+	for (i = 0; i < MAX_NUM_ICEBO; i++) {
 
-		dev = cve_device_get(job->hw_ice_id);
-		ice_dg_borrow_this_ice(ntw, dev, true);
+		bo = &dg->dev_info.icebo_list[i];
+
+		if (ntw->pjob_info.picebo[i] != INVALID_ENTRY) {
+
+			dev = bo->dev_list;
+			ice_dg_borrow_this_ice(ntw, dev, true);
+
+			dev = cve_dle_next(dev, bo_list);
+			ice_dg_borrow_this_ice(ntw, dev, true);
+
+			ntw->num_picebo_req++;
+
+		} else if (ntw->pjob_info.dicebo[i] != INVALID_ENTRY) {
+
+			dev = cve_device_get(ntw->pjob_info.dicebo[i]);
+			ice_dg_borrow_this_ice(ntw, dev, true);
+
+			ntw->num_dicebo_req++;
+		}
 	}
 }
 
@@ -4134,6 +4272,14 @@ static int __ntw_reserve_ice(struct ice_network *ntw)
 
 	} else {
 
+		/* memset the ICE id map with invalid ICE ID i.e. 255 */
+		memset(&ntw->pjob_info.ice_id_map[0], 0xFF,
+				(sizeof(u8) * MAX_CVE_DEVICES_NR));
+		memset(&ntw->pjob_info.picebo[0], 0xFF,
+				(sizeof(u8) * MAX_NUM_ICEBO));
+		memset(&ntw->pjob_info.dicebo[0], 0xFF,
+				(sizeof(u8) * MAX_NUM_ICEBO));
+
 		/* Removing Job2ICE linkage and setting Ntw for Cold run */
 		for (i = 0; i < ntw->jg_list->submitted_jobs_nr; i++) {
 			job = &ntw->jg_list->job_list[i];
@@ -4142,37 +4288,28 @@ static int __ntw_reserve_ice(struct ice_network *ntw)
 		}
 	}
 
-	ntw->given_pbo_req = ntw->temp_pbo_req;
-	ntw->given_dice_req = ntw->temp_dice_req;
-	ntw->given_icebo_req = ntw->temp_icebo_req;
-	ntw->shared_read = (ntw->temp_icebo_req == ICEBO_MANDATORY);
+	for (i = 0; i < ntw->num_picebo_req; i++)
+		ice_dg_borrow_next_pbo(ntw);
 
-	for (i = 0; i < ntw->jg_list->submitted_jobs_nr; i++) {
-
-		struct job_descriptor *job_0, *job_1;
-
-		job_0 = &ntw->jg_list->job_list[i];
-
-		if (job_0->hw_ice_id < NUM_ICE_UNIT)
-			continue;
-
-		if ((ntw->given_icebo_req == ICEBO_MANDATORY) &&
-			job_0->paired_job) {
-
-			job_1 = job_0->paired_job;
-			ice_dg_borrow_next_pbo(ntw, job_0, job_1);
-
-		} else
-			ice_dg_borrow_next_dice(ntw, job_0);
-	}
+	for (i = 0; i < ntw->num_dicebo_req; i++)
+		ice_dg_borrow_next_dice(ntw);
 
 out:
 	cve_os_unlock(&dg->poweroff_dev_list_lock);
 
 	cve_os_log(CVE_LOGLEVEL_DEBUG,
 		"NtwID=0x%lx, Reserved pICEBO=%d dICEBO=%d\n",
-		(uintptr_t)ntw, ntw->given_pbo_req,
-		ntw->given_dice_req);
+		(uintptr_t)ntw, ntw->num_picebo_req,
+		ntw->num_dicebo_req);
+
+	for (i = 0; i < MAX_NUM_ICEBO; i++) {
+		if ((ntw->pjob_info.picebo[i] != INVALID_ENTRY) ||
+			(ntw->pjob_info.dicebo[i] != INVALID_ENTRY))
+			cve_os_log(CVE_LOGLEVEL_DEBUG,
+			"NtwID:0x%llx, pICEBO[%d]=%d dICEBO[%d]=%d\n",
+			ntw->network_id, i, ntw->pjob_info.picebo[i], i,
+			ntw->pjob_info.dicebo[i]);
+	}
 
 	return ret;
 }
@@ -4499,21 +4636,13 @@ enum resource_status ice_ds_ntw_borrow_resource(struct ice_network *ntw)
 	}
 
 	/* WARNING: This value may change in Lazy Capture */
-	ntw->temp_pbo_req = ntw->org_pbo_req;
-	ntw->temp_dice_req = ntw->org_dice_req;
-	ntw->temp_icebo_req = ntw->org_icebo_req;
+	ntw->num_picebo_req = ntw->cached_num_picebo_req;
+	ntw->num_dicebo_req = ntw->cached_num_dicebo_req;
+	ntw->icebo_req = ntw->cached_icebo_req;
 
 	/* Update ICE requirement before checking for ICE availability*/
-	if (ntw->temp_icebo_req == ICEBO_PREFERRED) {
-
-		status = ice_dg_check_resource_availability(ntw);
-		if (status != RESOURCE_OK) {
-			ntw->temp_dice_req += (2 * ntw->temp_pbo_req);
-			ntw->temp_pbo_req = 0;
-			ntw->temp_icebo_req = ICEBO_DEFAULT;
-		} else
-			ntw->temp_icebo_req = ICEBO_MANDATORY;
-	}
+	if (ntw->icebo_req != ICEBO_MANDATORY)
+		ice_dg_adjust_ntw_ice_req(ntw);
 
 	status = ice_dg_check_resource_availability(ntw);
 	if (status != RESOURCE_OK) {

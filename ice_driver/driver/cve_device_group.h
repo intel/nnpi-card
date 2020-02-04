@@ -184,16 +184,14 @@ u32 ice_get_blocked_cdyn_val(void);
 /*check if user has requested to dump MMu PMONs after Job completion*/
 u8 ice_dump_mmu_pmon(void);
 
+void ice_dg_adjust_ntw_ice_req(struct ice_network *ntw);
 enum resource_status ice_dg_check_resource_availability(
 		struct ice_network *ntw);
 bool ice_dg_can_lazy_capture_ice(struct ice_network *ntw);
 void ice_dg_borrow_this_ice(struct ice_network *ntw,
 		struct cve_device *dev, bool lazy);
-void ice_dg_borrow_next_pbo(struct ice_network *ntw,
-	struct job_descriptor *job_0,
-	struct job_descriptor *job_1);
-void ice_dg_borrow_next_dice(struct ice_network *ntw,
-	struct job_descriptor *job_0);
+void ice_dg_borrow_next_pbo(struct ice_network *ntw);
+void ice_dg_borrow_next_dice(struct ice_network *ntw);
 void ice_dg_reserve_this_ice(struct cve_device *dev);
 void ice_dg_release_this_ice(struct cve_device *dev);
 void ice_dg_return_this_ice(struct ice_network *ntw,
