@@ -15,6 +15,7 @@
 #include "inf_devres.h"
 #include "inf_cmd_list.h"
 #include "sphcs_sw_counters.h"
+#include "sphcs_pcie.h"
 
 struct inf_copy {
 	void                 *magic;
@@ -28,9 +29,8 @@ struct inf_copy {
 
 
 	struct sg_table host_sgt;
-	dma_addr_t  lli_addr;
-	size_t      lli_size;
-	void       *lli_buf;
+	struct lli_desc lli;
+	struct sphcs_dma_multi_xfer_handle multi_xfer_handle;
 
 	struct sph_sw_counters *sw_counters;
 

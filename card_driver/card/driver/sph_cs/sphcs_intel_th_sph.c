@@ -35,7 +35,7 @@
 #include "sph_log.h"
 #include "sph_debug.h"
 
-#define HWTRACING_POOL_PAGE_COUNT ((uint32_t)(256))
+#define HWTRACING_POOL_PAGE_COUNT ((uint32_t)(512))
 #define HWTRACING_MIN_PAGE_COUNT ((uint32_t)(128))
 
 #define INTEL_TH_PCI_DEVICE_ID 0x45c5
@@ -134,6 +134,7 @@ int sphcs_init_th_driver(void)
 	int ret = 0;
 	size_t alloc_size = HWTRACING_POOL_PAGE_COUNT;
 
+	hw_tracing->resource_max_size = 0;
 	hw_tracing->hwtrace_status = SPHCS_HWTRACE_NOT_SUPPORTED;
 
 	//try to allocate page pool
@@ -149,6 +150,7 @@ int sphcs_init_th_driver(void)
 		goto err;
 	}
 
+	hw_tracing->resource_max_size = alloc_size;
 	hw_tracing->cmd_wq = create_singlethread_workqueue("hwtrace_cmd_wq");
 	if (!hw_tracing->cmd_wq) {
 		sph_log_err(START_UP_LOG, "Failed to initialize hwtrace commands workqueue");

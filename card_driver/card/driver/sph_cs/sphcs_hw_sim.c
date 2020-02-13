@@ -92,53 +92,69 @@ static void *dma_set_lli_data_element(void *sgl, dma_addr_t src, dma_addr_t dst,
 	return (sgl + sizeof(union sgl_data_element));
 }
 
-static u32 hw_sim_dma_calc_lli_size(void *hw_handle, struct sg_table *src, struct sg_table *dst, uint64_t dst_offset)
+static int hw_sim_dma_init_lli(void *hw_handle, struct lli_desc *outLli, struct sg_table *src, struct sg_table *dst, uint64_t dst_offset)
 {
-	return (dma_calc_and_gen_lli(src, dst, NULL, dst_offset, 0, NULL, NULL) + 1) * sizeof(union sgl_data_element);
+	outLli->num_elements = dma_calc_and_gen_lli(src, dst, NULL, dst_offset, 0, NULL, NULL);
+	outLli->num_filled = 0;
+	outLli->num_lists = 1;
+	outLli->offsets[0] = 0;
+	outLli->size = (outLli->num_elements + 1) * sizeof(union sgl_data_element);
+	return 0;
 }
 
-static u64 hw_sim_dma_gen_lli(void *hw_handle, struct sg_table *src, struct sg_table *dst, void *outLli, uint64_t dst_offset)
+static u64 hw_sim_dma_gen_lli(void *hw_handle, struct sg_table *src, struct sg_table *dst, struct lli_desc *outLli, uint64_t dst_offset)
 {
 	u32 num_of_elements;
 	uint64_t transfer_size = 0;
-
-	union sgl_data_element *current_data_element = (union sgl_data_element *)outLli;
+	union sgl_data_element *current_data_element;
+	union sgl_data_element *header;
 
 	if (hw_handle == NULL || src == NULL || dst == NULL || outLli == NULL)
 		return -1;
 
-	/* Skip header */
-	current_data_element++;
+	if (outLli->vptr == NULL)
+		return -1;
+
+	header = (union sgl_data_element *)outLli->vptr;
+	current_data_element = header + 1;
 
 	/* Fill SGL */
 	num_of_elements = dma_calc_and_gen_lli(src, dst, current_data_element, dst_offset, 0, dma_set_lli_data_element, &transfer_size);
 
 	/* Set header */
-	((union sgl_data_element *)outLli)->num_of_elements = num_of_elements;
-	((union sgl_data_element *)outLli)->bytes_to_copy = SIZE_MAX;
+	header->num_of_elements = num_of_elements;
+	header->bytes_to_copy = SIZE_MAX;
+
+	outLli->xfer_size[0] = transfer_size;
 
 	return transfer_size;
 }
 
-static u32 hw_sim_dma_calc_lli_size_vec(void *hw_handle, uint64_t dst_offset, genlli_get_next_cb cb, void *cb_ctx)
+static int hw_sim_dma_init_lli_vec(void *hw_handle, struct lli_desc *outLli, uint64_t dst_offset, genlli_get_next_cb cb, void *cb_ctx)
 {
 	struct sg_table *src;
 	struct sg_table *dst;
 	u64              max_size;
 	u32              nelem = 0;
 
-	if (hw_handle == NULL || cb == NULL)
-		return 0;
+	if (hw_handle == NULL || cb == NULL || outLli == NULL)
+		return -EINVAL;
 
 	while ((*cb)(cb_ctx, &src, &dst, &max_size)) {
 		nelem += dma_calc_and_gen_lli(src, dst, NULL, dst_offset, max_size, NULL, NULL);
 		dst_offset = 0;
 	}
 
-	return (nelem + 1) * sizeof(union sgl_data_element);
+	outLli->num_elements = nelem;
+	outLli->num_filled = 0;
+	outLli->num_lists = 1;
+	outLli->offsets[0] = 0;
+	outLli->size = (outLli->num_elements + 1) * sizeof(union sgl_data_element);
+
+	return 0;
 }
 
-static u64 hw_sim_dma_gen_lli_vec(void *hw_handle, void *outLli, uint64_t dst_offset, genlli_get_next_cb cb, void *cb_ctx)
+static u64 hw_sim_dma_gen_lli_vec(void *hw_handle, struct lli_desc *outLli, uint64_t dst_offset, genlli_get_next_cb cb, void *cb_ctx)
 {
 	struct sg_table *src;
 	struct sg_table *dst;
@@ -147,14 +163,17 @@ static u64 hw_sim_dma_gen_lli_vec(void *hw_handle, void *outLli, uint64_t dst_of
 	u32 nelem = 0;
 	uint64_t transfer_size = 0;
 	uint64_t total_transfer_size = 0;
-
-	union sgl_data_element *current_data_element = (union sgl_data_element *)outLli;
+	union sgl_data_element *current_data_element;
+	union sgl_data_element *header;
 
 	if (hw_handle == NULL || outLli == NULL || cb == NULL)
 		return -1;
 
-	/* Skip header */
-	current_data_element++;
+	if (outLli->vptr == NULL)
+		return -1;
+
+	header = (union sgl_data_element *)outLli->vptr;
+	current_data_element = header + 1;
 
 	/* Fill SGL */
 	while ((*cb)(cb_ctx, &src, &dst, &max_size)) {
@@ -166,16 +185,18 @@ static u64 hw_sim_dma_gen_lli_vec(void *hw_handle, void *outLli, uint64_t dst_of
 	}
 
 	/* Set header */
-	((union sgl_data_element *)outLli)->num_of_elements = nelem;
-	((union sgl_data_element *)outLli)->bytes_to_copy = SIZE_MAX;
+	header->num_of_elements = nelem;
+	header->bytes_to_copy = SIZE_MAX;
+
+	outLli->xfer_size[0] = total_transfer_size;
 
 	return total_transfer_size;
 }
 
-static int hw_sim_dma_edit_lli(void *hw_handle, void *outLli, uint32_t size)
+static int hw_sim_dma_edit_lli(void *hw_handle, struct lli_desc *outLli, uint32_t size)
 {
 	/* Set header */
-	((union sgl_data_element *)outLli)->bytes_to_copy = (size > 0) ? size : SIZE_MAX;
+	((union sgl_data_element *)outLli->vptr)->bytes_to_copy = (size > 0) ? size : SIZE_MAX;
 
 	return 0;
 }
@@ -233,10 +254,10 @@ static struct sphcs_pcie_hw_ops s_hw_sim_ops = {
 	.dma.reset_rd_dma_engine = hw_sim_reset_rd_dma_engine,
 	.dma.reset_wr_dma_engine = hw_sim_reset_wr_dma_engine,
 	.dma.init_dma_engine = hw_sim_init_dma_engine,
-	.dma.calc_lli_size = hw_sim_dma_calc_lli_size,
+	.dma.init_lli = hw_sim_dma_init_lli,
 	.dma.gen_lli = hw_sim_dma_gen_lli,
 	.dma.edit_lli = hw_sim_dma_edit_lli,
-	.dma.calc_lli_size_vec = hw_sim_dma_calc_lli_size_vec,
+	.dma.init_lli_vec = hw_sim_dma_init_lli_vec,
 	.dma.gen_lli_vec = hw_sim_dma_gen_lli_vec,
 	.dma.start_xfer_h2c = hw_sim_dma_start_xfer_h2c,
 	.dma.start_xfer_c2h = hw_sim_dma_start_xfer_c2h,

@@ -466,16 +466,6 @@ out:
 	return retval;
 }
 
-void ice_mm_get_domain_by_cve_idx(
-	void *hdom_inf,
-	u32 dma_domain_array_size,
-	struct cve_device *dev,
-	os_domain_handle *os_hdom)
-{
-	ice_osmm_get_inf_ice_domain(hdom_inf,
-		dma_domain_array_size, dev->dev_index, os_hdom);
-}
-
 int cve_mm_get_buffer_addresses(
 	cve_mm_allocation_t allocation,
 	ice_va_t *out_iova,

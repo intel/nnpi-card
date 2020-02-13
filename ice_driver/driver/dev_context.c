@@ -31,8 +31,6 @@ struct dev_context {
 	os_domain_handle hdom;
 	/* list of mapped fw sections per cve device */
 	struct cve_fw_mapped_sections *mapped_fw_sections;
-	/* list of custom loaded fw sections per cve device */
-	struct cve_fw_loaded_sections *loaded_cust_fw_sections;
 	/* list of embedded command buffers subjobs per cve device  */
 	cve_di_subjob_handle_t *embedded_cbs_subjobs;
 	/* cve dump buffer allocation info */
@@ -43,13 +41,14 @@ struct dev_context {
 };
 
 /* INTERNAL FUNCTIONS */
-static int cve_dev_map_base_package_fws(struct dev_context *context)
+
+static int __map_base_package_fws(cve_dev_context_handle_t hcontext)
 {
 	int retval;
+	struct dev_context *context = (struct dev_context *)hcontext;
 
 #ifndef NULL_DEVICE_RING0
-	retval = cve_fw_map(context->cve_dev,
-			context->hdom,
+	retval = cve_fw_map(context->hdom,
 			&context->mapped_fw_sections,
 			&context->embedded_cbs_subjobs);
 #else
@@ -58,13 +57,39 @@ static int cve_dev_map_base_package_fws(struct dev_context *context)
 	return retval;
 }
 
+void ice_map_dev_and_context(cve_dev_context_handle_t hcontext,
+	struct cve_device *dev)
+{
+	struct dev_context *context = (struct dev_context *)hcontext;
+
+	context->cve_dev = dev;
+}
+
+void ice_unmap_dev_and_context(cve_dev_context_handle_t hcontext)
+{
+	struct dev_context *context = (struct dev_context *)hcontext;
+
+	context->cve_dev = NULL;
+}
+
 #ifdef IDC_ENABLE
-int cve_bar1_map(struct cve_device *cve_dev,
-		os_domain_handle hdom,
-		cve_mm_allocation_t *out_alloc_handle)
+void ice_unmap_bar1(cve_dev_context_handle_t hcontext)
+{
+	struct dev_context *dev_ctx = (struct dev_context *)hcontext;
+
+	if (dev_ctx->bar1_alloc_handle) {
+		cve_os_log(CVE_LOGLEVEL_DEBUG,
+				"Reclaim BAR1 allocation\n");
+		cve_mm_reclaim_allocation(dev_ctx->bar1_alloc_handle);
+	}
+}
+
+int ice_map_bar1(struct cve_device *cve_dev,
+		cve_dev_context_handle_t hcontext)
 {
 	int retval;
 	cve_mm_allocation_t alloc_handles;
+	struct dev_context *dev_ctx = (struct dev_context *)hcontext;
 	struct cve_dma_handle mapped_dma_handles;
 	struct cve_os_device *os_dev = to_cve_os_device(cve_dev);
 	u64 offset;
@@ -97,7 +122,7 @@ int cve_bar1_map(struct cve_device *cve_dev,
 		 mapped_dma_handles.mem_handle.dma_address);
 
 	/* map the memory in cve address space */
-	retval = cve_mm_create_kernel_mem_allocation(hdom,
+	retval = cve_mm_create_kernel_mem_allocation(dev_ctx->hdom,
 			NULL,
 			size_bytes,
 			CVE_SURFACE_DIRECTION_IN | CVE_SURFACE_DIRECTION_OUT,
@@ -118,169 +143,97 @@ int cve_bar1_map(struct cve_device *cve_dev,
 		COLOR_GREEN("Stop Mapping BAR1\n"));
 
 	cve_addr = va;
-	*out_alloc_handle = alloc_handles;
+	dev_ctx->bar1_alloc_handle = alloc_handles;
 out:
 	return retval;
 }
 #endif
 
-static void cve_dev_fw_unload_and_unmap(cve_dev_context_handle_t hcontext)
-{
-	struct dev_context *context = (struct dev_context *)hcontext;
-
-	cve_os_dev_log(CVE_LOGLEVEL_DEBUG,
-			context->cve_dev->dev_index,
-			"Unmap Base + Bank0/1 FW\n");
-	cve_fw_unmap(context->cve_dev,
-			context->mapped_fw_sections,
-			context->embedded_cbs_subjobs);
-	/* unload bank0/bank1 firmwares */
-	cve_os_dev_log(CVE_LOGLEVEL_DEBUG,
-			context->cve_dev->dev_index,
-			"Unload Bank0/1 FW\n");
-	cve_fw_unload(context->cve_dev,
-			context->loaded_cust_fw_sections);
-}
-
-static int cve_dev_init_per_cve_ctx(struct dev_context *dev_ctx,
-		struct cve_device *cve_dev)
-{
-	struct dev_context *nc = dev_ctx;
-	int retval = 0;
-	cve_mm_allocation_t alloc_handle = NULL;
-	struct cve_surface_descriptor surf;
-	ice_va_t ice_vaddr = CVE_INVALID_VIRTUAL_ADDR;
-
-	/* assign a device to device interface context */
-	nc->cve_dev = cve_dev;
-
-#ifdef IDC_ENABLE
-		retval = cve_bar1_map(nc->cve_dev,
-				nc->hdom,
-				&nc->bar1_alloc_handle);
-		if (retval != 0) {
-			cve_os_log_default(CVE_LOGLEVEL_ERROR,
-					"Failed to map bar1 %d\n",
-					retval);
-			goto failed_to_map_fw;
-		}
-#endif
-
-	/* load the base package FWs. add fws to context */
-	retval = cve_dev_map_base_package_fws(nc);
-	if (retval != 0) {
-		cve_os_log_default(CVE_LOGLEVEL_ERROR,
-				"Failed to map base package %d\n",
-				retval);
-		goto failed_to_map_fw;
-	}
-
-	if (cve_dev->debug_control_buf.cve_dump_buffer != NULL) {
-		memset(&surf, 0, sizeof(struct cve_surface_descriptor));
-		retval = cve_mm_create_kernel_mem_allocation(nc->hdom,
-				cve_dev->debug_control_buf.cve_dump_buffer,
-				cve_dev->debug_control_buf.size_bytes,
-				CVE_SURFACE_DIRECTION_INOUT,
-				CVE_MM_PROT_READ | CVE_MM_PROT_WRITE,
-				&ice_vaddr,
-				&cve_dev->debug_control_buf.dump_dma_handle,
-				&surf,
-				&alloc_handle);
-		if (retval != 0) {
-			cve_os_log(CVE_LOGLEVEL_ERROR,
-				"cve_mm_create_kernel_mem_allocation failed (ice dump) %d\n",
-				retval);
-			goto failed_to_map_dump;
-		}
-
-		nc->cve_dump_alloc.alloc_handle = alloc_handle;
-		cve_dev->debug_control_buf.ice_vaddr = ice_vaddr;
-	}
-
-	return 0;
-
-failed_to_map_dump:
-	cve_dev_fw_unload_and_unmap(nc);
-failed_to_map_fw:
-	cve_osmm_put_domain(nc->hdom);
-
-	return retval;
-}
-
 static void cve_dev_release_per_cve_ctx(struct dev_context *dev_ctx)
 {
 	struct dev_context *context = dev_ctx;
-	struct cve_device __maybe_unused *dev = context->cve_dev;
 
 	if (context) {
-		cve_os_dev_log(CVE_LOGLEVEL_DEBUG,
-				dev->dev_index,
+		cve_os_log(CVE_LOGLEVEL_DEBUG,
 				"Unload & Unmap FW\n");
 
-		cve_dev_fw_unload_and_unmap(context);
+		cve_fw_unmap(context->mapped_fw_sections,
+			context->embedded_cbs_subjobs);
 
 		if (context->cve_dump_alloc.alloc_handle) {
 			/*remove allocations of ICE_DUMP buffer */
-			cve_os_dev_log(CVE_LOGLEVEL_DEBUG,
-					dev->dev_index,
+			cve_os_log(CVE_LOGLEVEL_DEBUG,
 					"Reclaim ICE_DUMP buffer\n");
 			cve_mm_reclaim_allocation(
 				context->cve_dump_alloc.alloc_handle);
 		}
 
 		if (context->bar1_alloc_handle) {
-			cve_os_dev_log(CVE_LOGLEVEL_DEBUG,
-				dev->dev_index,
+			cve_os_log(CVE_LOGLEVEL_DEBUG,
 				"Reclaim BAR1 allocation\n");
 			cve_mm_reclaim_allocation(
 				context->bar1_alloc_handle);
 		}
-		cve_os_dev_log(CVE_LOGLEVEL_DEBUG,
-				dev->dev_index,
+		cve_os_log(CVE_LOGLEVEL_DEBUG,
 				"Remove domain\n");
 		cve_osmm_put_domain(context->hdom);
 	}
 }
 
-static int cve_dev_fw_load_and_map_per_cve(cve_dev_context_handle_t hcontext,
-		const u64 fw_image,
+static int __load_fw(const u64 fw_image,
 		const u64 fw_binmap,
-		const u32 fw_binmap_size_bytes)
+		const u32 fw_binmap_size_bytes,
+		struct cve_fw_loaded_sections **out_fw_sec)
 {
 	int retval = CVE_DEFAULT_ERROR_CODE;
-	struct dev_context *context = (struct dev_context *)hcontext;
 	struct cve_fw_loaded_sections *fw_sec = NULL;
-	struct cve_fw_loaded_sections *fw_sec_base = NULL;
-	struct cve_fw_mapped_sections *fw_mapped = NULL;
 
 	retval = OS_ALLOC_ZERO(sizeof(*fw_sec), (void **)&fw_sec);
 	if (retval < 0) {
 		cve_os_log(CVE_LOGLEVEL_ERROR,
 				"os_malloc_zero failed %d\n", retval);
-		goto out;
+		goto exit;
 	}
 
-	cve_os_dev_log(CVE_LOGLEVEL_DEBUG,
-		context->cve_dev->dev_index,
-		COLOR_GREEN("Start Firmware Load and Map on ICE-%d\n"),
-		context->cve_dev->dev_index);
+	cve_os_log(CVE_LOGLEVEL_DEBUG,
+			COLOR_GREEN("Start Firmware Load and Map\n"));
 
 	/* load dynamic fw to memory */
-	retval = cve_fw_load_binary(context->cve_dev,
-			fw_image, fw_binmap,
+	retval = cve_fw_load_binary(fw_image, fw_binmap,
 			fw_binmap_size_bytes,
 			fw_sec);
 	if (retval != 0) {
 		cve_os_log_default(CVE_LOGLEVEL_ERROR,
 				"cve_fw_load_binary_context failure\n");
-		goto out;
+		goto err_fw_load;
 	}
 
-	cve_os_dev_log(CVE_LOGLEVEL_DEBUG,
-		context->cve_dev->dev_index,
+	cve_os_log(CVE_LOGLEVEL_DEBUG,
 		COLOR_GREEN("Firmware Loaded. FW_Type=%s, SectionsCount=%d\n"),
-		get_fw_binary_type_str(fw_sec->fw_type),
-		fw_sec->sections_nr);
+			get_fw_binary_type_str(fw_sec->fw_type),
+			fw_sec->sections_nr);
+
+	*out_fw_sec = fw_sec;
+
+	return retval;
+err_fw_load:
+	OS_FREE(fw_sec, sizeof(*fw_sec));
+exit:
+	return retval;
+}
+
+
+static int ice_map_fw_per_dev_ctx(cve_dev_context_handle_t hcontext,
+		const u64 fw_image,
+		const u64 fw_binmap,
+		const u32 fw_binmap_size_bytes,
+		struct cve_fw_loaded_sections *load_fw_sec)
+{
+	int retval = CVE_DEFAULT_ERROR_CODE;
+	struct dev_context *context = (struct dev_context *)hcontext;
+	struct cve_fw_loaded_sections *fw_sec = load_fw_sec;
+	struct cve_fw_loaded_sections *fw_sec_base = NULL;
+	struct cve_fw_mapped_sections *fw_mapped = NULL;
 
 	/* find mapped structure with dummy base fw */
 	fw_mapped = cve_dle_lookup(context->mapped_fw_sections,
@@ -296,18 +249,15 @@ static int cve_dev_fw_load_and_map_per_cve(cve_dev_context_handle_t hcontext,
 	/* copy of base fw loaded section pointer for restoring incase error*/
 	fw_sec_base = fw_mapped->cve_fw_loaded;
 
-	cve_os_dev_log(CVE_LOGLEVEL_DEBUG,
-		context->cve_dev->dev_index,
+	cve_os_log(CVE_LOGLEVEL_DEBUG,
 		"Cleaning the mapped Sections\n");
 	/* clean mapped structure with dummy base fw */
-	cve_mapped_fw_sections_cleanup(context->cve_dev, fw_mapped);
+	cve_mapped_fw_sections_cleanup(fw_mapped);
 
-	cve_os_dev_log(CVE_LOGLEVEL_DEBUG,
-		context->cve_dev->dev_index,
+	cve_os_log(CVE_LOGLEVEL_DEBUG,
 		"Mapping Sections\n");
 	/* fill mapped structure with new fw and map the fw to device */
-	retval = cve_fw_map_sections(context->cve_dev,
-			context->hdom,
+	retval = cve_fw_map_sections(context->hdom,
 			fw_sec,
 			fw_mapped);
 	if (retval != 0) {
@@ -316,8 +266,7 @@ static int cve_dev_fw_load_and_map_per_cve(cve_dev_context_handle_t hcontext,
 		cve_os_log(CVE_LOGLEVEL_WARNING,
 			"cve_fw_map_sections failure,base fw to be restored\n");
 		/* restore  old base fw */
-		err = cve_fw_map_sections(context->cve_dev,
-						context->hdom,
+		err = cve_fw_map_sections(context->hdom,
 						fw_sec_base,
 						fw_mapped);
 		if (err != 0) {
@@ -327,36 +276,16 @@ static int cve_dev_fw_load_and_map_per_cve(cve_dev_context_handle_t hcontext,
 		goto out;
 	}
 
-	/* add new loaded dynamic fw to loaded_cust_fw_sections struct */
-	cve_dle_add_to_list_after(context->loaded_cust_fw_sections,
-		list,
-		fw_sec);
-
-	cve_os_dev_log(CVE_LOGLEVEL_DEBUG,
-		context->cve_dev->dev_index,
-		COLOR_GREEN("End Firmware Load and Map on ICE-%d\n"),
-		context->cve_dev->dev_index);
-
 	/* success */
 	retval = 0;
 out:
-	if (retval != 0) {
-		if (fw_sec) {
-			cve_fw_sections_cleanup(context->cve_dev,
-				fw_sec->sections,
-				fw_sec->dma_handles,
-				fw_sec->sections_nr);
-
-			OS_FREE(fw_sec, sizeof(*fw_sec));
-		}
-	}
-
 	return retval;
 }
 
 
 /* INTERFACE FUNCTIONS */
-void cve_dev_close_all_contexts(cve_dev_context_handle_t hcontext_list)
+void ice_fini_sw_dev_contexts(cve_dev_context_handle_t hcontext_list,
+		struct cve_fw_loaded_sections *loaded_fw_sections_list)
 {
 	struct dev_context *dev_context_list =
 		(struct dev_context *)hcontext_list;
@@ -368,19 +297,23 @@ void cve_dev_close_all_contexts(cve_dev_context_handle_t hcontext_list)
 				dev_context_list, list, dev_ctx);
 
 		cve_os_log(CVE_LOGLEVEL_DEBUG,
-				"Remove dev context for CVE %d\n",
-				dev_ctx->cve_dev->dev_index);
+				"Remove dev context\n");
 
 		cve_dev_release_per_cve_ctx(dev_ctx);
 
 		OS_FREE(dev_ctx, sizeof(*dev_ctx));
 	}
+
+       /* unload bank0/bank1 firmwares */
+	cve_os_log(CVE_LOGLEVEL_DEBUG, "Unload Bank0/1 FW\n");
+	cve_fw_unload(NULL, loaded_fw_sections_list);
 }
 
 int cve_dev_fw_load_and_map(cve_dev_context_handle_t hcontext_list,
 		const u64 fw_image,
 		const u64 fw_binmap,
-		const u32 fw_binmap_size_bytes)
+		const u32 fw_binmap_size_bytes,
+		struct cve_fw_loaded_sections **out_fw_sec)
 {
 	struct dev_context *dev_context_list =
 		(struct dev_context *) hcontext_list;
@@ -390,15 +323,25 @@ int cve_dev_fw_load_and_map(cve_dev_context_handle_t hcontext_list,
 	cve_os_log(CVE_LOGLEVEL_DEBUG,
 			"Start Firmware Load and Map on all ICEs\n");
 
+	retval = __load_fw(fw_image,
+			fw_binmap,
+			fw_binmap_size_bytes,
+			out_fw_sec);
+	if (retval < 0) {
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+				"load_fw failed %d\n", retval);
+		goto out;
+	}
+
 	do {
-		retval = cve_dev_fw_load_and_map_per_cve(dev_ctx_item,
+		retval = ice_map_fw_per_dev_ctx(dev_ctx_item,
 			fw_image,
 			fw_binmap,
-			fw_binmap_size_bytes);
+			fw_binmap_size_bytes,
+			*out_fw_sec);
 		if (retval < 0) {
-			cve_os_dev_log(CVE_LOGLEVEL_ERROR,
-				dev_ctx_item->cve_dev->dev_index,
-				"cve_dev_fw_load_and_map_pre_cve failed %d\n",
+			cve_os_log(CVE_LOGLEVEL_ERROR,
+				"ce_load_fw_per_dev_ctx failed %d\n",
 				retval);
 			goto out;
 		}
@@ -423,94 +366,78 @@ void cve_dev_restore_fws(struct cve_device *cve_dev,
 	cve_fw_restore(cve_dev, context->mapped_fw_sections);
 }
 
-int cve_dev_open_all_contexts(u64 *va_partition_config,
-		u64 *infer_buf_page_config,
-		cve_dev_context_handle_t *out_hctx_list)
+int ice_init_sw_dev_contexts(struct ice_network_descriptor *ntw_desc,
+		struct ice_network *ntw)
 {
-	struct cve_device_group *cve_dg = g_cve_dev_group_list;
 	struct dev_context *dev_context_list = NULL;
 	int retval = CVE_DEFAULT_ERROR_CODE, i;
-	struct cve_device *dev, *dev_head;
 	struct dev_context *nc = NULL;
 
-	/* Only 1 DG exist in new Driver. So not looping on it. */
-	for (i = 0; i < MAX_NUM_ICEBO; i++) {
-		dev_head = cve_dg->dev_info.icebo_list[i].dev_list;
-		dev = dev_head;
-		if (!dev_head)
-			continue;
+	/* Create domain equal to number of ICE requirements of the network*/
+	for (i = 0; i < ntw_desc->num_ice; i++) {
+		retval = OS_ALLOC_ZERO(sizeof(struct dev_context),
+				(void **)&nc);
+		if (retval != 0) {
+			cve_os_log(CVE_LOGLEVEL_ERROR,
+					"os_malloc_failed %d\n",
+					retval);
+			goto out;
+		}
 
-		do {
-			retval = OS_ALLOC_ZERO(sizeof(struct dev_context),
-					(void **)&nc);
-			if (retval != 0) {
-				cve_os_log(CVE_LOGLEVEL_ERROR,
-						"os_malloc_failed %d\n",
-						retval);
-				goto out;
-			}
+		retval = cve_osmm_get_domain(i,
+				(uint64_t *)ntw_desc->va_partition_config,
+				(uint64_t *)ntw_desc->infer_buf_page_config,
+				&nc->hdom);
+		if (retval < 0) {
+			cve_os_log(CVE_LOGLEVEL_ERROR,
+					"osmm_get_domain failed %d\n",
+					retval);
+			OS_FREE(nc, sizeof(*nc));
+			goto out;
+		}
 
+		/* load the base package FWs. add fws to context */
+		retval = __map_base_package_fws(nc);
+		if (retval != 0) {
+			cve_os_log_default(CVE_LOGLEVEL_ERROR,
+					"Failed to map base package %d\n",
+					retval);
+			cve_osmm_put_domain(nc->hdom);
+			OS_FREE(nc, sizeof(*nc));
+			goto out;
+		}
 
-			retval = cve_osmm_get_domain(dev,
-					va_partition_config,
-					infer_buf_page_config,
-					&nc->hdom);
-			if (retval < 0) {
-				cve_os_log(CVE_LOGLEVEL_ERROR,
-						"osmm_get_domain failed %d\n",
-						retval);
-				OS_FREE(nc, sizeof(*nc));
-				goto out;
-			}
+		/* Add the device context list */
+		cve_dle_add_to_list_before(
+				dev_context_list, list, nc);
 
-			retval = cve_dev_init_per_cve_ctx(nc, dev);
-			if (retval != 0) {
-				cve_os_log_default(CVE_LOGLEVEL_ERROR,
-						"cve_dev_init_per_cve_ctx failed %d\n",
-						retval);
-				OS_FREE(nc, sizeof(*nc));
-				goto out;
-			}
-
-			/* Add the device context list */
-			cve_dle_add_to_list_before(
-					dev_context_list, list, nc);
-
-			dev = cve_dle_next(dev, bo_list);
-
-		} while (dev != dev_head);
-	}
-	/* If all devices are masked then Context Creation must fail */
-	if (!dev_context_list) {
-		cve_os_log_default(CVE_LOGLEVEL_ERROR,
-				"No device available.\n");
-		retval = -1;
-		goto out;
+		ntw->dev_ctx[i] = nc;
 	}
 
 	/* success */
-	*out_hctx_list = dev_context_list;
+	ntw->dev_hctx_list = dev_context_list;
+
+	return retval;
 
 out:
-	if (retval != 0)
-		cve_dev_close_all_contexts(dev_context_list);
+	while (dev_context_list) {
+		struct dev_context *dev_ctx = dev_context_list;
+
+		cve_dle_remove_from_list(
+				dev_context_list, list, dev_ctx);
+
+		cve_os_log(CVE_LOGLEVEL_DEBUG,
+				"Unmap Base + Bank0/1 FW\n");
+		cve_fw_unmap(dev_ctx->mapped_fw_sections,
+				dev_ctx->embedded_cbs_subjobs);
+
+		cve_os_log(CVE_LOGLEVEL_DEBUG,
+				"Remove dev context\n");
+		cve_osmm_put_domain(dev_ctx->hdom);
+		OS_FREE(dev_ctx, sizeof(*dev_ctx));
+	}
+
 	return retval;
-}
-
-void cve_dev_context_get_by_cve_idx(cve_dev_context_handle_t hcontext_list,
-	u32 dev_index, cve_dev_context_handle_t *out_hcontext)
-{
-	struct dev_context *dev_context_list =
-		(struct dev_context *)hcontext_list;
-
-	struct dev_context *dev_ctx_item =
-		cve_dle_lookup(dev_context_list,
-			list, cve_dev->dev_index,
-			dev_index);
-
-	ASSERT(dev_ctx_item);
-
-	*out_hcontext = dev_ctx_item;
 }
 
 void cve_dev_get_emb_cb_list(cve_dev_context_handle_t hcontext,
@@ -524,17 +451,6 @@ void cve_dev_get_emb_cb_list(cve_dev_context_handle_t hcontext,
 		*out_embedded_cbs_subjobs = context->embedded_cbs_subjobs;
 }
 
-void cve_dev_get_os_domain(cve_dev_context_handle_t hcontext,
-		os_domain_handle *out_hdom)
-{
-	struct dev_context *context = (struct dev_context *)hcontext;
-
-	*out_hdom = NULL;
-
-	if (hcontext != NULL)
-		*out_hdom = context->hdom;
-}
-
 void cve_dev_get_os_domain_arr(cve_dev_context_handle_t hcontext_list,
 	u32 domain_array_size,
 	os_domain_handle *out_hdom)
@@ -544,10 +460,11 @@ void cve_dev_get_os_domain_arr(cve_dev_context_handle_t hcontext_list,
 		(struct dev_context *) hcontext_list;
 	struct dev_context *dev_ctx_item = dev_context_list;
 
+	ASSERT(dev_ctx_item);
+
 	/* initialize array of os_domain_handle */
 	do {
-		cve_dev_get_os_domain(dev_ctx_item,
-			&out_hdom[i]);
+		out_hdom[i] = dev_ctx_item->hdom;
 
 		i++;
 		dev_ctx_item = cve_dle_next(dev_ctx_item, list);
@@ -558,30 +475,27 @@ void cve_dev_get_os_domain_arr(cve_dev_context_handle_t hcontext_list,
 }
 
 void cve_dev_get_custom_fw_version_per_context(
-	cve_dev_context_handle_t hcontext,
+	struct cve_fw_loaded_sections *loaded_fw_sections_list,
 	enum fw_binary_type fwtype,
 	Version *out_fw_version)
 {
-	struct dev_context *context = (struct dev_context *)hcontext;
-	struct cve_fw_loaded_sections *loaded_fw_sections = NULL;
+	struct cve_fw_loaded_sections *loaded_fw_section = NULL;
 	Version zero_version = { {0, 0, 0, 0, 0, 0}, {0, 0, 0, 0, 0, 0} };
 
 	/* look for the custom loaded section based on the FW type */
-	loaded_fw_sections = cve_dle_lookup(
-			context->loaded_cust_fw_sections,
+	loaded_fw_section = cve_dle_lookup(
+			loaded_fw_sections_list,
 			list, fw_type,
 			fwtype);
 
-	if (hcontext != NULL) {
-		if (loaded_fw_sections != NULL)
-			*out_fw_version = *loaded_fw_sections->fw_version;
+	if (loaded_fw_section != NULL)
+		*out_fw_version = *loaded_fw_section->fw_version;
 
-		else {
-			cve_os_log(CVE_LOGLEVEL_DEBUG,
-					"Cannot find loaded section with FW_Type=%s\n",
-					get_fw_binary_type_str(fwtype));
-			*out_fw_version = zero_version;
-		}
+	else {
+		cve_os_log(CVE_LOGLEVEL_DEBUG,
+				"Cannot find loaded section with FW_Type=%s\n",
+				get_fw_binary_type_str(fwtype));
+		*out_fw_version = zero_version;
 	}
 }
 
@@ -600,7 +514,7 @@ int cve_dev_alloc_and_map_cbdt(cve_dev_context_handle_t dev_ctx,
 	void *vaddr;
 	u32 size_bytes;
 	struct dev_context *nc;
-	struct cve_device *dev;
+	struct cve_device *dev = get_first_device();
 	struct cve_surface_descriptor surf;
 	int retval = CVE_DEFAULT_ERROR_CODE;
 	ice_va_t ice_va = CVE_INVALID_VIRTUAL_ADDR;
@@ -610,7 +524,6 @@ int cve_dev_alloc_and_map_cbdt(cve_dev_context_handle_t dev_ctx,
 	max_cbdt_entries += 1;
 
 	nc = (struct dev_context *)dev_ctx;
-	dev = nc->cve_dev;
 
 	retval = OS_ALLOC_DMA_CONTIG(dev,
 			sizeof(union CVE_SHARED_CB_DESCRIPTOR),
@@ -618,8 +531,7 @@ int cve_dev_alloc_and_map_cbdt(cve_dev_context_handle_t dev_ctx,
 			&vaddr,
 			&fifo_desc->fifo.cb_desc_dma_handle, 1);
 	if (retval != 0) {
-		cve_os_dev_log(CVE_LOGLEVEL_ERROR,
-			dev->dev_index,
+		cve_os_log(CVE_LOGLEVEL_ERROR,
 			"os_alloc_dma failed %d\n", retval);
 		goto out;
 	}
@@ -633,8 +545,7 @@ int cve_dev_alloc_and_map_cbdt(cve_dev_context_handle_t dev_ctx,
 	memset(&surf, 0, sizeof(struct cve_surface_descriptor));
 	surf.llc_policy = CVE_FIFO_LLC_CONFIG;
 
-	cve_os_dev_log(CVE_LOGLEVEL_DEBUG,
-		nc->cve_dev->dev_index,
+	cve_os_log(CVE_LOGLEVEL_DEBUG,
 		"Start Mapping CBDT. PA=0x%llx\n",
 		fifo_desc->fifo.cb_desc_dma_handle.mem_handle.dma_address);
 
@@ -649,15 +560,13 @@ int cve_dev_alloc_and_map_cbdt(cve_dev_context_handle_t dev_ctx,
 					&surf,
 					&fifo_alloc_handle);
 	if (retval != 0) {
-		cve_os_dev_log(CVE_LOGLEVEL_ERROR,
-			dev->dev_index,
+		cve_os_log(CVE_LOGLEVEL_ERROR,
 			"cve_mm_create_kernel_mem_allocation failed %d\n",
 			retval);
 		goto failed_map_fifo;
 	}
 
-	cve_os_dev_log(CVE_LOGLEVEL_DEBUG,
-		nc->cve_dev->dev_index,
+	cve_os_log(CVE_LOGLEVEL_DEBUG,
 		"Stop Mapping CBDT. PA=0x%llx, ICEVA=0x%llx\n",
 		fifo_desc->fifo.cb_desc_dma_handle.mem_handle.dma_address,
 		ice_va);
@@ -680,11 +589,7 @@ out:
 int cve_dev_dealloc_and_unmap_cbdt(cve_dev_context_handle_t dev_ctx,
 			struct fifo_descriptor *fifo_desc)
 {
-	struct dev_context *nc;
-	struct cve_device *dev;
-
-	nc = (struct dev_context *)dev_ctx;
-	dev = nc->cve_dev;
+	struct cve_device *dev = get_first_device();
 
 	cve_mm_reclaim_allocation(fifo_desc->fifo_alloc.alloc_handle);
 

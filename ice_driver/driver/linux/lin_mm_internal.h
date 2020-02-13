@@ -81,6 +81,7 @@ struct ice_mmu_config {
 
 /* holds page table management data */
 struct cve_lin_mm_domain {
+	u8 id;
 	/* DMA handle of the page directory */
 	struct cve_dma_handle pgd_dma_handle;
 	/* host virtual address of page directory */
@@ -94,8 +95,6 @@ struct cve_lin_mm_domain {
 	cve_iova_allocator_handle_t iova_allocator[ICE_MEM_MAX_PARTITION];
 	/* flags used to track the page table state */
 	enum page_table_flags pt_state;
-	/* cve device associated with this domain */
-	struct cve_device *cve_dev;
 	/* MMU config, dynamic parameters for MMU configurations */
 	struct ice_mmu_config mmu_config[ICE_MEM_MAX_PARTITION];
 	u32 page_sz_reg_config_arr[ICE_PAGE_SZ_CONFIG_REG_COUNT];
@@ -107,8 +106,7 @@ struct cve_lin_mm_domain {
  * outputs: out_cve_domain - the new domain
  * returns: 0 on success, a negative error code on failure
  */
-int lin_mm_domain_init(struct cve_device *cve_dev,
-		u64 *sz_per_page_alignment,
+int lin_mm_domain_init(u8 id, u64 *sz_per_page_alignment,
 		u64 *infer_buf_page_config,
 		struct cve_lin_mm_domain **out_cve_domain);
 

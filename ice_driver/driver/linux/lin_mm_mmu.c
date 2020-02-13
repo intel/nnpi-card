@@ -27,6 +27,7 @@
 #include "cve_driver_internal.h"
 #include "cve_linux_internal.h"
 #include "project_device_interface.h"
+#include "device_interface.h"
 
 /* CONSTANTS */
 
@@ -207,9 +208,9 @@ static void __dump_pt(struct cve_lin_mm_domain *adom,
 		if (adom->pgd_vaddr[l1_idx] == INVALID_PAGE)
 			continue;
 
-		cve_os_dev_log(CVE_LOGLEVEL_INFO,
-			adom->cve_dev->dev_index,
-			"l1: index=%u ICEVA=0x%llx value=%8.8x; PT2 page: IAVA=%p, PA=0x%llx\n",
+		cve_os_log(CVE_LOGLEVEL_INFO,
+			"JobID=%d, l1: index=%u ICEVA=0x%llx value=%8.8x; PT2 page: IAVA=%p, PA=0x%llx\n",
+			adom->id,
 			l1_idx,
 			ice_va_hi,
 			adom->pgd_vaddr[l1_idx],
@@ -227,9 +228,9 @@ static void __dump_pt(struct cve_lin_mm_domain *adom,
 			if (l2_pt_vaddr[l2_idx] == INVALID_PAGE)
 				continue;
 
-			cve_os_dev_log(CVE_LOGLEVEL_INFO,
-				adom->cve_dev->dev_index,
-				"\tl2: index=%u ICEVA=0x%llx value=%8.8x PA=%llx prot=%c%c%c\n",
+			cve_os_log(CVE_LOGLEVEL_INFO,
+				"\tJobID=%d, l2: index=%u ICEVA=0x%llx value=%8.8x PA=%llx prot=%c%c%c\n",
+				adom->id,
 				l2_idx,
 				cve_vaddr,
 				l2_pt_vaddr[l2_idx],
@@ -284,17 +285,17 @@ void cve_page_table_dump(struct cve_lin_mm_domain *adom)
  *          out_pt_dma_addr - holds the DMA address of the page
  * returns: 0 on success, a negative error value on failure
  */
-static int alloc_page_table(struct cve_device *cve_dev,
-		pt_entry_t **out_pt_vaddr,
+static int alloc_page_table(pt_entry_t **out_pt_vaddr,
 		struct cve_dma_handle *out_pt_dma_handle)
 {
 	u32 i;
+	struct cve_device *dev = get_first_device();
 	pt_entry_t *pt_vaddr = NULL;
 	int ret;
 
 	FUNC_ENTER();
 
-	ret = OS_ALLOC_DMA_CONTIG(cve_dev,
+	ret = OS_ALLOC_DMA_CONTIG(dev,
 			PAGE_SIZE,
 			1,
 			(void **)&pt_vaddr,
@@ -305,8 +306,7 @@ static int alloc_page_table(struct cve_device *cve_dev,
 		goto out;
 	}
 
-	cve_os_dev_log(CVE_LOGLEVEL_DEBUG,
-		cve_dev->dev_index,
+	cve_os_log(CVE_LOGLEVEL_DEBUG,
 		"Page allocated: IAVA=0x%lx, PA=0x%llx\n",
 		(uintptr_t)pt_vaddr,
 		out_pt_dma_handle->mem_handle.dma_address);
@@ -366,13 +366,14 @@ out:
  * outputs:
  * returns:
  */
-static void free_page_table(struct cve_device *cve_dev,
-		pt_entry_t *pt_vaddr,
+static void free_page_table(pt_entry_t *pt_vaddr,
 		struct cve_dma_handle *dma_handle)
 {
+	struct cve_device *dev = get_first_device();
+
 	FUNC_ENTER();
 
-	OS_FREE_DMA_CONTIG(cve_dev,
+	OS_FREE_DMA_CONTIG(dev,
 			PAGE_SIZE,
 			pt_vaddr,
 			dma_handle, 0);
@@ -392,11 +393,9 @@ static int __alloc_new_l2_page(struct cve_lin_mm_domain *cve_domain,
 	u8 l2_borrowed_width;
 	u32 start_l1 = l1_idx, end_l1 = l1_idx;
 
-	cve_os_dev_log(CVE_LOGLEVEL_DEBUG,
-		cve_domain->cve_dev->dev_index,
+	cve_os_log(CVE_LOGLEVEL_DEBUG,
 		"Creating Page Table\n");
-	retval = alloc_page_table(cve_domain->cve_dev,
-			&l2_pt_vaddr,
+	retval = alloc_page_table(&l2_pt_vaddr,
 			&pt_dma_handle);
 	if (retval != 0) {
 		cve_os_log(CVE_LOGLEVEL_ERROR,
@@ -444,9 +443,7 @@ static void __dealloc_l2_page(struct cve_lin_mm_domain *cve_domain,
 	l2_pt_vaddr = cve_domain->virtual_l1[l1_idx];
 	dma_handle.mem_handle.dma_address = TBL_DMA_ADDR(pde);
 	dma_handle.mem_type = CVE_MEMORY_TYPE_KERNEL_CONTIG;
-	free_page_table(cve_domain->cve_dev,
-		l2_pt_vaddr,
-		&dma_handle);
+	free_page_table(l2_pt_vaddr, &dma_handle);
 }
 
 /*
@@ -563,9 +560,9 @@ static int l2_unmap_page(struct cve_lin_mm_domain *cve_domain,
 			ICE_L2PT_MASK(mmu_config->l2_width));
 	FUNC_ENTER();
 
-	cve_os_dev_log(CVE_LOGLEVEL_DEBUG,
-			cve_domain->cve_dev->dev_index,
-			"Unmapping Page. ICEVA=0x%llx. PD_Idx=%u, PT_Idx=%u, PT_Entry=0x%x\n",
+	cve_os_log(CVE_LOGLEVEL_DEBUG,
+			"DOM:%u Unmapping Page. ICEVA=0x%llx. PD_Idx=%u, PT_Idx=%u, PT_Entry=0x%x\n",
+			cve_domain->id,
 			ice_va, l1_idx, l2_idx, l2_pt_vaddr[l2_idx]);
 
 	if (cve_domain->pgd_vaddr[l1_idx] == INVALID_PAGE)
@@ -618,9 +615,9 @@ int lin_mm_map(struct cve_lin_mm_domain *adom,
 
 	FUNC_ENTER();
 	cve_os_log(CVE_LOGLEVEL_DEBUG,
-			"Mapping IOVA range 0x%llx--0x%llx, size=0x%lx at dma_addr 0x%llx for ICE-%d\n",
+			"Mapping IOVA range 0x%llx--0x%llx, size=0x%lx at dma_addr 0x%llx\n",
 			va_start, va_end, size_bytes,
-			dma_addr, adom->cve_dev->dev_index);
+			dma_addr);
 
 	/* TODO HACK: Ideally IDC should also be page aligned.
 	 * Currently coral doesnt return a page aligned address
@@ -762,8 +759,7 @@ static void __do_mmu_config(struct cve_lin_mm_domain *domain,
 
 }
 
-int lin_mm_domain_init(struct cve_device *cve_dev,
-		u64 *sz_per_page_alignment,
+int lin_mm_domain_init(u8 id, u64 *sz_per_page_alignment,
 		u64 *infer_buf_page_config,
 		struct cve_lin_mm_domain **out_cve_domain)
 {
@@ -784,10 +780,10 @@ int lin_mm_domain_init(struct cve_device *cve_dev,
 #ifdef STANDALONE_TESTING
 	ASSERT(os_lock_init(&cve_domain->lock) == 0);
 #endif
+	cve_domain->id = id;
 	mmu_config = &cve_domain->mmu_config[ICE_MEM_BASE_PARTITION];
 	__do_mmu_config(cve_domain, sz_per_page_alignment,
 			infer_buf_page_config);
-	cve_domain->cve_dev = cve_dev;
 
 	__config_page_sz_reg_array(cve_domain);
 
@@ -795,11 +791,9 @@ int lin_mm_domain_init(struct cve_device *cve_dev,
 	 * We always map the L1 page table (a single page as well as
 	 * the L2 page tables).
 	 */
-	cve_os_dev_log(CVE_LOGLEVEL_DEBUG,
-		cve_domain->cve_dev->dev_index,
+	cve_os_log(CVE_LOGLEVEL_DEBUG,
 		"Creating Page Directory\n");
-	retval = alloc_page_table(cve_domain->cve_dev,
-			&cve_domain->pgd_vaddr,
+	retval = alloc_page_table(&cve_domain->pgd_vaddr,
 			&cve_domain->pgd_dma_handle);
 	if (retval != 0) {
 		cve_os_log(CVE_LOGLEVEL_ERROR,
@@ -868,8 +862,7 @@ out:
 	if (retval < 0) {
 		if (cve_domain) {
 			if (cve_domain->pgd_vaddr) {
-				free_page_table(cve_domain->cve_dev,
-					cve_domain->pgd_vaddr,
+				free_page_table(cve_domain->pgd_vaddr,
 					&cve_domain->pgd_dma_handle);
 			}
 			if (cve_domain->virtual_l1) {
@@ -907,8 +900,7 @@ void lin_mm_domain_destroy(struct cve_lin_mm_domain *cve_domain)
 		prev_l2_pt_vaddr = l2_pt_vaddr;
 	}
 
-	free_page_table(cve_domain->cve_dev,
-			cve_domain->pgd_vaddr,
+	free_page_table(cve_domain->pgd_vaddr,
 			&cve_domain->pgd_dma_handle);
 
 	OS_FREE(cve_domain->virtual_l1, PAGE_SIZE * 2);
@@ -922,8 +914,7 @@ void lin_mm_domain_destroy(struct cve_lin_mm_domain *cve_domain)
 	FUNC_LEAVE();
 }
 
-int cve_osmm_get_domain(struct cve_device *cve_dev,
-		u64 *va_partition_config,
+int cve_osmm_get_domain(u8 id, u64 *va_partition_config,
 		u64 *infer_buf_page_config,
 		os_domain_handle *out_hdomain)
 {
@@ -932,7 +923,7 @@ int cve_osmm_get_domain(struct cve_device *cve_dev,
 
 	FUNC_ENTER();
 
-	retval = lin_mm_domain_init(cve_dev, va_partition_config,
+	retval = lin_mm_domain_init(id, va_partition_config,
 			infer_buf_page_config, &cve_domain);
 	if (retval != 0) {
 		cve_os_log(CVE_LOGLEVEL_ERROR,
@@ -1028,8 +1019,7 @@ int lin_mm_domain_copy(
 		goto out;
 	}
 	/* Creating page Directory */
-	retval = alloc_page_table(adom_src->cve_dev,
-			&dom->pgd_vaddr,
+	retval = alloc_page_table(&dom->pgd_vaddr,
 			&dom->pgd_dma_handle);
 	if (retval != 0) {
 		cve_os_log(CVE_LOGLEVEL_ERROR,
@@ -1046,7 +1036,6 @@ int lin_mm_domain_copy(
 		goto free_pt;
 	}
 
-	dom->cve_dev = adom_src->cve_dev;
 	memcpy(dom->mmu_config, adom_src->mmu_config,
 		sizeof(struct ice_mmu_config) * ICE_MEM_MAX_PARTITION);
 	memcpy(dom->page_sz_reg_config_arr, adom_src->page_sz_reg_config_arr,
@@ -1081,8 +1070,7 @@ int lin_mm_domain_copy(
 release_mem:
 	OS_FREE(dom->virtual_l1, PAGE_SIZE * 2);
 free_pt:
-	free_page_table(adom_src->cve_dev,
-		dom->pgd_vaddr,
+	free_page_table(dom->pgd_vaddr,
 		&dom->pgd_dma_handle);
 free_dom:
 	OS_FREE(dom, sizeof(*dom));

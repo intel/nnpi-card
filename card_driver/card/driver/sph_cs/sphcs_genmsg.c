@@ -76,7 +76,17 @@ struct pending_packet {
 	struct list_head               node;
 };
 
+enum channel_close_state {
+	_chnl_open	  = 0, /* channel is operative */
+	_chnl_preclose	  = 1, /* work is being done before channel can be closed */
+	_chnl_close_ready = 2, /* work is done, channel can be close if... hangup is set */
+	_chnl_close_done  = 3  /* Close / free is being done or done and ownership
+				* is with a different thread
+				*/
+};
+
 struct channel_data {
+	struct kref	  ref;
 	u16               host_client_id;
 	int               fd;
 	bool              is_privileged;
@@ -95,7 +105,7 @@ struct channel_data {
 	struct sphcs_dma_desc c2h_dma_desc;
 	struct sphcs_dma_desc h2c_dma_desc;
 
-	int               closing;
+	enum channel_close_state closing;
 	int               hanging_up;
 	bool              io_error;
 
@@ -144,27 +154,13 @@ struct dma_req_user_data {
 
 static void sphcs_chan_genmsg_hangup(struct sphcs_cmd_chan *chan, void *cb_ctx);
 
-static struct channel_data *find_channel(u16 channel_id)
+static void free_channel(struct kref *kref)
 {
-	struct channel_data *channel;
+	struct channel_data *channel = container_of(kref,
+						   struct channel_data,
+						   ref);
 
-	SPH_SPIN_LOCK(&s_genmsg.lock);
-	hash_for_each_possible(s_genmsg.channel_hash,
-			       channel,
-			       hash_node,
-			       channel_id)
-		if (channel->channel_id == channel_id) {
-			SPH_SPIN_UNLOCK(&s_genmsg.lock);
-			return channel;
-		}
-
-	SPH_SPIN_UNLOCK(&s_genmsg.lock);
-	return NULL;
-}
-
-static void free_channel(struct channel_data *channel)
-{
-	SPH_ASSERT(channel->closing == 2 && channel->hanging_up);
+	SPH_ASSERT(channel->closing == _chnl_close_done && channel->hanging_up);
 
 	mutex_destroy(&channel->write_lock);
 	if (channel->cmd_chan) {
@@ -180,6 +176,34 @@ static void free_channel(struct channel_data *channel)
 	ida_simple_remove(&s_genmsg.channel_ida, channel->channel_id);
 
 	kfree(channel);
+}
+
+static int channel_put(struct channel_data *chan)
+{
+	return kref_put(&chan->ref, free_channel);
+}
+
+static struct channel_data *find_channel(u16 channel_id)
+{
+	struct channel_data *channel;
+
+	SPH_SPIN_LOCK(&s_genmsg.lock);
+	hash_for_each_possible(s_genmsg.channel_hash,
+			       channel,
+			       hash_node,
+			       channel_id)
+		if (channel->channel_id == channel_id) {
+			/* Make sure we have a valid reference to channel:
+			 * reference count may go down in the middle
+			 */
+			if (!kref_get_unless_zero(&channel->ref))
+				channel = NULL;
+			SPH_SPIN_UNLOCK(&s_genmsg.lock);
+			return channel;
+		}
+
+	SPH_SPIN_UNLOCK(&s_genmsg.lock);
+	return NULL;
 }
 
 static int chan_response_dma_completed(struct sphcs *sphcs,
@@ -206,7 +230,7 @@ static int sphcs_genmsg_chan_release(struct inode *inode, struct file *f)
 
 	/* move pending read packets to a list on local stack */
 	SPH_SPIN_LOCK(&channel->read_lock);
-	channel->closing = 1;
+	channel->closing = _chnl_preclose;
 	INIT_LIST_HEAD(&pending_read_packets);
 	list_splice_init(&channel->pending_read_packets, &pending_read_packets);
 	if (channel->current_read_packet) {
@@ -273,10 +297,11 @@ static int sphcs_genmsg_chan_release(struct inode *inode, struct file *f)
 	 * otherwise, it will be freed once a hangup message is arrived
 	 */
 	SPH_SPIN_LOCK(&channel->read_lock);
-	channel->closing = 2;
+	channel->closing = _chnl_close_ready;
 	if (channel->hanging_up) {
+		channel->closing = _chnl_close_done;
 		SPH_SPIN_UNLOCK(&channel->read_lock);
-		free_channel(channel);
+		channel_put(channel);
 	} else {
 		SPH_SPIN_UNLOCK(&channel->read_lock);
 	}
@@ -1102,6 +1127,11 @@ static long process_accept_client(struct file *f, void __user *arg)
 		goto free_id;
 	}
 
+	/* Reference count initialized to '1' for inode private_data
+	 * reference created by anon_inode_getfd() call
+	 */
+	kref_init(&channel->ref);
+
 	sfd = fdget(channel->fd);
 	channel->file = sfd.file;
 	fdput(sfd);
@@ -1352,7 +1382,8 @@ static void handle_cmd_dma_failed(struct genmsg_dma_command_data *dma_data)
 		 * mark io_error on channel - next read/write will fail
 		 * and app will close the channel
 		 */
-		if (is_channel_ptr(dma_data->channel) && !dma_data->channel->closing)
+		if (is_channel_ptr(dma_data->channel) &&
+			_chnl_open == dma_data->channel->closing)
 			dma_data->channel->io_error = true;
 	}
 
@@ -1440,7 +1471,8 @@ int sphcs_genmsg_cmd_dma_complete_callback(struct sphcs *sphcs, void *ctx, const
 				sphcs_cmd_chan_put(dma_data->cmd_chan);
 
 			channel = dma_data->channel;
-			if (is_channel_ptr(channel) && !channel->closing) {
+			if (is_channel_ptr(channel) &&
+				_chnl_open == dma_data->channel->closing) {
 				struct pending_packet *pend;
 
 				pend = kzalloc(sizeof(*pend), GFP_NOWAIT);
@@ -1517,6 +1549,8 @@ int process_genmsg_command(struct sphcs *sphcs,
 			}
 			return 0;
 		}
+
+		SPH_ASSERT(channel->cmd_chan == cmd_chan);
 		dma_data.channel = channel;
 
 		/* handle hangup packet */
@@ -1534,8 +1568,10 @@ int process_genmsg_command(struct sphcs *sphcs,
 			if (cmd_chan) {
 				sphcs_cmd_chan_put(cmd_chan);
 				/* Do not process two hangup messages - may happen when cmd_chan is destroyed after hangup */
-				if (channel->hanging_up)
+				if (channel->hanging_up) {
+					channel_put(channel);
 					return 0;
+				}
 			}
 
 			pend = kzalloc(sizeof(*pend), GFP_NOWAIT);
@@ -1550,9 +1586,18 @@ int process_genmsg_command(struct sphcs *sphcs,
 			}
 
 			SPH_SPIN_LOCK(&channel->read_lock);
+
+			/* check again hang up with the lock */
+			if (cmd_chan && channel->hanging_up) {
+				SPH_SPIN_UNLOCK(&channel->read_lock);
+				channel_put(channel);
+				kfree(pend);
+				return 0;
+			}
+
 			channel->hanging_up = 1;
 
-			if (channel->closing == 0) {
+			if (channel->closing == _chnl_open) {
 				/* channel is not yet closing add empty read packet */
 				/* but only after all pending read dma requests are done*/
 				if (pend) {
@@ -1563,19 +1608,25 @@ int process_genmsg_command(struct sphcs *sphcs,
 
 				SPH_SPIN_UNLOCK(&channel->read_lock);
 			} else {
-				if (channel->closing == 1) {
+				if (channel->closing == _chnl_preclose) {
 					SPH_SPIN_UNLOCK(&channel->read_lock);
-				} else {
-					SPH_ASSERT(channel->closing == 2);
+				} else if (channel->closing == _chnl_close_ready) {
+					channel->closing = _chnl_close_done;
 					SPH_SPIN_UNLOCK(&channel->read_lock);
-					free_channel(channel);
-				}
+					channel_put(channel);
+				} else
+					SPH_SPIN_UNLOCK(&channel->read_lock);
 
 				kfree(pend);
 			}
 
+			/* Remove ref from find_channel() */
+			channel_put(channel);
 			return 0;
 		}
+
+		/* Remove ref from find_channel() */
+		channel_put(channel);
 	} else
 		dma_data.channel = NULL;
 
@@ -1750,19 +1801,19 @@ done:
 	kfree(op);
 }
 
-static void sphcs_chan_genmsg_hangup(struct sphcs_cmd_chan *chan, void *cb_ctx)
+static void sphcs_chan_genmsg_hangup(struct sphcs_cmd_chan *cmd_chan, void *cb_ctx)
 {
 	union h2c_GenericMessaging old_msg;
 
 	memset(old_msg.value, 0, sizeof(old_msg.value));
 	old_msg.opcode = SPH_IPC_H2C_OP_CHAN_GENERIC_MSG_PACKET;
 	old_msg.hangup = 1;
-	old_msg.host_client_id = chan->protocolID;
+	old_msg.host_client_id = cmd_chan->protocolID;
 	old_msg.card_client_id = (uint32_t)(uintptr_t)cb_ctx;
 
-	sphcs_cmd_chan_get(chan);
+	sphcs_cmd_chan_get(cmd_chan);
 
-	process_genmsg_command(g_the_sphcs, &old_msg, chan);
+	process_genmsg_command(g_the_sphcs, &old_msg, cmd_chan);
 }
 
 /*

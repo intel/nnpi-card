@@ -31,6 +31,8 @@ static int inf_req_copy_put(struct inf_exec_req *req);
 static int inf_copy_migrate_priority(struct inf_exec_req *req, uint8_t priority);
 static void inf_copy_req_release(struct kref *kref);
 
+#define SUBRES_MAX_LLI_SIZE SPH_PAGE_SIZE
+
 struct func_table const s_copy_funcs = {
 	.schedule = inf_copy_req_sched,
 	.is_ready = inf_copy_req_ready,
@@ -47,7 +49,7 @@ struct func_table const s_copy_funcs = {
 static int copy_complete_cb(struct sphcs *sphcs, void *ctx, const void *user_data, int status, u32 xferTimeUS)
 {
 	int err;
-	struct inf_exec_req *req = *((struct inf_exec_req **)user_data);
+	struct inf_exec_req *req = (struct inf_exec_req *)ctx;
 	struct inf_copy *copy;
 
 	SPH_ASSERT(req != NULL);
@@ -123,7 +125,7 @@ int inf_d2d_copy_create(uint16_t protocolCopyID,
 	copy->protocolID = protocolCopyID;
 	copy->context = context;
 	copy->devres = from_devres;
-	copy->lli_buf = NULL;
+	copy->lli.vptr = NULL;
 	copy->destroyed = 0;
 	copy->min_block_time = U64_MAX;
 	copy->max_block_time = 0;
@@ -134,6 +136,7 @@ int inf_d2d_copy_create(uint16_t protocolCopyID,
 	/* d2d copy needs DMA Wr*/
 	copy->card2Host = true;
 	copy->d2d = true;
+	sphcs_dma_multi_xfer_handle_init(&copy->multi_xfer_handle);
 
 	ret = sph_create_sw_counters_values_node(g_hSwCountersInfo_copy,
 						 (u32)protocolCopyID,
@@ -154,19 +157,25 @@ int inf_d2d_copy_create(uint16_t protocolCopyID,
 	SPH_SPIN_UNLOCK(&copy->context->lock);
 
 	/* Calculate DMA LLI size */
-	copy->lli_size = g_the_sphcs->hw_ops->dma.calc_lli_size(g_the_sphcs->hw_handle, from_devres->dma_map, to_sgt, 0);
-	SPH_ASSERT(copy->lli_size > 0);
+	ret = g_the_sphcs->hw_ops->dma.init_lli(g_the_sphcs->hw_handle, &copy->lli, from_devres->dma_map, to_sgt, 0);
+	if (ret != 0) {
+		sph_log_err(CREATE_COMMAND_LOG, "FATAL: line:%u failed to init lli buffer\n", __LINE__);
+		ret = -ENOMEM;
+		goto failed_to_allocate_lli;
+	}
+
+	SPH_ASSERT(copy->lli.size > 0);
 
 	/* Allocate memory for DMA LLI */
-	copy->lli_buf = dma_alloc_coherent(g_the_sphcs->hw_device, copy->lli_size, &copy->lli_addr, GFP_KERNEL);
-	if (unlikely(copy->lli_buf == NULL)) {
+	copy->lli.vptr = dma_alloc_coherent(g_the_sphcs->hw_device, copy->lli.size, &copy->lli.dma_addr, GFP_KERNEL);
+	if (unlikely(copy->lli.vptr == NULL)) {
 		sph_log_err(CREATE_COMMAND_LOG, "FATAL: line:%u failed to allocate lli buffer\n", __LINE__);
 		ret = -ENOMEM;
 		goto failed_to_allocate_lli;
 	}
 
 	/* Generate LLI */
-	transfer_size = g_the_sphcs->hw_ops->dma.gen_lli(g_the_sphcs->hw_handle, from_devres->dma_map, to_sgt, copy->lli_buf, 0);
+	transfer_size = g_the_sphcs->hw_ops->dma.gen_lli(g_the_sphcs->hw_handle, from_devres->dma_map, to_sgt, &copy->lli, 0);
 	SPH_ASSERT(transfer_size == from_devres->size);
 
 	/* Send report to host */
@@ -199,6 +208,7 @@ void inf_copy_hostres_pagetable_complete_cb(void                  *cb_ctx,
 	struct sg_table *src_sgt;
 	struct sg_table *dst_sgt;
 	u64 total_entries_bytes;
+	int ret;
 
 	if (status == 0) {
 #ifdef _DEBUG
@@ -218,19 +228,25 @@ void inf_copy_hostres_pagetable_complete_cb(void                  *cb_ctx,
 			dst_sgt = (copy->devres)->dma_map; // sg_table from device resource
 		}
 
-		copy->lli_size = g_the_sphcs->hw_ops->dma.calc_lli_size(g_the_sphcs->hw_handle, src_sgt, dst_sgt, 0);
-		SPH_ASSERT(copy->lli_size > 0);
+		ret = g_the_sphcs->hw_ops->dma.init_lli(g_the_sphcs->hw_handle, &copy->lli, src_sgt, dst_sgt, 0);
+		if (ret != 0) {
+			sph_log_err(CREATE_COMMAND_LOG, "FATAL: line:%u failed to init lli buffer\n", __LINE__);
+			status = SPH_IPC_NO_MEMORY;
+			goto failed;
+		}
+
+		SPH_ASSERT(copy->lli.size > 0);
 
 		// allocate memory in size lli_size
-		copy->lli_buf = dma_alloc_coherent(g_the_sphcs->hw_device, copy->lli_size, &copy->lli_addr, GFP_KERNEL);
-		if (unlikely(copy->lli_buf == NULL)) {
+		copy->lli.vptr = dma_alloc_coherent(g_the_sphcs->hw_device, copy->lli.size, &copy->lli.dma_addr, GFP_KERNEL);
+		if (unlikely(copy->lli.vptr == NULL)) {
 			sph_log_err(CREATE_COMMAND_LOG, "FATAL: line:%u failed to allocate lli buffer\n", __LINE__);
 			status = SPH_IPC_NO_MEMORY;
 			goto failed;
 		}
 
 		// generate lli buffer for dma
-		total_entries_bytes = g_the_sphcs->hw_ops->dma.gen_lli(g_the_sphcs->hw_handle, src_sgt, dst_sgt, copy->lli_buf, 0);
+		total_entries_bytes = g_the_sphcs->hw_ops->dma.gen_lli(g_the_sphcs->hw_handle, src_sgt, dst_sgt, &copy->lli, 0);
 		SPH_ASSERT(total_entries_bytes > 0);
 
 		memcpy(&copy->host_sgt, host_sgt, sizeof(struct sg_table));
@@ -292,8 +308,8 @@ int inf_copy_create(uint16_t protocolCopyID,
 	copy->context = context;
 	copy->devres = devres;
 	copy->card2Host = card2Host;
-	copy->lli_buf = NULL;
-	copy->lli_size = 0;
+	copy->lli.vptr = NULL;
+	copy->lli.size = 0;
 	copy->host_sgt.sgl = NULL;
 	copy->destroyed = 0;
 	copy->min_block_time = U64_MAX;
@@ -307,6 +323,7 @@ int inf_copy_create(uint16_t protocolCopyID,
 #ifdef _DEBUG
 	copy->hostres_size = 0;
 #endif
+	sphcs_dma_multi_xfer_handle_init(&copy->multi_xfer_handle);
 
 	res = sph_create_sw_counters_values_node(g_hSwCountersInfo_copy,
 						 (u32)protocolCopyID,
@@ -332,9 +349,9 @@ int inf_copy_create(uint16_t protocolCopyID,
 
 	if (subres_copy) {
 		// allocate one page to be used for lli buffer
-		copy->lli_size = PAGE_SIZE;
-		copy->lli_buf = dma_alloc_coherent(g_the_sphcs->hw_device, copy->lli_size, &copy->lli_addr, GFP_KERNEL);
-		if (unlikely(copy->lli_buf == NULL)) {
+		copy->lli.size = SUBRES_MAX_LLI_SIZE;
+		copy->lli.vptr = dma_alloc_coherent(g_the_sphcs->hw_device, copy->lli.size, &copy->lli.dma_addr, GFP_KERNEL);
+		if (unlikely(copy->lli.vptr == NULL)) {
 			sph_log_err(CREATE_COMMAND_LOG, "FATAL: line:%u failed to allocate lli buffer\n", __LINE__);
 			res = -ENOMEM;
 			goto put_copy;
@@ -394,15 +411,11 @@ static void release_copy(struct work_struct *work)
 	hash_del(&copy->hash_node);
 	SPH_SPIN_UNLOCK(&copy->context->lock);
 
-	/* free the sg table only if not mapped to a channel */
-	if (copy->host_sgt.sgl != NULL && copy->context->chan == NULL)
-		sg_free_table(&copy->host_sgt);
-
-	if (likely(copy->lli_buf != NULL))
+	if (likely(copy->lli.vptr != NULL))
 		dma_free_coherent(g_the_sphcs->hw_device,
-				copy->lli_size,
-				copy->lli_buf,
-				copy->lli_addr);
+				copy->lli.size,
+				copy->lli.vptr,
+				copy->lli.dma_addr);
 	if (copy->sw_counters)
 		sph_remove_sw_counters_values_node(copy->sw_counters);
 
@@ -524,7 +537,8 @@ static int inf_copy_req_sched(struct inf_exec_req *req)
 					 req->cmd ? req->cmd->protocolID : -1,
 					 copy->card2Host,
 					 req->size,
-					 1));
+					 1,
+					 copy->lli.num_lists));
 
 	if (SPH_SW_GROUP_IS_ENABLE(copy->sw_counters,
 				   COPY_SPHCS_SW_COUNTERS_GROUP)) {
@@ -577,23 +591,32 @@ static int inf_copy_req_execute(struct inf_exec_req *req)
 		 req->cmd ? req->cmd->protocolID : -1,
 		 copy->card2Host,
 		 req->size,
-		 1));
+		 1,
+		 copy->lli.num_lists));
 
 	if (copy->subres_copy) {
-		size_t lli_size;
 		u32 transfer_size;
+		u32 lli_size_keep;
+		int ret;
 
-		lli_size = g_the_sphcs->hw_ops->dma.calc_lli_size(g_the_sphcs->hw_handle,
-								  &req->hostres_map->host_sgt,
-								  copy->devres->dma_map,
-								  req->devres_offset);
-		if (lli_size > copy->lli_size)
+		lli_size_keep = copy->lli.size;
+		ret = g_the_sphcs->hw_ops->dma.init_lli(g_the_sphcs->hw_handle,
+							&copy->lli,
+							&req->hostres_map->host_sgt,
+							copy->devres->dma_map,
+							req->devres_offset);
+		if (ret != 0 || copy->lli.size > lli_size_keep) {
+			sph_log_err(EXECUTE_COMMAND_LOG, "Failed init lli for subres ret=%d size=%u size_keep=%u vptr=0x%lx\n",
+				    ret, copy->lli.size, lli_size_keep, (uintptr_t)copy->lli.vptr);
+			copy->lli.size = lli_size_keep;
 			return -ENOMEM;
+		}
+		copy->lli.size = lli_size_keep;
 
 		transfer_size = g_the_sphcs->hw_ops->dma.gen_lli(g_the_sphcs->hw_handle,
 								 &req->hostres_map->host_sgt,
 								 copy->devres->dma_map,
-								 copy->lli_buf,
+								 &copy->lli,
 								 req->devres_offset);
 		if (transfer_size < 1)
 			return -EINVAL;
@@ -660,13 +683,15 @@ static int inf_copy_req_execute(struct inf_exec_req *req)
 	if (inf_context_get_state(copy->context) != CONTEXT_OK)
 		return -SPHER_CONTEXT_BROKEN;
 
-	g_the_sphcs->hw_ops->dma.edit_lli(g_the_sphcs->hw_handle, copy->lli_buf, req->size);
+	g_the_sphcs->hw_ops->dma.edit_lli(g_the_sphcs->hw_handle, &copy->lli, req->size);
 
-	return sphcs_dma_sched_start_xfer(g_the_sphcs->dmaSched, desc,
-					  copy->lli_addr,
-					  req->size,
-					  copy_complete_cb, NULL,
-					  &req, sizeof(req));
+	return sphcs_dma_sched_start_xfer_multi(g_the_sphcs->dmaSched,
+						&copy->multi_xfer_handle,
+						desc,
+						&copy->lli,
+						req->size,
+						copy_complete_cb,
+						req);
 }
 
 static void inf_copy_req_complete(struct inf_exec_req *req,
@@ -698,7 +723,8 @@ static void inf_copy_req_complete(struct inf_exec_req *req,
 					 cmd ? cmd->protocolID : -1,
 					 copy->card2Host,
 					 req->size,
-					 1));
+					 1,
+					 copy->lli.num_lists));
 
 	if (SPH_SW_GROUP_IS_ENABLE(copy->sw_counters,
 				   COPY_SPHCS_SW_COUNTERS_GROUP)) {
@@ -849,12 +875,14 @@ static int inf_req_copy_put(struct inf_exec_req *req)
 static int inf_copy_migrate_priority(struct inf_exec_req *req, uint8_t priority)
 {
 	int ret = 0;
+	int i;
 
 	if (req->priority != priority)
-		ret = inf_update_priority(req,
-					  priority,
-					  req->copy->card2Host,
-					  req->copy->lli_addr);
+		for (i = 0; i < req->copy->lli.num_lists; i++)
+			ret |= inf_update_priority(req,
+						   priority,
+						   req->copy->card2Host,
+						   req->copy->lli.dma_addr + req->copy->lli.offsets[i]);
 
 	return ret;
 }

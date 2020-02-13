@@ -224,7 +224,6 @@ static struct attribute_group filter_attr_group = {
 		.attrs = dso_filter_attrs,
 };
 
-
 struct pmoninfo_details {
 	u32 index;
 	const u32 reg_offset;
@@ -269,6 +268,48 @@ static ssize_t set_dump_pmon_status(struct kobject *kobj,
 				struct kobj_attribute *attr,
 				const char *buf, size_t count);
 
+static ssize_t store_trace_node_cnt(struct kobject *kobj,
+				struct kobj_attribute *attr,
+				const char *buf, size_t count);
+
+static ssize_t store_trace_update_status(struct kobject *kobj,
+				struct kobj_attribute *attr,
+				const char *buf, size_t count);
+
+static ssize_t show_trace_node_cnt(struct kobject *kobj,
+			struct kobj_attribute *attr, char *buf);
+
+static ssize_t show_trace_update_status(struct kobject *kobj,
+			struct kobj_attribute *attr, char *buf);
+
+static ssize_t show_ctx_id(struct kobject *kobj,
+			struct kobj_attribute *attr, char *buf);
+
+static ssize_t show_ntw_id(struct kobject *kobj,
+			struct kobj_attribute *attr, char *buf);
+
+static ssize_t show_infer_num(struct kobject *kobj,
+			struct kobj_attribute *attr, char *buf);
+
+static ssize_t store_jobs(struct kobject *kobj,
+				struct kobj_attribute *attr,
+				const char *buf, size_t count);
+
+static ssize_t show_jobs(struct kobject *kobj,
+			struct kobj_attribute *attr, char *buf);
+
+static ssize_t store_ctx_id(struct kobject *kobj,
+			struct kobj_attribute *attr,
+			const char *buf, size_t count);
+
+static ssize_t store_ntw_id(struct kobject *kobj,
+				struct kobj_attribute *attr,
+				const char *buf, size_t count);
+
+static ssize_t store_infer_num(struct kobject *kobj,
+				struct kobj_attribute *attr,
+				const char *buf, size_t count);
+
 static struct kobj_attribute pmoninfo_attr =
 __ATTR(pmoninfo, 0444, show_pmoninfo, NULL);
 
@@ -283,6 +324,25 @@ __ATTR(delphi_pmon, 0444, read_ice_delphi_pmon, NULL);
 
 static struct kobj_attribute enable_pmon_attr =
 __ATTR(enable_ice_pmon, 0664, get_dump_pmon_status, set_dump_pmon_status);
+
+static struct kobj_attribute enable_nodes_attr =
+__ATTR(node_count, 0664, show_trace_node_cnt, store_trace_node_cnt);
+
+static struct kobj_attribute trace_update_status_attr =
+__ATTR(update_status, 0664, show_trace_update_status,
+		store_trace_update_status);
+
+static struct kobj_attribute enable_job_attr =
+__ATTR(jobs, 0664, show_jobs, store_jobs);
+
+static struct kobj_attribute ctx_id_attr =
+__ATTR(ctx_id, 0664, show_ctx_id, store_ctx_id);
+
+static struct kobj_attribute ntw_id_attr =
+__ATTR(ntw_id, 0664, show_ntw_id, store_ntw_id);
+
+static struct kobj_attribute infer_num_attr =
+__ATTR(infer_num, 0664, show_infer_num, store_infer_num);
 
 static struct attribute *read_ice_pmon_attrs[] = {
 	&mmu_pmon_attr.attr,
@@ -301,8 +361,32 @@ static struct attribute *enable_pmon_attrs[] = {
 	NULL,
 };
 
+static struct attribute *enable_nodes_attrs[] = {
+	&enable_nodes_attr.attr,
+	&trace_update_status_attr.attr,
+	&pmoninfo_attr.attr,
+	NULL,
+};
+
+static struct attribute *enable_job_attrs[] = {
+	&enable_job_attr.attr,
+	&ctx_id_attr.attr,
+	&ntw_id_attr.attr,
+	&infer_num_attr.attr,
+	&pmon_attr.attr,
+	NULL,
+};
+
 static struct attribute_group enable_pmon_attr_group = {
 		.attrs = enable_pmon_attrs,
+};
+
+static struct attribute_group enable_nodes_attr_group = {
+		.attrs = enable_nodes_attrs,
+};
+
+static struct attribute_group enable_job_attr_group = {
+		.attrs = enable_job_attrs,
 };
 
 static struct attribute_group read_ice_pmon_attr_group = {
@@ -316,9 +400,14 @@ static struct attribute_group pmon_attr_group = {
 
 struct kobject *icedrv_kobj;
 static struct kobject *hwtrace_kobj;
+static struct kobject *physical_ice_kobj;
+static struct kobject *jobs_kobj;
 static int ice_trace_set_ice_observer_sysfs(u8 dso_reg_index, u32 dso_reg_val,
 							u32 dev_index);
-
+static int ice_trace_set_job_observer_sysfs(u8 dso_reg_index, u32 dso_reg_val,
+							u32 dev_index);
+static int ice_trace_pmon_config_sysfs_node(u32 daemonfreq, u32 pmonindex,
+						int node_index);
 
 static int ice_trace_pmon_config_sysfs(u32 daemonfreq, u32 pmonindex,
 						struct cve_device *ice_dev);
@@ -346,11 +435,38 @@ out:
 	FUNC_LEAVE();
 	return ret;
 }
+
+int ice_trace_dso_register_uncore_callbacks(struct ice_dso_regs_data *dso)
+{
+	int ret = 0;
+
+	FUNC_ENTER()
+
+	intel_icedrv_uncore_regbar_cb(&dso->regbar_cbs);
+	if (!dso->regbar_cbs) {
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+				"Error in getting regbar callback functions\n");
+		ret = -ENODEV;
+		goto out;
+	}
+	cve_os_log(CVE_LOGLEVEL_DEBUG,
+			  "Uncore regbar callback functions are registered\n");
+out:
+	FUNC_LEAVE();
+	return ret;
+}
 #else /* RING3_VALIDATION*/
 int ice_trace_register_uncore_callbacks(struct cve_device *ice_dev)
 {
 	cve_os_dev_log(CVE_LOGLEVEL_DEBUG,
 			ice_dev->dev_index,
+			"Simulation mode\n");
+	return 0;
+}
+
+int ice_trace_dso_register_uncore_callbacks(struct ice_dso_regs_data *dso)
+{
+	cve_os_log(CVE_LOGLEVEL_DEBUG,
 			"Simulation mode\n");
 	return 0;
 }
@@ -701,6 +817,7 @@ int ice_trace_write_dso_regs(struct cve_device *ice_dev)
 #endif
 
 	FUNC_ENTER();
+
 	ret = write_dso_regs_sanity(ice_dev);
 	if (ret) {
 		cve_os_dev_log(CVE_LOGLEVEL_ERROR,
@@ -805,6 +922,7 @@ int  ice_trace_configure_registers_reader_demon(struct cve_device *ice_dev)
 	u32 reg_offset, reg_offset_table;
 
 	FUNC_ENTER();
+
 	cve_os_dev_log(CVE_LOGLEVEL_DEBUG, ice_dev->dev_index,
 				"daemon control = 0x%x\n",
 				ice_dev->daemon.conf.daemon_control);
@@ -1111,61 +1229,182 @@ static ssize_t show_dso_filter(struct kobject *kobj,
 {
 	int ret = 0;
 	u32 dev_index;
+	u32 node_idx;
 	u8 reg_index = MAX_DSO_CONFIG_REG;
 	struct cve_device *ice_dev;
 	u32 value;
 	u32 cached_value;
 	u16 croffset;
+	struct trace_node_sysfs *node_ptr;
+	struct cve_device_group *dg;
 
 	ret = sscanf(kobj->name, "ice%d", &dev_index);
-	if (ret < 1) {
-		cve_os_log(CVE_LOGLEVEL_ERROR, "failed getting ice id %s\n",
-						kobj->name);
-		return -EFAULT;
-	}
-	if (dev_index >= NUM_ICE_UNIT) {
-		cve_os_log(CVE_LOGLEVEL_ERROR, "wrong ice id %d\n", dev_index);
-		return -EFAULT;
-	}
+	/* This section is for physical ice (legacy) sysfs */
+	if (ret == 1) {
+		if (dev_index >= NUM_ICE_UNIT) {
+			cve_os_log(CVE_LOGLEVEL_ERROR, "wrong ice id %d\n",
+						dev_index);
+			return -EFAULT;
+		}
 
-	cve_os_log(CVE_LOGLEVEL_DEBUG, "ICE number %d\n", dev_index);
-	cve_os_log(CVE_LOGLEVEL_DEBUG, "attr: %s\n", attr->attr.name);
+		cve_os_log(CVE_LOGLEVEL_DEBUG, "ICE number %d\n", dev_index);
+		cve_os_log(CVE_LOGLEVEL_DEBUG, "attr: %s\n", attr->attr.name);
 
-	reg_index = get_dso_filter(attr);
+		reg_index = get_dso_filter(attr);
 
-	if (reg_index >= MAX_DSO_CONFIG_REG) {
-		cve_os_log(CVE_LOGLEVEL_ERROR, "bad dso reg index\n");
-		return -EINVAL;
-	}
+		if (reg_index >= MAX_DSO_CONFIG_REG) {
+			cve_os_log(CVE_LOGLEVEL_ERROR, "bad dso reg index\n");
+			return -EINVAL;
+		}
 
-	ret = cve_os_lock(&g_cve_driver_biglock, CVE_INTERRUPTIBLE);
-	if (ret != 0)
-		return -ERESTARTSYS;
+		ret = cve_os_lock(&g_cve_driver_biglock, CVE_INTERRUPTIBLE);
+		if (ret != 0)
+			return -ERESTARTSYS;
 
-	ice_dev = cve_device_get(dev_index);
-	if (!ice_dev) {
-		cve_os_log(CVE_LOGLEVEL_ERROR, "NULL ice_dev pointer\n");
-		ret = -ENODEV;
-		return ret;
-	}
+		ice_dev = cve_device_get(dev_index);
+		if (!ice_dev) {
+			cve_os_log(CVE_LOGLEVEL_ERROR,
+					"NULL ice_dev pointer\n");
+			ret = -ENODEV;
+			return ret;
+		}
 
-	croffset = ice_dev->dso.reg_offsets[reg_index].croffset;
-	value = ice_dev->dso.reg_readback_vals[reg_index];
-	cached_value = ice_dev->dso.reg_vals[reg_index];
+		croffset = ice_dev->dso.reg_offsets[reg_index].croffset;
+		value = ice_dev->dso.reg_readback_vals[reg_index];
+		cached_value = ice_dev->dso.reg_vals[reg_index];
 
-	cve_os_log(CVE_LOGLEVEL_DEBUG,
+		cve_os_log(CVE_LOGLEVEL_DEBUG,
 			"DSO readback value 0x%x, DSO cached vale 0x%x\n",
 			value, cached_value);
 
-	ret += sprintf((buf + ret),
+		ret += sprintf((buf + ret),
 			"Cached value:0x%x,",
 			cached_value);
-	ret += sprintf((buf + ret),
+		ret += sprintf((buf + ret),
 			" Last update:0x%x\n",
 			value);
-	cve_os_unlock(&g_cve_driver_biglock);
+		cve_os_unlock(&g_cve_driver_biglock);
 
-	return ret;
+		return ret;
+	}
+
+	dg = cve_dg_get();
+	ret = sscanf(kobj->name, "node%u", &node_idx);
+	/* This section is for  logical ice node sysfs */
+	if (ret == 1) {
+		if (node_idx >= dg->trace_node_cnt) {
+			cve_os_log(CVE_LOGLEVEL_ERROR,
+					"Node index sysfs is INVALID");
+			return -EFAULT;
+		}
+		cve_os_log(CVE_LOGLEVEL_DEBUG,
+			"Node id in show_dso is %u\n", node_idx);
+
+		cve_os_log(CVE_LOGLEVEL_DEBUG, "attr: %s\n", attr->attr.name);
+
+		node_ptr = &dg->node_group_sysfs[node_idx];
+		reg_index = get_dso_filter(attr);
+
+		if (reg_index >= MAX_DSO_CONFIG_REG) {
+			cve_os_log(CVE_LOGLEVEL_ERROR, "bad dso reg index\n");
+			return -EINVAL;
+		}
+		ret = cve_os_lock(&g_cve_driver_biglock, CVE_INTERRUPTIBLE);
+		if (ret != 0)
+			return -ERESTARTSYS;
+
+		value = node_ptr->job.dso.reg_vals[reg_index];
+		ret += sprintf((buf + ret),
+			"value:0x%x\n", value);
+		cve_os_unlock(&g_cve_driver_biglock);
+		return ret;
+	}
+
+	cve_os_log(CVE_LOGLEVEL_ERROR, "FALIED to get ice/node id %s\n",
+						kobj->name);
+	return -EFAULT;
+
+}
+
+static ssize_t store_ntw_id(struct kobject *kobj,
+		struct kobj_attribute *attr, const char *buf, size_t count)
+{
+
+	int value;
+	int ret;
+	char *nw_id;
+	int index;
+	struct cve_device_group *dg;
+
+	dg = cve_dg_get();
+	ret = sscanf(kobj->name, "node%d", &index);
+	if (ret < 0)
+		return -EFAULT;
+	nw_id = (char *)buf;
+	nw_id = strim(nw_id);
+
+	ret = kstrtoint(nw_id, 10, &value);
+	if (ret < 0)
+		return -EFAULT;
+
+	dg->node_group_sysfs[index].ntw_id = value;
+	cve_os_log(CVE_LOGLEVEL_DEBUG,
+		"ntw ID in node is %d\n", value);
+	return count;
+}
+
+static ssize_t store_infer_num(struct kobject *kobj,
+		struct kobj_attribute *attr, const char *buf, size_t count)
+{
+
+	int value;
+	int ret;
+	char *infer_num;
+	int index;
+	struct cve_device_group *dg;
+
+	dg = cve_dg_get();
+	ret = sscanf(kobj->name, "node%d", &index);
+	if (ret < 0)
+		return -EFAULT;
+
+	infer_num = (char *)buf;
+	infer_num = strim(infer_num);
+
+	ret = kstrtoint(infer_num, 10, &value);
+	if (ret < 0)
+		return -EFAULT;
+
+	dg->node_group_sysfs[index].infer_num = value;
+	cve_os_log(CVE_LOGLEVEL_DEBUG,
+		"Infer num in node is %d\n", value);
+	return count;
+}
+static ssize_t store_ctx_id(struct kobject *kobj,
+		struct kobj_attribute *attr, const char *buf, size_t count)
+{
+	int value;
+	int ret;
+	char *ctx_id;
+	int index;
+	struct cve_device_group *dg;
+
+	dg = cve_dg_get();
+	ret = sscanf(kobj->name, "node%d", &index);
+	if (ret < 0)
+		return -EFAULT;
+
+	ctx_id = (char *)buf;
+	ctx_id = strim(ctx_id);
+
+	ret = kstrtoint(ctx_id, 10, &value);
+	if (ret < 0)
+		return -EFAULT;
+
+	dg->node_group_sysfs[index].ctx_id = value;
+	cve_os_log(CVE_LOGLEVEL_DEBUG,
+		"ctx id in node is %d\n", value);
+	return count;
 }
 
 static ssize_t store_dso_filter(struct kobject *kobj,
@@ -1174,6 +1413,7 @@ static ssize_t store_dso_filter(struct kobject *kobj,
 	u32 val;
 	int ret;
 	u32 dev_index;
+	u32 node_idx;
 	u8 reg_index = MAX_DSO_CONFIG_REG;
 
 	ret = kstrtouint(buf, 16, &val);
@@ -1181,40 +1421,75 @@ static ssize_t store_dso_filter(struct kobject *kobj,
 		return ret;
 
 	ret = sscanf(kobj->name, "ice%d", &dev_index);
-	if (ret < 1) {
-		cve_os_log(CVE_LOGLEVEL_ERROR, "failed getting ice id %s\n",
-						kobj->name);
-		return -EFAULT;
-	}
-	if (dev_index >= NUM_ICE_UNIT) {
-		cve_os_log(CVE_LOGLEVEL_ERROR, "wrong ice id %d\n", dev_index);
-		return -EFAULT;
-	}
+	/* This section of code deals with Physical ice (legacy) sysfs */
+	if (ret == 1) {
+		if (dev_index >= NUM_ICE_UNIT) {
+			cve_os_log(CVE_LOGLEVEL_ERROR, "wrong ice id %d\n",
+							dev_index);
+			return -EFAULT;
+		}
 
-	cve_os_log(CVE_LOGLEVEL_DEBUG, "user given value  0x%x\n", val);
-	cve_os_log(CVE_LOGLEVEL_DEBUG, "ICE number %d\n", dev_index);
-	cve_os_log(CVE_LOGLEVEL_DEBUG, "attr: %s\n", attr->attr.name);
+		cve_os_log(CVE_LOGLEVEL_DEBUG, "user given value 0x%x\n", val);
+		cve_os_log(CVE_LOGLEVEL_DEBUG, "ICE number %d\n", dev_index);
+		cve_os_log(CVE_LOGLEVEL_DEBUG, "attr: %s\n", attr->attr.name);
 
-	reg_index = get_dso_filter(attr);
+		reg_index = get_dso_filter(attr);
 
-	if (reg_index >= MAX_DSO_CONFIG_REG) {
-		cve_os_log(CVE_LOGLEVEL_ERROR, "bad dso reg index\n");
-		return -EINVAL;
-	}
+		if (reg_index >= MAX_DSO_CONFIG_REG) {
+			cve_os_log(CVE_LOGLEVEL_ERROR, "bad dso reg index\n");
+			return -EINVAL;
+		}
 
-	ret = cve_os_lock(&g_cve_driver_biglock, CVE_INTERRUPTIBLE);
-	if (ret != 0)
-		return -ERESTARTSYS;
+		ret = cve_os_lock(&g_cve_driver_biglock, CVE_INTERRUPTIBLE);
+		if (ret != 0)
+			return -ERESTARTSYS;
 
-	ret = ice_trace_set_ice_observer_sysfs(reg_index, val, dev_index);
-	if (ret < 0) {
-		cve_os_log(CVE_LOGLEVEL_ERROR, "set dso reg failed\n");
+		ret = ice_trace_set_ice_observer_sysfs(reg_index,
+						val, dev_index);
+		if (ret < 0) {
+			cve_os_log(CVE_LOGLEVEL_ERROR, "set dso reg failed\n");
+			cve_os_unlock(&g_cve_driver_biglock);
+			return ret;
+		}
+
 		cve_os_unlock(&g_cve_driver_biglock);
-		return ret;
+		return count;
 	}
+	ret = sscanf(kobj->name, "node%u", &node_idx);
+	/* This section of code deals with Logical ice sysfs */
+	if (ret == 1) {
 
-	cve_os_unlock(&g_cve_driver_biglock);
-	return count;
+		cve_os_log(CVE_LOGLEVEL_DEBUG, "user given value 0x%x\n", val);
+		cve_os_log(CVE_LOGLEVEL_DEBUG, "node number %d\n", node_idx);
+		cve_os_log(CVE_LOGLEVEL_DEBUG, "attr: %s\n", attr->attr.name);
+
+		reg_index = get_dso_filter(attr);
+
+		if (reg_index >= MAX_DSO_CONFIG_REG) {
+			cve_os_log(CVE_LOGLEVEL_ERROR, "bad dso reg index\n");
+			return -EINVAL;
+		}
+
+		ret = cve_os_lock(&g_cve_driver_biglock, CVE_INTERRUPTIBLE);
+		if (ret != 0)
+			return -ERESTARTSYS;
+
+		ret = ice_trace_set_job_observer_sysfs(reg_index,
+						val, node_idx);
+		if (ret < 0) {
+			cve_os_log(CVE_LOGLEVEL_ERROR, "set dso reg failed\n");
+			cve_os_unlock(&g_cve_driver_biglock);
+			return ret;
+		}
+
+		cve_os_unlock(&g_cve_driver_biglock);
+
+		return count;
+	}
+	cve_os_log(CVE_LOGLEVEL_ERROR,
+			"failed getting ice/node id %s\n", kobj->name);
+	return -EFAULT;
+
 }
 
 static ssize_t show_pmoninfo(struct kobject *kobj,
@@ -1410,6 +1685,358 @@ static ssize_t get_dump_pmon_status(struct kobject *kobj,
 	ret += sprintf((buf + ret), "%d\n",
 		(device_group->dump_ice_pmon)?1:0);
 	return ret;
+}
+
+static ssize_t show_trace_node_cnt(struct kobject *kobj,
+		struct kobj_attribute *attr, char *buf)
+{
+	struct cve_device_group *dg;
+
+	dg = cve_dg_get();
+
+	return sprintf(buf, "%d\n", dg->trace_node_cnt);
+}
+
+static ssize_t show_trace_update_status(struct kobject *kobj,
+		struct kobj_attribute *attr, char *buf)
+{
+	struct cve_device_group *dg;
+
+	dg = cve_dg_get();
+
+	return sprintf(buf, "%d\n", dg->trace_update_status);
+}
+
+static ssize_t show_ctx_id(struct kobject *kobj,
+		struct kobj_attribute *attr, char *buf)
+{
+
+	struct cve_device_group *dg;
+	int index;
+	int ret;
+
+	dg = cve_dg_get();
+	ret = sscanf(kobj->name, "node%d", &index);
+	if (ret < 0) {
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+				"FAILED to get node id %s\n", kobj->name);
+		return -EFAULT;
+	}
+	return sprintf(buf, "%lld\n", dg->node_group_sysfs[index].ctx_id);
+}
+
+static ssize_t show_ntw_id(struct kobject *kobj,
+		struct kobj_attribute *attr, char *buf)
+{
+	int index;
+	struct cve_device_group *dg;
+	int ret;
+
+	dg = cve_dg_get();
+	ret = sscanf(kobj->name, "node%d", &index);
+	if (ret < 0) {
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+				"FAILED to get node id %s\n", kobj->name);
+		return -EFAULT;
+	}
+
+	return sprintf(buf, "%lld\n", dg->node_group_sysfs[index].ntw_id);
+}
+
+static ssize_t show_infer_num(struct kobject *kobj,
+		struct kobj_attribute *attr, char *buf)
+{
+	int index;
+	int ret;
+	struct cve_device_group *dg;
+
+	dg = cve_dg_get();
+	ret = sscanf(kobj->name, "node%d", &index);
+	if (ret < 0) {
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+				"FAILED to get node id %s\n", kobj->name);
+		return -EFAULT;
+	}
+
+	return sprintf(buf, "%lld\n", dg->node_group_sysfs[index].infer_num);
+}
+
+static ssize_t show_jobs(struct kobject *kobj,
+		struct kobj_attribute *attr, char *buf)
+{
+	int ret = 0;
+	int i;
+	struct trace_node_sysfs *node;
+	int index;
+	struct cve_device_group *dg;
+
+	dg = cve_dg_get();
+	ret = sscanf(kobj->name, "node%d", &index);
+	if (ret < 0) {
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+			"FAILED to get node id %s\n", kobj->name);
+		return -EFAULT;
+	}
+	node = &dg->node_group_sysfs[index];
+
+	for (i = 0; i < node->job_count; i++)
+		ret += sprintf(buf + ret, "%u,", node->job_list[i]);
+
+	buf[ret-1] = '\n';
+	return ret;
+}
+
+void init_dso_default_nodes(struct trace_node_sysfs *trace_node)
+{
+	int i;
+	struct ice_dso_regs_data *local_dso;
+	struct ice_read_daemon_config *local_daemon;
+	struct ice_perf_counter_config *local_perf_counter;
+
+	local_dso = &trace_node->job.dso;
+	local_daemon = &trace_node->job.daemon;
+	local_perf_counter = &trace_node->job.perf_counter;
+
+	for (i = 0; i < MAX_DSO_CONFIG_REG; i++) {
+		local_dso->reg_offsets[i].croffset =
+			__get_dso_regoffset(i);
+	}
+	memcpy(local_dso->reg_vals, default_dso_reg_vals,
+						sizeof(default_dso_reg_vals));
+	memcpy(local_dso->reg_readback_vals, default_dso_reg_vals,
+			sizeof(default_dso_reg_vals));
+	local_dso->reg_num = MAX_DSO_CONFIG_REG;
+	local_dso->dso_config_status = TRACE_STATUS_DEFAULT;
+	ice_trace_dso_register_uncore_callbacks(local_dso);
+
+	/* Set registers reader daemon  configuration status to default */
+	local_daemon->daemon_config_status = TRACE_STATUS_DEFAULT;
+	local_daemon->conf.daemon_table_len = 0;
+	local_daemon->reset_conf.daemon_table_len = 0;
+	local_daemon->restore_needed_from_suspend = false;
+
+	/*Initalize perf Counter config length to 0 */
+	local_perf_counter->perf_counter_config_len = 0;
+}
+
+int create_kobj_nodes(void)
+{
+	int i;
+	char name[30];
+	int ret = 0;
+	struct cve_device_group *dg;
+
+	dg = cve_dg_get();
+
+	ret = OS_ALLOC_ZERO(sizeof(struct trace_node_sysfs) *
+			dg->trace_node_cnt, (void **)&dg->node_group_sysfs);
+
+	if (ret < 0) {
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+				"Failed to allocate memory %d\n", ret);
+		return -ENOMEM;
+	}
+
+	for (i = 0; i < dg->trace_node_cnt; i++) {
+		snprintf(name, sizeof(name), "node%d", i);
+		dg->node_group_sysfs[i].node_kobj = kobject_create_and_add(name,
+							jobs_kobj);
+		if (!dg->node_group_sysfs[i].node_kobj) {
+			cve_os_log(CVE_LOGLEVEL_ERROR,
+					"FAILED to create node kobj\n");
+			ret = -ENOMEM;
+			goto clear_out;
+		}
+		ret = sysfs_create_group(dg->node_group_sysfs[i].node_kobj,
+						&filter_attr_group);
+		if (ret < 0) {
+			cve_os_log(CVE_LOGLEVEL_ERROR,
+				"Failed to create filter inside node\n");
+			ret = -EFAULT;
+			goto clear_out;
+		}
+		ret = sysfs_create_group(dg->node_group_sysfs[i].node_kobj,
+						&enable_job_attr_group);
+
+		if (ret < 0) {
+			cve_os_log(CVE_LOGLEVEL_ERROR,
+				"Failed to create job inside node\n");
+			ret = -EFAULT;
+			goto clear_out;
+		}
+		dg->node_group_sysfs[i].ctx_id = DEFAULT_ID;
+		dg->node_group_sysfs[i].ntw_id = DEFAULT_ID;
+		dg->node_group_sysfs[i].infer_num = DEFAULT_ID;
+
+		init_dso_default_nodes(&dg->node_group_sysfs[i]);
+
+	}
+	return i;
+clear_out:
+	ret = OS_FREE(dg->node_group_sysfs,
+		sizeof(struct trace_node_sysfs) * dg->trace_node_cnt);
+	dg->node_group_sysfs = NULL;
+	dg->trace_node_cnt = 0;
+	return ret;
+}
+
+ssize_t store_trace_update_status(struct kobject *kobj,
+			struct kobj_attribute *attr,
+			const char *buf, size_t count)
+{
+	char *update_status;
+	int ret = 0;
+	int status;
+	struct cve_device_group *dg;
+
+	dg = cve_dg_get();
+
+	update_status = (char *)buf;
+	update_status = strim(update_status);
+
+	if (update_status == NULL)
+		return -EFAULT;
+
+	ret = kstrtoint(update_status, 10, &status);
+	if (ret < 0)
+		return ret;
+
+	dg->trace_update_status = status;
+	return count;
+}
+
+static void  __reset_icedrv_trace(struct cve_device *ice_dev)
+{
+
+	FUNC_ENTER()
+	/* Set dso configuration status to default*/
+	ice_dev->dso.dso_config_status = TRACE_STATUS_DEFAULT;
+	ice_dev->logical_dso = false;
+
+	/* Set registers reader daemon  configuration status to default */
+	ice_dev->daemon.daemon_config_status = TRACE_STATUS_DEFAULT;
+	ice_dev->daemon.conf.daemon_table_len = 0;
+	ice_dev->daemon.reset_conf.daemon_table_len = 0;
+	ice_dev->daemon.restore_needed_from_suspend = false;
+
+	/*Initalize perf Counter config length to 0 */
+	ice_dev->perf_counter.perf_counter_config_len = 0;
+
+
+	FUNC_LEAVE();
+}
+
+void free_old_nodes(void)
+{
+	int i;
+	struct cve_device_group *dg;
+	struct cve_device *dev;
+	int ret;
+	u32 active_ice;
+
+	dg = cve_dg_get();
+
+	active_ice = (~g_icemask) & VALID_ICE_MASK;
+	while (active_ice) {
+		i = __builtin_ctz(active_ice);
+		CVE_CLEAR_BIT(active_ice, i);
+		dev = cve_device_get(i);
+		if (!dev) {
+			cve_os_log(CVE_LOGLEVEL_ERROR,
+					"CVE Dev is NULL\n");
+			continue;
+		}
+		cve_os_log(CVE_LOGLEVEL_DEBUG,
+				"Reset ice trace related fields for dev %d\n",
+				dev->dev_index);
+		/* Reset the ice trace related fields */
+		__reset_icedrv_trace(dev);
+	}
+	for (i = 0; i < dg->trace_node_cnt; i++) {
+		if (dg->node_group_sysfs[i].node_kobj) {
+			kobject_put(dg->node_group_sysfs[i].node_kobj);
+			dg->node_group_sysfs[i].node_kobj = NULL;
+		}
+	}
+	ret = OS_FREE(dg->node_group_sysfs,
+		sizeof(struct trace_node_sysfs) * dg->trace_node_cnt);
+	dg->node_group_sysfs = NULL;
+	dg->trace_node_cnt = 0;
+
+}
+
+ssize_t store_trace_node_cnt(struct kobject *kobj,
+			struct kobj_attribute *attr,
+			const char *buf, size_t count)
+{
+	char *node_cnt;
+	int ret = 0;
+	int dump;
+	struct cve_device_group *dg;
+
+	dg = cve_dg_get();
+
+	node_cnt = (char *)buf;
+	node_cnt = strim(node_cnt);
+
+	if (node_cnt == NULL)
+		return -EFAULT;
+
+	ret = kstrtoint(node_cnt, 10, &dump);
+	if (ret < 0)
+		return ret;
+
+	cve_os_log(CVE_LOGLEVEL_DEBUG, "store_trace_node_cnt %d\n", dump);
+	if (dg->trace_node_cnt)
+		free_old_nodes();
+
+	dg->trace_node_cnt = dump;
+	ret = create_kobj_nodes();
+	if (ret != dump) {
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+			"node count is %d but created kobj return  %d\n",
+				dump, ret);
+	}
+	return count;
+}
+
+ssize_t store_jobs(struct kobject *kobj,
+		struct kobj_attribute *attr,
+		const char *buf, size_t count)
+{
+	char *dump_s;
+	int i = 0;
+	struct trace_node_sysfs *node;
+	int dump;
+	int ret;
+	int index;
+	struct cve_device_group *dg;
+
+	dg = cve_dg_get();
+
+	ret = sscanf(kobj->name, "node%d", &index);
+	if (ret < 1) {
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+			"falied to get node index %s\n", kobj->name);
+		return -EFAULT;
+	}
+	node = &dg->node_group_sysfs[index];
+	while ((dump_s = strsep((char **)&buf, ",")) != NULL) {
+		dump_s = strim(dump_s);
+		ret = kstrtoint(dump_s, 10, &dump);
+		if (ret < 0)
+			return -EFAULT;
+		node->job_list[i] = dump;
+		i++;
+
+	}
+	node->job_count = i;
+	for (i = 0; i < node->job_count; i++)
+		cve_os_log(CVE_LOGLEVEL_DEBUG,
+			"job_# is: %d\n", node->job_list[i]);
+	cve_os_log(CVE_LOGLEVEL_DEBUG,
+		"Job_count is %d", node->job_count);
+	return count;
 }
 
 static ssize_t set_dump_pmon_status(struct kobject *kobj,
@@ -1652,15 +2279,24 @@ ssize_t store_pmon(struct kobject *kobj,
 	int tmp_pmonindex;
 	int tmp_daemonfreq;
 	u32 dev_index;
+	u32 node_index;
 	int ret = 0;
 	struct cve_device *ice_dev;
+	struct cve_device_group *dg;
+	struct trace_node_sysfs *node;
 
+	dg = cve_dg_get();
 
 	ret = sscanf(kobj->name, "ice%d", &dev_index);
 	if (ret < 1) {
-		cve_os_log(CVE_LOGLEVEL_ERROR, "failed getting ice id %s\n",
-						kobj->name);
-		return -EFAULT;
+		ret = sscanf(kobj->name, "node%u", &node_index);
+		if (ret < 1) {
+			cve_os_log(CVE_LOGLEVEL_ERROR,
+					"failed getting ice/node id %s\n",
+					kobj->name);
+			return -EFAULT;
+		}
+		goto node_pmon;
 	}
 	if (dev_index >= NUM_ICE_UNIT) {
 		cve_os_log(CVE_LOGLEVEL_ERROR, "wrong ice id %d\n", dev_index);
@@ -1726,6 +2362,54 @@ ssize_t store_pmon(struct kobject *kobj,
 		cve_os_log(CVE_LOGLEVEL_ERROR, "daemon sysfs config failed\n");
 		return ret;
 	}
+
+	return count;
+
+node_pmon:
+	node = &dg->node_group_sysfs[node_index];
+	node->job.daemon.conf.daemon_table_len = 0; /* a new deamon table */
+	/* TODO: Check for any side effect of const buf ptr given to strsep() */
+	while ((pmonset_s = strsep((char **)&buf, ":")) != NULL) {
+		pmonset_s = strim(pmonset_s);
+		cve_os_log(CVE_LOGLEVEL_DEBUG, "%s\n", pmonset_s);
+		pmonindex_s = strsep((char **)&pmonset_s, ",");
+		if (pmonindex_s == NULL)
+			return -EINVAL;
+
+		pmonindex_s = strim(pmonindex_s);
+
+		daemonfreq_s = strsep((char **)&pmonset_s, ",");
+		if (daemonfreq_s == NULL)
+			return -EINVAL;
+
+		daemonfreq_s = strim(daemonfreq_s);
+		ret = kstrtoint(pmonindex_s, 10, &tmp_pmonindex);
+		if (ret < 0)
+			return ret;
+
+		ret = kstrtoint(daemonfreq_s, 10, &tmp_daemonfreq);
+		if (ret < 0)
+			return ret;
+		cve_os_log(CVE_LOGLEVEL_DEBUG, "index: %d\t", tmp_pmonindex);
+		cve_os_log(CVE_LOGLEVEL_DEBUG, "freq: %d\n", tmp_daemonfreq);
+		ret = cve_os_lock(&g_cve_driver_biglock, CVE_INTERRUPTIBLE);
+		if (ret != 0)
+			return -ERESTARTSYS;
+		if (tmp_pmonindex < 0) {
+			pmonindex = 0;
+			daemonfreq = 0;
+		} else {
+			pmonindex = tmp_pmonindex + 1;
+			daemonfreq = tmp_daemonfreq;
+		}
+		ret = ice_trace_pmon_config_sysfs_node(daemonfreq, pmonindex,
+								node_index);
+		cve_os_unlock(&g_cve_driver_biglock);
+		if (ret < 0) {
+			cve_os_log(CVE_LOGLEVEL_ERROR, "pmon config failed\n");
+			return ret;
+		}
+	}
 	return count;
 }
 
@@ -1744,6 +2428,7 @@ static int  ice_trace_configure_pmonregs_sysfs(u32 dev_index)
 		ret = -ENODEV;
 		goto out;
 	}
+
 	pe_mask = (1 << ice_dev->dev_index) << 4;
 	value = cve_os_read_idc_mmio(ice_dev,
 				cfg_default.bar0_mem_icepe_offset);
@@ -1826,6 +2511,7 @@ static int  ice_trace_configure_reset_daemon_regs(u32 dev_index)
 		ret = -ENODEV;
 		goto out;
 	}
+
 	pe_mask = (1 << ice_dev->dev_index) << 4;
 	value = cve_os_read_idc_mmio(ice_dev,
 				cfg_default.bar0_mem_icepe_offset);
@@ -1875,6 +2561,173 @@ out:
 	return ret;
 }
 
+static int ice_trace_pmon_config_sysfs_node(u32 daemonfreq, u32 pmonindex,
+						int node_index)
+{
+	int ret = 0;
+	struct ice_register_reader_daemon *daemon_conf;
+	u8 consecutive = 0;
+	u32 curr_cfg;
+	u8 freqexp = 0;
+	u32 daemon_reg_offset;
+	struct ice_perf_counter_setup *pmon_config_conf;
+	u32 pmon_config_reg_offset = 0;
+	u32 pmon_config_value;
+	u32 pmon_config_mask = 0;
+	bool configure_pmon = true;
+	bool perform_reset = false;
+	struct cve_device_group *dg;
+	struct trace_node_sysfs *node;
+
+	dg = cve_dg_get();
+	node = &dg->node_group_sysfs[node_index];
+
+	FUNC_ENTER();
+	switch (pmonindex) {
+	/*reset PMON configuration */
+	case 0:
+		consecutive = 0;
+		perform_reset = true;
+		break;
+	/* MMU configuration Index */
+	case 1 ... 10:
+		consecutive = 0;
+		{
+			union ice_mmu_inner_mem_mmu_config_t reg;
+
+			pmon_config_reg_offset = cfg_default.mmu_base +
+						cfg_default.mmu_cfg_offset;
+
+
+			reg.val = 0;
+
+			/* Enable/Disable HW counters */
+			reg.field.ACTIVATE_PERFORMANCE_COUNTERS = 1;
+			pmon_config_value = 1;
+			pmon_config_mask = reg.val;
+		}
+		break;
+
+	/*GECOE configuration Index */
+	case 11 ... 16:
+		consecutive = 0;
+		configure_pmon = false;
+		break;
+
+	/*DELPHI configuration Index */
+	case 17 ... 18:
+		consecutive = 0;
+		configure_pmon = false;
+		break;
+
+	case 19 ... 26:
+		if (!ice_get_a_step_enable_flag()) {
+			consecutive = 0;
+			configure_pmon = false;
+			break;
+		}
+
+	default:
+		cve_os_log(CVE_LOGLEVEL_ERROR, "unsupported ipmon index\n");
+		ret = -EINVAL;
+		goto out;
+	}
+
+	daemon_reg_offset = __get_pmon_config_regoffset(pmonindex) &
+							0x3FFFF; /* b'17:0 */
+	switch (daemonfreq) {
+	case 0:
+		break;
+	case 256:
+	case 512:
+	case 1024:
+	case 2048:
+	case 4096:
+	case 8192:
+	case 32768:
+	case 65536:
+	case 131072:
+	case 262144:
+	case 524288:
+	case 1048576:
+	case 2097152:
+	case 4194304:
+	case 8388608:
+		freqexp = __builtin_ctz(daemonfreq) - 8; /*2^8 i.e.256 is base*/
+		break;
+	default:
+		freqexp = 2; /*1024 clks as default mode is selected*/
+		cve_os_log(CVE_LOGLEVEL_WARNING,
+				"Invalid Daemon freq.Default freq 1024 will be set\n");
+		break;
+	}
+	if (perform_reset) {
+		int i;
+
+		perform_daemon_reset_node(&node->job);
+
+		/*Perf Counters to default values*/
+		/*reset perf counter reg values that are set */
+		for (i = 0; i < node->job.perf_counter.perf_counter_config_len;
+							i++) {
+			node->job.perf_counter.conf[i].counter_value = 0x0;
+		}
+		node->job.perf_counter.is_default_config = true;
+
+	} else {
+		freqexp = 0xf & freqexp;/*only 4 bit b'23:20*/
+		cve_os_log(CVE_LOGLEVEL_DEBUG,
+				"freq exponent %d\n", freqexp);
+
+		daemon_conf = &node->job.daemon.conf;
+		/*TODO: check if only certain bit needs to be programmed */
+		/*Enable bit 0:0*/
+		daemon_conf->daemon_enable = 0x1;
+		/*Immediate read disabled bit 2:2 */
+
+		if (daemon_conf->daemon_table_len >= ICE_MAX_DAEMON_TABLE_LEN) {
+			cve_os_log(CVE_LOGLEVEL_ERROR,
+					"Daemon table index exceeded max limit\n");
+			goto out;
+
+		}
+		/* Driver currently doesn't support immediate read */
+		daemon_conf->daemon_control = 0x0;
+		daemon_conf->daemon_table[daemon_conf->daemon_table_len] =
+			(0x80000000 | (consecutive << 24) | freqexp << 20 |
+							daemon_reg_offset);
+		daemon_conf->daemon_table_len++;
+		node->job.daemon.daemon_config_status =
+				TRACE_STATUS_SYSFS_USER_CONFIG_WRITE_PENDING;
+		node->job.daemon.is_default_config = false;
+		/* PMON CONFIG*/
+		if (configure_pmon) {
+			curr_cfg =
+				node->job.perf_counter.perf_counter_config_len;
+			if (curr_cfg >= ICE_MAX_PMON_CONFIG) {
+				cve_os_log(CVE_LOGLEVEL_ERROR,
+					"PMON config len is beyond limit\n");
+				ret = -EINVAL;
+				goto out;
+			}
+			pmon_config_conf =
+				&node->job.perf_counter.conf[curr_cfg];
+			node->job.perf_counter.perf_counter_config_len++;
+
+			pmon_config_conf->register_offset =
+						pmon_config_reg_offset;
+			pmon_config_conf->counter_value = pmon_config_value;
+			pmon_config_conf->counter_config_mask =
+							pmon_config_mask;
+			node->job.perf_counter.perf_counter_config_status =
+				TRACE_STATUS_SYSFS_USER_CONFIG_WRITE_PENDING;
+			node->job.perf_counter.is_default_config = false;
+		}
+	}
+out:
+	FUNC_LEAVE();
+	return ret;
+}
 static int ice_trace_pmon_config_sysfs(u32 daemonfreq, u32 pmonindex,
 						struct cve_device *ice_dev)
 {
@@ -2058,9 +2911,27 @@ void perform_daemon_reset(struct cve_device *ice_dev)
 				"Daemon reset configuration\n");
 }
 
+void perform_daemon_reset_node(struct hwtrace_job *job)
+{
+	/*Daemon reset to default values */
+	job->daemon.conf.daemon_enable = 0; /* Disable */
+	job->daemon.conf.daemon_control = 0;
+	job->daemon.conf.daemon_table_len =
+				ICE_MAX_DAEMON_TABLE_LEN;
+
+	memset(job->daemon.conf.daemon_table, 0,
+			 ICE_MAX_DAEMON_TABLE_LEN * sizeof(u32));
+	job->daemon.daemon_config_status =
+			TRACE_STATUS_SYSFS_USER_CONFIG_WRITE_PENDING;
+	job->daemon.restore_needed_from_suspend = false;
+	job->daemon.is_default_config = true;
+	cve_os_log(CVE_LOGLEVEL_INFO,
+			"Daemon reset configuration(logical ice flow)\n");
+}
 void perform_daemon_suspend(struct cve_device *ice_dev)
 {
 	/*Daemon reset to default values */
+
 	ice_dev->daemon.reset_conf.daemon_enable = 0; /* Disable */
 	ice_dev->daemon.reset_conf.daemon_control = 0;
 	ice_dev->daemon.reset_conf.daemon_table_len =
@@ -2109,7 +2980,7 @@ static int ice_trace_enable_pmon_sysfs_init(void)
 	int ret;
 
 	/*Create the enable pmon file associated with hwtrace kobject*/
-	ret = sysfs_create_group(hwtrace_kobj, &enable_pmon_attr_group);
+	ret = sysfs_create_group(physical_ice_kobj, &enable_pmon_attr_group);
 
 	if (ret)
 		cve_os_log(CVE_LOGLEVEL_ERROR,
@@ -2134,7 +3005,21 @@ static int ice_trace_read_ice_pmon_sysfs_init(struct cve_device *ice_dev)
 static void ice_trace_enable_pmon_sysfs_term(void)
 {
 	/*Create the enable pmon file associated with hwtrace kobject*/
-	sysfs_remove_group(hwtrace_kobj, &enable_pmon_attr_group);
+	sysfs_remove_group(physical_ice_kobj, &enable_pmon_attr_group);
+}
+
+static int ice_trace_enable_trace_node_sysfs_init(void)
+{
+	int ret;
+
+	ret = sysfs_create_group(jobs_kobj, &enable_nodes_attr_group);
+
+	return ret;
+}
+
+static void ice_trace_enable_trace_node_sysfs_term(void)
+{
+	sysfs_remove_group(jobs_kobj, &enable_nodes_attr_group);
 }
 
 static void ice_trace_dso_sysfs_term(struct cve_device *ice_dev)
@@ -2167,12 +3052,43 @@ int ice_trace_sysfs_init(struct cve_device *ice_dev)
 	}
 
 	if (hwtrace_kobj)
-		goto ice_sysfs;
+		goto ice_sysfs_jobs;
 
 	hwtrace_kobj = kobject_create_and_add("hwtrace", icedrv_kobj);
 	if (!hwtrace_kobj) {
 		cve_os_dev_log(CVE_LOGLEVEL_ERROR, ice_dev->dev_index,
 					"hwtrace kobj creation failed\n");
+		ret = -ENOMEM;
+		goto out;
+	}
+/* TODO: Conditional check for jobs and physical */
+ice_sysfs_jobs:
+	if (jobs_kobj)
+		goto ice_sysfs_physical;
+
+	jobs_kobj = kobject_create_and_add("jobs", hwtrace_kobj);
+	if (!jobs_kobj) {
+		cve_os_dev_log(CVE_LOGLEVEL_ERROR, ice_dev->dev_index,
+				"jobs kobj creation failed\n");
+		ret = -ENOMEM;
+		goto out;
+	}
+	ret = ice_trace_enable_trace_node_sysfs_init();
+	if (ret) {
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+			"ice_trace_enable_trace_node_sysfs_init failed\n");
+		goto enable_trace_node_sysfs_free;
+	}
+
+
+ice_sysfs_physical:
+	if (physical_ice_kobj)
+		goto ice_sysfs;
+
+	physical_ice_kobj = kobject_create_and_add("physical", hwtrace_kobj);
+	if (!physical_ice_kobj) {
+		cve_os_dev_log(CVE_LOGLEVEL_ERROR, ice_dev->dev_index,
+				"physical ice kobj creation failed\n");
 		ret = -ENOMEM;
 		goto out;
 	}
@@ -2183,10 +3099,11 @@ int ice_trace_sysfs_init(struct cve_device *ice_dev)
 
 		goto hwtrace_kobj_free;
 	}
+
 ice_sysfs:
 	ice_dev->ice_kobj = NULL;
 	snprintf(name, sizeof(name), "ice%d", ice_dev->dev_index);
-	ice_dev->ice_kobj = kobject_create_and_add(name, hwtrace_kobj);
+	ice_dev->ice_kobj = kobject_create_and_add(name, physical_ice_kobj);
 	if (!ice_dev->ice_kobj) {
 		cve_os_dev_log(CVE_LOGLEVEL_ERROR, ice_dev->dev_index,
 				"ice%d kobj creation failed\n",
@@ -2223,7 +3140,10 @@ ice_kobj_free:
 	ice_dev->ice_kobj = NULL;
 enable_pmon_sysfs_free:
 	ice_trace_enable_pmon_sysfs_term();
+enable_trace_node_sysfs_free:
+	ice_trace_enable_trace_node_sysfs_term();
 hwtrace_kobj_free:
+	kobject_put(physical_ice_kobj);
 	kobject_put(hwtrace_kobj);
 	hwtrace_kobj = NULL;
 out:
@@ -2233,7 +3153,11 @@ out:
 
 void ice_trace_sysfs_term(struct cve_device *ice_dev)
 {
-	FUNC_ENTER();
+	int i;
+	int ret;
+	struct cve_device_group *dg;
+
+	dg = cve_dg_get();
 
 	if (ice_dev->ice_kobj) {
 		kobject_put(ice_dev->ice_kobj);
@@ -2249,7 +3173,35 @@ void ice_trace_sysfs_term(struct cve_device *ice_dev)
 					"hw_trace kobj deleted\n");
 	}
 
-	FUNC_LEAVE();
+	if (physical_ice_kobj) {
+		kobject_put(physical_ice_kobj);
+		physical_ice_kobj = NULL;
+		cve_os_dev_log(CVE_LOGLEVEL_DEBUG, ice_dev->dev_index,
+				"physical kobj deleted\n");
+	}
+
+	if (jobs_kobj) {
+		kobject_put(jobs_kobj);
+		jobs_kobj = NULL;
+		cve_os_dev_log(CVE_LOGLEVEL_DEBUG, ice_dev->dev_index,
+				"jobs kobj deleted\n");
+	}
+	if (dg->node_group_sysfs)
+		for (i = 0; i < dg->trace_node_cnt; i++) {
+
+			if (dg->node_group_sysfs[i].node_kobj) {
+				kobject_put(dg->node_group_sysfs[i].node_kobj);
+				dg->node_group_sysfs[i].node_kobj = NULL;
+			}
+
+	}
+	if (dg->node_group_sysfs) {
+		ret = OS_FREE(dg->node_group_sysfs,
+			sizeof(struct trace_node_sysfs) * dg->trace_node_cnt);
+		dg->node_group_sysfs = NULL;
+		dg->trace_node_cnt = 0;
+	}
+
 }
 
 static int ice_trace_write_dso_reg_sysfs(struct cve_device *ice_dev,
@@ -2326,6 +3278,37 @@ static int ice_trace_write_dso_reg_sysfs(struct cve_device *ice_dev,
 				TRACE_STATUS_SYSFS_USER_CONFIG_WRITE_DONE;
 out:
 	FUNC_LEAVE();
+	return ret;
+}
+
+static int ice_trace_set_job_observer_sysfs(u8 dso_reg_index, u32 dso_reg_val,
+							u32 node_index)
+{
+	int ret = 0;
+	struct trace_node_sysfs *node_ptr;
+	struct cve_device_group *dg;
+
+	dg = cve_dg_get();
+
+	FUNC_ENTER();
+	node_ptr = &dg->node_group_sysfs[node_index];
+
+	cve_os_log(CVE_LOGLEVEL_DEBUG,
+		"node_index is %d\n", node_index);
+
+	cve_os_log(CVE_LOGLEVEL_DEBUG,
+			"offset:%u USER VALUE %x\n",
+			__get_dso_regoffset(dso_reg_index), dso_reg_val);
+
+	node_ptr->job.dso.reg_offsets[dso_reg_index].croffset =
+					__get_dso_regoffset(dso_reg_index);
+
+	node_ptr->job.dso.reg_vals[dso_reg_index] = dso_reg_val;
+	node_ptr->job.dso.dso_config_status =
+				TRACE_STATUS_SYSFS_USER_CONFIG_WRITE_PENDING;
+
+	FUNC_LEAVE();
+
 	return ret;
 }
 
@@ -2453,6 +3436,53 @@ out:
 	return ret;
 }
 
+int __ice_trace_dso_config_port_regsoffset(struct cve_device *ice_dev)
+{
+	u8 icebo_num;
+	u8 i;
+	int ret = 0;
+	u8 port;
+
+	FUNC_ENTER();
+	icebo_num = ice_dev->dev_index / 2;
+	if (icebo_num >= MAX_NUM_ICEBO) {
+		cve_os_dev_log(CVE_LOGLEVEL_ERROR, ice_dev->dev_index,
+			"Invalid ICEBO number\n");
+		ret = -EINVAL;
+		goto out;
+	}
+	/*
+	 * ICE OBSERVER REGISTER
+	 *
+	 * -----------------------------------------------------
+	 * |Regbar base[39:24] | Port[23:16] | CR offset[15:0] |
+	 * -----------------------------------------------------
+	 *  CR offset[15:14] = b'00 -ICE0, b'01 ICE1
+	 *
+	 */
+	port = icebo_port_lookup[icebo_num];
+
+	for (i = 0; i < MAX_DSO_CONFIG_REG; i++)
+		ice_dev->dso.reg_offsets[i].port = port;
+
+	if (ice_dev->dev_index % 2) {
+		for (i = 0; i < MAX_DSO_CONFIG_REG; i++) {
+			if (ice_dev->dso.reg_offsets[i].croffset) {
+				ice_dev->dso.reg_offsets[i].croffset |=
+								0x4000;
+
+				cve_os_log(CVE_LOGLEVEL_DEBUG,
+				"offset:0x%x,value:0x%x\n",
+				ice_dev->dso.reg_offsets[i].croffset,
+				ice_dev->dso.reg_vals[i]);
+			}
+		}
+	}
+
+out:
+	FUNC_LEAVE();
+	return ret;
+}
 void configure_pmon_names(struct cve_device *dev)
 {
 	int i = 0;

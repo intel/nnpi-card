@@ -30,6 +30,7 @@ int ice_trace_set_reg_reader_daemon(struct ice_register_reader_daemon *daemon,
 							u32 dev_index);
 
 int ice_trace_register_uncore_callbacks(struct cve_device *ice_dev);
+int ice_trace_dso_register_uncore_callbacks(struct ice_dso_regs_data *dso);
 void ice_trace_unregister_uncore_callbacks(struct cve_device *ice_dev);
 int ice_trace_write_dso_regs(struct cve_device *ice_dev);
 int ice_trace_configure_registers_reader_demon(struct cve_device *ice_dev);
@@ -44,7 +45,7 @@ int ice_trace_restore_daemon_config(struct cve_device *ice_dev,
 int ice_trace_sysfs_init(struct cve_device *ice_dev);
 void ice_trace_sysfs_term(struct cve_device *ice_dev);
 int ice_trace_init_dso(struct cve_device *ice_dev);
-
+int __ice_trace_dso_config_port_regsoffset(struct cve_device *ice_dev);
 #if ICEDRV_ENABLE_HSLE_FLOW
 #define init_icedrv_trace(x) __no_op_stub
 #define term_icedrv_trace(x) __no_op_stub

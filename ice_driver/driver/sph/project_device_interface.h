@@ -71,6 +71,7 @@ int hw_config_sysfs_init(struct cve_device *ice_dev);
 void hw_config_sysfs_term(struct cve_device *ice_dev);
 void icedrv_sysfs_term(void);
 void perform_daemon_suspend(struct cve_device *ice_dev);
+void perform_daemon_reset_node(struct hwtrace_job *job);
 void perform_daemon_reset(struct cve_device *ice_dev);
 int sw_debug_sysfs_init(void);
 void sw_debug_sysfs_term(void);

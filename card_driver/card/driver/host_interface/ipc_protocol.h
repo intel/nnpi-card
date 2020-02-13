@@ -45,7 +45,7 @@ SPH_STATIC_ASSERT(SPH_PAGE_SHIFT <= PAGE_SHIFT, "SPH_PAGE_SIZE is bigger than PA
 					     ((minor) & 0x1f) << 5 | \
 					     ((dot) & 0x1f))
 
-#define SPH_IPC_PROTOCOL_VERSION SPH_MAKE_VERSION(2, 12, 0)
+#define SPH_IPC_PROTOCOL_VERSION SPH_MAKE_VERSION(2, 14, 0)
 
 /* Maximumum of free pages, which device can hold at any time */
 #define MAX_HOST_RESPONSE_PAGES 32

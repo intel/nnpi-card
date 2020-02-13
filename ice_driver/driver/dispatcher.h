@@ -54,6 +54,8 @@ int cve_ds_open_context(
 		int64_t obj_id,
 		u64 *out_context_id);
 
+void config_ds_trace_node_sysfs(struct cve_device *dev, struct ice_network *ntw,
+		struct job_descriptor *job, int id);
 /*
  * closes a connection channel with a user
  * inputs :

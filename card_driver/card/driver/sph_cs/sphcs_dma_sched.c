@@ -34,7 +34,7 @@
 #define MAX_SKIPPED_SERIAL 5
 
 // Disable use of C2H DMA channel 1 due since it getting hang after FLR reset.
-#define DMA_DISABLE_C2H_CHANNEL_1_WA
+//#define DMA_DISABLE_C2H_CHANNEL_1_WA
 
 const struct sphcs_dma_desc g_dma_desc_h2c_low = {
 	.dma_direction  = SPHCS_DMA_DIRECTION_HOST_TO_CARD,
@@ -138,6 +138,7 @@ struct sphcs_dma_sched_priority_queue {
 struct spch_dma_hw_channels {
 	u32 busy_mask;
 	struct sphcs_dma_req *inflight_req[SPHCS_DMA_NUM_HW_CHANNELS];
+	u32 spurious[SPHCS_DMA_NUM_HW_CHANNELS];
 	spinlock_t lock_irq;
 };
 
@@ -577,7 +578,10 @@ int sphcs_dma_sched_create(struct sphcs *sphcs,
 						SPHCH_DMA_CHANNEL_3);
 				break;
 			case SPHCS_DMA_PRIORITY_DTF:
-				q->allowed_hw_channels = (SPHCH_DMA_CHANNEL_3);
+				q->allowed_hw_channels = (SPHCH_DMA_CHANNEL_0 |
+						SPHCH_DMA_CHANNEL_1 |
+						SPHCH_DMA_CHANNEL_2 |
+						SPHCH_DMA_CHANNEL_3);
 				break;
 			}
 
@@ -837,7 +841,7 @@ int sphcs_dma_sched_start_xfer_single(struct sphcs_dma_sched *dmaSched,
 	return 0;
 }
 
-int sphcs_dma_sched_start_xfer(struct sphcs_dma_sched      *dmaSched,
+static int sphcs_dma_sched_start_xfer(struct sphcs_dma_sched      *dmaSched,
 			       const struct sphcs_dma_desc *desc,
 			       dma_addr_t                   lli,
 			       uint64_t                     transfer_size,
@@ -898,6 +902,86 @@ int sphcs_dma_sched_start_xfer(struct sphcs_dma_sched      *dmaSched,
 	return 0;
 }
 
+
+void sphcs_dma_multi_xfer_handle_init(struct sphcs_dma_multi_xfer_handle *handle)
+{
+	atomic_set(&handle->num_xfers, 0);
+	atomic_set(&handle->num_inflight, 0);
+	handle->status = 0;
+	handle->cb = NULL;
+	handle->cb_ctx = NULL;
+}
+
+static int sphcs_dma_multi_xfer_callback(struct sphcs *sphcs,
+					 void *ctx,
+					 const void *user_data,
+					 int status,
+					 u32 xferTimeUS)
+{
+	struct sphcs_dma_multi_xfer_handle *handle = (struct sphcs_dma_multi_xfer_handle *)ctx;
+
+	if ((status & SPHCS_DMA_STATUS_FAILED) != 0)
+		handle->status = status;
+
+	if (atomic_dec_and_test(&handle->num_inflight)) {
+		if (handle->cb)
+			(*handle->cb)(sphcs, handle->cb_ctx, NULL, handle->status, 0);
+		atomic_set(&handle->num_xfers, 0);
+	}
+
+	return 0;
+}
+
+int sphcs_dma_sched_start_xfer_multi(struct sphcs_dma_sched      *dmaSched,
+				     struct sphcs_dma_multi_xfer_handle *handle,
+				     const struct sphcs_dma_desc *desc,
+				     struct lli_desc             *lli,
+				     uint64_t                     transfer_size,
+				     sphcs_dma_sched_completion_callback callback,
+				     void                        *callback_ctx)
+{
+	int i;
+	int ret;
+
+	if (lli->num_lists == 1)
+		return sphcs_dma_sched_start_xfer(dmaSched,
+						  desc,
+						  lli->dma_addr + lli->offsets[0],
+						  transfer_size,
+						  callback,
+						  callback_ctx,
+						  NULL, 0);
+
+	if (atomic_cmpxchg(&handle->num_xfers, 0, lli->num_lists) != 0)
+		return -EBUSY;
+
+	handle->cb = callback;
+	handle->cb_ctx = callback_ctx;
+	handle->status = SPHCS_DMA_STATUS_DONE;
+	atomic_set(&handle->num_inflight, lli->num_lists);
+
+	for (i = 0; i < lli->num_lists; i++) {
+		ret = sphcs_dma_sched_start_xfer(dmaSched,
+						 desc,
+						 lli->dma_addr + lli->offsets[i],
+						 lli->xfer_size[i],
+						 sphcs_dma_multi_xfer_callback,
+						 handle,
+						 NULL, 0);
+		if (unlikely(ret != 0)) {
+			if (i == 0)
+				return ret;
+
+			while (i++ < lli->num_lists)
+				sphcs_dma_multi_xfer_callback(dmaSched->sphcs, handle, NULL, SPHCS_DMA_STATUS_FAILED, 0);
+
+			return 0;
+		}
+	}
+
+	return 0;
+}
+
 static void request_callback_handler(struct work_struct *work)
 {
 	struct sphcs_dma_request_callback_wq *cb_work = (struct sphcs_dma_request_callback_wq *)work;
@@ -930,6 +1014,12 @@ static int sphcs_dma_sched_xfer_complete_int(struct sphcs_dma_sched *dmaSched,
 	struct spcs_dma_direction_info *dir_info;
 	unsigned long flags;
 	struct sphcs_dma_req *req = DMA_HW_CHANNEL(dmaSched, dma_direction).inflight_req[channel];
+
+	if (unlikely(req == NULL)) {
+		/* Spurious DMA interrupt for not-busy channel */
+		DMA_HW_CHANNEL(dmaSched, dma_direction).spurious[channel]++;
+		return 0;
+	}
 
 	DO_TRACE(trace_dma(SPH_TRACE_OP_STATUS_COMPLETE, req->direction == SPHCS_DMA_DIRECTION_CARD_TO_HOST,
 			req->transfer_size, channel, req->priority, (uint64_t)(uintptr_t)req));
@@ -1105,16 +1195,17 @@ static int debug_direction_show(struct seq_file *m, void *v)
 		if (dir_info->hw_channels.busy_mask & BIT(i)) {
 			const struct sphcs_dma_req *req = dir_info->hw_channels.inflight_req[i];
 
-			seq_printf(m, "\tchan%d: busy req=0x%lx xfer_size=0x%llx pri=%u status=%u flags=0x%x serial=%u\n",
+			seq_printf(m, "\tchan%d: busy req=0x%lx xfer_size=0x%llx pri=%u status=%u flags=0x%x serial=%u spurious=%u\n",
 				   i,
 				   (uintptr_t)req,
 				   req->transfer_size,
 				   req->priority,
 				   req->status,
 				   req->flags,
-				   req->serial_channel);
+				   req->serial_channel,
+				   dir_info->hw_channels.spurious[i]);
 		} else {
-			seq_printf(m, "\tchan%d: idle\n", i);
+			seq_printf(m, "\tchan%d: spurious=%u idle\n", i, dir_info->hw_channels.spurious[i]);
 		}
 	}
 

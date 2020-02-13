@@ -86,6 +86,7 @@ static int process_dma_sg_command(struct sphcs *sphcs,
 				  struct sphcs_ult_dma_req_state *dmaState,
 				  const struct sphcs_dma_desc    *dmaDesc);
 
+#if 0
 static int sphcs_ult_dma_scatterGather_complete_callback(struct sphcs *sphcs, void *ctx, const void *user_data, int status, u32 timeUS)
 {
 	struct sphcs_ult_dma_req_state *dmaState = (struct sphcs_ult_dma_req_state *)ctx;
@@ -126,6 +127,7 @@ static int sphcs_ult_dma_scatterGather_complete_callback(struct sphcs *sphcs, vo
 	}
 	return 0;
 }
+#endif
 
 static int sphcs_ult_dma_single_with_polling_complete_callback(struct sphcs *sphcs,
 		void *ctx,
@@ -248,6 +250,7 @@ static int ult2_process_host_hwQ_msg(struct sphcs *sphcs, struct sphcs_cmd_chan 
 	return 0;
 }
 
+#if 0
 static void createSGTable(dma_addr_t dmaAddress, u32 dmaSize, struct sg_table *sgt, u16 tableMode)
 {
 	int nents, i = 0;
@@ -282,12 +285,13 @@ static void createSGTable(dma_addr_t dmaAddress, u32 dmaSize, struct sg_table *s
 		currentSgl = sg_next(currentSgl);
 	}
 }
-
+#endif
 
 static int process_dma_sg_command(struct sphcs *sphcs,
 				  struct sphcs_ult_dma_req_state *dmaState,
 				  const struct sphcs_dma_desc    *dmaDesc)
 {
+#if 0
 	int lliSize = 0;
 	struct sg_table srcSgt;
 	struct sg_table dstSgt;
@@ -367,6 +371,9 @@ static int process_dma_sg_command(struct sphcs *sphcs,
 				   0);
 
 	return 0;
+#else
+	return -EINVAL;
+#endif
 }
 
 static int process_dma_single_command(struct sphcs *sphcs, u64 *msg, u32 size)
@@ -416,6 +423,7 @@ static int process_dma_single_command(struct sphcs *sphcs, u64 *msg, u32 size)
 }
 
 
+#if 0
 static int sphcs_ult_dma_bandwidth_complete_callback(struct sphcs *sphcs, void *ctx, const void *user_data, int status, u32 timeUS)
 {
 	struct sphcs_ult_dma_req_state *dmaState = (struct sphcs_ult_dma_req_state *)ctx;
@@ -495,13 +503,14 @@ static int sphcs_ult_dma_bandwidth_complete_callback(struct sphcs *sphcs, void *
 		kfree(dmaState);
 
 	}
-
 	return 0;
 }
+#endif
 
 
 static int sphcs_ult_dma_bandwidth_parse_args_complete_callback(struct sphcs *sphcs, void *ctx, const void *user_data, int status, u32 timeUS)
 {
+#if 0
 	struct sphcs_ult_dma_req_state *dmaState = (struct sphcs_ult_dma_req_state *)ctx;
 
 	wait_queue_head_t dma_test_completion_wait;
@@ -939,6 +948,7 @@ static int sphcs_ult_dma_bandwidth_parse_args_complete_callback(struct sphcs *sp
 					  dmaState->dmaSize,
 					  sphcs_ult_dma_bandwidth_complete_callback,
 					  dmaState, NULL, 0);
+#endif
 	return 0;
 }
 

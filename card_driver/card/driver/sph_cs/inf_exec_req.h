@@ -55,7 +55,7 @@ struct inf_exec_req {
 	union {
 		struct {
 			struct inf_cpylst *cpylst;
-			dma_addr_t         lli_addr;
+			struct lli_desc   *lli;
 			uint16_t           num_opt_depend_devres;
 			struct inf_devres **opt_depend_devres;
 		};

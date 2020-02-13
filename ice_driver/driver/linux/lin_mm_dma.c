@@ -369,12 +369,11 @@ static void unmap_user_allocation(struct cve_os_allocation *cve_alloc_data,
 {
 	struct scatterlist *sglist =
 		cve_alloc_data->dma_handle.mem_handle.sgt->sgl;
-	struct cve_lin_mm_domain *hdomain =
-		(struct cve_lin_mm_domain *)cve_alloc_data->domain;
+	struct cve_device *ice = get_first_device();
 
 	FUNC_ENTER();
 
-	dma_unmap_sg(to_cve_os_device(hdomain->cve_dev)->dev,
+	dma_unmap_sg(to_cve_os_device(ice)->dev,
 			sglist, nents,
 			dir);
 
@@ -395,16 +394,15 @@ static int map_user_allocation(struct cve_os_allocation *cve_alloc_data,
 	int nents)
 {
 	int retval = CVE_DEFAULT_ERROR_CODE;
+	struct cve_device *ice = get_first_device();
 	struct scatterlist *sglist =
 		cve_alloc_data->dma_handle.mem_handle.sgt->sgl;
-	struct cve_lin_mm_domain *adom =
-		(struct cve_lin_mm_domain *)cve_alloc_data->domain;
 	int r_nents;
 
 	FUNC_ENTER();
 
 	/* dma address of user memory are set by dma_map_sg */
-	r_nents = dma_map_sg(to_cve_os_device(adom->cve_dev)->dev,
+	r_nents = dma_map_sg(to_cve_os_device(ice)->dev,
 			sglist,
 			nents,
 			dir);
@@ -867,6 +865,7 @@ static int ice_osmm_get_sgt(struct cve_dma_handle **dma_handle,
 	struct cve_os_allocation *cve_alloc_data = NULL;
 	struct cve_os_allocation *cve_alloc_list = NULL;
 	struct device *dev = NULL;
+	struct cve_device *ice = get_first_device();
 	os_domain_handle *hdomain = alloc->hdomain;
 
 	if (USER_MEM_ONLY(mem_type)) {
@@ -926,8 +925,6 @@ static int ice_osmm_get_sgt(struct cve_dma_handle **dma_handle,
 				dma_handle[i]->mem_type;
 		}
 		cve_alloc_data->domain = domain;
-		cve_alloc_data->cve_index =
-			domain->cve_dev->dev_index;
 
 		if (USER_MEM_ONLY(mem_type)) {
 			/*
@@ -962,7 +959,7 @@ static int ice_osmm_get_sgt(struct cve_dma_handle **dma_handle,
 		else if (SHARED_MEM_ONLY(mem_type)) {
 			cve_alloc_data->dma_handle.mem_type =
 				CVE_MEMORY_TYPE_SHARED_BUFFER_SG;
-			dev = to_cve_os_device(domain->cve_dev)->dev;
+			dev = to_cve_os_device(ice)->dev;
 
 			retval = dma_buf_sharing_connect_to_buffer(
 					dev, alloc, cve_alloc_data);
@@ -1174,31 +1171,6 @@ static void ice_osmm_unset_pte(struct lin_mm_allocation *alloc)
 			alloc->buf_meta_data.partition_id);
 
 		domain->pt_state |= PAGES_REMOVED_FROM_PAGE_TABLE;
-	}
-}
-
-/*
- * InferDomain contains an array of Domains per ICE. This
- * function will return ICE specific Domain.
- */
-void ice_osmm_get_inf_ice_domain(
-	os_domain_handle *hdom_src,
-	u32 dma_domain_array_size,
-	u32 dev_index,
-	os_domain_handle *hdom_dst)
-{
-	u32 i;
-
-	*hdom_dst = NULL;
-
-	for (i = 0; i < dma_domain_array_size; i++) {
-		struct cve_lin_mm_domain *dom =
-			(struct cve_lin_mm_domain *)hdom_src[i];
-
-		if (dom->cve_dev->dev_index == dev_index) {
-			*hdom_dst = dom;
-			break;
-		}
 	}
 }
 

@@ -1639,7 +1639,7 @@ static int cmdlist_create_dma_complete(struct sphcs *sphcs,
 				--cmd->num_left;
 				if (cmd->num_left == 0) {//after finilize is done
 					cmd->req_list[cmd->num_reqs].size = cmd->req_list[cmd->num_reqs].cpylst->size;
-					cmd->req_list[cmd->num_reqs].lli_addr = cmd->req_list[cmd->num_reqs].cpylst->lli_addr;
+					cmd->req_list[cmd->num_reqs].lli = &cmd->req_list[cmd->num_reqs].cpylst->lli;
 					++cmd->num_reqs;
 
 					DO_TRACE(trace_cpylist_create(SPH_TRACE_OP_STATUS_COMPLETE,
@@ -2005,6 +2005,13 @@ struct network_op_work {
 	union h2c_InferenceNetworkOp cmd;
 	int rbID;
 	uint32_t start_res_idx;
+};
+
+struct subres_op_work {
+	struct work_struct work;
+	struct sphcs *sphcs;
+	struct inf_context *context;
+	union h2c_ChanInferenceSchedCopySubres cmd;
 };
 
 struct network_dma_data {
@@ -3103,14 +3110,73 @@ send_error:
 				cmd->chanID, cmd->protCopyID);
 }
 
-void IPC_OPCODE_HANDLER(CHAN_SCHEDULE_COPY_SUBRES)(struct sphcs                 *sphcs,
-						   union h2c_ChanInferenceSchedCopySubres *cmd)
+static void copy_subres_op_work_handler(struct work_struct *work)
 {
-	struct inf_context *context;
+	struct subres_op_work *op = container_of(work,
+			struct subres_op_work,
+			work);
 	struct inf_copy *copy;
 	struct inf_exec_req *req;
 	enum event_val val;
 	int ret;
+
+	copy = inf_context_find_and_get_copy(op->context, op->cmd.protCopyID);
+	if (unlikely(copy == NULL)) {
+		val = SPH_IPC_NO_SUCH_COPY;
+		goto put_ctx;
+	}
+
+	req = kmem_cache_alloc(copy->context->exec_req_slab_cache, GFP_NOWAIT);
+	if (unlikely(req == NULL)) {
+		val = SPH_IPC_NO_MEMORY;
+		goto put_copy;
+	}
+
+	if (unlikely((op->cmd.dstOffset + (op->cmd.copySize + 1)) > copy->devres->size)) {
+		val = SPH_IPC_NO_MEMORY;
+		goto put_copy;
+	}
+
+	ret = inf_copy_req_init_subres_copy(req,
+					    copy,
+					    op->cmd.hostresID,
+					    op->cmd.dstOffset,
+					    op->cmd.copySize + 1);
+	if (ret) {
+		val = SPH_IPC_NO_MEMORY;
+		goto put_copy;
+	}
+
+	ret = req->f->schedule(req);
+	if (unlikely(ret < 0)) {
+		kmem_cache_free(copy->context->exec_req_slab_cache, req);
+		val = SPH_IPC_NO_MEMORY;
+		goto put_copy;
+	}
+
+	inf_copy_put(copy);
+	inf_context_put(op->context);
+
+	kfree(op);
+
+	return;
+
+put_copy:
+	inf_copy_put(copy);
+put_ctx:
+	inf_context_put(op->context);
+
+	sphcs_send_event_report(op->sphcs, SPH_IPC_EXECUTE_COPY_FAILED, val,
+				op->cmd.chanID, op->cmd.protCopyID);
+	kfree(op);
+}
+
+void IPC_OPCODE_HANDLER(CHAN_SCHEDULE_COPY_SUBRES)(struct sphcs                 *sphcs,
+						   union h2c_ChanInferenceSchedCopySubres *cmd)
+{
+	struct subres_op_work *work;
+	enum event_val val;
+	struct inf_context *context;
 
 	context = find_and_get_context(sphcs->inf_data, cmd->chanID);
 	if (unlikely(context == NULL)) {
@@ -3128,47 +3194,27 @@ void IPC_OPCODE_HANDLER(CHAN_SCHEDULE_COPY_SUBRES)(struct sphcs                 
 		goto put_ctx;
 	}
 
-	copy = inf_context_find_and_get_copy(context, cmd->protCopyID);
-	if (unlikely(copy == NULL)) {
-		val = SPH_IPC_NO_SUCH_COPY;
-		goto put_ctx;
-	}
-
-	req = kmem_cache_alloc(copy->context->exec_req_slab_cache, GFP_NOWAIT);
-	if (unlikely(req == NULL)) {
+	work = kzalloc(sizeof(*work), GFP_NOWAIT);
+	if (unlikely(work == NULL)) {
 		val = SPH_IPC_NO_MEMORY;
-		goto put_copy;
+		goto send_error;
 	}
 
-	ret = inf_copy_req_init_subres_copy(req,
-					    copy,
-					    cmd->hostresID,
-					    cmd->dstOffset,
-					    cmd->copySize);
-	if (ret) {
-		val = SPH_IPC_NO_MEMORY;
-		goto put_copy;
-	}
+	work->sphcs = sphcs;
+	work->context = context;
+	memcpy_s(work->cmd.value, sizeof(work->cmd.value), cmd->value, sizeof(cmd->value));
 
-	ret = req->f->schedule(req);
-	if (unlikely(ret < 0)) {
-		kmem_cache_free(copy->context->exec_req_slab_cache, req);
-		val = SPH_IPC_NO_MEMORY;
-		goto put_copy;
-	}
-
-	inf_copy_put(copy);
-	inf_context_put(context);
+	INIT_WORK(&work->work, copy_subres_op_work_handler);
+	queue_work(context->chan->wq, &work->work);
 
 	return;
 
-put_copy:
-	inf_copy_put(copy);
 put_ctx:
 	inf_context_put(context);
 send_error:
 	sphcs_send_event_report(sphcs, SPH_IPC_EXECUTE_COPY_FAILED, val,
 				cmd->chanID, cmd->protCopyID);
+	return;
 }
 
 static void handle_sched_cmdlist(struct inf_cmd_list *cmdlist,
@@ -3239,8 +3285,8 @@ static void handle_sched_cmdlist(struct inf_cmd_list *cmdlist,
 				if (req->cpylst->priorities[k] == 1)
 					req->priority = 1;
 			}
-			inf_cpylst_build_cur_lli(req->cpylst);
-			req->lli_addr = req->cpylst->cur_lli_addr;
+			if (inf_cpylst_build_cur_lli(req->cpylst) == 0)
+				req->lli = &req->cpylst->cur_lli;
 		}
 
 		SPH_SPIN_LOCK_IRQSAVE(&cmdlist->lock_irq, flags);
@@ -4653,7 +4699,11 @@ static void release_pending_create_context_reuquests(void *cmd_args)
 	struct inf_create_context *ctx_cmd_args = cmd_args;
 	struct inf_context *context = find_and_get_context(g_the_sphcs->inf_data, ctx_cmd_args->contextID);
 
-	SPH_ASSERT(context != NULL);
+	if (unlikely(context == NULL)) {
+		SPH_ASSERT(0);
+		return;
+	}
+
 	SPH_ASSERT(!context->daemon_ref_released);
 	inf_context_put(context);
 

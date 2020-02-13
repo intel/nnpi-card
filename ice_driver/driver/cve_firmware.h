@@ -54,14 +54,12 @@ struct cve_fw_file {
 
 /*
  * map firmware binary to device memory.
- * inputs : cve_device *cve_dev - pointer for device
- *          hdom - handle to os domain structure
+ * inputs : hdom - handle to os domain structure
  *          cve_fw_loaded_sections *fw_loaded_sec - fw loaded sections
  * outputs: cve_fw_mapped_sections *out_fw_mapped_sec - fw mapped sections
  * returns: 0 on success, a negative error code on failure
  */
 int cve_fw_map_sections(
-		struct cve_device *cve_dev,
 		const os_domain_handle hdom,
 		struct cve_fw_loaded_sections *fw_loaded_sec,
 		struct cve_fw_mapped_sections *out_fw_mapped_sec);
@@ -74,8 +72,7 @@ int cve_fw_map_sections(
  * outputs: cve_fw_loaded_sections *fw_sec - the firmware binary sections
  * returns: 0 on success, a negative error code on failure
  */
-int cve_fw_load_binary(struct cve_device *cve_dev,
-		const u64 fw_image,
+int cve_fw_load_binary(const u64 fw_image,
 		const u64 fw_binmap,
 		const u32 fw_binmap_size_bytes,
 		struct cve_fw_loaded_sections *out_fw_sec);
@@ -86,7 +83,7 @@ int cve_fw_load_binary(struct cve_device *cve_dev,
  * outputs:
  * returns:
  */
-void cve_mapped_fw_sections_cleanup(struct cve_device *cve_dev,
+void cve_mapped_fw_sections_cleanup(
 		struct cve_fw_mapped_sections *mapped_fw_sec);
 
 /*
@@ -116,8 +113,7 @@ int cve_fw_load(struct cve_device *cve_dev);
  *	initialized. The array size will be CVE_FW_CB_TYPE_MAX.
  * returns: 0 on success, a negative error code on failure
  */
-int cve_fw_map(struct cve_device *cve_dev,
-		os_domain_handle hdom,
+int cve_fw_map(os_domain_handle hdom,
 		struct cve_fw_mapped_sections **out_head,
 		cve_di_subjob_handle_t **out_embedded_cbs_subjobs);
 /*
@@ -134,12 +130,11 @@ void cve_fw_restore(struct cve_device *cve_dev,
 /*
  * unload all the firmware binaries that were loaded to specific
  * cve device
- * inputs :cve_dev - CVE device handle
- *         cve_fw_loaded_sections *fw_loaded_list - fw loaded list handle
+ * inputs : cve_fw_loaded_sections *fw_loaded_list - fw loaded list handle
  * outputs:
  * returns:
  */
-void cve_fw_unload(struct cve_device *cve_dev,
+void cve_fw_unload(struct cve_device *ice,
 		struct cve_fw_loaded_sections *fw_loaded_list);
 
 /*
@@ -152,8 +147,7 @@ void cve_fw_unload(struct cve_device *cve_dev,
  * outputs:
  * returns:
  */
-void cve_fw_unmap(struct cve_device *cve_dev,
-		struct cve_fw_mapped_sections *fw_mapped_sec,
+void cve_fw_unmap(struct cve_fw_mapped_sections *fw_mapped_sec,
 		cve_di_subjob_handle_t *embedded_cbs_subjobs);
 /*
  * reclaim firmware loading sections & dma handles
@@ -163,10 +157,10 @@ void cve_fw_unmap(struct cve_device *cve_dev,
  * outputs:
  * returns:
  */
-void cve_fw_sections_cleanup(struct cve_device *cve_dev,
-	struct cve_fw_section_descriptor *sections_lst,
-	struct cve_dma_handle *dma_handles_lst,
-	u32 list_items_nr);
+void cve_fw_sections_cleanup(struct cve_device *ice,
+		struct cve_fw_section_descriptor *sections_lst,
+		struct cve_dma_handle *dma_handles_lst,
+		u32 list_items_nr);
 
 
 int cve_fw_load_firmware_via_files(struct cve_device *cve_dev,

@@ -18,17 +18,31 @@ typedef bool (*genlli_get_next_cb)(void             *ctx,
 				   struct sg_table **out_src,
 				   struct sg_table **out_dst,
 				   uint64_t         *out_max_size);
+
+#define SPH_LLI_MAX_LISTS 4
+
+struct lli_desc {
+	dma_addr_t dma_addr;
+	void      *vptr;
+	u32        size;
+	u32        num_elements;
+	u32        num_filled;
+	u32        num_lists;
+	u32        offsets[SPH_LLI_MAX_LISTS];
+	u64        xfer_size[SPH_LLI_MAX_LISTS];
+};
+
 struct sphcs_dma_hw_ops {
 	/* called on error recovery */
 	void (*reset_rd_dma_engine)(void *hw_handle);
 	void (*reset_wr_dma_engine)(void *hw_handle);
 	/* called once on start up*/
 	int (*init_dma_engine)(void *hw_handle);
-	u32 (*calc_lli_size)(void *hw_handle, struct sg_table *src, struct sg_table *dst, uint64_t dst_offset);
-	u64 (*gen_lli)(void *hw_handle, struct sg_table *src, struct sg_table *dst, void *outLli, uint64_t dst_offset);
-	int (*edit_lli)(void *hw_handle, void *outLli, uint32_t size);
-	u32 (*calc_lli_size_vec)(void *hw_handle, uint64_t dst_offset, genlli_get_next_cb cb, void *cb_ctx);
-	u64 (*gen_lli_vec)(void *hw_handle, void *outLli, uint64_t dst_offset, genlli_get_next_cb cb, void *cb_ctx);
+	int (*init_lli)(void *hw_handle, struct lli_desc *outLli, struct sg_table *src, struct sg_table *dst, uint64_t dst_offset);
+	u64 (*gen_lli)(void *hw_handle, struct sg_table *src, struct sg_table *dst, struct lli_desc *outLli, uint64_t dst_offset);
+	int (*edit_lli)(void *hw_handle, struct lli_desc *outLli, uint32_t size);
+	int (*init_lli_vec)(void *hw_handle, struct lli_desc *outLli, uint64_t dst_offset, genlli_get_next_cb cb, void *cb_ctx);
+	u64 (*gen_lli_vec)(void *hw_handle, struct lli_desc *outLli, uint64_t dst_offset, genlli_get_next_cb cb, void *cb_ctx);
 	int (*start_xfer_h2c)(void *hw_handle, int channel, u32 priority, dma_addr_t lli_addr);
 	int (*start_xfer_c2h)(void *hw_handle, int channel, u32 priority, dma_addr_t lli_addr);
 	int (*start_xfer_h2c_single)(void *hw_handle, int channel, u32 priority, dma_addr_t src, dma_addr_t dst, u32 size);

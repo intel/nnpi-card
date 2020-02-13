@@ -64,8 +64,8 @@ TRACE_EVENT(SPH_TRACE_INFREQ,
 
 
 TRACE_EVENT(SPH_TRACE_COPY,
-	TP_PROTO(u8 state, u32 ctxID, u32 copyID, int cmdlistID, u8 isC2H, u64 size, int n_copies),
-	TP_ARGS(state, ctxID, copyID, cmdlistID, isC2H, size, n_copies),
+	TP_PROTO(u8 state, u32 ctxID, u32 copyID, int cmdlistID, u8 isC2H, u64 size, int n_copies, u8 n_dma),
+	TP_ARGS(state, ctxID, copyID, cmdlistID, isC2H, size, n_copies, n_dma),
 	SPH_TP_STRUCT__entry(
 			__field(u64, size)
 			__field(u32, ctxID)
@@ -74,6 +74,7 @@ TRACE_EVENT(SPH_TRACE_COPY,
 			__field(int, n_copies)
 			__field(u8, isC2H)
 			__field(u8, state)
+			__field(u8, n_dma)
 	),
 	SPH_TP_fast_assign(
 			__entry->state = state;
@@ -83,15 +84,17 @@ TRACE_EVENT(SPH_TRACE_COPY,
 			__entry->isC2H = isC2H;
 			__entry->size = size;
 			__entry->n_copies = n_copies;
+			__entry->n_dma = n_dma;
 	),
-	SPH_TP_printk("state=%s ctxID=%u copyID=%u cmdlistID=%d isC2H=%d size=0x%llx, n_copies=%d",
+	SPH_TP_printk("state=%s ctxID=%u copyID=%u cmdlistID=%d isC2H=%d size=0x%llx, n_copies=%d, n_dma=%d",
 		  sph_trace_op_to_str[__entry->state],
 		  __entry->ctxID,
 		  __entry->copyID,
 		  __entry->cmdlistID,
 		  __entry->isC2H,
 		  __entry->size,
-		  __entry->n_copies)
+		  __entry->n_copies,
+		  __entry->n_dma)
 );
 
 TRACE_EVENT(SPH_TRACE_CMDLIST,
