@@ -637,9 +637,9 @@ int do_reset_device(struct cve_device *cve_dev, uint8_t idc_reset)
 
 	err = ice_di_is_shared_read_error(cve_dev);
 	if (err) {
-		cve_os_dev_log_default(CVE_LOGLEVEL_ERROR,
+		cve_os_dev_log_default(CVE_LOGLEVEL_INFO,
 			cve_dev->dev_index,
-			"Error: shared_read_status value:%x\n",
+			"shared_read_status value:%x\n",
 			err);
 	}
 
@@ -731,7 +731,8 @@ int do_reset_device(struct cve_device *cve_dev, uint8_t idc_reset)
 	configure_llc(cve_dev);
 
 	/* configure default ICE frequency */
-	retval = configure_ice_frequency(cve_dev);
+	configure_ice_frequency(cve_dev);
+
 	return retval;
 }
 
@@ -940,7 +941,7 @@ int set_ice_freq(void *ice_freq_config)
 	   (freq_config->ice_freq > max_freq_allowed ||
 	   (freq_config->ice_freq % ICE_FREQ_DIVIDER_FACTOR != 0))) {
 		retval = -ICEDRV_KERROR_INVAL_ICE_FREQ;
-		cve_os_log(CVE_LOGLEVEL_ERROR,
+		cve_os_log_default(CVE_LOGLEVEL_ERROR,
 		"ERROR:%d ice freq param should be in range of %d-%d , multiple of 25 ( freq:%u)\n",
 			retval, MIN_ICE_FREQ_PARAM, max_freq_allowed,
 			freq_config->ice_freq);

@@ -901,46 +901,6 @@ u8 ice_dump_mmu_pmon(void)
 	return drv_config_param.enable_mmu_pmon;
 }
 
-void ice_dg_adjust_ntw_ice_req(struct ice_network *ntw)
-{
-	struct cve_device_group *dg = cve_dg_get();
-
-	if (dg->in_pool_pbo < ntw->num_picebo_req) {
-
-		u8 total_ntw_ice = (2 * ntw->num_picebo_req) +
-					ntw->num_dicebo_req;
-
-		/* if here then it means that requested resource is not met
-		 * hence fall back to default case
-		 */
-		ntw->num_picebo_req = dg->in_pool_pbo;
-		ntw->num_dicebo_req = total_ntw_ice -
-					(2 * ntw->num_picebo_req);
-		cve_os_log(CVE_LOGLEVEL_DEBUG,
-			"NtwID:0x%llx ICE requirement updated now pICEBO:%d dICEBO:%d\n",
-			ntw->network_id, ntw->num_picebo_req,
-			ntw->num_dicebo_req);
-
-		/*ICEBO request could not be met, so disable shared read also*/
-		ntw->shared_read = 0;
-	} else {
-		/* If here then it means that requested resource is met
-		 * and ICEBO_PREFERRED can act like MANDATORY during scheduling
-		 * hence changing icebo_req
-		 */
-		if (ntw->icebo_req) {
-			ntw->icebo_req = ICEBO_MANDATORY;
-			ntw->shared_read = 1;
-		} else {
-			ntw->shared_read = 0;
-		}
-		cve_os_log(CVE_LOGLEVEL_DEBUG,
-			"NtwID:0x%llx icebo_req:%d\n",
-			ntw->network_id, ntw->icebo_req);
-
-	}
-}
-
 enum resource_status ice_dg_check_resource_availability(struct ice_network *ntw)
 {
 	/* TODO: Add debug logs */
@@ -949,26 +909,30 @@ enum resource_status ice_dg_check_resource_availability(struct ice_network *ntw)
 	enum resource_status tmp_status;
 	enum resource_status status = RESOURCE_INSUFFICIENT;
 
-	if (ntw->icebo_req == ICEBO_MANDATORY) {
+	if (ntw->temp_icebo_req != ICEBO_DEFAULT) {
 
-		if (ntw->num_picebo_req <= dg->in_pool_pbo)
+		int in_pool_dice = 2 * (dg->in_pool_pbo - ntw->temp_pbo_req) +
+				dg->in_pool_dice;
+		int non_res_dice = 2 * (dg->non_res_pbo - ntw->temp_pbo_req) +
+				dg->non_res_dice;
+
+		if ((ntw->temp_pbo_req <= dg->in_pool_pbo) &&
+			(ntw->temp_dice_req <= in_pool_dice))
+
 			tmp_status = RESOURCE_OK;
-		else if (ntw->num_picebo_req <= dg->non_res_pbo)
-			tmp_status = RESOURCE_BUSY;
-		else
-			goto out;
 
-		if (ntw->num_dicebo_req <= dg->in_pool_dice)
-			tmp_status = tmp_status;
-		else if (ntw->num_dicebo_req <= dg->non_res_dice)
+		else if ((ntw->temp_pbo_req <= dg->non_res_pbo) &&
+			(ntw->temp_dice_req <= non_res_dice))
+
 			tmp_status = RESOURCE_BUSY;
+
 		else
 			goto out;
 
 	} else {
 
-		int num_ice_req = (2 * ntw->num_picebo_req) +
-					ntw->num_dicebo_req;
+		int num_ice_req = (2 * ntw->temp_pbo_req) +
+					ntw->temp_dice_req;
 		int num_ice_pool = (2 * dg->in_pool_pbo) +
 					dg->in_pool_dice;
 		int num_ice_non_res = (2 * dg->non_res_pbo) +
@@ -985,13 +949,9 @@ enum resource_status ice_dg_check_resource_availability(struct ice_network *ntw)
 
 	__local_builtin_popcount(ntw->cntr_bitmap, count);
 	if (count <= dg->num_avl_cntr)
-		tmp_status = tmp_status;
+		status = tmp_status;
 	else if (count <= dg->num_nonres_cntr)
-		tmp_status = RESOURCE_BUSY;
-	else
-		goto out;
-
-	status = tmp_status;
+		status = RESOURCE_BUSY;
 
 out:
 	return status;
@@ -1003,6 +963,11 @@ bool ice_dg_can_lazy_capture_ice(struct ice_network *ntw)
 	bool lazy_capture = true;
 	struct cve_device *dev;
 	struct job_descriptor *job;
+
+	if (ntw->temp_icebo_req != ntw->given_icebo_req) {
+		lazy_capture = false;
+		goto out;
+	}
 
 	/* Check if previous ICEs are still available */
 	for (i = 0; i < ntw->jg_list->submitted_jobs_nr; i++) {
@@ -1028,7 +993,7 @@ bool ice_dg_can_lazy_capture_ice(struct ice_network *ntw)
 			break;
 		}
 	}
-
+out:
 	return lazy_capture;
 }
 
@@ -1092,7 +1057,9 @@ void ice_dg_borrow_this_ice(struct ice_network *ntw,
 	bo->in_pool_ice--;
 }
 
-void ice_dg_borrow_next_pbo(struct ice_network *ntw)
+void ice_dg_borrow_next_pbo(struct ice_network *ntw,
+	struct job_descriptor *job_0,
+	struct job_descriptor *job_1)
 {
 	struct cve_device_group *dg = cve_dg_get();
 	struct icebo_desc *bo = dg->dev_info.picebo_list;
@@ -1101,14 +1068,15 @@ void ice_dg_borrow_next_pbo(struct ice_network *ntw)
 	/* add first device of BOn to ntw ice list */
 	dev = bo->dev_list;
 	ice_dg_borrow_this_ice(ntw, dev, false);
+	job_0->hw_ice_id = dev->dev_index;
 
 	dev = cve_dle_next(dev, bo_list);
 	ice_dg_borrow_this_ice(ntw, dev, false);
-
-	ntw->pjob_info.picebo[bo->bo_id] = 1;
+	job_1->hw_ice_id = dev->dev_index;
 }
 
-void ice_dg_borrow_next_dice(struct ice_network *ntw)
+void ice_dg_borrow_next_dice(struct ice_network *ntw,
+	struct job_descriptor *job_0)
 {
 	struct cve_device_group *dg = cve_dg_get();
 	struct icebo_desc *bo;
@@ -1130,8 +1098,7 @@ void ice_dg_borrow_next_dice(struct ice_network *ntw)
 
 	ASSERT(dev);
 	ice_dg_borrow_this_ice(ntw, dev, false);
-
-	ntw->pjob_info.dicebo[bo->bo_id] = dev->dev_index;
+	job_0->hw_ice_id = dev->dev_index;
 }
 
 void ice_dg_reserve_this_ice(struct cve_device *dev)

@@ -129,8 +129,7 @@ ice_va_t cve_osmm_alloc_get_iova(os_allocation_handle halloc);
  * outputs: out_hdomain - a handle to the domain
  * returns: 0 on success, a negative error code on failure
  */
-int cve_osmm_get_domain(struct cve_device *cve_dev,
-		u64 *sz_per_page_alignment,
+int cve_osmm_get_domain(u8 id, u64 *sz_per_page_alignment,
 		u64 *infer_buf_page_config,
 		os_domain_handle *out_hdomain);
 
@@ -234,11 +233,5 @@ int cve_osmm_domain_copy(os_domain_handle *hdom_src,
 
 void cve_osmm_domain_destroy(os_domain_handle *hdom,
 		u32 domain_array_size);
-
-void ice_osmm_get_inf_ice_domain(
-	os_domain_handle *hdom_src,
-	u32 dma_domain_array_size,
-	u32 dev_index,
-	os_domain_handle *hdom_dst);
 
 #endif /* _OS_MM_DMA_H_ */

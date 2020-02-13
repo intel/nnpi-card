@@ -7,6 +7,7 @@
 #define _SPHCS_DMA_SCHED_H
 
 #include "sphcs_pcie.h"
+#include <linux/atomic.h>
 #include <linux/debugfs.h>
 
 struct sphcs_dma_sched;
@@ -65,6 +66,14 @@ typedef int (*sphcs_dma_sched_completion_callback)(struct sphcs *sphcs,
 						   int status,
 						   u32 xferTimeUS);
 
+struct sphcs_dma_multi_xfer_handle {
+	atomic_t num_xfers;
+	atomic_t num_inflight;
+	int status;
+	sphcs_dma_sched_completion_callback cb;
+	void                               *cb_ctx;
+};
+
 static inline enum sphcs_dma_direction sph_dma_direction(bool card2host)
 {
 	return card2host ? SPHCS_DMA_DIRECTION_CARD_TO_HOST : SPHCS_DMA_DIRECTION_HOST_TO_CARD;
@@ -110,14 +119,15 @@ int sphcs_dma_sched_start_xfer_single(struct sphcs_dma_sched *dmaSched,
 				      const void *user_data,
 				      u32 user_data_size);
 
-int sphcs_dma_sched_start_xfer(struct sphcs_dma_sched      *dmaSched,
-			       const struct sphcs_dma_desc *desc,
-			       dma_addr_t                   lli,
-			       uint64_t                     transfer_size,
-			       sphcs_dma_sched_completion_callback callback,
-			       void                        *callback_ctx,
-			       const void                  *user_data,
-			       u32                          user_data_size);
+void sphcs_dma_multi_xfer_handle_init(struct sphcs_dma_multi_xfer_handle *handle);
+
+int sphcs_dma_sched_start_xfer_multi(struct sphcs_dma_sched      *dmaSched,
+				     struct sphcs_dma_multi_xfer_handle *handle,
+				     const struct sphcs_dma_desc *desc,
+				     struct lli_desc             *lli,
+				     uint64_t                     transfer_size,
+				     sphcs_dma_sched_completion_callback callback,
+				     void                        *callback_ctx);
 
 int sphcs_dma_sched_h2c_xfer_complete_int(struct sphcs_dma_sched *dmaSched,
 					  int channel,

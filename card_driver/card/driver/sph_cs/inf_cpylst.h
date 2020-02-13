@@ -15,6 +15,7 @@
 #include "inf_devres.h"
 #include "inf_cmd_list.h"
 #include "sphcs_sw_counters.h"
+#include "sphcs_pcie.h"
 
 struct inf_cpylst {
 	void                 *magic;
@@ -30,13 +31,9 @@ struct inf_cpylst {
 	bool                  active;
 
 
-	dma_addr_t  lli_addr;
-	size_t      lli_size;
-	void       *lli_buf;
-
-	dma_addr_t  cur_lli_addr;
-	size_t      cur_lli_size;
-	void       *cur_lli_buf;
+	struct lli_desc lli;
+	struct lli_desc cur_lli;
+	struct sphcs_dma_multi_xfer_handle multi_xfer_handle;
 
 	struct sph_sw_counters *sw_counters;
 
@@ -59,7 +56,7 @@ int inf_cpylst_add_copy(struct inf_cpylst  *cpylst,
 			uint64_t size,
 			uint8_t priority);
 
-void inf_cpylst_build_cur_lli(struct inf_cpylst *cpylst);
+int inf_cpylst_build_cur_lli(struct inf_cpylst *cpylst);
 
 void inf_cpylst_get(struct inf_cpylst *cpylst);
 int inf_cpylst_put(struct inf_cpylst *cpylst);

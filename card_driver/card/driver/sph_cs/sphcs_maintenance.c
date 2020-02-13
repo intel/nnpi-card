@@ -37,7 +37,7 @@
 #define FPGA_REVISION_REG              11
 #define FPGA_SCRATCHPAD_REG            12
 #define FPGA_FRU_PRD_SERIAL_BASE_REG   13
-#define FPGA_FRU_PRD_SERIAL_LEN         7
+#define FPGA_FRU_PRD_SERIAL_LEN         6
 #define FPGA_FRU_BRD_PART_NO_BASE_REG  20
 #define FPGA_FRU_BRD_PART_NO_LEN        5
 

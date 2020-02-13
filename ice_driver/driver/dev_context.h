@@ -26,37 +26,27 @@
 #include "cve_linux_internal.h"
 
 /*
- * allocated a list of dev contexts per cve device according to num
- * of cve devices in the system
+ * allocate a list of dev contexts according to num of ICE requested by the
+ * network
  * inputs :
  * outputs:
  *	out_hctx_list -  will hold a handle to the list of dev contexts per
  *                   cve device
  * returns: 0 on success, a negative error code on failure
  */
-int cve_dev_open_all_contexts(u64 *va_partition_config,
-		u64 *infer_buf_page_config,
-		cve_dev_context_handle_t *out_hctx_list);
+int ice_init_sw_dev_contexts(struct ice_network_descriptor *ntw_desc,
+		struct ice_network *ntw);
 
 /*
  * free all the resources that were taken by the dev contexts (per cve
  * context)
  * inputs : hcontext_list - pointer to the list of dev contexts
+ * loaded_cust_fw_sections - list of custome fws
  * outputs:
  * returns:
  */
-void cve_dev_close_all_contexts(cve_dev_context_handle_t hcontext_list);
-
-/*
- * get device context according to provided CVE device index
- * inputs : hcontext_list - device context list
- *          dev_index - CVE device index
- *          out_hcontext - pointer to device context
- * outputs:
- * returns:
- */
-void cve_dev_context_get_by_cve_idx(cve_dev_context_handle_t hcontext_list,
-	u32 dev_index, cve_dev_context_handle_t *out_hcontext);
+void ice_fini_sw_dev_contexts(cve_dev_context_handle_t hcontext_list,
+		struct cve_fw_loaded_sections *loaded_fw_sections_list);
 
 /*
  * get array of CVE domains in current context
@@ -93,25 +83,28 @@ void cve_dev_restore_fws(struct cve_device *cve_dev,
 int cve_dev_fw_load_and_map(cve_dev_context_handle_t hcontext,
 		const u64 fw_image,
 		const u64 fw_binmap,
-		const u32 fw_binmap_size_bytes);
+		const u32 fw_binmap_size_bytes,
+		struct cve_fw_loaded_sections **out_fw_sec);
 
 void cve_dev_get_emb_cb_list(cve_dev_context_handle_t hcontext,
 		cve_di_subjob_handle_t **out_embedded_cbs_subjobs);
 
-void cve_dev_get_os_domain(cve_dev_context_handle_t hcontext,
-		os_domain_handle *out_hdom);
-
 void cve_dev_get_custom_fw_version_per_context(
-	cve_dev_context_handle_t hcontext,
+	struct cve_fw_loaded_sections *loaded_fw_sections_list,
 	enum fw_binary_type fw_type,
 	Version *out_fw_version);
 
 void cve_di_reset_cve_dump(struct cve_device *dev,  uint8_t dumpTrigger,
 		struct di_cve_dump_buffer ice_dump_buf);
 
-int cve_bar1_map(struct cve_device *cve_dev,
-		os_domain_handle hdom,
-		cve_mm_allocation_t *out_alloc_handle);
+void ice_map_dev_and_context(cve_dev_context_handle_t dev_ctx,
+	struct cve_device *dev);
+void ice_unmap_dev_and_context(cve_dev_context_handle_t dev_ctx);
+
+void ice_unmap_bar1(cve_dev_context_handle_t dev_ctx);
+
+int ice_map_bar1(struct cve_device *ice,
+		cve_dev_context_handle_t dev_ctx);
 
 /*
  * Allocate and map CBDT memory for given Device and Context

@@ -313,8 +313,7 @@ static int cve_fw_load_firmware_from_kernel_mem(struct cve_device *cve_dev,
 
 out:
 	if (retval != 0) {
-		cve_fw_sections_cleanup(cve_dev,
-			sections_impl,
+		cve_fw_sections_cleanup(NULL, sections_impl,
 			dma_handles,
 			sections_nr);
 
@@ -372,8 +371,7 @@ failed_to_vmap:
 
 }
 
-static int cve_fw_load_firmware_from_user_mem(struct cve_device *cve_dev,
-		u64 fw_image,
+static int cve_fw_load_firmware_from_user_mem(u64 fw_image,
 		u64 fw_binmap,
 		u32 fw_binmap_size_bytes,
 		u32 *out_sections_nr,
@@ -383,6 +381,7 @@ static int cve_fw_load_firmware_from_user_mem(struct cve_device *cve_dev,
 {
 	int retval = CVE_DEFAULT_ERROR_CODE;
 	u32 sections_nr = 0;
+	struct cve_device *dev = get_first_device();
 	/* hold a pointer to the map file interface sections */
 	struct ICVE_FIRMWARE_SECTION_DESCRIPTOR *sections = NULL;
 	/* hold a pointer to the map file impl sections */
@@ -465,7 +464,7 @@ static int cve_fw_load_firmware_from_user_mem(struct cve_device *cve_dev,
 		}
 
 		/* Allocate DMA'able memory and get its kernel virt address */
-		retval = OS_ALLOC_DMA_SG(cve_dev,
+		retval = OS_ALLOC_DMA_SG(dev,
 				s->size_bytes,
 				1,
 				&dma_handles[i],
@@ -490,7 +489,7 @@ static int cve_fw_load_firmware_from_user_mem(struct cve_device *cve_dev,
 
 		/* Flush CPU caches, if needed */
 		if (!(s->permissions & CVE_MM_PROT_WRITE)) {
-			cve_os_sync_sg_memory_to_device(cve_dev,
+			cve_os_sync_sg_memory_to_device(dev,
 					dma_handles[i].mem_handle.sgt);
 		}
 
@@ -528,8 +527,7 @@ out:
 	OS_FREE(sections, sizeof(*sections) * sections_nr);
 
 	if (retval != 0) {
-		cve_fw_sections_cleanup(cve_dev,
-			sections_impl,
+		cve_fw_sections_cleanup(NULL, sections_impl,
 			dma_handles,
 			sections_nr);
 
@@ -720,8 +718,7 @@ out:
 		 * shared domain removal. Therefore there is no need to
 		 * reclaim it here.
 		 */
-		cve_fw_sections_cleanup(cve_dev,
-			sections,
+		cve_fw_sections_cleanup(NULL, sections,
 			dma_handles,
 			sections_nr);
 	}
@@ -776,7 +773,6 @@ out:
 }
 
 int cve_fw_map_sections(
-		struct cve_device *cve_dev,
 		const os_domain_handle hdom,
 		struct cve_fw_loaded_sections *fw_loaded_sec,
 		struct cve_fw_mapped_sections *out_fw_mapped_sec)
@@ -785,6 +781,7 @@ int cve_fw_map_sections(
 	u32 i;
 	u32 mapped_sections_nr = 0;
 	u32 sections_nr = fw_loaded_sec->sections_nr;
+	struct cve_device *dev = get_first_device();
 	struct cve_fw_section_descriptor *sections = fw_loaded_sec->sections;
 	struct cve_dma_handle *dma_handles = fw_loaded_sec->dma_handles;
 	struct cve_dma_handle *mapped_dma_handles = NULL;
@@ -816,8 +813,7 @@ int cve_fw_map_sections(
 		goto out;
 	}
 
-	cve_os_dev_log(CVE_LOGLEVEL_DEBUG,
-		cve_dev->dev_index,
+	cve_os_log(CVE_LOGLEVEL_DEBUG,
 		COLOR_GREEN(
 			"Mapping Firmware. FW_Type=%s, SectionsCount=%d\n"
 			),
@@ -843,7 +839,7 @@ int cve_fw_map_sections(
 			 * Data from loaded to mapped will be copied after
 			 * CVE reset - on FW restore
 			 */
-			retval = OS_ALLOC_DMA_SG(cve_dev,
+			retval = OS_ALLOC_DMA_SG(dev,
 					s->size_bytes,
 					1,
 					&mapped_dma_handles[i],
@@ -863,13 +859,11 @@ int cve_fw_map_sections(
 		if (cve_debug_get(DEBUG_TENS_EN)) {
 			/* enabling write permissions for all FW sections */
 			permissions = (s->permissions | CVE_MM_PROT_WRITE);
-			cve_os_dev_log(CVE_LOGLEVEL_DEBUG,
-					cve_dev->dev_index,
+			cve_os_log(CVE_LOGLEVEL_DEBUG,
 					"changing permissions for FW sections\n");
 		}
 
-		cve_os_dev_log(CVE_LOGLEVEL_DEBUG,
-			cve_dev->dev_index,
+		cve_os_log(CVE_LOGLEVEL_DEBUG,
 			COLOR_YELLOW(
 				"Start Mapping Firmware Section. FW_Type=%s, Section=%d, ICEVA=0x%x, Size=0x%x, Perm=%s\n"
 				),
@@ -900,8 +894,7 @@ int cve_fw_map_sections(
 		}
 		s->cve_addr = (u32)va;
 
-		cve_os_dev_log(CVE_LOGLEVEL_DEBUG,
-				cve_dev->dev_index,
+		cve_os_log(CVE_LOGLEVEL_DEBUG,
 				COLOR_YELLOW(
 					"Stop Mapping Firmware Section. FW_Type=%s, Section=%d\n"
 					),
@@ -926,8 +919,7 @@ out:
 
 			if (alloc_handles && alloc_handles[i]) {
 				/*remove allocations of the FW */
-				cve_os_dev_log(CVE_LOGLEVEL_DEBUG,
-					cve_dev->dev_index,
+				cve_os_log(CVE_LOGLEVEL_DEBUG,
 					"reclaiming allocation of FW sec %d\n",
 					i);
 				cve_mm_reclaim_allocation(alloc_handles[i]);
@@ -935,7 +927,7 @@ out:
 
 			if ((s->permissions & CVE_MM_PROT_WRITE) ==
 				CVE_MM_PROT_WRITE) {
-				OS_FREE_DMA_SG(cve_dev,
+				OS_FREE_DMA_SG(dev,
 						s->size_bytes,
 						&mapped_dma_handles[i]);
 			}
@@ -951,8 +943,7 @@ out:
 	return retval;
 }
 
-int cve_fw_load_binary(struct cve_device *cve_dev,
-		const u64 fw_image,
+int cve_fw_load_binary(const u64 fw_image,
 		const u64 fw_binmap,
 		const u32 fw_binmap_size_bytes,
 		struct cve_fw_loaded_sections *out_fw_sec)
@@ -964,8 +955,7 @@ int cve_fw_load_binary(struct cve_device *cve_dev,
 	enum fw_binary_type fw_type = CVE_FW_TYPE_INVALID;
 
 	/* read input sections from memory */
-	int retval = cve_fw_load_firmware_from_user_mem(cve_dev,
-			fw_image,
+	int retval = cve_fw_load_firmware_from_user_mem(fw_image,
 			fw_binmap,
 			fw_binmap_size_bytes,
 			&sections_nr,
@@ -999,8 +989,7 @@ int cve_fw_load_binary(struct cve_device *cve_dev,
 	retval = 0;
 out:
 	if (retval != 0) {
-		cve_fw_sections_cleanup(cve_dev,
-			sections,
+		cve_fw_sections_cleanup(NULL, sections,
 			dma_handles,
 			sections_nr);
 		if (fw_version)
@@ -1086,12 +1075,13 @@ out:
  * outputs:
  * returns:
  */
-void cve_mapped_fw_sections_cleanup(struct cve_device *cve_dev,
+void cve_mapped_fw_sections_cleanup(
 		struct cve_fw_mapped_sections *mapped_fw_sec)
 {
 	u32 i;
 	struct cve_fw_loaded_sections *fw_sec = mapped_fw_sec->cve_fw_loaded;
 	struct cve_fw_section_descriptor *s = NULL;
+	struct cve_device *dev = get_first_device();
 
 	for (i = 0; i < fw_sec->sections_nr; i++) {
 		if (!fw_sec->sections)
@@ -1101,8 +1091,7 @@ void cve_mapped_fw_sections_cleanup(struct cve_device *cve_dev,
 
 		if (mapped_fw_sec->alloc_handles) {
 			/*remove allocations of the FW */
-			cve_os_dev_log(CVE_LOGLEVEL_DEBUG,
-					cve_dev->dev_index,
+			cve_os_log(CVE_LOGLEVEL_DEBUG,
 					"Reclaiming allocation of Section=%d\n",
 					i);
 			cve_mm_reclaim_allocation(
@@ -1112,20 +1101,18 @@ void cve_mapped_fw_sections_cleanup(struct cve_device *cve_dev,
 		if ((s->permissions & CVE_MM_PROT_WRITE) == CVE_MM_PROT_WRITE) {
 			struct cve_dma_handle *dma_handle_list =
 				mapped_fw_sec->dma_handles;
-			cve_os_dev_log(CVE_LOGLEVEL_DEBUG,
-					cve_dev->dev_index,
+			cve_os_log(CVE_LOGLEVEL_DEBUG,
 					"This is WRITE section. Releasing DMA memory.\n");
 			if (dma_handle_list &&
 				dma_handle_list[i].mem_handle.sgt) {
-				OS_FREE_DMA_SG(cve_dev,
+				OS_FREE_DMA_SG(dev,
 					s->size_bytes,
 					&dma_handle_list[i]);
 			}
 		}
 	}
 
-	cve_os_dev_log(CVE_LOGLEVEL_DEBUG,
-			cve_dev->dev_index,
+	cve_os_log(CVE_LOGLEVEL_DEBUG,
 			"Removing DMA handle of this firmware\n");
 	if (mapped_fw_sec->dma_handles)
 		OS_FREE(mapped_fw_sec->dma_handles,
@@ -1249,18 +1236,18 @@ out:
 	return retval;
 }
 
-int cve_fw_map(struct cve_device *cve_dev,
-		os_domain_handle hdom,
+int cve_fw_map(os_domain_handle hdom,
 		struct cve_fw_mapped_sections **out_head,
 		cve_di_subjob_handle_t **out_embedded_cbs_subjobs)
 {
 	int retval = CVE_DEFAULT_ERROR_CODE;
+	struct cve_device *dev = get_first_device();
 	struct cve_fw_loaded_sections *fw_loaded_head = NULL;
 	struct cve_fw_loaded_sections *fw_loaded_curr = NULL;
 	struct cve_fw_mapped_sections *fw_mapped_head = NULL;
 	cve_di_subjob_handle_t *subjobs_embedded_cbs = NULL;
 
-	fw_loaded_head = cve_dev->fw_loaded_list;
+	fw_loaded_head = dev->fw_loaded_list;
 	fw_loaded_curr = fw_loaded_head;
 
 	if (!fw_loaded_head) {
@@ -1271,8 +1258,7 @@ int cve_fw_map(struct cve_device *cve_dev,
 		goto out;
 	}
 
-	cve_os_dev_log(CVE_LOGLEVEL_DEBUG,
-			cve_dev->dev_index,
+	cve_os_log(CVE_LOGLEVEL_DEBUG,
 			"Start Firmwares Mapping on device\n");
 
 	/* go over all base firmwares and map them to device memory */
@@ -1290,8 +1276,7 @@ int cve_fw_map(struct cve_device *cve_dev,
 		}
 
 		/* map current firmware binary to device memory */
-		retval = cve_fw_map_sections(cve_dev,
-				hdom,
+		retval = cve_fw_map_sections(hdom,
 				fw_loaded_curr,
 				fw_mapped);
 		if (retval < 0) {
@@ -1329,8 +1314,7 @@ int cve_fw_map(struct cve_device *cve_dev,
 		fw_loaded_curr = cve_dle_next(fw_loaded_curr, list);
 	} while (fw_loaded_curr != fw_loaded_head);
 
-	cve_os_dev_log(CVE_LOGLEVEL_DEBUG,
-			cve_dev->dev_index,
+	cve_os_log(CVE_LOGLEVEL_DEBUG,
 			"End Firmwares Mapping on device\n");
 
 	*out_head = fw_mapped_head;
@@ -1342,36 +1326,34 @@ out:
 	/* cleanup on error */
 	if (retval != 0) {
 		/* cleanup fw binaries */
-		cve_fw_unmap(cve_dev, fw_mapped_head, subjobs_embedded_cbs);
+		cve_fw_unmap(fw_mapped_head, subjobs_embedded_cbs);
 	}
 
 	return retval;
 }
 
-void cve_fw_unload(struct cve_device *cve_dev,
-		struct cve_fw_loaded_sections *fw_loaded_list)
+void cve_fw_unload(struct cve_device *ice,
+		struct cve_fw_loaded_sections *loaded_fw_sections_list)
 {
 #ifndef NULL_DEVICE_RING0
 	/* unload context fws */
-	while (fw_loaded_list) {
-		struct cve_fw_loaded_sections *fw_loaded =
-			fw_loaded_list;
+	while (loaded_fw_sections_list) {
+		struct cve_fw_loaded_sections *loaded_fw_section =
+			loaded_fw_sections_list;
 
-		cve_dle_remove_from_list(fw_loaded_list,
-				list,
-				fw_loaded);
-		cve_fw_sections_cleanup(cve_dev,
-			fw_loaded->sections,
-			fw_loaded->dma_handles,
-			fw_loaded->sections_nr);
-		OS_FREE(fw_loaded->fw_version, sizeof(*fw_loaded->fw_version));
-		OS_FREE(fw_loaded, sizeof(*fw_loaded));
+		cve_dle_remove_from_list(loaded_fw_sections_list,
+				list, loaded_fw_section);
+		cve_fw_sections_cleanup(ice, loaded_fw_section->sections,
+			loaded_fw_section->dma_handles,
+			loaded_fw_section->sections_nr);
+		OS_FREE(loaded_fw_section->fw_version,
+			sizeof(*loaded_fw_section->fw_version));
+		OS_FREE(loaded_fw_section, sizeof(*loaded_fw_section));
 	}
 #endif
 }
 
-void cve_fw_unmap(struct cve_device *cve_dev,
-		struct cve_fw_mapped_sections *fw_mapped_list,
+void cve_fw_unmap(struct cve_fw_mapped_sections *fw_mapped_list,
 		cve_di_subjob_handle_t *embedded_cbs_subjobs)
 {
 	while (fw_mapped_list) {
@@ -1380,10 +1362,9 @@ void cve_fw_unmap(struct cve_device *cve_dev,
 		cve_dle_remove_from_list(fw_mapped_list,
 				list,
 				fw_mapped);
-		cve_os_dev_log(CVE_LOGLEVEL_DEBUG,
-				cve_dev->dev_index,
+		cve_os_log(CVE_LOGLEVEL_DEBUG,
 				"Mapped FW section cleanup\n");
-		cve_mapped_fw_sections_cleanup(cve_dev, fw_mapped);
+		cve_mapped_fw_sections_cleanup(fw_mapped);
 		OS_FREE(fw_mapped, sizeof(*fw_mapped));
 	}
 
@@ -1593,12 +1574,16 @@ void cve_fw_restore(struct cve_device *cve_dev,
  * outputs:
  * returns:
  */
-void cve_fw_sections_cleanup(struct cve_device *cve_dev,
-	struct cve_fw_section_descriptor *sections_lst,
-	struct cve_dma_handle *dma_handles_lst,
-	u32 list_items_nr)
+void cve_fw_sections_cleanup(struct cve_device *ice,
+		struct cve_fw_section_descriptor *sections_lst,
+		struct cve_dma_handle *dma_handles_lst,
+		u32 list_items_nr)
 {
 	u32 i;
+	struct cve_device *dev = get_first_device();
+
+	if (ice)
+		dev = ice;
 
 	if (sections_lst) {
 		struct cve_fw_section_descriptor *s = NULL;
@@ -1610,8 +1595,7 @@ void cve_fw_sections_cleanup(struct cve_device *cve_dev,
 
 				fw_dma_handle = &dma_handles_lst[i];
 
-				cve_os_dev_log(CVE_LOGLEVEL_DEBUG,
-					cve_dev->dev_index,
+				cve_os_log(CVE_LOGLEVEL_DEBUG,
 					"FW_LOADING: Unload SectionID: %i. DMA sgt: %p, CVE addr: 0x%x, perm: %d, size bytes: 0x%x\n",
 					i,
 					fw_dma_handle->mem_handle.sgt,
@@ -1623,7 +1607,7 @@ void cve_fw_sections_cleanup(struct cve_device *cve_dev,
 					cve_sync_sgt_to_llc(
 						fw_dma_handle->mem_handle.sgt);
 
-					OS_FREE_DMA_SG(cve_dev,
+					OS_FREE_DMA_SG(dev,
 						s->size_bytes,
 						fw_dma_handle);
 				}

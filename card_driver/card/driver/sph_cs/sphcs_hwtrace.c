@@ -28,6 +28,7 @@
 #include "sph_log.h"
 #include "sphcs_dma_sched.h"
 #include "sphcs_cmd_chan.h"
+#include "sphcs_pcie.h"
 
 #define BIT_SET(a)	(((uint32_t)(1))<<(a))
 
@@ -84,9 +85,8 @@ struct dma_res_info {
 	struct			sg_table *sgt;
 	struct page		*pages;
 	uint32_t		nr_pages;
-	void			*lli_buf;
-	dma_addr_t		lli_addr;
-	size_t			lli_size;
+	struct lli_desc         lli;
+	struct sphcs_dma_multi_xfer_handle multi_xfer_handle;
 };
 
 
@@ -250,9 +250,9 @@ void sphcs_hwtrace_cleanup_host_resource(struct host_res_info *host)
 void sphcs_hwtrace_cleanup_dma_info(struct dma_res_info *dma)
 {
 	dma_free_coherent(g_the_sphcs->hw_device,
-			  dma->lli_size,
-			  dma->lli_buf,
-			  dma->lli_addr);
+			  dma->lli.size,
+			  dma->lli.vptr,
+			  dma->lli.dma_addr);
 
 	dma_unmap_sg(g_the_sphcs->hw_device,
 		     dma->sgt->sgl,
@@ -315,19 +315,22 @@ struct dma_res_info *sphcs_hwtrace_alloc_dma_info(struct sphcs_dma_res_info *r)
 	dma->sgt->nents = ret;
 
 	//get required lli size for dma op
-	dma->lli_size =
-		g_the_sphcs->hw_ops->dma.calc_lli_size(g_the_sphcs->hw_handle,
-						       dma->sgt,
-						       &(r->host_res->sgt), 0);
-	SPH_ASSERT(dma->lli_size > 0);
+	ret = g_the_sphcs->hw_ops->dma.init_lli(g_the_sphcs->hw_handle,
+						&dma->lli,
+						dma->sgt,
+						&(r->host_res->sgt), 0);
+	if (ret != 0 || dma->lli.size == 0) {
+		sph_log_err(HWTRACE_LOG, "failed to init lli buffer\n");
+		goto cleanup_dma_map;
+	}
 
 	// allocate memory in size lli_size
-	dma->lli_buf =
+	dma->lli.vptr =
 		dma_alloc_coherent(g_the_sphcs->hw_device,
-				   dma->lli_size,
-				   &dma->lli_addr,
+				   dma->lli.size,
+				   &dma->lli.dma_addr,
 				   GFP_NOWAIT);
-	if (!dma->lli_buf) {
+	if (!dma->lli.vptr) {
 		sph_log_err(HWTRACE_LOG, "failed to allocate lli buffer\n");
 		goto cleanup_dma_map;
 	}
@@ -336,9 +339,11 @@ struct dma_res_info *sphcs_hwtrace_alloc_dma_info(struct sphcs_dma_res_info *r)
 	transfer_size = g_the_sphcs->hw_ops->dma.gen_lli(g_the_sphcs->hw_handle,
 					 dma->sgt,
 					 &(r->host_res->sgt),
-					 dma->lli_buf,
+					 &dma->lli,
 					 0);
 	SPH_ASSERT(transfer_size > 0);
+
+	sphcs_dma_multi_xfer_handle_init(&dma->multi_xfer_handle);
 
 	r->dma_res = dma;
 
@@ -531,10 +536,19 @@ static int sphcs_hwtrace_dma_stream_complete_cb(struct sphcs *sphcs, void *ctx, 
 
 	r->state &= ~HWTRACE_STATE_NPK_RESOURCE_BUSY;
 
+	hw_tracing->requests_in_flight--;
+	hw_tracing->npk_resources_ready--;
+
 	if (r->host_res) {
 		index = r->host_res->resource_index;
-		bIsLast = (g_the_sphcs->hw_tracing.hwtrace_status == SPHCS_HWTRACE_DEACTIVATED);
+		if (hw_tracing->requests_in_flight != 0 ||
+		    hw_tracing->npk_resources_ready != 0 ||
+		    !(g_the_sphcs->hw_tracing.hwtrace_status == SPHCS_HWTRACE_DEACTIVATED))
+			bIsLast = false;
 	}
+
+	if (bIsLast)
+		sphcs_dma_sched_reserve_channel_for_dtf(g_the_sphcs->dmaSched, false);
 
 	bytes = r->bytes_to_copy;
 
@@ -595,6 +609,7 @@ static int sphcs_hwtrace_dma_stream_complete_cb(struct sphcs *sphcs, void *ctx, 
 void do_stream_hwtrace(struct sphcs_dma_res_info *r)
 {
 	int ret;
+	struct sphcs_hwtrace_data *hw_tracing = &g_the_sphcs->hw_tracing;
 
 	SPH_ASSERT(r != NULL);
 
@@ -618,16 +633,16 @@ void do_stream_hwtrace(struct sphcs_dma_res_info *r)
 	r->state |= (HWTRACE_STATE_NPK_RESOURCE_BUSY |
 		     HWTRACE_STATE_HOST_RESOURCE_BUSY);
 
+	hw_tracing->requests_in_flight++;
 
 	//now we start dma transaction from card to host.
-	ret = sphcs_dma_sched_start_xfer(g_the_sphcs->dmaSched,
-					 &g_dma_desc_c2h_dtf_nowait,
-					 r->dma_res->lli_addr,
-					 r->host_res->resource_size,
-					 sphcs_hwtrace_dma_stream_complete_cb,
-					 r,
-					 NULL,
-					 0);
+	ret = sphcs_dma_sched_start_xfer_multi(g_the_sphcs->dmaSched,
+					       &r->dma_res->multi_xfer_handle,
+					       &g_dma_desc_c2h_dtf_nowait,
+					       &r->dma_res->lli,
+					       r->host_res->resource_size,
+					       sphcs_hwtrace_dma_stream_complete_cb,
+					       r);
 	if (ret)
 		sph_log_err(HWTRACE_LOG, "dma from card to host failed\n err = %d", ret);
 
@@ -818,7 +833,7 @@ void intel_th_activate(void *priv)
 }
 
 //callback from intel trace hub driver
-// notification when tracSPHCS_HWTRACE_DEACTIVATEDe stopped
+// notification when trace stopped
 void intel_th_deactivate(void *priv)
 {
 	if (g_the_sphcs->hw_tracing.hwtrace_status == SPHCS_HWTRACE_REGISTERED) {
@@ -826,7 +841,6 @@ void intel_th_deactivate(void *priv)
 		return;
 	}
 
-	sphcs_dma_sched_reserve_channel_for_dtf(g_the_sphcs->dmaSched, false);
 
 	g_the_sphcs->hw_tracing.hwtrace_status = SPHCS_HWTRACE_DEACTIVATED;
 }
@@ -862,8 +876,10 @@ int intel_th_window_ready(void *priv, struct sg_table *sgt, size_t bytes)
 		}
 	}
 
-	if (bFound)
+	if (bFound) {
+		hw_tracing->npk_resources_ready++;
 		do_stream_hwtrace(r);
+	}
 
 	SPH_SPIN_UNLOCK_IRQRESTORE(&hw_tracing->lock_irq, flags);
 
@@ -946,7 +962,8 @@ int sphcs_hwtrace_init(struct sphcs *sphcs, struct sphcs_cmd_chan *chan)
 
 	sphcs_hwtrace_update_state();
 
-
+	hw_tracing->requests_in_flight = 0;
+	hw_tracing->npk_resources_ready = 0;
 	hw_tracing->hwtrace_status = SPHCS_HWTRACE_INITIALIZED;
 
 reply_message:
@@ -1227,8 +1244,9 @@ void sphcs_hwtrace_query_state(struct sphcs *sphcs, struct sphcs_cmd_chan *chan)
 		chan_response_msg.chanID	= chan->protocolID;
 		chan_response_msg.opcode	= SPH_IPC_C2H_OP_CHAN_HWTRACE_STATE;
 		chan_response_msg.subOpcode	= HWTRACE_QUERY_STATE;
-		chan_response_msg.val1	= hw_tracing->hwtrace_status;
-		chan_response_msg.val2	= hw_tracing->host_resource_count;
+		chan_response_msg.val1		= hw_tracing->hwtrace_status;
+		chan_response_msg.val2		= hw_tracing->host_resource_count;
+		chan_response_msg.val3		= hw_tracing->resource_max_size;
 
 		sphcs_msg_scheduler_queue_add_msg(chan->respq, chan_response_msg.value, 2);
 	} else {

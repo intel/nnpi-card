@@ -165,6 +165,12 @@ static DEFINE_INT_STAT(int_stats, 8);
 bool no_dma_retries;
 module_param(no_dma_retries,  bool, 0400);
 
+static int dma_lli_split = 3;
+module_param(dma_lli_split,  int, 0600);
+
+static int dma_lli_min_split = 20;
+module_param(dma_lli_min_split,  int, 0600);
+
 /* interrupt mask bits we enable and handle at interrupt level */
 static u32 s_host_status_int_mask =
 		   ELBI_IOSF_STATUS_RESPONSE_FIFO_READ_UPDATE_MASK |
@@ -234,6 +240,9 @@ struct sph_lli_header {
 	struct sph_dma_data_element *cut_element;
 	uint32_t cut_element_transfer_size;
 	uint32_t cut_element_ctrl_flag;
+	uint32_t cut_list_idx;
+	uint32_t num_lists_keep;
+	uint64_t xfer_size_keep;
 	struct sph_dma_data_element cut_element_next;
 	uint32_t size;
 };
@@ -982,8 +991,23 @@ static void *dma_set_lli_data_element(void *lliPtr,
 				      dma_addr_t dst,
 				      uint32_t size)
 {
-	struct sph_dma_data_element *dataElement = (struct sph_dma_data_element *)lliPtr;
+	struct lli_desc *lli = (struct lli_desc *)lliPtr;
+	struct sph_dma_data_element *dataElement;
+	u32 n, list_idx, list_off;
 
+	if (lli->num_filled >= lli->num_elements || lli->num_lists == 0) {
+		SPH_ASSERT(0);
+		return lliPtr;
+	}
+
+	n = lli->num_elements / lli->num_lists;
+	list_idx = lli->num_filled / n;
+	if (list_idx >= lli->num_lists)
+		list_idx = lli->num_lists - 1;
+	list_off = lli->num_filled - (n * list_idx);
+	dataElement = (struct sph_dma_data_element *)((uintptr_t)lli->vptr +
+						      lli->offsets[list_idx] +
+						      list_off * sizeof(struct sph_dma_data_element));
 	dataElement->source_address_low = lower_32_bits(src);
 	dataElement->source_address_high = upper_32_bits(src);
 	dataElement->dest_address_low = lower_32_bits(dst);
@@ -991,119 +1015,172 @@ static void *dma_set_lli_data_element(void *lliPtr,
 	dataElement->transfer_size = size;
 	dataElement->control = DMA_CTRL_CB;
 
-	return (lliPtr + sizeof(struct sph_dma_data_element));
+	lli->xfer_size[list_idx] += size;
+
+	/* insert EOL element if last element in list */
+	if (list_off == (n - 1)) {
+		/* Set local interrupt enable bit */
+		dataElement->control |= DMA_CTRL_LIE;
+
+		/* Set end of list data element */
+		dataElement++;
+		dataElement->source_address_low = 0;
+		dataElement->source_address_high = 0;
+		dataElement->dest_address_low = 0;
+		dataElement->dest_address_high = 0;
+		dataElement->transfer_size = 0;
+		dataElement->control = DMA_CTRL_LLP;
+	}
+
+	lli->num_filled = lli->num_filled + 1;
+
+	return lliPtr;
 }
 
-u32 sphcs_sph_dma_calc_lli_size(void            *hw_handle,
-				struct sg_table *src,
-				struct sg_table *dst,
-				uint64_t         dst_offset)
+static void init_lli_desc(struct lli_desc *outLli, u32 nelements)
 {
-	return (dma_calc_and_gen_lli(src, dst, NULL, dst_offset, 0, NULL, NULL) + 1) * sizeof(struct sph_dma_data_element) + sizeof(struct sph_lli_header);
+	u32 off;
+	u32 i, n;
+
+	outLli->num_elements = nelements;
+	outLli->num_filled = 0;
+	if (outLli->num_elements > 0 &&
+	    outLli->num_elements >= dma_lli_min_split &&
+	    dma_lli_split > 1)
+		outLli->num_lists = (outLli->num_elements >= dma_lli_split ? dma_lli_split : outLli->num_elements);
+	else
+		outLli->num_lists = 1;
+
+	off = sizeof(struct sph_lli_header);
+	n = outLli->num_elements / outLli->num_lists;
+	for (i = 0; i < outLli->num_lists; i++) {
+		outLli->offsets[i] = off;
+		off += ((n + 1) * sizeof(struct sph_dma_data_element));
+	}
+
+	outLli->size = (outLli->num_elements + outLli->num_lists) * sizeof(struct sph_dma_data_element) + sizeof(struct sph_lli_header);
+}
+
+int sphcs_sph_dma_init_lli(void            *hw_handle,
+			   struct lli_desc *outLli,
+			   struct sg_table *src,
+			   struct sg_table *dst,
+			   uint64_t         dst_offset)
+{
+	u32 nelem;
+
+	if (!outLli || !src || !dst)
+		return -EINVAL;
+
+	nelem = dma_calc_and_gen_lli(src, dst, NULL, dst_offset, 0, NULL, NULL);
+	if (nelem == 0)
+		return -EINVAL;
+
+	init_lli_desc(outLli, nelem);
+
+	return 0;
 }
 
 u64 sphcs_sph_dma_gen_lli(void            *hw_handle,
 			  struct sg_table *src,
 			  struct sg_table *dst,
-			  void            *outLli,
+			  struct lli_desc *outLli,
 			  uint64_t         dst_offset)
 {
 	u32 num_of_elements;
-	struct sph_lli_header *lli_header = (struct sph_lli_header *)outLli;
-	struct sph_dma_data_element *data_element = (struct sph_dma_data_element *)(outLli + sizeof(*lli_header));
+	struct sph_lli_header *lli_header;
 	uint64_t transfer_size = 0;
 
 	if (hw_handle == NULL || src == NULL || dst == NULL || outLli == NULL)
 		return 0;
 
+	if (outLli->vptr == NULL || outLli->num_lists < 1)
+		return 0;
+
+	lli_header = (struct sph_lli_header *)outLli->vptr;
 
 	lli_header->cut_element = NULL;
 
 	/* Fill SGL */
-	num_of_elements = dma_calc_and_gen_lli(src, dst, data_element, dst_offset, 0, dma_set_lli_data_element, &transfer_size);
-	if (num_of_elements == 0) {
+	outLli->num_filled = 0;
+	memset(&outLli->xfer_size, 0, sizeof(outLli->xfer_size));
+	num_of_elements = dma_calc_and_gen_lli(src, dst, outLli, dst_offset, 0, dma_set_lli_data_element, &transfer_size);
+	if (num_of_elements == 0 || outLli->num_filled != outLli->num_elements) {
 		sph_log_err(EXECUTE_COMMAND_LOG, "ERROR: gen_lli cannot generate any data element.\n");
 		return 0;
 	}
 
-	/* Move to the last element and set local interrupt enable bit */
-	data_element = data_element + (num_of_elements - 1);
-	data_element->control |= DMA_CTRL_LIE;
-
-	/* Set Link data element */
-	data_element++;
-	dma_set_lli_data_element(data_element, 0, 0, 0);
-	data_element->control = DMA_CTRL_LLP;
-
 	return transfer_size;
 }
 
-static u32 sphcs_sph_dma_calc_lli_size_vec(void *hw_handle, uint64_t dst_offset, genlli_get_next_cb cb, void *cb_ctx)
+static int sphcs_sph_dma_init_lli_vec(void *hw_handle, struct lli_desc *outLli, uint64_t dst_offset, genlli_get_next_cb cb, void *cb_ctx)
 {
 	struct sg_table *src;
 	struct sg_table *dst;
 	u64              max_size;
 	u32              nelem = 0;
 
-	if (hw_handle == NULL || cb == NULL)
-		return 0;
+	if (hw_handle == NULL || cb == NULL || outLli == NULL)
+		return -EINVAL;
 
 	while ((*cb)(cb_ctx, &src, &dst, &max_size)) {
 		nelem += dma_calc_and_gen_lli(src, dst, NULL, dst_offset, max_size, NULL, NULL);
 		dst_offset = 0;
 	}
 
-	return (nelem + 1) * sizeof(struct sph_dma_data_element) + sizeof(struct sph_lli_header);
+	if (nelem == 0)
+		return -EINVAL;
+
+	init_lli_desc(outLli, nelem);
+
+	return 0;
 }
 
-static u64 sphcs_sph_dma_gen_lli_vec(void *hw_handle, void *outLli, uint64_t dst_offset, genlli_get_next_cb cb, void *cb_ctx)
+static u64 sphcs_sph_dma_gen_lli_vec(void *hw_handle, struct lli_desc *outLli, uint64_t dst_offset, genlli_get_next_cb cb, void *cb_ctx)
 {
 	struct sg_table *src;
 	struct sg_table *dst;
 	u64              max_size;
 	u32 num_of_elements;
-	u32 nelem = 0;
-	struct sph_lli_header *lli_header = (struct sph_lli_header *)outLli;
-	struct sph_dma_data_element *data_element = (struct sph_dma_data_element *)(outLli + sizeof(*lli_header));
-	struct sph_dma_data_element *last_data_element = NULL;
+	struct sph_lli_header *lli_header;
 	uint64_t transfer_size = 0;
 	uint64_t total_transfer_size = 0;
 
 	if (hw_handle == NULL || cb == NULL || outLli == NULL)
 		return 0;
 
+	if (outLli->vptr == NULL)
+		return 0;
+
+	lli_header = (struct sph_lli_header *)outLli->vptr;
+
 	lli_header->cut_element = NULL;
 
 	/* Fill SGL */
+	outLli->num_filled = 0;
 	while ((*cb)(cb_ctx, &src, &dst, &max_size)) {
-		num_of_elements = dma_calc_and_gen_lli(src, dst, data_element, dst_offset, max_size, dma_set_lli_data_element, &transfer_size);
+		num_of_elements = dma_calc_and_gen_lli(src, dst, outLli, dst_offset, max_size, dma_set_lli_data_element, &transfer_size);
 		if (num_of_elements == 0) {
 			sph_log_err(EXECUTE_COMMAND_LOG, "ERROR: gen_lli cannot generate any data element.\n");
 			return 0;
 		}
 		dst_offset = 0;
-		last_data_element = data_element + num_of_elements - 1;
-		data_element += num_of_elements;
-		nelem += num_of_elements;
 		total_transfer_size += transfer_size;
 	}
 
-	if (unlikely(last_data_element == NULL))
+	if (outLli->num_filled != outLli->num_elements) {
+		sph_log_err(EXECUTE_COMMAND_LOG, "ERROR: gen_lli generated too few elements.\n");
 		return 0;
-
-	/* Move to the last element and set local interrupt enable bit */
-	last_data_element->control |= DMA_CTRL_LIE;
-
-	/* Set Link data element */
-	dma_set_lli_data_element(data_element, 0, 0, 0);
-	data_element->control = DMA_CTRL_LLP;
+	}
 
 	return total_transfer_size;
 }
 
 
-static void restore_lli(struct sph_lli_header *lli_header)
+static void restore_lli(struct lli_desc *lli)
 {
+	struct sph_lli_header *lli_header = (struct sph_lli_header *)lli->vptr;
+
 	if (lli_header->cut_element != NULL) {
 		struct sph_dma_data_element *next_element = lli_header->cut_element + 1;
 
@@ -1113,29 +1190,41 @@ static void restore_lli(struct sph_lli_header *lli_header)
 		//restore next element control
 		memcpy(next_element, &lli_header->cut_element_next, sizeof(*next_element));
 
+		lli->num_lists = lli_header->num_lists_keep;
+		if (lli_header->cut_list_idx < SPH_LLI_MAX_LISTS)
+			lli->xfer_size[lli_header->cut_list_idx] = lli_header->xfer_size_keep;
 		lli_header->cut_element = NULL;
+		lli_header->num_lists_keep = 0;
 	}
 }
 
-int sphcs_sph_dma_edit_lli(void *hw_handle, void *outLli, uint32_t size)
+int sphcs_sph_dma_edit_lli(void *hw_handle, struct lli_desc *outLli, uint32_t size)
 {
-	struct sph_lli_header *lli_header = (struct sph_lli_header *)outLli;
-	struct sph_dma_data_element *data_element = (struct sph_dma_data_element *)(outLli + sizeof(struct sph_lli_header));
+	struct sph_lli_header *lli_header = (struct sph_lli_header *)outLli->vptr;
+	struct sph_dma_data_element *data_element;
 	uint32_t totalSize;
+	uint32_t list_idx = 0;
+	uint32_t i;
 
 	if (size > 0) {
 		if (lli_header->cut_element) {
 			if (lli_header->size == size)
 				return 0;
-			restore_lli(lli_header);
+			restore_lli(outLli);
 		}
 
+		data_element = (struct sph_dma_data_element *)((uintptr_t)outLli->vptr + outLli->offsets[list_idx]);
 		totalSize = data_element->transfer_size;
 		while (totalSize < size) {
 			data_element++;
 			if (data_element->control & DMA_CTRL_LLP) {
-				sph_log_err(EXECUTE_COMMAND_LOG, "ERROR: edit size %d is too big\n", size);
-				return 0;
+				if (list_idx < outLli->num_lists - 1) {
+					list_idx++;
+					data_element = (struct sph_dma_data_element *)((uintptr_t)outLli->vptr + outLli->offsets[list_idx]);
+				} else {
+					sph_log_err(EXECUTE_COMMAND_LOG, "ERROR: edit size %d is too big\n", size);
+					return 0;
+				}
 			}
 			totalSize += data_element->transfer_size;
 		}
@@ -1153,12 +1242,19 @@ int sphcs_sph_dma_edit_lli(void *hw_handle, void *outLli, uint32_t size)
 		//Set next element is link
 		data_element++;
 		memcpy(&lli_header->cut_element_next, data_element, sizeof(*data_element));
-		dma_set_lli_data_element(data_element, 0, 0, 0);
+		memset(data_element, 0, sizeof(*data_element));
 		data_element->control = DMA_CTRL_LLP;
 
 		lli_header->size = size;
+		lli_header->num_lists_keep = outLli->num_lists;
+		lli_header->xfer_size_keep = outLli->xfer_size[list_idx];
+		lli_header->cut_list_idx = list_idx;
+		outLli->num_lists = list_idx + 1;
+		outLli->xfer_size[list_idx] = size;
+		for (i = 0; i < list_idx; i++)
+			outLli->xfer_size[list_idx] -= outLli->xfer_size[i];
 	} else { //restore lli to previous state
-		restore_lli(lli_header);
+		restore_lli(outLli);
 	}
 
 	return 0;
@@ -1188,8 +1284,6 @@ int sphcs_sph_dma_start_xfer_h2c(void      *hw_handle,
 
 	if (!sph_pci->bus_master_en)
 		return -EACCES;
-
-	lli_addr += (unsigned int)sizeof(struct sph_lli_header);
 
 	/* program LLI mode */
 	sph_mmio_write(sph_pci,
@@ -1245,8 +1339,6 @@ int sphcs_sph_dma_start_xfer_c2h(void      *hw_handle,
 
 	if (!sph_pci->bus_master_en)
 		return -EACCES;
-
-	lli_addr += (unsigned int)sizeof(struct sph_lli_header);
 
 	/* program LLI mode */
 	sph_mmio_write(sph_pci,
@@ -1651,10 +1743,10 @@ static struct sphcs_pcie_hw_ops s_pcie_sph_ops = {
 	.dma.reset_rd_dma_engine = sphcs_sph_reset_rd_dma_engine,
 	.dma.reset_wr_dma_engine = sphcs_sph_reset_wr_dma_engine,
 	.dma.init_dma_engine = sphcs_sph_init_dma_engine,
-	.dma.calc_lli_size = sphcs_sph_dma_calc_lli_size,
+	.dma.init_lli = sphcs_sph_dma_init_lli,
 	.dma.gen_lli = sphcs_sph_dma_gen_lli,
 	.dma.edit_lli = sphcs_sph_dma_edit_lli,
-	.dma.calc_lli_size_vec = sphcs_sph_dma_calc_lli_size_vec,
+	.dma.init_lli_vec = sphcs_sph_dma_init_lli_vec,
 	.dma.gen_lli_vec = sphcs_sph_dma_gen_lli_vec,
 	.dma.start_xfer_h2c = sphcs_sph_dma_start_xfer_h2c,
 	.dma.start_xfer_c2h = sphcs_sph_dma_start_xfer_c2h,

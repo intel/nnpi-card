@@ -36,6 +36,7 @@ int __init_icedrv_trace(struct cve_device *ice_dev)
 	FUNC_ENTER()
 	/* Set dso configuration status to default*/
 	ice_dev->dso.dso_config_status = TRACE_STATUS_DEFAULT;
+	ice_dev->logical_dso = false;
 	ret = ice_trace_init_dso(ice_dev);
 	if (ret)
 		return ret;
@@ -81,6 +82,15 @@ int ice_restore_trace_hw_regs(struct cve_device *ice_dev)
 	int ret = 0;
 
 	FUNC_ENTER();
+
+	if (ice_dev->logical_dso) {
+		ret = __ice_trace_dso_config_port_regsoffset(ice_dev);
+		if (ret) {
+			cve_os_dev_log(CVE_LOGLEVEL_ERROR, ice_dev->dev_index,
+				"__ice_trace_dso_config_port_regsoffset() failed\n");
+			goto out;
+		}
+	}
 
 #ifndef RING3_VALIDATION
 	if (ice_trace_hw_debug_check(ice_dev)) {

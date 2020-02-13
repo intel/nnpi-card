@@ -37,7 +37,7 @@
 
 #define SPHPB_NO_THROTTLE	0x0
 #define	SPHPB_THROTTLE_TO_MAX	0x1
-#define	SPHPB_THROTTLE_TO_MIN	0x8
+#define	SPHPB_THROTTLE_TO_MIN	0xf
 
 
 const uint32_t grade_active_icebo_higer_ring_divisor	= 40;
@@ -535,12 +535,12 @@ int do_throttle(struct sphpb_pb *sphpb,
 	 * - two steps are between SPHPB_THROTTLE_TO_MIN to SPHPB_THROTTLE_TO_MAX (0x8, 0x4, 0x2, 0x1)
 	 */
 
-	if (all_min && (avg_power_mW > ((power_limit1_mW * 102llu) / 100llu))) {
+	if (all_min && (avg_power_mW > ((power_limit1_mW * 103llu) / 100llu))) {
 		// throttle more
 		if (sphpb->throttle_data.curr_state == SPHPB_NO_THROTTLE)
 			new_state = SPHPB_THROTTLE_TO_MIN;
 		else if (sphpb->throttle_data.curr_state > SPHPB_THROTTLE_TO_MAX)
-			new_state = sphpb->throttle_data.curr_state >> 1;
+			new_state = sphpb->throttle_data.curr_state - 1;
 		else
 			goto end_func;
 	} else if (!all_min || (avg_power_mW <= power_limit1_mW)) {
@@ -548,7 +548,7 @@ int do_throttle(struct sphpb_pb *sphpb,
 		if (sphpb->throttle_data.curr_state == SPHPB_NO_THROTTLE)
 			goto end_func;
 		else if (sphpb->throttle_data.curr_state < SPHPB_THROTTLE_TO_MIN)
-			new_state = sphpb->throttle_data.curr_state << 1;
+			new_state = sphpb->throttle_data.curr_state + 1;
 		else
 			new_state = SPHPB_NO_THROTTLE;
 	} else
@@ -584,8 +584,8 @@ int do_throttle(struct sphpb_pb *sphpb,
 	if (sphpb->throttle_data.curr_state != SPHPB_NO_THROTTLE) {
 		if (g_the_sphpb->debug_log)
 			sph_log_info(POWER_BALANCER_LOG,
-				     "throttling is enabled: state(%u), set ddr mode to %s\n",
-				     sphpb->throttle_data.curr_state, sph_ddr_bw_to_str[sphpb->request_ddr_value]);
+				     "throttling is enabled: state(%u), p(%umW), set ddr mode to %s\n",
+				     sphpb->throttle_data.curr_state, avg_power_mW, sph_ddr_bw_to_str[SAGV_POLICY_FIXED_LOW]);
 
 		DO_TRACE(trace_power_set(SPH_TRACE_OP_STATUS_START,
 					 SPH_TRACE_OP_POWER_SET_THROTTLE,
@@ -594,8 +594,8 @@ int do_throttle(struct sphpb_pb *sphpb,
 	} else {
 		if (g_the_sphpb->debug_log)
 			sph_log_info(POWER_BALANCER_LOG,
-				     "throttling is desabled: state(%u), set ddr mode to %s\n",
-				     sphpb->throttle_data.curr_state, sph_ddr_bw_to_str[sphpb->request_ddr_value]);
+				     "throttling is disabled: state(%u), p(%umW), set ddr mode to %s\n",
+				     sphpb->throttle_data.curr_state, avg_power_mW, sph_ddr_bw_to_str[sphpb->request_ddr_value]);
 
 
 		DO_TRACE(trace_power_set(SPH_TRACE_OP_STATUS_STOP,

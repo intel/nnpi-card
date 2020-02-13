@@ -48,7 +48,7 @@ struct func_table const s_cpylst_funcs = {
 static int cpylst_complete_cb(struct sphcs *sphcs, void *ctx, const void *user_data, int status, u32 xferTimeUS)
 {
 	int err;
-	struct inf_exec_req *req = *((struct inf_exec_req **)user_data);
+	struct inf_exec_req *req = (struct inf_exec_req *)ctx;
 //	struct inf_cpylst *cpylst;
 
 	SPH_ASSERT(req != NULL);
@@ -145,8 +145,8 @@ int inf_cpylst_create(struct inf_cmd_list *cmd,
 	cpylst->n_copies = num_copies;
 	cpylst->added_copies = 0;
 	cpylst->size = 0;
-	cpylst->lli_buf = NULL;
-	cpylst->cur_lli_buf = NULL;
+	cpylst->lli.vptr = NULL;
+	cpylst->cur_lli.vptr = NULL;
 	cpylst->destroyed = 0;
 	cpylst->min_block_time = U64_MAX;
 	cpylst->max_block_time = 0;
@@ -154,6 +154,8 @@ int inf_cpylst_create(struct inf_cmd_list *cmd,
 	cpylst->max_exec_time = 0;
 	cpylst->min_hw_exec_time = U64_MAX;
 	cpylst->max_hw_exec_time = 0;
+
+	sphcs_dma_multi_xfer_handle_init(&cpylst->multi_xfer_handle);
 
 #if 0
 	res = sph_create_sw_counters_values_node(g_hSwCountersInfo_copy,
@@ -213,6 +215,7 @@ static int inf_cpylst_init_llis(struct inf_cpylst *cpylst)
 {
 	struct genlli_iterator it;
 	u64 total_entries_bytes;
+	int ret;
 
 	it.cpylst = cpylst;
 
@@ -222,15 +225,19 @@ static int inf_cpylst_init_llis(struct inf_cpylst *cpylst)
 	 * so we get cur_lli_size be maximum
 	 */
 	it.sizes = cpylst->cur_sizes;
-	cpylst->cur_lli_size = g_the_sphcs->hw_ops->dma.calc_lli_size_vec(g_the_sphcs->hw_handle,
-								      0,
-								      genlli_get_next,
-								      &it);
-	SPH_ASSERT(cpylst->cur_lli_size > 0);
+	ret = g_the_sphcs->hw_ops->dma.init_lli_vec(g_the_sphcs->hw_handle,
+						    &cpylst->cur_lli,
+						    0,
+						    genlli_get_next,
+						    &it);
+	if (ret != 0 || cpylst->cur_lli.size == 0) {
+		sph_log_err(CREATE_COMMAND_LOG, "FATAL: line:%u failed to init current lli buffer\n", __LINE__);
+		return -ENOMEM;
+	}
 
 	// allocate memory in size lli_size
-	cpylst->cur_lli_buf = dma_alloc_coherent(g_the_sphcs->hw_device, cpylst->cur_lli_size, &cpylst->cur_lli_addr, GFP_KERNEL);
-	if (unlikely(cpylst->cur_lli_buf == NULL)) {
+	cpylst->cur_lli.vptr = dma_alloc_coherent(g_the_sphcs->hw_device, cpylst->cur_lli.size, &cpylst->cur_lli.dma_addr, GFP_KERNEL);
+	if (unlikely(cpylst->cur_lli.vptr == NULL)) {
 		sph_log_err(CREATE_COMMAND_LOG, "FATAL: line:%u failed to allocate current lli buffer\n", __LINE__);
 		return -ENOMEM;
 	}
@@ -238,15 +245,19 @@ static int inf_cpylst_init_llis(struct inf_cpylst *cpylst)
 	/* allocate and generate lli for default params */
 	it.curr_idx = 0;
 	it.sizes = cpylst->sizes;
-	cpylst->lli_size = g_the_sphcs->hw_ops->dma.calc_lli_size_vec(g_the_sphcs->hw_handle,
-								      0,
-								      genlli_get_next,
-								      &it);
-	SPH_ASSERT(cpylst->lli_size > 0);
+	ret = g_the_sphcs->hw_ops->dma.init_lli_vec(g_the_sphcs->hw_handle,
+						    &cpylst->lli,
+						    0,
+						    genlli_get_next,
+						    &it);
+	if (ret != 0 || cpylst->lli.size == 0) {
+		sph_log_err(CREATE_COMMAND_LOG, "FATAL: line:%u failed to init lli buffer\n", __LINE__);
+		return -ENOMEM;
+	}
 
 	// allocate memory in size lli_size
-	cpylst->lli_buf = dma_alloc_coherent(g_the_sphcs->hw_device, cpylst->lli_size, &cpylst->lli_addr, GFP_KERNEL);
-	if (unlikely(cpylst->lli_buf == NULL)) {
+	cpylst->lli.vptr = dma_alloc_coherent(g_the_sphcs->hw_device, cpylst->lli.size, &cpylst->lli.dma_addr, GFP_KERNEL);
+	if (unlikely(cpylst->lli.vptr == NULL)) {
 		sph_log_err(CREATE_COMMAND_LOG, "FATAL: line:%u failed to allocate lli buffer\n", __LINE__);
 		return -ENOMEM;
 	}
@@ -254,7 +265,7 @@ static int inf_cpylst_init_llis(struct inf_cpylst *cpylst)
 	// generate lli buffer for dma
 	it.curr_idx = 0;
 	total_entries_bytes = g_the_sphcs->hw_ops->dma.gen_lli_vec(g_the_sphcs->hw_handle,
-								   cpylst->lli_buf,
+								   &cpylst->lli,
 								   0,
 								   genlli_get_next,
 								   &it);
@@ -263,22 +274,43 @@ static int inf_cpylst_init_llis(struct inf_cpylst *cpylst)
 	return 0;
 }
 
-void inf_cpylst_build_cur_lli(struct inf_cpylst *cpylst)
+int inf_cpylst_build_cur_lli(struct inf_cpylst *cpylst)
 {
 	struct genlli_iterator it;
 	u64 total_entries_bytes;
+	u32 prev_lli_size;
+	int ret;
 
+	/* we must re-initialize lli since it may be divided to different sub-lists */
+	it.cpylst = cpylst;
+	it.curr_idx = 0;
+	it.sizes = cpylst->cur_sizes;
+	prev_lli_size = cpylst->cur_lli.size;
+	ret = g_the_sphcs->hw_ops->dma.init_lli_vec(g_the_sphcs->hw_handle,
+						    &cpylst->cur_lli,
+						    0,
+						    genlli_get_next,
+						    &it);
+	if (ret != 0 || cpylst->cur_lli.size == 0 || cpylst->cur_lli.size > prev_lli_size) {
+		sph_log_info(CREATE_COMMAND_LOG, "WARN: modified lli for cpylst larger than allocated %u > %u\n",
+			     cpylst->cur_lli.size, prev_lli_size);
+		cpylst->cur_lli.size = prev_lli_size;
+		return -ENOMEM;
+	}
+	cpylst->cur_lli.size = prev_lli_size;
+
+	/* generate the lli list content */
 	it.cpylst = cpylst;
 	it.curr_idx = 0;
 	it.sizes = cpylst->cur_sizes;
 	total_entries_bytes = g_the_sphcs->hw_ops->dma.gen_lli_vec(g_the_sphcs->hw_handle,
-								   cpylst->cur_lli_buf,
+								   &cpylst->cur_lli,
 								   0,
 								   genlli_get_next,
 								   &it);
 	SPH_ASSERT(total_entries_bytes > 0);
 
-	return;
+	return 0;
 }
 
 int inf_cpylst_add_copy(struct inf_cpylst *cpylst,
@@ -319,17 +351,17 @@ static void release_cpylst(struct inf_cpylst *cpylst)
 {
 	uint16_t i;
 
-	if (likely(cpylst->lli_buf != NULL))
+	if (likely(cpylst->lli.vptr != NULL))
 		dma_free_coherent(g_the_sphcs->hw_device,
-				  cpylst->lli_size,
-				  cpylst->lli_buf,
-				  cpylst->lli_addr);
+				  cpylst->lli.size,
+				  cpylst->lli.vptr,
+				  cpylst->lli.dma_addr);
 
-	if (likely(cpylst->cur_lli_buf != NULL))
+	if (likely(cpylst->cur_lli.vptr != NULL))
 		dma_free_coherent(g_the_sphcs->hw_device,
-				  cpylst->cur_lli_size,
-				  cpylst->cur_lli_buf,
-				  cpylst->cur_lli_addr);
+				  cpylst->cur_lli.size,
+				  cpylst->cur_lli.vptr,
+				  cpylst->cur_lli.dma_addr);
 #if 0
 	//TODO CPYLST counters
 	if (copy->sw_counters)
@@ -416,7 +448,8 @@ static int inf_cpylst_req_sched(struct inf_exec_req *req)
 		 req->cmd->protocolID,
 		 cpylst->copies[0]->card2Host,
 		 req->size,
-		 cpylst->n_copies));
+		 cpylst->n_copies,
+		 req->lli->num_lists));
 
 #if 0
 	if (SPH_SW_GROUP_IS_ENABLE(copy->sw_counters,
@@ -492,7 +525,8 @@ static int inf_cpylst_req_execute(struct inf_exec_req *req)
 		 req->cmd->protocolID,
 		 cpylst->copies[0]->card2Host,
 		 req->size,
-		 req->cpylst->n_copies));
+		 req->cpylst->n_copies,
+		 req->lli->num_lists));
 
 #if 0
 
@@ -559,11 +593,13 @@ static int inf_cpylst_req_execute(struct inf_exec_req *req)
 	if (inf_context_get_state(req->context) != CONTEXT_OK)
 		return -SPHER_CONTEXT_BROKEN;
 
-	return sphcs_dma_sched_start_xfer(g_the_sphcs->dmaSched, desc,
-					  req->lli_addr,
-					  req->size,
-					  cpylst_complete_cb, NULL,
-					  &req, sizeof(req));
+	return sphcs_dma_sched_start_xfer_multi(g_the_sphcs->dmaSched,
+						&req->cpylst->multi_xfer_handle,
+						desc,
+						req->lli,
+						req->size,
+						cpylst_complete_cb,
+						req);
 }
 
 static void inf_cpylst_req_complete(struct inf_exec_req *req,
@@ -592,7 +628,8 @@ static void inf_cpylst_req_complete(struct inf_exec_req *req,
 		 req->cmd->protocolID,
 		 cpylst->copies[0]->card2Host,
 		 req->size,
-		 req->cpylst->n_copies));
+		 req->cpylst->n_copies,
+		 req->lli->num_lists));
 
 #if 0
 	//TODO CPYLST counters
@@ -732,13 +769,15 @@ static int inf_req_cpylst_put(struct inf_exec_req *req)
 static int inf_cpylst_migrate_priority(struct inf_exec_req *req, uint8_t priority)
 {
 	int ret = 0;
+	int i;
 
 	//TODO CPYLST migrate recurcively
 	if (req->priority != priority)
-		ret = inf_update_priority(req,
-					  priority,
-					  req->cpylst->copies[0]->card2Host,
-					  req->cpylst->lli_addr);
+		for (i = 0; i < req->cpylst->lli.num_lists; i++)
+			ret |= inf_update_priority(req,
+						   priority,
+						   req->cpylst->copies[0]->card2Host,
+						   req->cpylst->lli.dma_addr + req->cpylst->lli.offsets[i]);
 
 	return ret;
 }

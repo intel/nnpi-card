@@ -1555,6 +1555,9 @@ int cve_probe_common(struct cve_os_device *linux_device, int dev_ind)
 		goto out;
 	}
 
+	store_llc_max_freq();
+	store_ice_max_freq();
+
 	/* Keep only relevant bits */
 	core_mask = (core_mask & 0xF);
 	if (core_mask)
@@ -1690,8 +1693,6 @@ create_idc:
 #endif
 
 	}
-	store_llc_max_freq();
-	store_ice_max_freq();
 out:
 	FUNC_LEAVE();
 	return retval;

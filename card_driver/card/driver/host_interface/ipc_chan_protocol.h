@@ -408,8 +408,9 @@ union c2h_ChanHwTraceState {
 		u64 subOpcode		: 5;
 		u64 val1		: 32;
 		u64 val2		: 8;
+		u64 val3		: 32;
 		u64 err			: 8;
-		u64 reserved		: 59;
+		u64 reserved		: 27;
 	};
 
 	u64 value[2];

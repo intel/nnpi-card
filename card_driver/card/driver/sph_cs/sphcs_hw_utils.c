@@ -98,7 +98,8 @@ u32 dma_calc_and_gen_lli(struct sg_table *srcSgt,
 			       dst_reg.dma_address + dst_reg.length &&
 
 			       (u64)dst_reg.length + (u64)next_dstSgl->length
-			       <= (u64)U32_MAX) {
+			       <= (u64)U32_MAX &&
+				   dst_reg.length < src_reg.length) {
 
 				dst_reg.length += next_dstSgl->length;
 				next_dstSgl = sg_next(next_dstSgl);

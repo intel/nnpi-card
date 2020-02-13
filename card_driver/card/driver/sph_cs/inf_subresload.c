@@ -34,8 +34,10 @@ struct subres_lli_space_node {
 static void lli_remove_space(struct inf_subres_load_session *session,
 			     uint64_t offset);
 
+#if 0
 static struct subres_lli_space_node *lli_find_space(struct inf_subres_load_session *session,
 						    uint64_t size);
+#endif
 
 int complete_subresload(struct sphcs *sphcs, void *ctx, const void *user_data, int status, u32 xferTimeUS)
 {
@@ -69,6 +71,7 @@ int complete_subresload(struct sphcs *sphcs, void *ctx, const void *user_data, i
 
 enum event_val inf_subresload_execute(struct inf_context *context, union h2c_SubResourceLoadOp *cmd)
 {
+#if 0
 	struct subresload_dma_command_data dma_req_data;
 	struct sg_table src_sgt;
 	struct sg_table *res_dst_sgt;
@@ -133,6 +136,9 @@ enum event_val inf_subresload_execute(struct inf_context *context, union h2c_Sub
 				   sizeof(dma_req_data));
 
 	return res;
+#else
+	return SPH_IPC_NOT_SUPPORTED;
+#endif
 }
 
 int inf_subresload_create_session(struct inf_context *context, struct inf_devres *devres, union h2c_SubResourceLoadCreateRemoveSession *cmd)
@@ -196,6 +202,7 @@ static void lli_remove_space(struct inf_subres_load_session *session,
 }
 
 
+#if 0
 static int cmp_lli_space_node(void *priv, struct list_head *a, struct list_head *b)
 {
 	struct subres_lli_space_node *a_node = list_entry(a, struct subres_lli_space_node, node);
@@ -255,5 +262,5 @@ free_lli_space:
 	kfree(lli_space);
 	return NULL;
 }
-
+#endif
 

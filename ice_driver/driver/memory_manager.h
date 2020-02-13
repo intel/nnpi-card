@@ -297,12 +297,6 @@ int ice_mm_domain_copy(os_domain_handle *hdom_src,
 void ice_mm_domain_destroy(void *hdom_inf,
 	u32 domain_array_size);
 
-void ice_mm_get_domain_by_cve_idx(
-	void *inf_hdom,
-	u32 dma_domain_array_size,
-	struct cve_device *dev,
-	os_domain_handle *os_hdom);
-
 int ice_mm_process_inf_pp_arr(struct ice_infer *inf);
 int ice_mm_patch_inf_pp_arr(struct ice_infer *inf);
 

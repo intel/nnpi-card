@@ -40,8 +40,11 @@ struct sphcs_hwtrace_data {
 	struct list_head	dma_stream_list;
 	struct sphcs_cmd_chan	*chan;
 	uint32_t		host_resource_count;
+	uint32_t		resource_max_size;
 	uint32_t		hwtrace_status;
 	uint32_t		nr_pool_pages;
+	uint32_t		requests_in_flight;
+	uint32_t		npk_resources_ready;
 	struct device		*intel_th_device;
 	struct sphcs_hwtrace_mem_pool mem_pool[SPHCS_HWTRACING_MAX_POOL_LENGTH];
 	wait_queue_head_t waitq;

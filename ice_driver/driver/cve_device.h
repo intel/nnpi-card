@@ -36,7 +36,7 @@
 #define ICE_MAX_DELPHI_PMON 10
 #define ICE_MAX_A_STEP_DELPHI_PMON 2
 #define EXE_ORDER_MAX 0xFFFFFFFFFFFFFFFF
-
+#define DEFAULT_ID 0xFFFFFFFFFFFFFFFF
 
 enum CVE_DEVICE_STATE {
 	CVE_DEVICE_IDLE = 0,
@@ -249,6 +249,7 @@ struct cve_device {
 	struct cve_dma_handle bar1_dma_handle;
 	cve_mm_allocation_t bar1_alloc_handle;
 #endif
+	bool logical_dso;
 	struct ice_dso_regs_data dso;
 	struct ice_read_daemon_config daemon;
 	struct ice_observer_config observer;
@@ -389,7 +390,22 @@ struct debug_dump_conf {
 	u8 llc_config;
 	u8 page_size_config;
 };
+struct hwtrace_job {
+	u8 job_id;
+	struct ice_dso_regs_data dso;
+	struct ice_read_daemon_config daemon;
+	struct ice_perf_counter_config perf_counter;
+};
 
+struct trace_node_sysfs {
+	u64 ctx_id;
+	u64 ntw_id;
+	u64 infer_num;
+	u8 job_count;
+	u8 job_list[MAX_CVE_DEVICES_NR];
+	struct kobject *node_kobj;
+	struct hwtrace_job job;
+};
 
 /* TODO: In future DG can be rebranded as ResourcePool.
  * It contains ICEs, Counters, LLC and Pools info.
@@ -502,6 +518,10 @@ struct cve_device_group {
 	u8 in_pool_cntr;
 	u8 non_res_cntr;
 #endif
+	int trace_node_cnt;
+	int trace_update_status;
+	struct trace_node_sysfs *node_group_sysfs;
+
 };
 
 /* Holds all the relevant IDs required for maintaining a map between
@@ -554,10 +574,14 @@ struct cve_workqueue {
  * that is passed to the device for execution
  */
 struct job_descriptor {
+	/* Job ID, incremental counter starting from 0 */
+	u8 id;
 	/* links to the jobs group list */
 	struct cve_dle_t list;
 	/* the parent jobgroup */
 	struct jobgroup_descriptor *jobgroup;
+	/* link to paired job */
+	struct job_descriptor *paired_job;
 	/* device interface's job handle */
 	cve_di_job_handle_t di_hjob;
 	/* num of allocations (cb & surfaces) associated with this job */
@@ -575,6 +599,8 @@ struct job_descriptor {
 	u32 *mmu_cfg_list;
 	/* Number of MMU Config registers */
 	u32 num_mmu_cfg_regs;
+	/* SW device context */
+	struct dev_context *dev_ctx;
 };
 
 /* hold information about a job group */
@@ -656,22 +682,6 @@ struct fifo_descriptor {
 	struct dev_alloc fifo_alloc;
 	/* Above CBDT allocation is associated with this FIFO */
 	struct di_fifo fifo;
-};
-
-struct ntw_pjob_info {
-
-	/* If N is the graph_ice_id then ice_id_map[N] is driver_ice_id  */
-	u8 ice_id_map[MAX_CVE_DEVICES_NR];
-
-	u32 num_pjob[MAX_CVE_DEVICES_NR];
-	/* picebo[N] is 1 only if both the ICE of ICEBOn
-	 * belongs to this NTW
-	 */
-	u8 picebo[MAX_NUM_ICEBO];
-	/* dicebo[N] contains index of the ICE which belongs to this NTW
-	 * only if exactly one ICE from ICEBOn belongs to this NTW
-	 */
-	u8 dicebo[MAX_NUM_ICEBO];
 };
 
 struct ntw_cntr_info {
@@ -797,8 +807,8 @@ struct ice_network {
 	struct cve_hw_cntr_descriptor *cntr_list;
 	/****************************************/
 
-	/* For ICE book-keeping */
-	struct ntw_pjob_info pjob_info;
+	/* To keep track of paired jobs */
+	struct job_descriptor *pjob_list[MAX_CVE_DEVICES_NR];
 
 	/* For Counter book-keeping */
 	struct ntw_cntr_info cntr_info;
@@ -806,6 +816,11 @@ struct ice_network {
 	/* Network specific FIFO allocation */
 	struct fifo_descriptor fifo_desc[MAX_CVE_DEVICES_NR];
 
+	/* Place holder for software device context
+	 * Max entries == Jobs. Each job to have a unique dev context
+	 * to be mapped to actual ICE during execution
+	 */
+	struct dev_context *dev_ctx[MAX_CVE_DEVICES_NR];
 	/************************/
 	/* SW Counter handle */
 	void *hswc;
@@ -841,16 +856,20 @@ struct ice_network {
 	bool ntw_enable_bp;
 
 	/* paired ICE from ICEBO requirement */
-	u8 num_picebo_req;
-	u8 cached_num_picebo_req;
+	u8 org_pbo_req;
+	u8 temp_pbo_req;
+	u8 given_pbo_req;
 	/* single ICE from ICEBO requirement, the other ICE is free
 	 * to be allocated to other NTW
 	 */
-	u8 num_dicebo_req;
-	u8 cached_num_dicebo_req;
+	u8 org_dice_req;
+	u8 temp_dice_req;
+	u8 given_dice_req;
 	/* icebo requirement type */
-	enum icebo_req_type icebo_req;
-	enum icebo_req_type cached_icebo_req;
+	enum icebo_req_type org_icebo_req;
+	enum icebo_req_type temp_icebo_req;
+	enum icebo_req_type given_icebo_req;
+
 	/* Network type deepsram/normal */
 	enum ice_network_type network_type;
 	u8 max_shared_distance;
@@ -901,6 +920,9 @@ struct ice_network {
 
 	/*Device specific domain data */
 	cve_dev_context_handle_t dev_hctx_list;
+
+	/* list of custom loaded fw sections per cve device */
+	struct cve_fw_loaded_sections *loaded_cust_fw_sections;
 
 	/* Flag to disallow fw loading after exIR */
 	u8 exIR_performed;
