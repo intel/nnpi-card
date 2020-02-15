@@ -20,27 +20,32 @@ int s_interrupt_thresh = -1;
 
 static uint64_t compute_msr_time_window(uint64_t value)
 {
-	uint64_t x, y;
+	uint64_t x = 0, y = 0;
 
 	//protect do_div
 	if (s_time_units == 0) {
 		sph_log_err(MAINTENANCE_LOG, "%s: Invalid time units: %u\n", __func__, s_time_units);
-		value = 0;
 		goto out;
 	}
 
-	do_div(value, s_time_units);
+	value = mult_frac(value, 8, s_time_units);
 
 	//protect ilog2
-	if (value == 0)
-		goto out;
+	if (value >= 8) {
+		y = ilog2(value + __roundup_pow_of_two(value) / 16ull) - 3ull;
+		if (y > 0x1f) {
+			y = 0x1f;
+			x = 0x3;
+			goto out;
+		}
+	}
 
-	y = ilog2(value);
-	x = div64_u64(4 * (value - (1 << y)), 1 << y);
-
-	value = (y & 0x1f) | ((x & 0x3) << 5);
+	if (value > (1 << y) * 8)
+		x = DIV_ROUND_CLOSEST(value - (1ull << y) * 8, (1ull << y) * 2);
 
 out:
+	value = (y & 0x1f) | ((x & 0x3) << 5);
+
 	sph_log_info(MAINTENANCE_LOG, "%s: time units: %d, value: %llu:\n", __func__, s_time_units, value);
 	return value;
 }
@@ -51,7 +56,7 @@ static uint64_t compute_readable_time_window(uint64_t value)
 
 	x = (value & 0x60) >> 5;
 	y = value & 0x1f;
-	value = (1ULL << y) * (4 + x) * s_time_units / 4;
+	value = (1ULL << y) * s_time_units + mult_frac(s_time_units, (1ULL << y) * x, 4);
 
 	sph_log_info(MAINTENANCE_LOG, "%s: %llu:\n", __func__, value);
 
