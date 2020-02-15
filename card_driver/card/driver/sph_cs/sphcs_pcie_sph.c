@@ -994,6 +994,7 @@ static void *dma_set_lli_data_element(void *lliPtr,
 	struct lli_desc *lli = (struct lli_desc *)lliPtr;
 	struct sph_dma_data_element *dataElement;
 	u32 n, list_idx, list_off;
+	bool is_last;
 
 	if (lli->num_filled >= lli->num_elements || lli->num_lists == 0) {
 		SPH_ASSERT(0);
@@ -1018,7 +1019,10 @@ static void *dma_set_lli_data_element(void *lliPtr,
 	lli->xfer_size[list_idx] += size;
 
 	/* insert EOL element if last element in list */
-	if (list_off == (n - 1)) {
+	is_last = (list_idx == (lli->num_lists - 1) ?
+			lli->num_filled == (lli->num_elements - 1) :
+			list_off == (n - 1));
+	if (is_last) {
 		/* Set local interrupt enable bit */
 		dataElement->control |= DMA_CTRL_LIE;
 
