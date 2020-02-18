@@ -56,7 +56,7 @@ int sphcs_cmd_chan_create(uint16_t                protocolID,
 	if (!cmd_chan->wq) {
 		sph_log_err(CREATE_COMMAND_LOG, "Failed to initialize workqueue\n");
 		kfree(cmd_chan);
-		return -ENOMEM;
+		return SPH_IPC_NO_MEMORY;
 	}
 
 	cmd_chan->respq = sphcs_create_response_queue(g_the_sphcs, 1);
@@ -64,7 +64,7 @@ int sphcs_cmd_chan_create(uint16_t                protocolID,
 		sph_log_err(START_UP_LOG, "Failed to create channel response q\n");
 		destroy_workqueue(cmd_chan->wq);
 		kfree(cmd_chan);
-		return -ENOMEM;
+		return SPH_IPC_NO_MEMORY;
 	}
 
 	//
