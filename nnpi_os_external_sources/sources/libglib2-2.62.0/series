@@ -1,0 +1,4 @@
+0001-fix-compile-time-atomic-detection.patch
+0002-add-option-to-build-tests.patch
+0003-remove-cpp-requirement.patch
+0004-Add-Wno-format-nonliteral-to-compiler-arguments.patch

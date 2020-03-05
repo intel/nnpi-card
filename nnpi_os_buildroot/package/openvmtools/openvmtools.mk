@@ -20,6 +20,10 @@ OPENVMTOOLS_CONF_OPTS = --with-dnet \
 OPENVMTOOLS_CONF_ENV += CUSTOM_DNET_CPPFLAGS=" "
 OPENVMTOOLS_DEPENDENCIES = host-nfs-utils libglib2 libdnet
 
+ifeq ($(BR2_PACKAGE_LIBTIRPC),y)
+OPENVMTOOLS_DEPENDENCIES += libtirpc
+endif
+
 # When libfuse is available, openvmtools can build vmblock-fuse, so
 # make sure that libfuse gets built first
 ifeq ($(BR2_PACKAGE_LIBFUSE),y)
@@ -33,18 +37,18 @@ else
 OPENVMTOOLS_CONF_OPTS += --without-ssl
 endif
 
-ifeq ($(BR2_PACKAGE_OPENVMTOOLS_PROCPS),y)
-OPENVMTOOLS_CONF_OPTS += --with-procps
-OPENVMTOOLS_DEPENDENCIES += procps-ng
-else
-OPENVMTOOLS_CONF_OPTS += --without-procps
-endif
-
 ifeq ($(BR2_PACKAGE_OPENVMTOOLS_PAM),y)
 OPENVMTOOLS_CONF_OPTS += --with-pam
 OPENVMTOOLS_DEPENDENCIES += linux-pam
 else
 OPENVMTOOLS_CONF_OPTS += --without-pam
+endif
+
+ifeq ($(BR2_PACKAGE_OPENVMTOOLS_RESOLUTIONKMS),y)
+OPENVMTOOLS_CONF_OPTS += --enable-resolutionkms
+OPENVMTOOLS_DEPENDENCIES += libdrm udev
+else
+OPENVMTOOLS_CONF_OPTS += --disable-resolutionkms
 endif
 
 # symlink needed by lib/system/systemLinux.c (or will cry in /var/log/messages)

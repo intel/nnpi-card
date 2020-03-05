@@ -1,5 +1,0 @@
-0001-networking-libiproute-use-linux-if_packet.h-instead-.patch
-0002-Makefile.flags-strip-non-l-arguments-returned-by-pkg.patch
-0003-install.sh-don-t-clobber-dangling-symlinks.patch
-0004-udhcpc-check-that-4-byte-options-are-indeed-4-byte-closes-11506.patch
-0005-udhcpc-when-decoding-DHCP_SUBNET-ensure-it-is-4-bytes-long.patch

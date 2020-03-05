@@ -1,0 +1,3 @@
+0001-fix-O_CLOEXEC.patch
+0002-Do-not-check-for-undefined-symbols-when-building-the.patch
+0003-Makefile.am-filter-Wl-no-undefined.patch

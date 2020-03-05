@@ -351,14 +351,14 @@ int create_sph_file(struct kobject *kobj, struct attribute *attr)
 /* free binary file */
 void release_bin_file(struct kobject *kobj, struct sph_sw_counters_bin_file_attr *attr)
 {
+	sysfs_remove_bin_file(kobj, &attr->attr);
+
 	/* if we have allocated a page - we need to release it */
 	if (attr->page_count)
 		__free_pages(attr->bin_page, get_order(attr->page_count));
 
 	if (attr->info_size)
 		kfree(attr->info_buf);
-
-	sysfs_remove_bin_file(kobj, &attr->attr);
 }
 
 static void move_to_stale_list(struct gen_sync_attr                 *gen_sync,

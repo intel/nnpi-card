@@ -27,6 +27,7 @@ struct sphcs_host_rb {
 	uint32_t head;
 	uint32_t tail;
 	bool is_full;
+	bool disconnected;
 };
 
 struct sphcs_hostres_map {

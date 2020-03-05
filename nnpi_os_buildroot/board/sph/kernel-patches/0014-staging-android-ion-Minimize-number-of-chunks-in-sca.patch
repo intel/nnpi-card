@@ -1,0 +1,160 @@
+From d4b97385c629362ca42a7cbabdfcf94e6b683761 Mon Sep 17 00:00:00 2001
+From: Alexey Skidanov <alexey.skidanov@intel.com>
+Date: Wed, 29 Jan 2020 00:12:31 -0500
+Subject: [PATCH] staging: android: ion: Minimize number of chunks in scattered
+ buffer
+
+Try to allocate longer chunks to minimize number of chunks
+in scattered buffer
+
+Signed-off-by: Alexey Skidanov <alexey.skidanov@intel.com>
+---
+ drivers/staging/android/ion/ion_chunk_heap.c | 92 +++++++++++++++++++---------
+ 1 file changed, 64 insertions(+), 28 deletions(-)
+
+diff --git a/drivers/staging/android/ion/ion_chunk_heap.c b/drivers/staging/android/ion/ion_chunk_heap.c
+index d522a0de..be46df3 100644
+--- a/drivers/staging/android/ion/ion_chunk_heap.c
++++ b/drivers/staging/android/ion/ion_chunk_heap.c
+@@ -13,11 +13,10 @@
+ #include <linux/slab.h>
+ #include <linux/vmalloc.h>
+ #include <linux/ion_exp.h>
++#include <linux/log2.h>
+ 
+ #include "ion.h"
+ 
+-#define MAX_CONT_BUFF_SIZE 0x100000000
+-
+ struct ion_chunk_heap {
+ 	struct ion_heap heap;
+ 	struct gen_pool *pool;
+@@ -35,7 +34,7 @@ static int ion_chunk_heap_allocate_contig(struct ion_chunk_heap *chunk_heap,
+ 	unsigned long paddr;
+ 	int rc;
+ 
+-	if (allocated_size >= MAX_CONT_BUFF_SIZE)
++	if (allocated_size >= SCATTERLIST_MAX_SEGMENT)
+ 		return -EINVAL;
+ 
+ 	paddr = gen_pool_alloc_algo(chunk_heap->pool,
+@@ -61,46 +60,83 @@ static int ion_chunk_heap_allocate_contig(struct ion_chunk_heap *chunk_heap,
+ }
+ 
+ static int ion_chunk_heap_allocate_scattered(struct ion_chunk_heap *chunk_heap,
+-					     unsigned long num_chunks,
+-					     unsigned long chunk_size,
++					     unsigned long buf_size,
++					     unsigned long size_of_small_chunks,
+ 					     struct sg_table *table,
+ 					     struct genpool_data_align *data)
+ {
++	struct chunk_descr {
++		unsigned long paddr;
++		unsigned long size;
++	};
++	unsigned long max_num_of_chunks;
+ 	struct scatterlist *sg;
++	struct chunk_descr *chunks;
++	int rc = 0;
++	int i;
++	unsigned long chunk_size;
+ 	unsigned long paddr;
+-	int i, rc;
++	unsigned long num_of_chunks = 0;
++
++	/* Allocate array containing physical addresses of the chunks.
++	 * Some of these chunks may be large ones - thus the overall number
++	 * of chunks will be less than the maximum
++	 */
++	max_num_of_chunks = buf_size / size_of_small_chunks;
++	chunks = vmalloc(sizeof(*chunks) * max_num_of_chunks);
++	if (!chunks)
++		return -ENOMEM;
+ 
+-	rc = sg_alloc_table(table, num_chunks, GFP_KERNEL);
+-	if (rc)
+-		return rc;
++	chunk_size = 1UL << (fls64(buf_size) - 1);
++	if (chunk_size > SCATTERLIST_MAX_SEGMENT)
++		chunk_size = SCATTERLIST_MAX_SEGMENT;
++
++	do {
++		pr_debug("Chunk size 0x%lX\n", chunk_size);
+ 
+-	sg = table->sgl;
+-	for (i = 0; i < num_chunks; i++) {
+ 		paddr = gen_pool_alloc_algo(chunk_heap->pool,
+-					    chunk_size,
+-					    gen_pool_first_fit_align,
+-					    data);
++				    chunk_size,
++				    gen_pool_first_fit_align,
++				    data);
++		if (paddr == 0) {
++			chunk_size >>= 1;
++		} else {
++			/* Fill chunk descriptor */
++			chunks[num_of_chunks].paddr = paddr;
++			chunks[num_of_chunks].size = chunk_size;
++			num_of_chunks++;
++
++			/* Adjust next allocated chunk size if needed */
++			buf_size -= chunk_size;
++
++			if (buf_size < chunk_size) {
++				chunk_size = 1UL << (fls64(buf_size) - 1);
++				if (chunk_size > SCATTERLIST_MAX_SEGMENT)
++					chunk_size = SCATTERLIST_MAX_SEGMENT;
++			}
++		}
++	} while (buf_size != 0);
+ 
+-		if (!paddr)
+-			goto err;
++	pr_debug("Number of chunks 0x%lX\n", num_of_chunks);
+ 
+-		sg_set_page(sg, pfn_to_page(PFN_DOWN(paddr)),
+-			    chunk_size, 0);
+-		sg = sg_next(sg);
++	/* Allocate SGT */
++	rc = sg_alloc_table(table, num_of_chunks, GFP_KERNEL);
++	if (rc) {
++		rc = -ENOMEM;
++		goto failed_to_alloc_sgt;
+ 	}
+ 
+-	return 0;
+-
+-err:
++	/* Fill SGT */
+ 	sg = table->sgl;
+-	for (i -= 1; i >= 0; i--) {
+-		gen_pool_free(chunk_heap->pool, page_to_phys(sg_page(sg)),
+-			      sg->length);
++	for (i = 0; i < num_of_chunks; i++) {
++		sg_set_page(sg, pfn_to_page(PFN_DOWN(chunks[i].paddr)),
++			    chunks[i].size, 0);
+ 		sg = sg_next(sg);
+ 	}
+-	sg_free_table(table);
+ 
+-	return -ENOMEM;
++failed_to_alloc_sgt:
++	vfree(chunks);
++	return rc;
+ }
+ 
+ static int ion_chunk_heap_allocate(struct ion_heap *heap,
+@@ -159,7 +195,7 @@ static int ion_chunk_heap_allocate(struct ion_heap *heap,
+ 	/* Fall back to scattered allocation */
+ 	pr_debug("%s: Fall back to scattered allocation\n", __func__);
+ 	rc = ion_chunk_heap_allocate_scattered(chunk_heap,
+-					       allocated_size / allocated_chunk,
++					       allocated_size,
+ 					       allocated_chunk, table, &data);
+ 	if (rc)
+ 		goto err;
+-- 
+2.7.4
+

@@ -3202,7 +3202,7 @@ void IPC_OPCODE_HANDLER(CHAN_SCHEDULE_COPY_SUBRES)(struct sphcs                 
 
 	work->sphcs = sphcs;
 	work->context = context;
-	memcpy_s(work->cmd.value, sizeof(work->cmd.value), cmd->value, sizeof(cmd->value));
+	memcpy(work->cmd.value, cmd->value, sizeof(cmd->value));
 
 	INIT_WORK(&work->work, copy_subres_op_work_handler);
 	queue_work(context->chan->wq, &work->work);

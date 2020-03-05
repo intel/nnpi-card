@@ -20,6 +20,7 @@
 #include <linux/fcntl.h>
 #include <asm/msr.h>
 #include <linux/sched/clock.h>
+#include "sphpb_sw_counters.h"
 #include "sphpb_trace.h"
 #include "sph_log.h"
 #include "sph_version.h"
@@ -28,6 +29,8 @@
 #include "sphpb_bios_mailbox.h"
 
 struct sphpb_pb *g_the_sphpb;
+void *g_hSwCountersInfo_global;
+struct sph_sw_counters *g_sph_sw_pb_counters;
 
 static ssize_t show_bios_mailbox_locked(struct kobject *kobj,
 					struct kobj_attribute *attr,
@@ -126,7 +129,7 @@ int sphpb_set_power_state(uint32_t ice_index, bool bOn)
 int sphpb_throttle_init(struct sphpb_pb *sphpb)
 {
 	int ret = 0;
-	sphpb->throttle_data.curr_state = 0x0;
+	sphpb->throttle_data.curr_state = 0x0/*SPHPB_NO_THROTTLE*/;
 
 	sphpb->throttle_data.cpu_stat = kmalloc_array(num_possible_cpus(), sizeof(struct cpu_perfstat), GFP_KERNEL);
 	if (unlikely(sphpb->throttle_data.cpu_stat == NULL)) {
@@ -297,6 +300,41 @@ static ssize_t store_debug_log_value(struct kobject *kobj,
 	return ret;
 }
 
+static int sphpb_sw_counters_init(void)
+{
+	int ret;
+
+	ret = sph_create_sw_counters_info_node(NULL,
+					       &g_sw_counters_set_global,
+					       NULL,
+					       &g_hSwCountersInfo_global);
+	if (ret) {
+		sph_log_err(START_UP_LOG, "Failed to initialize sw counters nodes\n");
+		return ret;
+	}
+
+	ret = sph_create_sw_counters_values_node(g_hSwCountersInfo_global,
+						 0x0,
+						 NULL,
+						 &g_sph_sw_pb_counters);
+	if (ret) {
+		sph_log_err(START_UP_LOG, "Failed to initialize sw counters values\n");
+		goto free_counters_info_global;
+	}
+
+	return ret;
+
+free_counters_info_global:
+	sph_remove_sw_counters_info_node(g_hSwCountersInfo_global);
+
+	return ret;
+}
+
+static void sphpb_sw_counters_fini(void)
+{
+	sph_remove_sw_counters_values_node(g_sph_sw_pb_counters);
+	sph_remove_sw_counters_info_node(g_hSwCountersInfo_global);
+}
 
 int create_sphpb(void)
 {
@@ -348,10 +386,14 @@ int create_sphpb(void)
 	if (ret)
 		goto cleanup_ring_freq_sysfs;
 
+	ret = sphpb_sw_counters_init();
+	if (ret)
+		goto cleanup_ia_cycles_sysfs;
+
 	ret = sphpb_map_bios_mailbox(sphpb);
 	if (ret) {
 		sph_log_err(POWER_BALANCER_LOG, "sphpb_map_bios_mailbox failed with err: %d.\n", ret);
-		goto cleanup_ia_cycles_sysfs;
+		goto cleanup_counters;
 	}
 
 	ret = sphpb_power_overshoot_sysfs_init(sphpb);
@@ -377,6 +419,9 @@ cleanup_power_overshoot_sysfs:
 
 cleanup_map_bios_mailbox_sysfs:
 	sphpb_unmap_bios_mailbox(sphpb);
+
+cleanup_counters:
+	sphpb_sw_counters_fini();
 
 cleanup_ia_cycles_sysfs:
 	sphpb_ia_cycles_sysfs_deinit(sphpb);
@@ -411,6 +456,8 @@ void destroy_sphpb(void)
 	sphpb_power_overshoot_sysfs_deinit(g_the_sphpb);
 
 	sphpb_unmap_bios_mailbox(g_the_sphpb);
+
+	sphpb_sw_counters_fini();
 
 	sphpb_ia_cycles_sysfs_deinit(g_the_sphpb);
 

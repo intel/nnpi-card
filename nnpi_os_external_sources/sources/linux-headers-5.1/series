@@ -13,3 +13,5 @@
 0011-staging-android-ion-Use-ida-to-manage-heaps-id.patch
 0012-limit-continuos-memory-allocation.patch
 0013-EDAC-igen6-Clear-PciSerr-nmi-status.patch
+0014-staging-android-ion-Minimize-number-of-chunks-in-sca.patch
+0015-no_panic_timeout_on_mce_icli.patch

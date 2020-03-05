@@ -175,6 +175,7 @@ struct sphcs_cmd_chan *sphcs_find_channel(struct sphcs *sphcs, uint16_t protocol
 int find_and_destroy_channel(struct sphcs *sphcs, uint16_t protocolID)
 {
 	struct sphcs_cmd_chan *iter, *chan = NULL;
+	int i;
 
 	SPH_SPIN_LOCK_BH(&sphcs->lock_bh);
 	hash_for_each_possible(sphcs->cmd_chan_hash,
@@ -197,6 +198,13 @@ int find_and_destroy_channel(struct sphcs *sphcs, uint16_t protocolID)
 
 	if (chan->destroy_cb)
 		(*chan->destroy_cb)(chan, chan->destroy_cb_ctx);
+
+	/* mark all c2h channels as "disconnected" to release any writers */
+	for (i = 0; i < SPH_IPC_MAX_CHANNEL_RINGBUFS; i++)
+		if (chan->c2h_rb[i].host_sgt.sgl != NULL) {
+			chan->c2h_rb[i].disconnected = true;
+			wake_up_all(&chan->c2h_rb[i].waitq);
+		}
 
 	sphcs_cmd_chan_put(chan);
 
