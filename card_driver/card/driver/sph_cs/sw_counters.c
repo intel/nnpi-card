@@ -100,6 +100,8 @@ struct sph_internal_sw_counters {
 	struct gen_sync_attr			        *gen_sync_attr;
 };
 
+static DEFINE_MUTEX(values_tree_sync_mutex);
+
 /* create counters description buffer object */
 int create_sw_counters_description_data(const  struct sph_sw_counters_set *counters_set,
 					bool isRoot,
@@ -351,14 +353,14 @@ int create_sph_file(struct kobject *kobj, struct attribute *attr)
 /* free binary file */
 void release_bin_file(struct kobject *kobj, struct sph_sw_counters_bin_file_attr *attr)
 {
+	sysfs_remove_bin_file(kobj, &attr->attr);
+
 	/* if we have allocated a page - we need to release it */
 	if (attr->page_count)
 		__free_pages(attr->bin_page, get_order(attr->page_count));
 
 	if (attr->info_size)
 		kfree(attr->info_buf);
-
-	sysfs_remove_bin_file(kobj, &attr->attr);
 }
 
 static void move_to_stale_list(struct gen_sync_attr                 *gen_sync,
@@ -532,6 +534,8 @@ static void remove_group_files(struct sph_internal_sw_counters *sw_counters)
 
 static void client_refresh_dirty_updated(struct gen_sync_attr *gen_sync)
 {
+	mutex_lock(&values_tree_sync_mutex);
+
 	if (list_empty(&gen_sync->sync_clients)) {
 		remove_stale_bin_files(gen_sync, 0, true);
 		gen_sync->last_remove_dirty_val = 0;
@@ -551,6 +555,8 @@ static void client_refresh_dirty_updated(struct gen_sync_attr *gen_sync)
 			gen_sync->last_remove_dirty_val = min_dirty_val;
 		}
 	}
+
+	mutex_unlock(&values_tree_sync_mutex);
 }
 
 static int gen_sync_release(struct inode *inode, struct file *f)
@@ -877,12 +883,17 @@ int sph_create_sw_counters_values_node(void *hInfoNode,
 	struct bin_stale_node *stale_node = NULL;
 	bool   dir_exist = false;
 
-	u32 counters_size = sw_counters_info->counters_set->counters_count * SPH_COUNTER_SIZE;
+	u32 counters_size;
 	u32 n;
+
+	mutex_lock(&values_tree_sync_mutex);
+
+	counters_size = sw_counters_info->counters_set->counters_count * SPH_COUNTER_SIZE;
 
 	sw_counters_values = kzalloc(sizeof(*sw_counters_values), GFP_KERNEL);
 	if (!sw_counters_values) {
 		sph_log_err(GENERAL_LOG, "unable to generate sph_sw_counters_object\n");
+		mutex_unlock(&values_tree_sync_mutex);
 		return -ENOMEM;
 	}
 
@@ -1124,6 +1135,7 @@ int sph_create_sw_counters_values_node(void *hInfoNode,
 		sw_counters_values = sw_counters_values->parent;
 	}
 
+	mutex_unlock(&values_tree_sync_mutex);
 
 	return 0;
 
@@ -1152,6 +1164,8 @@ cleanup_sw_counters_values_dir_name:
 cleanup_sw_counters_values:
 	kfree(sw_counters_values);
 
+	mutex_unlock(&values_tree_sync_mutex);
+
 	return ret;
 }
 
@@ -1162,6 +1176,8 @@ int sph_sw_counters_release_values_node(struct sph_internal_sw_counters *sw_coun
 	struct sph_internal_sw_counters *tmp_sw_counters_values = sw_counters_values;
 	struct kobj_node *kobjNode;
 	u64 root_dirty = 0;
+
+	mutex_lock(&values_tree_sync_mutex);
 
 	/* once new object was deleted we will update node to root */
 	while (tmp_sw_counters_values->parent != NULL) {
@@ -1223,6 +1239,8 @@ int sph_sw_counters_release_values_node(struct sph_internal_sw_counters *sw_coun
 
 	mutex_destroy(&sw_counters_values->list_lock);
 	kfree(sw_counters_values);
+
+	mutex_unlock(&values_tree_sync_mutex);
 
 	return 0;
 

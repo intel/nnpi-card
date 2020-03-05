@@ -713,10 +713,41 @@ static int add_service(const char *service_name, size_t service_name_len, struct
 
 static void delete_service(int service_id)
 {
+	struct pending_packet *p, *n;
+	union c2h_ChanGenericMessaging msg = {0};
+	struct service_data *service_data;
+	int rc;
+
 	mutex_lock(&s_service_list->lock);
 	if (s_service_list->service_name[service_id]) {
-		s_service_list->service_data[service_id] = NULL;
+		service_data = s_service_list->service_data[service_id];
 
+		/* Handle all the pending connections requests, if the service released.
+		 * Needed for cases such as counterd crash before accepting connections.
+		 */
+		if (!list_empty(&service_data->pending_connections)) {
+			msg.value = 0;
+			msg.opcode = SPH_IPC_C2H_OP_CHAN_GENERIC_MSG_PACKET;
+			msg.rbID = 0;
+			msg.connect = 1;
+			msg.card_client_id = SPH_IPC_GENMSG_BAD_CLIENT_ID;
+
+			list_for_each_entry_safe(p, n, &service_data->pending_connections, node) {
+				/* Send connect reply message back to host */
+				msg.chanID = p->dma_data.cmd_chan->protocolID;
+				sphcs_msg_scheduler_queue_add_msg(p->dma_data.cmd_chan->respq, &msg.value, 1);
+
+				sphcs_cmd_chan_put(p->dma_data.cmd_chan);
+
+				rc = dma_page_pool_set_page_free(g_the_sphcs->dma_page_pool, p->dma_data.dma_page_hndl);
+				if (rc)
+					sph_log_err(SERVICE_LOG, "Delete service: failed to return dma page back to pool. rc=%d", rc);
+
+				list_del(&p->node);
+				kfree(p);
+			}
+		}
+		service_data = NULL;
 		kfree(s_service_list->service_name[service_id]);
 		s_service_list->service_name[service_id] = NULL;
 		s_service_list->service_name_len[service_id] = 0;

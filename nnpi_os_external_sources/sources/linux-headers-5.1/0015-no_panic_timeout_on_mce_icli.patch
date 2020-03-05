@@ -1,0 +1,29 @@
+From 8b835efa597442fda61300f0f03741f1f04d305f Mon Sep 17 00:00:00 2001
+From: farah kassabri <farah.kassabri@intel.com>
+Date: Wed, 12 Feb 2020 00:38:53 -0500
+Subject: [PATCH] On ICL-I CPU model we don't want to set panic timeout upon
+ receiving critical machine check. since we need the server to do reboot using
+ outband interface and not to get self reboot after 30 seconds.
+
+---
+ arch/x86/kernel/cpu/mce/core.c | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/arch/x86/kernel/cpu/mce/core.c b/arch/x86/kernel/cpu/mce/core.c
+index b7fb541..71003b2 100644
+--- a/arch/x86/kernel/cpu/mce/core.c
++++ b/arch/x86/kernel/cpu/mce/core.c
+@@ -1642,6 +1642,10 @@ static int __mcheck_cpu_apply_quirks(struct cpuinfo_x86 *c)
+ 		if (c->x86 == 6 && c->x86_model <= 13 && cfg->bootlog < 0)
+ 			cfg->bootlog = 0;
+ 
++		/* No panic timeout on ICL-I model */
++                if (c->x86_model == INTEL_FAM6_ICELAKE_NNPI)
++			cfg->bootlog = 0;
++
+ 		if (c->x86 == 6 && c->x86_model == 45)
+ 			quirk_no_way_out = quirk_sandybridge_ifu;
+ 	}
+-- 
+1.8.3.1
+

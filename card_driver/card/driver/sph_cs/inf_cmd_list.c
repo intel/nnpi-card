@@ -12,6 +12,8 @@
 #include "inf_req.h"
 #include "inf_cpylst.h"
 
+//#define OPT_EXTRA_DEBUG
+
 struct id_range {
 	struct list_head node;
 	uint16_t         first;
@@ -261,7 +263,11 @@ static int id_range_add(struct list_head *ranges, uint16_t first_id, uint16_t la
 
 	new_range->first = first_id;
 	new_range->last = last_id;
-	list_add_tail(&new_range->node, ranges);
+	if (list_empty(ranges))
+		list_add_tail(&new_range->node, ranges);
+	else
+		list_add_tail(&new_range->node, &range->node);
+
 	return 0;
 }
 
@@ -285,7 +291,17 @@ static uint32_t id_range_intersect(struct list_head *isect,
 				   struct list_head *ranges1)
 {
 	struct id_range *r0, *r1, *n;
-	uint32_t n_intersect = 0;
+	int n_intersect = 0;
+	uint16_t keep_last;
+
+#ifdef OPT_EXTRA_DEBUG
+	sph_log_debug(GENERAL_LOG, "intersect r0: (isect=0x%lx)\n", (uintptr_t)isect);
+	list_for_each_entry_safe(r0, n, ranges0, node)
+		sph_log_debug(GENERAL_LOG, "\t%d -> %d\n", r0->first, r0->last);
+	sph_log_debug(GENERAL_LOG, "intersect r1:\n");
+	list_for_each_entry_safe(r1, n, ranges1, node)
+		sph_log_debug(GENERAL_LOG, "\t%d -> %d\n", r1->first, r1->last);
+#endif
 
 	r0 = list_first_entry(ranges0, struct id_range, node);
 	r1 = list_first_entry(ranges1, struct id_range, node);
@@ -296,31 +312,63 @@ static uint32_t id_range_intersect(struct list_head *isect,
 		if (first <= last) {
 			n_intersect += (last - first + 1);
 
-			if (isect == NULL)
+			if (isect == NULL) {
+#ifdef OPT_EXTRA_DEBUG
+				sph_log_debug(GENERAL_LOG, "intersect NULL DONE n_intersect=%d\n", n_intersect);
+#endif
 				return n_intersect;
-
-			if (first > r0->first)
-				r0->last = first - 1;
-			else
-				r0->first = last + 1;
-
-			if (first > r1->first)
-				r1->last = first - 1;
-			else
-				r1->first = last + 1;
-
-			if (r0->first > r0->last) {
-				n = list_next_entry(r0, node);
-				list_del(&r0->node);
-				kfree(r0);
-				r0 = n;
 			}
 
-			if (r1->first > r1->last) {
-				n = list_next_entry(r1, node);
-				list_del(&r1->node);
-				kfree(r1);
-				r1 = n;
+			if (first > r0->first) {
+				keep_last = r0->last;
+				if (last < keep_last) {
+					n = kzalloc(sizeof(struct id_range), GFP_KERNEL);
+					if (unlikely(n == NULL)) {
+						n_intersect -= (last - first + 1);
+						return n_intersect;
+					}
+					n->first = last + 1;
+					n->last = keep_last;
+					list_add(&n->node, &r0->node);
+					r0->last = first - 1;
+					r0 = n;
+				} else
+					r0->last = first - 1;
+			} else {
+				r0->first = last + 1;
+
+				if (r0->first > r0->last) {
+					n = list_next_entry(r0, node);
+					list_del(&r0->node);
+					kfree(r0);
+					r0 = n;
+				}
+			}
+
+			if (first > r1->first) {
+				keep_last = r1->last;
+				if (last < keep_last) {
+					n = kzalloc(sizeof(struct id_range), GFP_KERNEL);
+					if (unlikely(n == NULL)) {
+						n_intersect -= (last - first + 1);
+						return n_intersect;
+					}
+					n->first = last + 1;
+					n->last = keep_last;
+					list_add(&n->node, &r1->node);
+					r1->last = first - 1;
+					r1 = n;
+				} else
+					r1->last = first - 1;
+			} else {
+				r1->first = last + 1;
+
+				if (r1->first > r1->last) {
+					n = list_next_entry(r1, node);
+					list_del(&r1->node);
+					kfree(r1);
+					r1 = n;
+				}
 			}
 
 			id_range_add(isect, first, last);
@@ -329,6 +377,13 @@ static uint32_t id_range_intersect(struct list_head *isect,
 		else
 			r1 = list_next_entry(r1, node);
 	}
+
+#ifdef OPT_EXTRA_DEBUG
+	sph_log_debug(GENERAL_LOG, "intersect DONE n_intersect=%d:\n", n_intersect);
+	if (isect != NULL)
+		list_for_each_entry_safe(r0, n, isect, node)
+			sph_log_debug(GENERAL_LOG, "\t%d -> %d\n", r0->first, r0->last);
+#endif
 
 	return n_intersect;
 }
@@ -408,10 +463,61 @@ static void id_set_free(struct id_set *set)
 	kfree(set);
 }
 
+#ifdef OPT_EXTRA_DEBUG
+static void dump_id_range(struct list_head *ranges)
+{
+	struct id_range *range, *tmp;
+
+	list_for_each_entry_safe(range, tmp, ranges, node)
+		sph_log_debug(GENERAL_LOG, "\tid range: %d -> %d\n", range->first, range->last);
+}
+
+static void dump_sets(struct list_head *sets)
+{
+	struct id_range *range, *tmp;
+	struct req_entry *r, *tmpr;
+	struct id_set *curr_set;
+
+	if (list_empty(sets)) {
+		sph_log_debug(GENERAL_LOG, "Dump Sets - NO Sets to dump\n");
+		return;
+	}
+
+	sph_log_debug(GENERAL_LOG, "Dump Sets:\n");
+	list_for_each_entry(curr_set, sets, node) {
+		sph_log_debug(GENERAL_LOG, "Set 0x%lx is_output=%d merged=%d\n",
+			      (uintptr_t)curr_set, curr_set->is_output, curr_set->merged);
+
+		list_for_each_entry_safe(range, tmp, &curr_set->ranges, node)
+			sph_log_debug(GENERAL_LOG, "\tid range: %d -> %d\n", range->first, range->last);
+
+		list_for_each_entry_safe(r, tmpr, &curr_set->req_list, node) {
+			if (r->req->cmd_type == CMDLIST_CMD_COPYLIST)
+				sph_log_debug(GENERAL_LOG, "\treq: cpylst %d cmdlist=%d n_copies=%d\n",
+				       r->req->cpylst->idx_in_cmd,
+				       r->req->cmd->protocolID,
+				       r->req->cpylst->n_copies);
+			else if (r->req->cmd_type == CMDLIST_CMD_INFREQ)
+				sph_log_debug(GENERAL_LOG, "\treq: infreq %d cmdlist=%d n=%d\n",
+					      r->req->infreq->protocolID,
+					      r->req->cmd->protocolID,
+					      curr_set->is_output ? r->req->infreq->n_outputs : r->req->infreq->n_inputs);
+			else
+				sph_log_debug(GENERAL_LOG, "\treq: copy %d cmdlist=%d devres=%d\n",
+					      r->req->copy->protocolID,
+					      r->req->cmd->protocolID,
+					      r->req->copy->devres->protocolID);
+		}
+	}
+	sph_log_debug(GENERAL_LOG, "Dump Sets DONE\n");
+}
+#endif
+
 static void inf_cmd_clear_group_devres_optimization(struct inf_cmd_list *cmd)
 {
 	struct inf_exec_req *req;
 	uint16_t i;
+	struct id_range *range, *tmp;
 
 	for (i = 0; i < cmd->num_reqs; i++) {
 		req = &cmd->req_list[i];
@@ -434,6 +540,12 @@ static void inf_cmd_clear_group_devres_optimization(struct inf_cmd_list *cmd)
 			}
 		}
 	}
+
+	if (!list_empty(&cmd->devres_id_ranges))
+		list_for_each_entry_safe(range, tmp, &cmd->devres_id_ranges, node) {
+			list_del(&range->node);
+			kfree(range);
+		}
 }
 
 static int build_access_group_sets(struct inf_cmd_list *cmd,
@@ -510,6 +622,11 @@ static int build_access_group_sets(struct inf_cmd_list *cmd,
 		}
 	}
 
+#ifdef OPT_EXTRA_DEBUG
+	sph_log_debug(GENERAL_LOG, "cmdlist %d total ranges:\n", cmd->protocolID);
+	dump_id_range(&cmd->devres_id_ranges);
+#endif
+
 	return 0;
 }
 
@@ -529,6 +646,7 @@ void inf_cmd_optimize_group_devres(struct inf_cmd_list *cmd)
 	SPH_ASSERT(cmd != NULL);
 	SPH_ASSERT(cmd->status == CREATED);
 
+	sph_log_debug(GENERAL_LOG, "cmd_optimize %d START num_reqs=%d\n", cmd->protocolID, cmd->num_reqs);
 	if (cmd->num_reqs == 0)
 		return;
 
@@ -551,18 +669,23 @@ void inf_cmd_optimize_group_devres(struct inf_cmd_list *cmd)
 		if (c == cmd)
 			continue;
 
+		sph_log_debug(GENERAL_LOG, "intersecting total cmd %d and %d\n", cmd->protocolID, c->protocolID);
 		if (id_range_intersect(NULL,
 				       &cmd->devres_id_ranges,
 				       &c->devres_id_ranges) > 0) {
 			SPH_SPIN_UNLOCK(&cmd->context->lock);
+			sph_log_debug(GENERAL_LOG, "clearing opts of cmdlist %d\n", c->protocolID);
 			inf_cmd_clear_group_devres_optimization(c);
-			cmd->context->num_optimized_cmd_lists--;
 			if (build_access_group_sets(c, &sets) != 0)
 				goto done;
 			SPH_SPIN_LOCK(&cmd->context->lock);
 		}
 	}
 	SPH_SPIN_UNLOCK(&cmd->context->lock);
+
+#ifdef OPT_EXTRA_DEBUG
+	dump_sets(&sets);
+#endif
 
 	/* add devres pivot of merged sets to devres_groups of requests */
 	list_for_each_entry_safe(idset, tmp, &sets, node) {
@@ -652,7 +775,7 @@ void inf_cmd_optimize_group_devres(struct inf_cmd_list *cmd)
 					if (idset->is_output) {
 						re->req->o_opt_depend_devres = opt_depend_devres;
 						re->req->o_num_opt_depend_devres = num_devres;
-						sph_log_debug(GENERAL_LOG, "optimized input dependency list for cmdlist %d infreq %d from %d to %d\n",
+						sph_log_debug(GENERAL_LOG, "optimized output dependency list for cmdlist %d infreq %d from %d to %d\n",
 							      re->req->cmd->protocolID,
 							      re->req->infreq->protocolID,
 							      re->req->infreq->n_outputs,
@@ -660,14 +783,15 @@ void inf_cmd_optimize_group_devres(struct inf_cmd_list *cmd)
 					} else {
 						re->req->i_opt_depend_devres = opt_depend_devres;
 						re->req->i_num_opt_depend_devres = num_devres;
-						sph_log_debug(GENERAL_LOG, "optimized output dependency list for cmdlist %d infreq %d from %d to %d\n",
+						sph_log_debug(GENERAL_LOG, "optimized inout dependency list for cmdlist %d infreq %d from %d to %d\n",
 							      re->req->cmd->protocolID,
 							      re->req->infreq->protocolID,
 							      re->req->infreq->n_inputs,
 							      num_devres);
 					}
 				}
-			}
+			} else
+				sph_log_debug(GENERAL_LOG, "skip optimize %d->%d cmd_type=%d\n", orig_num_devres, num_devres, re->req->cmd_type);
 		}
 
 		list_del(&idset->node);
@@ -680,6 +804,8 @@ void inf_cmd_optimize_group_devres(struct inf_cmd_list *cmd)
 done:
 	if (!success)
 		sph_log_err(GENERAL_LOG, "dependency optimization for cmdlist %d has failed!!\n", cmd->protocolID);
+
+	sph_log_debug(GENERAL_LOG, "cmd_optimize %d DONE success=%d num_optimized=%d\n", cmd->protocolID, success, cmd->context->num_optimized_cmd_lists);
 
 	list_for_each_entry_safe(idset, tmp, &sets, node) {
 		if (!success) {

@@ -1,0 +1,3 @@
+0001-Dont-waste-time-building-manpages-if-we-re-not-going.patch
+0002-Reproducible-build-do-not-leak-compiler-path.patch
+0003-Introduce-the-OPENSSL_NO_MADVISE-to-disable-call-to-.patch

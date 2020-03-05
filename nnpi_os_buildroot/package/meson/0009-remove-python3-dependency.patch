@@ -1,0 +1,14 @@
+ mesonbuild/dependencies/base.py | 2 +-
+ 1 file changed, 1 insertions(+), 1 deletions(-)
+
+diff --git a/mesonbuild/dependencies/base.py b/mesonbuild/dependencies/base.py
+--- a/mesonbuild/dependencies/base.py
++++ b/mesonbuild/dependencies/base.py
+@@ -1494,7 +1494,7 @@
+     def _setup_cmake_dir(self, cmake_file: str) -> str:
+         # Setup the CMake build environment and return the "build" directory
+         build_dir = Path(self.cmake_root_dir) / 'cmake_{}'.format(self.name)
+-        build_dir.mkdir(parents=True, exist_ok=True)
++        build_dir.mkdir(parents=True)
+ 
+         # Copy the CMakeLists.txt

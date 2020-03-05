@@ -84,7 +84,7 @@ HOSTNAME=`hostname`
 FLAVOR=`echo $HOSTNAME | cut -d "[" -f2 | cut -d "]" -f1`
 
 #register counters
-init_ice_driver ${FLAVOR}
+init_ice_driver ${FLAVOR} || exit 1
 
 #TEMPORARY PATCH: ice_driver is loaded by init_ice_driver after it performs some mapping of good/bad ICEs
 echo "initializing register counters"

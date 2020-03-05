@@ -20,12 +20,14 @@
 #include <linux/fcntl.h>
 #include <linux/sched/clock.h>
 
+#include "sphpb_sw_counters.h"
 #include "sph_log.h"
 #include "sph_version.h"
 #include "sphpb.h"
 #include "sphpb_punit.h"
 #include "sphpb_bios_mailbox.h"
 #include "sphpb_trace.h"
+
 /* power throttling threasholds*/
 #define RING_FREQ_SETP 100llu //MHz
 #define RING_THRESHOLD (400llu + RING_FREQ_SETP / 2u) //MHz
@@ -461,7 +463,6 @@ int do_throttle(struct sphpb_pb *sphpb,
 		return ret;
 	}
 
-
 	/*
 	 * RING
 	 * check if ring frequency is set at minimum.
@@ -526,16 +527,22 @@ int do_throttle(struct sphpb_pb *sphpb,
 		}
 	}
 
+	if (sphpb->throttle_data.curr_state != SPHPB_NO_THROTTLE) {
+		time_us = sph_time_us();
+		SPH_SW_COUNTER_ADD(g_sph_sw_pb_counters,
+				   SPHCS_SW_COUNTERS_IPC_THROTTLING_TIME, time_us - sphpb->throttle_data.begin_throttling_us);
+		sphpb->throttle_data.begin_throttling_us = time_us;
+	}
 	/*
 	 * Decide on throttle state:
 	 * supported states:
 	 *  - SPHPB_NO_THROTTLE - indicates  that throttling is not active/required
 	 *  - SPHPB_THROTTLE_TO_MAX - indicates the pcode will try to throttle the system to maximum
 	 *  - SPHPB_THROTTLE_TO_MIN - indicates the pcode will try to throttle the system to minimum ( first level of throttling)
-	 * - two steps are between SPHPB_THROTTLE_TO_MIN to SPHPB_THROTTLE_TO_MAX (0x8, 0x4, 0x2, 0x1)
+	 * - 14 steps are between SPHPB_THROTTLE_TO_MIN to SPHPB_THROTTLE_TO_MAX (0xf, 0xe, ... , 0x2, 0x1)
 	 */
 
-	if (all_min && (avg_power_mW > ((power_limit1_mW * 103llu) / 100llu))) {
+	if (all_min && (avg_power_mW > mult_frac(power_limit1_mW, 103llu, 100llu))) {
 		// throttle more
 		if (sphpb->throttle_data.curr_state == SPHPB_NO_THROTTLE)
 			new_state = SPHPB_THROTTLE_TO_MIN;
@@ -576,6 +583,10 @@ int do_throttle(struct sphpb_pb *sphpb,
 		goto cleanup_ddr_value;
 	}
 
+
+	if (sphpb->throttle_data.curr_state == SPHPB_NO_THROTTLE &&
+	    new_state != SPHPB_NO_THROTTLE)
+		sphpb->throttle_data.begin_throttling_us = sph_time_us();
 
 	sphpb->throttle_data.curr_state = new_state;
 
