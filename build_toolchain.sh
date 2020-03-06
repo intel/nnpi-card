@@ -40,13 +40,15 @@ error_check "rm -rf $OUTPUT_DIR/$TOOLCHAIN_DIR"
 echo "toolchain output directory: $OUTPUT_DIR/$TOOLCHAIN_DIR"
 
 cd nnpi_os_buildroot
+#to enable toolchain build
+echo "BR2_COMPILER_PARANOID_UNSAFE_PATH=n" >> configs/SPH_x86_64_efi_nnpi_defconfig
 make SPH_x86_64_efi_nnpi_defconfig  O=$TOOLCHAIN_BUILD_DIR
 error_check "make SPH_x86_64_efi_Simics_nnpi_defconfig"
 
 set -x; 
 cd $TOOLCHAIN_BUILD_DIR
 make sdk
-error_check "make toolchain"
+error_check "make sdk"
 
 cd ../../
 mv nnpi_os_buildroot/$TOOLCHAIN_BUILD_DIR/host $OUTPUT_DIR/$TOOLCHAIN_DIR
