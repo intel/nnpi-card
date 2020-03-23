@@ -33,20 +33,9 @@
  */
 
 C2H_OPCODE(QUERY_VERSION_REPLY,		0, union c2h_QueryVersionReplyMsg)
-C2H_OPCODE(SERVICE_LIST,		1, union c2h_ServiceListMsg)
-C2H_OPCODE(GENERIC_MSG_PACKET,		2, union c2h_GenericMessaging)
 C2H_OPCODE(ETH_MSG_DSCR,		3, union c2h_EthernetMsgDscr)
 C2H_OPCODE(EVENT_REPORT,		4, union c2h_EventReport)
-C2H_OPCODE(SYNC_DONE,			5, union c2h_SyncDone)
-C2H_OPCODE(INF_SUBRES_LOAD_REPLY,	6, union c2h_SubResourceLoadReply)
-C2H_OPCODE(INF_SUBRES_LOAD_CREATE_REMOVE_SESSION_REPLY, 7, union c2h_SubResourceLoadCreateSessionReply)
 C2H_OPCODE(DMA_PAGE_HANDLE_FREE,	8, union c2h_DmaPageHandleFree)
 C2H_OPCODE(CLOCK_SYNC,			9, union ClockSyncMsg)
 C2H_OPCODE(ETH_CONFIG,			10, union c2h_EthernetConfig)
 C2H_OPCODE(SYS_INFO,			11, union c2h_SysInfo)
-C2H_OPCODE(HWTRACE_STATE,		12, union c2h_HwTraceState)
-C2H_OPCODE(INFREQ_FAILED,		13, union c2h_InfreqFailed)
-
-#ifdef ULT
-C2H_OPCODE(ULT_OP,              30, union ult_message)
-#endif

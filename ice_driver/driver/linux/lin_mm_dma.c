@@ -54,8 +54,6 @@
 
 /* allocation descriptor */
 struct lin_mm_allocation {
-	/* Is zero for Network copy */
-	u64 infer_id;
 	/* size as per the surface requirement */
 	u64 size_bytes;
 	/* actual size allocated by the allocator */
@@ -119,46 +117,6 @@ void cve_osmm_print_page_table(os_domain_handle hdomain)
 	}
 	if (dg->dump_conf.pt_dump)
 		cve_page_table_dump((struct cve_lin_mm_domain *)hdomain);
-}
-
-/*
- * During CreateInfer a copy of ContextDomain is allocated to the
- * corresponding InferRequest. This new copy is called InferDomain.
- */
-int cve_osmm_domain_copy(os_domain_handle *hdom_src,
-		os_domain_handle *hdom_dst,
-		u32 domain_array_size)
-{
-	u32 i, j;
-	int retval = 0;
-
-	for (i = 0; i < domain_array_size; i++) {
-		struct cve_lin_mm_domain *dom_src =
-			(struct cve_lin_mm_domain *)hdom_src[i];
-		struct cve_lin_mm_domain *dom_dst;
-
-		retval = lin_mm_domain_copy(dom_src, &dom_dst);
-		if (retval != 0) {
-			cve_os_log(CVE_LOGLEVEL_ERROR,
-				"lin_mm_domain_copy failed %d\n", retval);
-
-			goto undo_loop;
-		}
-
-		hdom_dst[i] = (os_domain_handle)dom_dst;
-	}
-
-	goto out;
-
-undo_loop:
-	for (j = 0; j < i; j++) {
-		struct cve_lin_mm_domain *dom =
-			(struct cve_lin_mm_domain *)hdom_dst[i];
-
-		lin_mm_domain_destroy(dom);
-	}
-out:
-	return retval;
 }
 
 /*
@@ -242,9 +200,9 @@ static int get_iova(cve_iova_allocator_handle_t allocator,
 	} else {
 		iova = VADDR_TO_IOVA(cve_addr, mmu_config->page_shift);
 		if (IOVA_TO_VADDR(iova, mmu_config->page_shift) != cve_addr) {
-			cve_os_log(CVE_LOGLEVEL_WARNING,
-				"cve_addr not page aligned 0x%llx\n",
-				cve_addr);
+			cve_os_log(CVE_LOGLEVEL_ERROR,
+				"ICEVA not page aligned. ICEVA=0x%llx, PageShift=%d\n",
+				cve_addr, mmu_config->page_shift);
 			retval = -ICEDRV_KERROR_IOVA_PAGE_ALIGNMENT;
 			goto out;
 		}
@@ -535,7 +493,7 @@ static int add_to_device_page_table(struct lin_mm_allocation *alloc,
 static int pin_user_memory(struct lin_mm_allocation *alloc)
 {
 	unsigned long start;
-	u32 array_size;
+	size_t array_size;
 	int os_pages_nr;
 	struct page **pages = NULL;
 	long nr = 0;
@@ -1206,7 +1164,6 @@ int cve_osmm_inf_dma_buf_map(u64 inf_id,
 		goto out;
 	}
 
-	inf_alloc->infer_id = inf_id;
 	inf_alloc->size_bytes = ntw_alloc->size_bytes;
 	inf_alloc->actual_sz = ntw_alloc->actual_sz;
 	inf_alloc->buf_meta_data = ntw_alloc->buf_meta_data;
@@ -1218,6 +1175,12 @@ int cve_osmm_inf_dma_buf_map(u64 inf_id,
 	memcpy(inf_alloc->hdomain, hdomain,
 		dma_domain_array_size * sizeof(os_domain_handle));
 	inf_alloc->dma_domain_array_size = ntw_alloc->dma_domain_array_size;
+
+	cve_os_log(CVE_LOGLEVEL_DEBUG,
+		"Mapping InfBuf. Size=0x%llx, ActualSize=0x%llx, PageSz=0x%x NumPages=%ld, PID=%d. FD=0x%llx\n",
+		inf_alloc->size_bytes, inf_alloc->actual_sz,
+		inf_alloc->page_sz, inf_alloc->ice_pages_nr,
+		ntw_alloc->buf_meta_data.partition_id, alloc_addr.fd);
 
 	retval = ice_osmm_get_iceva(ntw_alloc, inf_alloc);
 	if (retval != 0) {
@@ -1342,6 +1305,28 @@ free_mem:
 out:
 	FUNC_LEAVE();
 	return retval;
+}
+
+void ice_osmm_dma_buf_transfer(os_allocation_handle *hdst,
+	os_allocation_handle *hsrc)
+{
+	struct lin_mm_allocation **dst = (struct lin_mm_allocation **)hdst;
+	struct lin_mm_allocation **src = (struct lin_mm_allocation **)hsrc;
+
+	OS_FREE(*dst, sizeof(*dst));
+
+	*dst = *src;
+	*src = NULL;
+}
+
+void ice_osmm_use_extended_iceva(os_allocation_handle halloc)
+{
+	struct lin_mm_allocation *alloc = (struct lin_mm_allocation *)halloc;
+
+	if (alloc->buf_meta_data.partition_id >= MEM_PARTITION_HIGH_32KB) {
+		alloc->buf_meta_data.partition_id +=
+			(MEM_PARTITION_HIGHER_32KB - MEM_PARTITION_HIGH_32KB);
+	}
 }
 
 void cve_osmm_dma_buf_unmap(os_allocation_handle halloc,
@@ -1545,4 +1530,13 @@ void ice_osmm_domain_get_page_sz_list(os_domain_handle hdomain,
 		(struct cve_lin_mm_domain *)hdomain;
 
 	*page_sz_list = &domain->page_sz_reg_config_arr[0];
+}
+
+void ice_osmm_get_page_size(os_allocation_handle halloc,
+	u32 *page_sz, u8 *pid)
+{
+	struct lin_mm_allocation *alloc = (struct lin_mm_allocation *)halloc;
+
+	*page_sz = alloc->page_sz;
+	*pid = alloc->buf_meta_data.partition_id;
 }

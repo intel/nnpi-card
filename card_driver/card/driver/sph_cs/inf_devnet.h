@@ -68,7 +68,6 @@ int inf_devnet_put(struct inf_devnet *devnet);
 int inf_devnet_create_infreq(struct inf_devnet *devnet,
 			     uint16_t           protocolID,
 			     dma_addr_t         host_dma_addr,
-			     page_handle        host_page_hndl,
 			     uint16_t           dma_size);
 struct inf_req *inf_devnet_find_infreq(struct inf_devnet *devnet,
 				       uint16_t           protocolID);

@@ -96,6 +96,7 @@ static long thermal_trip(void __user *arg)
 	sphcs_send_event_report_ext(g_the_sphcs,
 				    SPH_IPC_THERMAL_TRIP_EVENT,
 				    trip_info.trip_num,
+				    NULL,
 				    -1,
 				    trip_info.trip_temperature & 0xffff,
 				    trip_info.temperature & 0xffff);
@@ -105,7 +106,6 @@ static long thermal_trip(void __user *arg)
 
 struct sys_info_dma_data {
 	dma_addr_t  host_dma_addr;
-	page_handle host_handle;
 	dma_addr_t  dma_addr;
 	page_handle handle;
 };
@@ -118,15 +118,9 @@ static int send_sys_info_dma_completed(struct sphcs *sphcs,
 	struct sys_info_dma_data *dma_data = (struct sys_info_dma_data *)user_data;
 	union c2h_SysInfo msg;
 
-	if (status == SPHCS_DMA_STATUS_FAILED) {
-		/* dma failed */
-		sphcs_response_pool_put_back_response_page(0,
-						  dma_data->host_dma_addr,
-						  dma_data->host_handle);
-	} else {
+	if (status != SPHCS_DMA_STATUS_FAILED) {
 		msg.value = 0;
 		msg.opcode = C2H_OPCODE_NAME(SYS_INFO);
-		msg.host_page_hndl = dma_data->host_handle;
 
 		sphcs_msg_scheduler_queue_add_msg(sphcs->public_respq,
 						  &msg.value, 1);
@@ -150,22 +144,17 @@ static void send_sys_info_handler(struct work_struct *work)
 	if (!g_the_sphcs)
 		return;
 
-	ret = sphcs_response_pool_get_response_page_wait(SPH_MAIN_RESPONSE_POOL_INDEX,
-						&dma_data.host_dma_addr,
-						&dma_data.host_handle);
-	if (ret)
+	if (!g_the_sphcs->host_sys_info_dma_addr_valid)
 		return;
+
+	dma_data.host_dma_addr = g_the_sphcs->host_sys_info_dma_addr;
 
 	ret = dma_page_pool_get_free_page(g_the_sphcs->dma_page_pool,
 					  &dma_data.handle,
 					  &vptr,
 					  &dma_data.dma_addr);
-	if (ret) {
-		sphcs_response_pool_put_back_response_page(0,
-						  dma_data.host_dma_addr,
-						  dma_data.host_handle);
+	if (ret)
 		return;
-	}
 
 	memcpy(vptr, &s_sys_info_packet, sizeof(s_sys_info_packet));
 
@@ -181,10 +170,6 @@ static void send_sys_info_handler(struct work_struct *work)
 	if (ret) {
 		dma_page_pool_set_page_free(g_the_sphcs->dma_page_pool,
 					    dma_data.handle);
-
-		sphcs_response_pool_put_back_response_page(0,
-						  dma_data.host_dma_addr,
-						  dma_data.host_handle);
 		return;
 	}
 }

@@ -60,6 +60,28 @@
 
 /* We expect 5 because the same value has been programmed in ECB */
 #define ECB_SUCCESS_STATUS 5
+
+#define __dump_wait_mode_reg(ice, msg)				\
+{								\
+	union mmio_hub_mem_p_wait_mode_t __reg;			\
+								\
+	__reg.val = cve_os_read_mmio_32(cve_dev,		\
+			cfg_default.mmio_hub_p_wait_mode_offset);\
+	cve_os_dev_log_default(CVE_LOGLEVEL_WARNING,		\
+			ice->dev_index,				\
+			"%s TLC:%d IVP:%d ASIP:%d DSE:%d"	\
+			"MMU:%d MMIO:%d Delphi%d\n",		\
+			msg, __reg.field.TLC_P_WAIT_MODE,	\
+			__reg.field.IVP_P_WAIT_MODE,		\
+			__reg.field.ASIP_P_WAIT_MODE,		\
+			__reg.field.DSE_GCLK_DISABLE,		\
+			__reg.field.MMU_DONE,			\
+			__reg.field.ALL_CORES_DONE,		\
+			__reg.field.DELPHI_DONE);		\
+}
+
+
+
 /* Use: To avoid spurious interrupt */
 int is_driver_active;
 
@@ -140,6 +162,10 @@ struct di_job {
 #define DSE_ATU_MAPPING 1
 #define IVP_ATU_MAPPING 2
 #define TLC_ATU_MAPPING 3
+#define MAX_DEBUGFS_REG_NR 14
+
+/* registers to be exposed through debugfs*/
+struct debugfs_reg32 registers_fs[MAX_DEBUGFS_REG_NR];
 
 static void __dump_mmu_pmon(struct cve_device *ice);
 static void __dump_delphi_pmon(struct cve_device *ice);
@@ -272,13 +298,12 @@ int ice_di_mmu_block_entrance(struct cve_device *cve_dev)
 	union ice_mmu_inner_mem_mmu_config_t reg;
 	int new_block_performed = 0;
 	u32 offset_bytes = cfg_default.mmu_base + cfg_default.mmu_cfg_offset;
-	u32 wait_timeout = 0;
+	u32 wait_timeout = 0, attempt = 0;
 	/* validate that we are 32bit aligned */
 	ASSERT(((offset_bytes >> 2) << 2) == offset_bytes);
 
 	/* read current register value */
 	reg.val = cve_os_read_mmio_32(cve_dev, offset_bytes);
-
 	cve_os_dev_log(CVE_LOGLEVEL_DEBUG,
 			cve_dev->dev_index,
 			"Read BLOCK_ENTRANCE bit in MMU Config Register. reg.val = 0x%08x\n",
@@ -301,6 +326,8 @@ int ice_di_mmu_block_entrance(struct cve_device *cve_dev)
 		 */
 		wait_timeout = cve_os_get_msec_time_stamp() + 10000;
 		do {
+			attempt++;
+
 			/* BLOCK_ENTRANCE = 1 :
 			 * block CVE to send any NEW memory transactions to MMU
 			 * The switching between
@@ -315,16 +342,25 @@ int ice_di_mmu_block_entrance(struct cve_device *cve_dev)
 			 * field check
 			 */
 			reg.val = cve_os_read_mmio_32(cve_dev, offset_bytes);
-			if (time_after_in_msec(cve_os_get_msec_time_stamp(),
-				wait_timeout)) {
+
+			if (reg.field.ACTIVE_TRANSACTIONS == 0)
+				break;
+
+			if (unlikely(time_after_in_msec(
+					cve_os_get_msec_time_stamp(),
+					wait_timeout))) {
+				__dump_wait_mode_reg(cve_dev,
+						"MMU Block Failed: ");
 
 				cve_os_dev_log_default(CVE_LOGLEVEL_ERROR,
 				cve_dev->dev_index,
 				"Timeout due to continues MMU transaction\n");
 
 				break;
+
 			}
-		} while (reg.field.ACTIVE_TRANSACTIONS == 1);
+		} while (1);
+
 		cve_os_dev_log(CVE_LOGLEVEL_DEBUG,
 			cve_dev->dev_index,
 			"All active MMU transaction from CVE finished...!\n");
@@ -1492,7 +1528,8 @@ int cve_di_interrupt_handler(struct idc_device *idc_dev)
 	status_hl = status_lo | status_hi;
 	while (status_hl) {
 		index = identify_ice_and_clear(&status_hl);
-
+		if (index < 0)
+			goto exit;
 		cve_dev = &idc_dev->cve_dev[index];
 
 		cve_dev->idle_start_time.tv_sec =
@@ -1799,6 +1836,16 @@ void cve_di_interrupt_handler_deferred_proc(struct idc_device *dev)
 			"Interrupt Status = 0x%08x Embedded CB Error = %d\n",
 			status, is_embedded_cb_error(cve_dev));
 
+				cve_os_log_default(CVE_LOGLEVEL_ERROR,
+					"ICE:%d Start:%u End:%u Status:0x%x cbdId:%d tlcStartCmdWinIp:%u tlcEndCmdWinIp:%u\n",
+					cve_dev->dev_index,
+					cb_descriptor->start_time,
+					cb_descriptor->completion_time,
+					cb_descriptor->status,
+					cb_descriptor->cbdId,
+					cb_descriptor->tlcStartCmdWinIp,
+					cb_descriptor->tlcEndCmdWinIp);
+
 				job_status = CVE_JOBSTATUS_ABORTED;
 
 				/* Error Handling ??? */
@@ -1848,7 +1895,8 @@ void cve_di_interrupt_handler_deferred_proc(struct idc_device *dev)
 		}
 
 		if (is_wd_error(status)) {
-
+			__dump_wait_mode_reg(cve_dev,
+					"WD Detected: ");
 			if (get_ice_dump(cve_dev)) {
 				status = status |
 				cfg_default.
@@ -1857,6 +1905,13 @@ void cve_di_interrupt_handler_deferred_proc(struct idc_device *dev)
 		}
 		/*If error detected and recovery enabled*/
 		if (ice_err) {
+
+			struct ice_network *ntw =
+				(struct ice_network *)cve_dev->dev_ntw_id;
+
+			if (is_fatal_error_in_ice(status))
+				dg->icedc_state =
+					ICEDC_STATE_CARD_RESET_REQUIRED;
 
 			ice_ds_block_network(job->ds_hjob, cve_dev, status);
 
@@ -1878,7 +1933,9 @@ void cve_di_interrupt_handler_deferred_proc(struct idc_device *dev)
 					is_butress_error(status),
 					is_tlc_panic(status),
 					is_ice_dump_completed(status));
+
 			ice_dump_hw_err_info(cve_dev);
+			ice_dump_hw_cntr_info(ntw);
 			ice_ds_handle_ice_error(&dev->cve_dev[index], status);
 			/* Signal dump was created */
 			if (is_ice_dump_completed(status)) {
@@ -1902,11 +1959,11 @@ void cve_di_interrupt_handler_deferred_proc(struct idc_device *dev)
 			job_status = CVE_JOBSTATUS_COMPLETED;
 
 		}
-		if (ice_dump_mmu_pmon() || dg->dump_ice_pmon) {
+		if (ice_dump_mmu_pmon() || dg->dump_ice_mmu_pmon) {
 			get_ice_mmu_pmon_regs(cve_dev);
 			__dump_mmu_pmon(cve_dev);
 		}
-		if (dg->dump_ice_pmon) {
+		if (dg->dump_ice_delphi_pmon) {
 			get_ice_delphi_pmon_regs(cve_dev);
 			__dump_delphi_pmon(cve_dev);
 		}
@@ -2180,10 +2237,10 @@ void cve_di_get_debugfs_regs_list(const struct debugfs_reg32 **regs,
 
 	};
 
+	memcpy(registers_fs, registers, sizeof(registers));
 
-
-	*regs = registers;
-	*num_of_regs = ARRAY_SIZE(registers);
+	*regs = registers_fs;
+	*num_of_regs = ARRAY_SIZE(registers_fs);
 }
 
 void cve_di_set_hw_counters(struct cve_device *cve_dev)
@@ -2199,7 +2256,7 @@ void cve_di_set_hw_counters(struct cve_device *cve_dev)
 	reg.val = cve_os_read_mmio_32(cve_dev, offset_bytes);
 
 	/* Enable/Disable HW counters */
-	if (ice_dump_mmu_pmon() || dg->dump_ice_pmon)
+	if (ice_dump_mmu_pmon() || dg->dump_ice_mmu_pmon)
 		reg.field. ACTIVATE_PERFORMANCE_COUNTERS = 1;
 	else
 		reg.field.ACTIVATE_PERFORMANCE_COUNTERS =
@@ -2279,11 +2336,11 @@ void ice_di_set_mmu_address_mode(struct cve_device *ice)
 
 	/* read current register value */
 	reg.val = cve_os_read_mmio_32(ice, offset_bytes);
-	if (ICE_DEFAULT_VA_WIDTH == ICE_VA_WIDTH_EXTENDED)
+#if ICE_DEFAULT_VA_WIDTH == ICE_VA_WIDTH_EXTENDED
 		reg.field.ATU_WITH_LARGER_LINEAR_ADDRESS = 0xf;
-	else
+#else
 		reg.field.ATU_WITH_LARGER_LINEAR_ADDRESS = 0x0;
-
+#endif
 	cve_os_write_mmio_32(ice, offset_bytes, reg.val);
 }
 
@@ -2320,6 +2377,7 @@ static int ice_trigger_cnc_control_msg(struct cve_device *dev, u32 destCbbid,
 	gp_reg_14_init_val = cve_os_read_mmio_32(dev,
 		cfg_default.mmio_gp_regs_offset +
 			ICE_MMIO_GP_14_REG_ADDR_OFFSET);
+	gp_reg_14_current_val = gp_reg_14_init_val;
 
 	/*write control payload data */
 	cve_os_write_mmio_32(dev,

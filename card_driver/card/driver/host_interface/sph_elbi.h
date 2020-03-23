@@ -12,7 +12,7 @@
  * Macros for accessing bit fields according to mask and shift
  */
 #define ELBI_BF_GET(regval, mask, shift)         (((regval) & (mask)) >> (shift))
-#define ELBI_BF_VAL(val, mask, shift)            (((val) << shift) & (mask))
+#define ELBI_BF_VAL(val, mask, shift)            (((val) << (shift)) & (mask))
 #define ELBI_BF_SET(regval, val, mask, shift)     \
 	((regval) = (((regval) & ~(mask)) | ELBI_BF_VAL((val), (mask), (shift))))
 
@@ -27,8 +27,8 @@
 #define ELBI_COMMAND_WRITE_W_MSI_HIGH         (ELBI_BASE + 0x5C)
 
 #define ELBI_COMMAND_FIFO_0_LOW		      (ELBI_BASE + 0x80)
-#define ELBI_COMMAND_FIFO_LOW(i)              (ELBI_COMMAND_FIFO_0_LOW+i*8)
-#define ELBI_COMMAND_FIFO_HIGH(i)             (ELBI_COMMAND_FIFO_0_LOW+i*8+4)
+#define ELBI_COMMAND_FIFO_LOW(i)              (ELBI_COMMAND_FIFO_0_LOW+(i)*8)
+#define ELBI_COMMAND_FIFO_HIGH(i)             (ELBI_COMMAND_FIFO_0_LOW+(i)*8+4)
 #define ELBI_COMMAND_FIFO_DEPTH               16
 
 #define ELBI_COMMAND_IOSF_CONTROL                         (ELBI_BASE + 0x44)
@@ -54,8 +54,8 @@
 #define ELBI_RESPONSE_WRITE_W_MSI_HIGH        (ELBI_BASE + 0x74)
 
 #define ELBI_RESPONSE_FIFO_0_LOW	      (ELBI_BASE + 0x100)
-#define ELBI_RESPONSE_FIFO_LOW(i)             (ELBI_RESPONSE_FIFO_0_LOW+i*8)
-#define ELBI_RESPONSE_FIFO_HIGH(i)            (ELBI_RESPONSE_FIFO_0_LOW+i*8+4)
+#define ELBI_RESPONSE_FIFO_LOW(i)             (ELBI_RESPONSE_FIFO_0_LOW+(i)*8)
+#define ELBI_RESPONSE_FIFO_HIGH(i)            (ELBI_RESPONSE_FIFO_0_LOW+(i)*8+4)
 #define ELBI_RESPONSE_FIFO_DEPTH              16
 
 #define ELBI_RESPONSE_PCI_CONTROL                       (ELBI_BASE + 0x60)

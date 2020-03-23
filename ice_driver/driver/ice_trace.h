@@ -45,6 +45,7 @@ int ice_trace_restore_daemon_config(struct cve_device *ice_dev,
 int ice_trace_sysfs_init(struct cve_device *ice_dev);
 void ice_trace_sysfs_term(struct cve_device *ice_dev);
 int ice_trace_init_dso(struct cve_device *ice_dev);
+void ice_trace_set_default_dso(struct cve_device *ice_dev);
 int __ice_trace_dso_config_port_regsoffset(struct cve_device *ice_dev);
 #if ICEDRV_ENABLE_HSLE_FLOW
 #define init_icedrv_trace(x) __no_op_stub

@@ -182,6 +182,7 @@ int inf_d2d_copy_create(uint16_t protocolCopyID,
 	sphcs_send_event_report(g_the_sphcs,
 				SPH_IPC_CREATE_COPY_SUCCESS,
 				0,
+				copy->context->chan->respq,
 				copy->context->protocolID,
 				copy->protocolID);
 
@@ -199,93 +200,16 @@ failed_to_allocate_sgt:
 	return ret;
 }
 
-void inf_copy_hostres_pagetable_complete_cb(void                  *cb_ctx,
-					    int                    status,
-					    struct sg_table       *host_sgt,
-					    uint64_t               total_size)
-{
-	struct inf_copy *copy = (struct inf_copy *)cb_ctx;
-	struct sg_table *src_sgt;
-	struct sg_table *dst_sgt;
-	u64 total_entries_bytes;
-	int ret;
-
-	if (status == 0) {
-#ifdef _DEBUG
-		// set hostres size
-		copy->hostres_size = total_size;
-
-		// By definition, copy handle should be created for host resouce and device resource with the same size
-		// It should be validated first in the UMD during creation of copy handle, we add this check in the card only in debug.
-		SPH_ASSERT(copy->hostres_size == copy->devres->size);
-#endif
-
-		if (copy->card2Host) {
-			src_sgt = (copy->devres)->dma_map; // sg_table from device resource
-			dst_sgt = host_sgt;
-		} else {
-			src_sgt = host_sgt;
-			dst_sgt = (copy->devres)->dma_map; // sg_table from device resource
-		}
-
-		ret = g_the_sphcs->hw_ops->dma.init_lli(g_the_sphcs->hw_handle, &copy->lli, src_sgt, dst_sgt, 0);
-		if (ret != 0) {
-			sph_log_err(CREATE_COMMAND_LOG, "FATAL: line:%u failed to init lli buffer\n", __LINE__);
-			status = SPH_IPC_NO_MEMORY;
-			goto failed;
-		}
-
-		SPH_ASSERT(copy->lli.size > 0);
-
-		// allocate memory in size lli_size
-		copy->lli.vptr = dma_alloc_coherent(g_the_sphcs->hw_device, copy->lli.size, &copy->lli.dma_addr, GFP_KERNEL);
-		if (unlikely(copy->lli.vptr == NULL)) {
-			sph_log_err(CREATE_COMMAND_LOG, "FATAL: line:%u failed to allocate lli buffer\n", __LINE__);
-			status = SPH_IPC_NO_MEMORY;
-			goto failed;
-		}
-
-		// generate lli buffer for dma
-		total_entries_bytes = g_the_sphcs->hw_ops->dma.gen_lli(g_the_sphcs->hw_handle, src_sgt, dst_sgt, &copy->lli, 0);
-		SPH_ASSERT(total_entries_bytes > 0);
-
-		memcpy(&copy->host_sgt, host_sgt, sizeof(struct sg_table));
-
-		sphcs_send_event_report(g_the_sphcs,
-					SPH_IPC_CREATE_COPY_SUCCESS,
-					0,
-					copy->context->protocolID,
-					copy->protocolID);
-
-		DO_TRACE(trace_infer_create((copy->card2Host ? SPH_TRACE_INF_CREATE_C2H_COPY_HANDLE : SPH_TRACE_INF_CREATE_H2C_COPY_HANDLE),
-				copy->context->protocolID, copy->protocolID, SPH_TRACE_OP_STATUS_COMPLETE, -1, -1));
-
-		// put refcount, taken for create process
-		inf_copy_put(copy);
-
-		return;
-	}
-
-failed:
-	sphcs_send_event_report(g_the_sphcs,
-				SPH_IPC_CREATE_COPY_FAILED,
-				status,
-				copy->context->protocolID,
-				copy->protocolID);
-
-	// put refcount, taken for create process
-	inf_copy_put(copy);
-	destroy_copy_on_create_failed(copy);
-}
-
 int inf_copy_create(uint16_t protocolCopyID,
 		    struct inf_context *context,
 		    struct inf_devres *devres,
-		    uint64_t hostDmaAddr,
+		    uint16_t hostres_map_id,
 		    bool card2Host,
 		    bool subres_copy,
 		    struct inf_copy **out_copy)
 {
+	struct sg_table *src_sgt = NULL;
+	struct sg_table *dst_sgt = NULL;
 	struct inf_copy *copy;
 	int res;
 
@@ -325,16 +249,68 @@ int inf_copy_create(uint16_t protocolCopyID,
 #endif
 	sphcs_dma_multi_xfer_handle_init(&copy->multi_xfer_handle);
 
+	if (subres_copy) {
+		// allocate one page to be used for lli buffer
+		copy->lli.size = SUBRES_MAX_LLI_SIZE;
+	} else {
+		struct sphcs_hostres_map *hostres_map;
+
+		hostres_map = sphcs_cmd_chan_find_hostres(context->chan,
+							  hostres_map_id);
+		if (unlikely(hostres_map == NULL)) {
+			sph_log_err(CREATE_COMMAND_LOG, "hostres map id not found chan %hu map id %hu\n",
+				    context->chan->protocolID, hostres_map_id);
+			res = -ENOENT;
+			goto failed;
+		}
+
+		if (copy->card2Host) {
+			src_sgt = (copy->devres)->dma_map; // sg_table from device resource
+			dst_sgt = &hostres_map->host_sgt;
+		} else {
+			src_sgt = &hostres_map->host_sgt;
+			dst_sgt = (copy->devres)->dma_map; // sg_table from device resource
+		}
+
+		res = g_the_sphcs->hw_ops->dma.init_lli(g_the_sphcs->hw_handle, &copy->lli, src_sgt, dst_sgt, 0);
+		if (unlikely(res != 0)) {
+			sph_log_err(CREATE_COMMAND_LOG, "FATAL: line:%u failed to init lli buffer\n", __LINE__);
+			res = -ENOMEM;
+			goto failed;
+		}
+
+		SPH_ASSERT(copy->lli.size > 0);
+
+		memcpy(&copy->host_sgt, &hostres_map->host_sgt, sizeof(struct sg_table));
+	}
+	// allocate memory in size lli_size
+	copy->lli.vptr = dma_alloc_coherent(g_the_sphcs->hw_device, copy->lli.size, &copy->lli.dma_addr, GFP_KERNEL);
+	if (unlikely(copy->lli.vptr == NULL)) {
+		sph_log_err(CREATE_COMMAND_LOG, "FATAL: line:%u failed to allocate lli buffer\n", __LINE__);
+		res = -ENOMEM;
+		goto failed;
+	}
+	if (!subres_copy) {
+		// generate lli buffer for dma
+		u64 total_entries_bytes = g_the_sphcs->hw_ops->dma.gen_lli(g_the_sphcs->hw_handle, src_sgt, dst_sgt, &copy->lli, 0);
+
+		SPH_ASSERT(total_entries_bytes > 0);
+		if (unlikely(total_entries_bytes == 0)) {
+			sph_log_err(CREATE_COMMAND_LOG, "FATAL: line:%u failed to gen lli buffer\n", __LINE__);
+			res = -ENOMEM;
+			goto failed;
+		}
+
+		DO_TRACE(trace_infer_create((copy->card2Host ? SPH_TRACE_INF_CREATE_C2H_COPY_HANDLE : SPH_TRACE_INF_CREATE_H2C_COPY_HANDLE),
+				copy->context->protocolID, copy->protocolID, SPH_TRACE_OP_STATUS_COMPLETE, -1, -1));
+	}
+
 	res = sph_create_sw_counters_values_node(g_hSwCountersInfo_copy,
 						 (u32)protocolCopyID,
 						 context->sw_counters,
 						 &copy->sw_counters);
-	if (unlikely(res < 0)) {
-		inf_devres_put(devres);
-		kfree(copy);
-		return res;
-	}
-
+	if (unlikely(res < 0))
+		goto failed;
 
 	/* make sure the context will exist for the copy handle life */
 	inf_context_get(context);
@@ -344,61 +320,20 @@ int inf_copy_create(uint16_t protocolCopyID,
 		 copy->protocolID);
 	SPH_SPIN_UNLOCK(&copy->context->lock);
 
-	// get ref to ensure copy will not be destoyed in the middle of create
-	inf_copy_get(copy);
-
-	if (subres_copy) {
-		// allocate one page to be used for lli buffer
-		copy->lli.size = SUBRES_MAX_LLI_SIZE;
-		copy->lli.vptr = dma_alloc_coherent(g_the_sphcs->hw_device, copy->lli.size, &copy->lli.dma_addr, GFP_KERNEL);
-		if (unlikely(copy->lli.vptr == NULL)) {
-			sph_log_err(CREATE_COMMAND_LOG, "FATAL: line:%u failed to allocate lli buffer\n", __LINE__);
-			res = -ENOMEM;
-			goto put_copy;
-		}
-
-		sphcs_send_event_report(g_the_sphcs,
-					SPH_IPC_CREATE_COPY_SUCCESS,
-					0,
-					copy->context->protocolID,
-					copy->protocolID);
-
-		// put refcount, taken for create process
-		inf_copy_put(copy);
-	} else if (context->chan == NULL) {
-		res = sphcs_retrieve_hostres_pagetable(hostDmaAddr,
-						       inf_copy_hostres_pagetable_complete_cb,
-						       copy);
-		if (res != 0)
-			goto put_copy;
-	} else {
-		struct sphcs_hostres_map *hostres_map;
-
-		/* hostDmaAddr is hostres map id */
-		SPH_ASSERT(hostDmaAddr <= 0xFFFF);
-
-		hostres_map = sphcs_cmd_chan_find_hostres(context->chan,
-							  (uint16_t)hostDmaAddr);
-		if (unlikely(hostres_map == NULL)) {
-			sph_log_err(CREATE_COMMAND_LOG, "hostres map id not found chan %d map id %lld\n",
-				    context->chan->protocolID, hostDmaAddr);
-			res = -ENOENT;
-			goto put_copy;
-		}
-
-		inf_copy_hostres_pagetable_complete_cb(copy,
-						       0,
-						       &hostres_map->host_sgt,
-						       hostres_map->size);
-	}
+	sphcs_send_event_report(g_the_sphcs,
+				SPH_IPC_CREATE_COPY_SUCCESS,
+				0,
+				copy->context->chan->respq,
+				copy->context->protocolID,
+				copy->protocolID);
 
 	*out_copy = copy;
 
 	return 0;
 
-put_copy:
-	inf_copy_put(copy);
-	destroy_copy_on_create_failed(copy);
+failed:
+	inf_devres_put(devres);
+	kfree(copy);
 
 	return res;
 }
@@ -425,6 +360,7 @@ static void release_copy(struct work_struct *work)
 		sphcs_send_event_report(g_the_sphcs,
 				SPH_IPC_COPY_DESTROYED,
 				0,
+				copy->context->chan->respq,
 				copy->context->protocolID,
 				copy->protocolID);
 
@@ -440,10 +376,7 @@ static void sched_release_copy(struct kref *kref)
 	copy = container_of(kref, struct inf_copy, ref);
 
 	INIT_WORK(&copy->work, release_copy);
-	if (copy->context->chan != NULL)
-		queue_work(system_wq, &copy->work);
-	else
-		queue_work(copy->context->wq, &copy->work);
+	queue_work(system_wq, &copy->work);
 }
 
 int inf_copy_get(struct inf_copy *copy)
@@ -538,7 +471,8 @@ static int inf_copy_req_sched(struct inf_exec_req *req)
 					 copy->card2Host,
 					 req->size,
 					 1,
-					 copy->lli.num_lists));
+					 copy->lli.num_lists,
+					 copy->lli.num_elements));
 
 	if (SPH_SW_GROUP_IS_ENABLE(copy->sw_counters,
 				   COPY_SPHCS_SW_COUNTERS_GROUP)) {
@@ -592,7 +526,8 @@ static int inf_copy_req_execute(struct inf_exec_req *req)
 		 copy->card2Host,
 		 req->size,
 		 1,
-		 copy->lli.num_lists));
+		 copy->lli.num_lists,
+		 copy->lli.num_elements));
 
 	if (copy->subres_copy) {
 		u32 transfer_size;
@@ -724,7 +659,8 @@ static void inf_copy_req_complete(struct inf_exec_req *req,
 					 copy->card2Host,
 					 req->size,
 					 1,
-					 copy->lli.num_lists));
+					 copy->lli.num_lists,
+					 copy->lli.num_elements));
 
 	if (SPH_SW_GROUP_IS_ENABLE(copy->sw_counters,
 				   COPY_SPHCS_SW_COUNTERS_GROUP)) {
@@ -808,6 +744,7 @@ static void inf_copy_req_complete(struct inf_exec_req *req,
 		sphcs_send_event_report_ext(g_the_sphcs,
 					    SPH_IPC_EXECUTE_COPY_SUCCESS,
 					    eventVal,
+					    copy->context->chan->respq,
 					    copy->context->protocolID,
 					    copy->protocolID,
 					    cmd->protocolID);
@@ -818,6 +755,7 @@ static void inf_copy_req_complete(struct inf_exec_req *req,
 			sphcs_send_event_report(g_the_sphcs,
 						SPH_IPC_EXECUTE_CMD_COMPLETE,
 						0,
+						cmd->context->chan->respq,
 						cmd->context->protocolID,
 						cmd->protocolID);
 	}
@@ -830,17 +768,19 @@ static void inf_copy_req_complete(struct inf_exec_req *req,
 	}
 	copy->active = false;
 
-	if (is_d2d_copy)
-		inf_copy_get(copy);
-
-	inf_exec_req_put(req);
-
-	/* Notify the dst */
 	if (is_d2d_copy) {
+		/* Should be source p2p buffer */
+		SPH_ASSERT(devres->is_p2p_src);
+
+		/* d2d copy completed - need to wait while the data is consumed */
+		devres->p2p_buf.ready = false;
+
+		/* Notify the dst */
 		sphcs_p2p_send_fw_cr(&devres->p2p_buf);
 		sphcs_p2p_ring_doorbell(&devres->p2p_buf);
-		inf_copy_put(copy);
 	}
+
+	inf_exec_req_put(req);
 }
 
 static void send_copy_report(struct inf_exec_req *req,
@@ -862,6 +802,7 @@ static void send_copy_report(struct inf_exec_req *req,
 		sphcs_send_event_report_ext(g_the_sphcs,
 					    eventCode,
 					    eventVal,
+					    copy->context->chan->respq,
 					    copy->context->protocolID,
 					    copy->protocolID,
 					    cmdID);

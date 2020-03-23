@@ -65,7 +65,6 @@ struct sphpb_throttle_info {
 	uint64_t ring_clock_ticks;
 	struct cpu_perfstat *cpu_stat;
 	uint64_t time_us;
-	uint64_t begin_throttling_us;
 	uint8_t curr_state;
 };
 

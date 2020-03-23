@@ -41,6 +41,27 @@ static dev_t       s_devnum;
 static struct class *s_class;
 static struct device *s_dev;
 
+#pragma pack(push, 1)
+union h2c_GenericMessaging {
+	struct {
+		u64 opcode   :  6;   /* SPH_IPC_H2C_OP_GENERIC_MSG_PACKET */
+		u64 size     : 12;
+		u64 connect  :  1;
+		u64 hangup   :  1;
+		u64 host_pfn : SPH_IPC_DMA_PFN_BITS;
+
+		u64 host_client_id  : 12;
+		u64 card_client_id  : 12;
+		u64 host_page_hndl  :  8;
+		u64 reserved        : 29;
+		u64 service_list_req:  1;
+		u64 privileged      :  1;
+	};
+
+	u64 value[2];
+};
+#pragma pack(pop)
+
 struct genmsg_global_data {
 	DECLARE_HASHTABLE(channel_hash, 5);
 	struct ida        channel_ida;
@@ -163,13 +184,8 @@ static void free_channel(struct kref *kref)
 	SPH_ASSERT(channel->closing == _chnl_close_done && channel->hanging_up);
 
 	mutex_destroy(&channel->write_lock);
-	if (channel->cmd_chan) {
-		channel->cmd_chan->destroy_cb = NULL;
-		sphcs_cmd_chan_put(channel->cmd_chan);
-	} else {
-		msg_scheduler_queue_flush(channel->respq);
-		sphcs_destroy_response_queue(g_the_sphcs, channel->respq);
-	}
+	channel->cmd_chan->destroy_cb = NULL;
+	sphcs_cmd_chan_put(channel->cmd_chan);
 	SPH_SPIN_LOCK(&s_genmsg.lock);
 	hash_del(&channel->hash_node);
 	SPH_SPIN_UNLOCK(&s_genmsg.lock);
@@ -222,7 +238,6 @@ static int sphcs_genmsg_chan_release(struct inode *inode, struct file *f)
 	struct channel_data *channel = (struct channel_data *)f->private_data;
 	struct pending_packet *pend;
 	struct list_head pending_read_packets;
-	union c2h_GenericMessaging msg;
 	union c2h_ChanGenericMessaging msg2;
 
 	if (!is_channel_file(f))
@@ -262,36 +277,20 @@ static int sphcs_genmsg_chan_release(struct inode *inode, struct file *f)
 	if (channel->write_page_vptr)
 		dma_page_pool_set_page_free(g_the_sphcs->dma_page_pool, channel->write_page_hndl);
 
-	if (channel->write_host_page_valid && channel->cmd_chan == NULL)
-		sphcs_response_pool_put_back_response_page(0,
-						  channel->write_host_page_addr,
-						  channel->write_host_page_hndl);
-
 	mutex_unlock(&channel->write_lock);
 
 	/*
 	 * Send hangup message to host
 	 */
-	if (channel->cmd_chan != NULL) {
-		msg2.value = 0LL;
-		msg2.opcode = SPH_IPC_C2H_OP_CHAN_GENERIC_MSG_PACKET;
-		msg2.chanID = channel->cmd_chan->protocolID;
-		msg2.rbID = 0;
-		msg2.size = 0;
-		msg2.hangup = 1;
-		msg2.card_client_id = channel->channel_id;
+	msg2.value = 0LL;
+	msg2.opcode = SPH_IPC_C2H_OP_CHAN_GENERIC_MSG_PACKET;
+	msg2.chanID = channel->cmd_chan->protocolID;
+	msg2.rbID = 0;
+	msg2.size = 0;
+	msg2.hangup = 1;
+	msg2.card_client_id = channel->channel_id;
 
-		sphcs_msg_scheduler_queue_add_msg(channel->cmd_chan->respq, &msg2.value, 1);
-	} else {
-		msg.value = 0LL;
-		msg.opcode = SPH_IPC_C2H_OP_GENERIC_MSG_PACKET;
-		msg.size = 0;
-		msg.hangup = 1;
-		msg.card_client_id = channel->channel_id;
-		msg.host_client_id = channel->host_client_id;
-
-		sphcs_msg_scheduler_queue_add_msg(channel->respq, &msg.value, 1);
-	}
+	sphcs_msg_scheduler_queue_add_msg(channel->cmd_chan->respq, &msg2.value, 1);
 
 	/* free the channel if we aleady got hangup message from host
 	 * otherwise, it will be freed once a hangup message is arrived
@@ -415,32 +414,21 @@ static ssize_t sphcs_genmsg_chan_write(struct file       *f,
 
 		// Need to have a host response page for sending data to host
 		if (!channel->write_host_page_valid) {
-			if (channel->cmd_chan != NULL) {
-				struct sphcs_host_rb *resp_data_rb = &channel->cmd_chan->c2h_rb[0];
-				uint32_t chunk_size;
-				int n;
+			struct sphcs_host_rb *resp_data_rb = &channel->cmd_chan->c2h_rb[0];
+			uint32_t chunk_size;
+			int n;
 
-				n = host_rb_wait_free_space(resp_data_rb,
-							    SPH_PAGE_SIZE,
-							    1,
-							    &channel->write_host_page_addr,
-							    &chunk_size);
-				if (n != 1 || chunk_size != SPH_PAGE_SIZE) {
-					sph_log_err(SERVICE_LOG, "Failed to get host response page for write n=%d chunk_size=%d\n", n, chunk_size);
-					/* end the write loop and return */
-					break;
-				}
-				host_rb_update_free_space(resp_data_rb, SPH_PAGE_SIZE);
-			} else {
-				ret = sphcs_response_pool_get_response_page_wait(SPH_MAIN_RESPONSE_POOL_INDEX,
-										 &channel->write_host_page_addr,
-										 &channel->write_host_page_hndl);
-				if (unlikely(ret < 0)) {
-					sph_log_err(SERVICE_LOG, "Failed to get host response page for write ret=%d\n", ret);
-					/* end the write loop and return */
-					break;
-				}
+			n = host_rb_wait_free_space(resp_data_rb,
+						    SPH_PAGE_SIZE,
+						    1,
+						    &channel->write_host_page_addr,
+						    &chunk_size);
+			if (n != 1 || chunk_size != SPH_PAGE_SIZE) {
+				sph_log_err(SERVICE_LOG, "Failed to get host response page for write n=%d chunk_size=%d\n", n, chunk_size);
+				/* end the write loop and return */
+				break;
 			}
+			host_rb_update_free_space(resp_data_rb, SPH_PAGE_SIZE);
 			channel->write_host_page_valid = 1;
 		}
 
@@ -478,8 +466,7 @@ static ssize_t sphcs_genmsg_chan_write(struct file       *f,
 		atomic_inc(&channel->n_write_dma_req);
 
 		ret = sphcs_dma_sched_start_xfer_single(g_the_sphcs->dmaSched,
-						channel->cmd_chan ? &channel->cmd_chan->c2h_dma_desc :
-								    &channel->c2h_dma_desc,
+						&channel->cmd_chan->c2h_dma_desc,
 						channel->write_page_addr,
 						channel->write_host_page_addr,
 						dma_req_data.xfer_size,
@@ -554,29 +541,22 @@ static long write_response_wait(struct file *f, void __user *arg)
 
 	/* need host response page */
 	if (!channel->write_host_page_valid) {
+		struct sphcs_host_rb *resp_data_rb = &channel->cmd_chan->c2h_rb[0];
+		uint32_t chunk_size;
+		int n;
 
 		mutex_unlock(&channel->write_lock);
-		if (channel->cmd_chan != NULL) {
-			struct sphcs_host_rb *resp_data_rb = &channel->cmd_chan->c2h_rb[0];
-			uint32_t chunk_size;
-			int n;
-
-			n = host_rb_wait_free_space(resp_data_rb,
-						    SPH_PAGE_SIZE,
-						    1,
-						    &channel->write_host_page_addr,
-						    &chunk_size);
-			if (n != 1 || chunk_size != SPH_PAGE_SIZE) {
-				sph_log_err(SERVICE_LOG, "Failed to get host response page for write n=%d chunk_size=%d\n", n, chunk_size);
-				ret = -1;
-			} else {
-				host_rb_update_free_space(resp_data_rb, SPH_PAGE_SIZE);
-				ret = 0;
-			}
+		n = host_rb_wait_free_space(resp_data_rb,
+					    SPH_PAGE_SIZE,
+					    1,
+					    &channel->write_host_page_addr,
+					    &chunk_size);
+		if (n != 1 || chunk_size != SPH_PAGE_SIZE) {
+			sph_log_err(SERVICE_LOG, "Failed to get host response page for write n=%d chunk_size=%d\n", n, chunk_size);
+			ret = -1;
 		} else {
-			ret = sphcs_response_pool_get_response_page_wait(SPH_MAIN_RESPONSE_POOL_INDEX,
-									 &channel->write_host_page_addr,
-									 &channel->write_host_page_hndl);
+			host_rb_update_free_space(resp_data_rb, SPH_PAGE_SIZE);
+			ret = 0;
 		}
 		mutex_lock(&channel->write_lock);
 		if (!ret)
@@ -820,36 +800,6 @@ static int build_service_list_packet(void *buf, unsigned int bufsize, u32 *out_s
 	return ret;
 }
 
-static int send_service_list_dma_completed(struct sphcs *sphcs, void *ctx, const void *user_data, int status, u32 timeUS)
-{
-	const struct dma_req_user_data *dma_req_user_data = (const struct dma_req_user_data *)user_data;
-	union c2h_ServiceListMsg msg;
-
-	if (status == SPHCS_DMA_STATUS_FAILED) {
-		/* dma failed */
-		msg.value = 0LL;
-		msg.opcode = SPH_IPC_C2H_OP_SERVICE_LIST;
-		msg.failure = 1;
-	} else {
-		/* if it is not an error - it must be done */
-		SPH_ASSERT(status == SPHCS_DMA_STATUS_DONE);
-
-		msg.value = 0LL;
-		msg.opcode = SPH_IPC_C2H_OP_SERVICE_LIST;
-		msg.num_services = dma_req_user_data->param1;
-		msg.size = dma_req_user_data->xfer_size - 1;
-		msg.resp_page_handle = dma_req_user_data->host_dma_page_hndl;
-	}
-
-	/* send the host services response message to host */
-	sphcs_msg_scheduler_queue_add_msg(sphcs->public_respq, &msg.value, 1);
-
-	/* return the local dma page back to the dma pool */
-	dma_page_pool_set_page_free(sphcs->dma_page_pool, dma_req_user_data->dma_page_hndl);
-
-	return 0;
-}
-
 static int send_service_list_dma_completed_chan(struct sphcs *sphcs, void *ctx, const void *user_data, int status, u32 timeUS)
 {
 	const struct dma_req_user_data *dma_req_user_data = (const struct dma_req_user_data *)user_data;
@@ -889,34 +839,22 @@ static int send_service_list_to_host(struct sphcs *sphcs, struct sphcs_cmd_chan 
 	dma_addr_t  host_dma_addr;
 	int         ret;
 	struct dma_req_user_data dma_req_data;
-	union c2h_ServiceListMsg msg;
 	union c2h_ChanServiceListMsg msg2;
 	u32         fail_code = 0;
+	struct sphcs_host_rb *resp_data_rb = &cmd_chan->c2h_rb[0];
+	uint32_t chunk_size;
+	int n;
 
 	if (s_service_list->num_services < 1) {
-		if (cmd_chan != NULL) {
-			union c2h_ChanServiceListMsg msg2;
+		/* send empty service list response message to host */
+		msg2.value = 0LL;
+		msg2.opcode = SPH_IPC_C2H_OP_CHAN_SERVICE_LIST;
+		msg2.chanID = cmd_chan->protocolID;
+		msg2.rbID = 0;
+		msg2.num_services = 0;
 
-			/* send empty service list response message to host */
-			msg2.value = 0LL;
-			msg2.opcode = SPH_IPC_C2H_OP_CHAN_SERVICE_LIST;
-			msg2.chanID = cmd_chan->protocolID;
-			msg2.rbID = 0;
-			msg2.num_services = 0;
-
-			sphcs_msg_scheduler_queue_add_msg(cmd_chan->respq, &msg2.value, 1);
-			sphcs_cmd_chan_put(cmd_chan);
-		} else {
-			union c2h_ServiceListMsg msg;
-
-			/* send empty service list response message to host */
-			msg.value = 0LL;
-			msg.opcode = SPH_IPC_C2H_OP_SERVICE_LIST;
-			msg.num_services = 0;
-			msg.resp_page_handle = 0;
-
-			sphcs_msg_scheduler_queue_add_msg(sphcs->public_respq, &msg.value, 1);
-		}
+		sphcs_msg_scheduler_queue_add_msg(cmd_chan->respq, &msg2.value, 1);
+		sphcs_cmd_chan_put(cmd_chan);
 		return 0;
 	}
 
@@ -940,42 +878,28 @@ static int send_service_list_to_host(struct sphcs *sphcs, struct sphcs_cmd_chan 
 	}
 
 	/* get host response page to be filled with the service list packet */
-	if (cmd_chan != NULL) {
-		struct sphcs_host_rb *resp_data_rb = &cmd_chan->c2h_rb[0];
-		uint32_t chunk_size;
-		int n;
 
-		n = host_rb_wait_free_space(resp_data_rb,
-					    SPH_PAGE_SIZE,
-					    1,
-					    &host_dma_addr,
-					    &chunk_size);
-		if (n != 1 || chunk_size != SPH_PAGE_SIZE) {
-			sph_log_err(SERVICE_LOG, "Failed to get host response page n=%d chunk_size=%d\n", n, chunk_size);
-			fail_code = 2;
-			goto fail;
-		}
-		host_rb_update_free_space(resp_data_rb, SPH_PAGE_SIZE);
-	} else {
-		ret = sphcs_response_pool_get_response_page(SPH_MAIN_RESPONSE_POOL_INDEX, &host_dma_addr, &dma_req_data.host_dma_page_hndl);
-		if (ret) {
-			sph_log_err(SERVICE_LOG, "Failed to get free DMA page\n");
-			dma_page_pool_set_page_free(sphcs->dma_page_pool, dma_req_data.dma_page_hndl);
-			fail_code = 2;
-			goto fail;
-		}
+	n = host_rb_wait_free_space(resp_data_rb,
+				    SPH_PAGE_SIZE,
+				    1,
+				    &host_dma_addr,
+				    &chunk_size);
+	if (n != 1 || chunk_size != SPH_PAGE_SIZE) {
+		sph_log_err(SERVICE_LOG, "Failed to get host response page n=%d chunk_size=%d\n", n, chunk_size);
+		fail_code = 2;
+		goto fail;
 	}
+	host_rb_update_free_space(resp_data_rb, SPH_PAGE_SIZE);
 
 	dma_req_data.cmd_chan = cmd_chan;
 
 	/* start the DMA transfer to host */
 	sphcs_dma_sched_start_xfer_single(sphcs->dmaSched,
-					  cmd_chan ? &cmd_chan->c2h_dma_desc : &g_dma_desc_c2h_low,
+					  &cmd_chan->c2h_dma_desc,
 					  dma_addr,
 					  host_dma_addr,
 					  dma_req_data.xfer_size,
-					  cmd_chan ? send_service_list_dma_completed_chan :
-						     send_service_list_dma_completed,
+					  send_service_list_dma_completed_chan,
 					  NULL,
 					  &dma_req_data,
 					  sizeof(dma_req_data));
@@ -984,22 +908,14 @@ static int send_service_list_to_host(struct sphcs *sphcs, struct sphcs_cmd_chan 
 
 fail:
 	/* send failed services response message to host */
-	if (cmd_chan != NULL) {
-		msg2.value = 0LL;
-		msg2.opcode = SPH_IPC_C2H_OP_CHAN_SERVICE_LIST;
-		msg2.chanID = cmd_chan->protocolID;
-		msg2.rbID = 0;
-		msg2.failure = fail_code;
+	msg2.value = 0LL;
+	msg2.opcode = SPH_IPC_C2H_OP_CHAN_SERVICE_LIST;
+	msg2.chanID = cmd_chan->protocolID;
+	msg2.rbID = 0;
+	msg2.failure = fail_code;
 
-		sphcs_msg_scheduler_queue_add_msg(cmd_chan->respq, &msg2.value, 1);
-		sphcs_cmd_chan_put(cmd_chan);
-	} else {
-		msg.value = 0LL;
-		msg.opcode = SPH_IPC_C2H_OP_SERVICE_LIST;
-		msg.failure = fail_code;
-
-		sphcs_msg_scheduler_queue_add_msg(sphcs->public_respq, &msg.value, 1);
-	}
+	sphcs_msg_scheduler_queue_add_msg(cmd_chan->respq, &msg2.value, 1);
+	sphcs_cmd_chan_put(cmd_chan);
 
 	return ret;
 }
@@ -1102,7 +1018,6 @@ static long process_accept_client(struct file *f, void __user *arg)
 	struct sphcs *sphcs = g_the_sphcs;
 	struct pending_packet *pend;
 	struct channel_data *channel;
-	union c2h_GenericMessaging msg;
 	union c2h_ChanGenericMessaging msg2;
 	int ret, rc;
 	struct fd sfd;
@@ -1167,35 +1082,12 @@ static long process_accept_client(struct file *f, void __user *arg)
 	channel->file = sfd.file;
 	fdput(sfd);
 
-	if (channel->cmd_chan == NULL) {
-		channel->respq = sphcs_create_response_queue(g_the_sphcs, 1);
-		if (!channel->respq) {
-			sph_log_err(SERVICE_LOG, "Failed to create response q\n");
-			ret = -ENOMEM;
-			goto free_id;
-		}
-	}
-
 	INIT_LIST_HEAD(&channel->pending_read_packets);
 	spin_lock_init(&channel->read_lock);
 	init_waitqueue_head(&channel->read_waitq);
 	init_waitqueue_head(&channel->write_waitq);
 	mutex_init(&channel->write_lock);
 	atomic_set(&channel->n_write_dma_req, 0);
-
-	if (channel->cmd_chan == NULL) {
-		channel->c2h_dma_desc.dma_direction = SPHCS_DMA_DIRECTION_CARD_TO_HOST;
-		channel->c2h_dma_desc.dma_priority = SPHCS_DMA_PRIORITY_LOW;
-		channel->c2h_dma_desc.flags = 0;
-		channel->c2h_dma_desc.serial_channel =
-			sphcs_dma_sched_create_serial_channel(g_the_sphcs->dmaSched);
-
-		channel->h2c_dma_desc.dma_direction = SPHCS_DMA_DIRECTION_HOST_TO_CARD;
-		channel->h2c_dma_desc.dma_priority = SPHCS_DMA_PRIORITY_LOW;
-		channel->h2c_dma_desc.flags = 0;
-		channel->h2c_dma_desc.serial_channel =
-			sphcs_dma_sched_create_serial_channel(g_the_sphcs->dmaSched);
-	}
 
 	ret = copy_to_user(arg, &channel->fd, sizeof(int));
 	if (ret) {
@@ -1207,8 +1099,6 @@ static long process_accept_client(struct file *f, void __user *arg)
 
 free_all:
 	mutex_destroy(&channel->write_lock);
-	if (channel->cmd_chan == NULL)
-		sphcs_destroy_response_queue(g_the_sphcs, channel->respq);
 free_id:
 	SPH_SPIN_LOCK(&s_genmsg.lock);
 	hash_del(&channel->hash_node);
@@ -1218,34 +1108,21 @@ err_done:
 	kfree(channel);
 	channel = NULL;
 done:
-	if (pend->dma_data.cmd_chan) {
-		/* send connect reply message back to host */
-		msg2.value = 0;
-		msg2.opcode = SPH_IPC_C2H_OP_CHAN_GENERIC_MSG_PACKET;
-		msg2.chanID = pend->dma_data.cmd_chan->protocolID;
-		msg2.rbID = 0;
-		msg2.connect = 1;
-		msg2.card_client_id = channel ? channel->channel_id :
-			SPH_IPC_GENMSG_BAD_CLIENT_ID;
+	/* send connect reply message back to host */
+	msg2.value = 0;
+	msg2.opcode = SPH_IPC_C2H_OP_CHAN_GENERIC_MSG_PACKET;
+	msg2.chanID = pend->dma_data.cmd_chan->protocolID;
+	msg2.rbID = 0;
+	msg2.connect = 1;
+	msg2.card_client_id = channel ? channel->channel_id :
+		SPH_IPC_GENMSG_BAD_CLIENT_ID;
 
-		sphcs_msg_scheduler_queue_add_msg(pend->dma_data.cmd_chan->respq, &msg2.value, 1);
-		if (!channel)
-			sphcs_cmd_chan_put(pend->dma_data.cmd_chan);
-		else {
-			pend->dma_data.cmd_chan->destroy_cb = sphcs_chan_genmsg_hangup;
-			pend->dma_data.cmd_chan->destroy_cb_ctx = (void *)(uintptr_t)channel->channel_id;
-		}
-	} else {
-		/* send connect reply message back to host */
-		msg.value = 0;
-		msg.opcode = SPH_IPC_C2H_OP_GENERIC_MSG_PACKET;
-		msg.connect = 1;
-		msg.host_page_hndl = pend->dma_data.msg.host_page_hndl;
-		msg.host_client_id = pend->dma_data.msg.host_client_id;
-		msg.card_client_id = channel ? channel->channel_id :
-			SPH_IPC_GENMSG_BAD_CLIENT_ID;
-
-		sphcs_msg_scheduler_queue_add_msg(sphcs->public_respq, &msg.value, 1);
+	sphcs_msg_scheduler_queue_add_msg(pend->dma_data.cmd_chan->respq, &msg2.value, 1);
+	if (!channel)
+		sphcs_cmd_chan_put(pend->dma_data.cmd_chan);
+	else {
+		pend->dma_data.cmd_chan->destroy_cb = sphcs_chan_genmsg_hangup;
+		pend->dma_data.cmd_chan->destroy_cb_ctx = (void *)(uintptr_t)channel->channel_id;
 	}
 
 	rc = dma_page_pool_set_page_free(sphcs->dma_page_pool, pend->dma_data.dma_page_hndl);
@@ -1338,34 +1215,21 @@ static int chan_response_dma_completed(struct sphcs *sphcs,
 		 */
 		dma_req_user_data->channel->io_error = true;
 	} else {
-		union c2h_GenericMessaging msg;
 		union c2h_ChanGenericMessaging msg2;
 
 		/* if it is not an error - it must be done */
 		SPH_ASSERT(status == SPHCS_DMA_STATUS_DONE);
 
 		/* send the packet to host */
-		if (dma_req_user_data->channel->cmd_chan) {
-			msg2.value = 0LL;
-			msg2.opcode = SPH_IPC_C2H_OP_CHAN_GENERIC_MSG_PACKET;
-			msg2.chanID = dma_req_user_data->channel->cmd_chan->protocolID;
-			msg2.rbID = 0;
-			msg2.size = dma_req_user_data->xfer_size - 1;
-			msg2.card_client_id = dma_req_user_data->channel->channel_id;
+		msg2.value = 0LL;
+		msg2.opcode = SPH_IPC_C2H_OP_CHAN_GENERIC_MSG_PACKET;
+		msg2.chanID = dma_req_user_data->channel->cmd_chan->protocolID;
+		msg2.rbID = 0;
+		msg2.size = dma_req_user_data->xfer_size - 1;
+		msg2.card_client_id = dma_req_user_data->channel->channel_id;
 
-			sphcs_msg_scheduler_queue_add_msg(dma_req_user_data->channel->cmd_chan->respq,
-							  &msg2.value, 1);
-		} else {
-			msg.value = 0LL;
-			msg.opcode = SPH_IPC_C2H_OP_GENERIC_MSG_PACKET;
-			msg.size = dma_req_user_data->xfer_size - 1;
-			msg.host_page_hndl = dma_req_user_data->host_dma_page_hndl;
-			msg.card_client_id = dma_req_user_data->channel->channel_id;
-			msg.host_client_id = dma_req_user_data->channel->host_client_id;
-
-			sphcs_msg_scheduler_queue_add_msg(dma_req_user_data->channel->respq,
-							  &msg.value, 1);
-		}
+		sphcs_msg_scheduler_queue_add_msg(dma_req_user_data->channel->cmd_chan->respq,
+						  &msg2.value, 1);
 	}
 
 	/* return the local dma page back to the dma pool */
@@ -1381,33 +1245,18 @@ static int chan_response_dma_completed(struct sphcs *sphcs,
 static void handle_cmd_dma_failed(struct genmsg_dma_command_data *dma_data)
 {
 	if (dma_data->msg.connect) {
-		if (dma_data->cmd_chan != NULL) {
-			union c2h_ChanGenericMessaging msg;
+		union c2h_ChanGenericMessaging msg;
 
-			msg.value = 0;
-			msg.opcode = SPH_IPC_C2H_OP_CHAN_GENERIC_MSG_PACKET;
-			msg.chanID = dma_data->cmd_chan->protocolID;
-			msg.rbID = 0;
-			msg.connect = 1;
-			msg.no_such_service = 1;
-			msg.card_client_id = SPH_IPC_GENMSG_BAD_CLIENT_ID;
+		msg.value = 0;
+		msg.opcode = SPH_IPC_C2H_OP_CHAN_GENERIC_MSG_PACKET;
+		msg.chanID = dma_data->cmd_chan->protocolID;
+		msg.rbID = 0;
+		msg.connect = 1;
+		msg.no_such_service = 1;
+		msg.card_client_id = SPH_IPC_GENMSG_BAD_CLIENT_ID;
 
-			sphcs_cmd_chan_update_cmd_head(dma_data->cmd_chan, 0, SPH_PAGE_SIZE);
-			sphcs_msg_scheduler_queue_add_msg(dma_data->cmd_chan->respq, (u64 *)&msg.value, 1);
-		} else {
-			union c2h_GenericMessaging msg;
-
-			msg.value = 0;
-			msg.opcode = SPH_IPC_C2H_OP_GENERIC_MSG_PACKET;
-			msg.connect = 1;
-			msg.no_such_service = 1;
-			msg.host_page_hndl = dma_data->msg.host_page_hndl;
-			msg.host_client_id = dma_data->msg.host_client_id;
-			msg.card_client_id = SPH_IPC_GENMSG_BAD_CLIENT_ID;
-
-			sphcs_msg_scheduler_queue_add_msg(g_the_sphcs->public_respq,
-							  &msg.value, 1);
-		}
+		sphcs_cmd_chan_update_cmd_head(dma_data->cmd_chan, 0, SPH_PAGE_SIZE);
+		sphcs_msg_scheduler_queue_add_msg(dma_data->cmd_chan->respq, (u64 *)&msg.value, 1);
 	} else if (dma_data->channel) {
 		/*
 		 * mark io_error on channel - next read/write will fail
@@ -1421,8 +1270,7 @@ static void handle_cmd_dma_failed(struct genmsg_dma_command_data *dma_data)
 	/* return back dma page to pool */
 	dma_page_pool_set_page_free(g_the_sphcs->dma_page_pool, dma_data->dma_page_hndl);
 
-	if (dma_data->cmd_chan)
-		sphcs_cmd_chan_put(dma_data->cmd_chan);
+	sphcs_cmd_chan_put(dma_data->cmd_chan);
 }
 
 /*
@@ -1437,22 +1285,8 @@ int sphcs_genmsg_cmd_dma_complete_callback(struct sphcs *sphcs, void *ctx, const
 	 * in case of connect command, it will happen on the connect response
 	 * after the service client will reply to the connect request
 	 */
-	if (!dma_data->msg.connect) {
-		if (dma_data->cmd_chan)
-			sphcs_cmd_chan_update_cmd_head(dma_data->cmd_chan, 0, SPH_PAGE_SIZE);
-		else {
-			union c2h_GenericMessaging msg;
-
-			msg.value = 0;
-			msg.opcode = SPH_IPC_C2H_OP_GENERIC_MSG_PACKET;
-			msg.free_page = 1;
-			msg.host_page_hndl = dma_data->msg.host_page_hndl;
-			msg.host_client_id = dma_data->msg.host_client_id;
-			msg.card_client_id = dma_data->msg.card_client_id;
-
-			sphcs_msg_scheduler_queue_add_msg(sphcs->public_respq, &msg.value, 1);
-		}
-	}
+	if (!dma_data->msg.connect)
+		sphcs_cmd_chan_update_cmd_head(dma_data->cmd_chan, 0, SPH_PAGE_SIZE);
 
 	if (status == SPHCS_DMA_STATUS_FAILED) {
 		sph_log_err(SERVICE_LOG, "Dma error\n");
@@ -1498,8 +1332,7 @@ int sphcs_genmsg_cmd_dma_complete_callback(struct sphcs *sphcs, void *ctx, const
 			 * cmd_chan pointer already in the channel struct, no
 			 * need to keep it in the pending packet
 			 */
-			if (dma_data->cmd_chan)
-				sphcs_cmd_chan_put(dma_data->cmd_chan);
+			sphcs_cmd_chan_put(dma_data->cmd_chan);
 
 			channel = dma_data->channel;
 			if (is_channel_ptr(channel) &&
@@ -1555,8 +1388,7 @@ int process_genmsg_command(struct sphcs *sphcs,
 	if (!req->hangup && !req->service_list_req && !req->host_pfn) {
 		/* This is a protocol error - should not happen!!! */
 		sph_log_err(SERVICE_LOG, "Got generic message packet from host connect=%d with NULL host pfn\n", req->connect);
-		if (cmd_chan)
-			sphcs_cmd_chan_put(cmd_chan);
+		sphcs_cmd_chan_put(cmd_chan);
 		return 0;
 	}
 
@@ -1573,11 +1405,9 @@ int process_genmsg_command(struct sphcs *sphcs,
 		if (!channel) {
 			/* This is a protocol error - should not happen!!! */
 			sph_log_err(SERVICE_LOG, "Got packet with no card, card_client_id= %u, host_client_id= %u\n", req->card_client_id, req->host_client_id);
-			if (cmd_chan) {
-				if (!req->hangup)
-					sphcs_cmd_chan_update_cmd_head(cmd_chan, 0, SPH_PAGE_SIZE);
-				sphcs_cmd_chan_put(cmd_chan);
-			}
+			if (!req->hangup)
+				sphcs_cmd_chan_update_cmd_head(cmd_chan, 0, SPH_PAGE_SIZE);
+			sphcs_cmd_chan_put(cmd_chan);
 			return 0;
 		}
 
@@ -1596,13 +1426,11 @@ int process_genmsg_command(struct sphcs *sphcs,
 			 * cmd_chan pointer already in the channel struct, no
 			 * need to keep it in the pending packet
 			 */
-			if (cmd_chan) {
-				sphcs_cmd_chan_put(cmd_chan);
-				/* Do not process two hangup messages - may happen when cmd_chan is destroyed after hangup */
-				if (channel->hanging_up) {
-					channel_put(channel);
-					return 0;
-				}
+			sphcs_cmd_chan_put(cmd_chan);
+			/* Do not process two hangup messages - may happen when cmd_chan is destroyed after hangup */
+			if (channel->hanging_up) {
+				channel_put(channel);
+				return 0;
 			}
 
 			pend = kzalloc(sizeof(*pend), GFP_NOWAIT);
@@ -1619,7 +1447,7 @@ int process_genmsg_command(struct sphcs *sphcs,
 			SPH_SPIN_LOCK(&channel->read_lock);
 
 			/* check again hang up with the lock */
-			if (cmd_chan && channel->hanging_up) {
+			if (channel->hanging_up) {
 				SPH_SPIN_UNLOCK(&channel->read_lock);
 				channel_put(channel);
 				kfree(pend);
@@ -1667,7 +1495,7 @@ int process_genmsg_command(struct sphcs *sphcs,
 					  &dma_addr);
 	if (ret) {
 		sph_log_err(SERVICE_LOG, "Failed to get free page (err: %d)\n", ret);
-		if (cmd_chan && !req->hangup)
+		if (!req->hangup)
 			sphcs_cmd_chan_update_cmd_head(cmd_chan, 0, SPH_PAGE_SIZE);
 		return ret;
 	}
@@ -1703,38 +1531,6 @@ int process_genmsg_command(struct sphcs *sphcs,
 	}
 
 	return 0;
-}
-
-/*
- * called to handle a
- * SPH_IPC_H2C_OP_GENERIC_MSG_PACKET message receviced from host.
- */
-void IPC_OPCODE_HANDLER(GENERIC_MSG_PACKET)(struct sphcs               *sphcs,
-					    union h2c_GenericMessaging *msg)
-{
-	struct genmsg_command_entry *entry;
-
-	/*
-	 * place the command in pending list and schedule the pending work to handle it
-	 */
-	entry = kzalloc(sizeof(*entry), GFP_NOWAIT);
-	if (!entry) {
-		sph_log_err(SERVICE_LOG, "No memory for pending command entry!!!\n");
-		return;
-	}
-
-	memcpy(entry->msg.value,
-	       msg->value,
-	       sizeof(msg->value));
-	INIT_LIST_HEAD(&entry->node);
-
-	SPH_SPIN_LOCK_BH(&s_pending_commands_lock_bh);
-	list_add_tail(&entry->node, &s_pending_commands);
-	s_num_pending_commands++;
-	if (s_num_pending_commands == 1) {
-		queue_work(system_wq, &s_pending_commands_work);
-	}
-	SPH_SPIN_UNLOCK_BH(&s_pending_commands_lock_bh);
 }
 
 /*

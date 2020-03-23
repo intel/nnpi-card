@@ -173,6 +173,26 @@ out:
 	return retval;
 }
 
+void ice_mm_transfer_shared_surface(
+	struct cve_ntw_buffer *ntw_buf,
+	struct cve_inf_buffer *inf_buf)
+{
+	struct allocation_desc *ntw_alloc =
+		(struct allocation_desc *)ntw_buf->ntw_buf_alloc;
+	struct allocation_desc *inf_alloc =
+		(struct allocation_desc *)inf_buf->inf_buf_alloc;
+
+	ntw_alloc->fd = inf_alloc->fd;
+	ntw_alloc->vaddr = inf_alloc->vaddr;
+	ntw_alloc->mem_type = inf_alloc->mem_type;
+
+	ice_osmm_dma_buf_transfer(&ntw_alloc->halloc,
+		&inf_alloc->halloc);
+
+	OS_FREE(inf_alloc, sizeof(*inf_alloc));
+	inf_buf->inf_buf_alloc = NULL;
+}
+
 /* INTERFACE FUNCTIONS */
 /* cleanup resources that are kept in the memory manager for the
  * given allocation
@@ -363,22 +383,6 @@ out:
 	return retval;
 }
 
-int ice_mm_domain_copy(os_domain_handle *hdom_src,
-	void **hdom_inf,
-	u32 domain_array_size)
-{
-	int retval = 0;
-
-	retval = cve_osmm_domain_copy(hdom_src, hdom_inf,
-		domain_array_size);
-	if (retval < 0) {
-		cve_os_log(CVE_LOGLEVEL_ERROR,
-				"os_malloc_zero failed %d\n", retval);
-	}
-
-	return retval;
-}
-
 void ice_mm_domain_destroy(void *hdom_inf,
 	u32 domain_array_size)
 {
@@ -512,7 +516,8 @@ int cve_mm_create_infer_buffer(
 	 */
 	if (!inf_buf->fd && !inf_buf->base_address) {
 		retval = -EINVAL;
-		ASSERT(false);
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+			"inf_buf fd or base_addres error\n");
 		goto free_mem;
 	} else if (inf_buf->fd) {
 		alloc_type = OSMM_SHARED_MEMORY;
@@ -556,6 +561,9 @@ void cve_mm_destroy_infer_buffer(
 {
 	struct allocation_desc *inf_alloc =
 		(struct allocation_desc *)inf_buf->inf_buf_alloc;
+
+	if (!inf_alloc)
+		return;
 
 	cve_osmm_inf_dma_buf_unmap(inf_alloc->halloc);
 	OS_FREE(inf_alloc, sizeof(*inf_alloc));
@@ -860,8 +868,12 @@ static void __calc_pp_va(ice_va_t va, u32 page_offset,
 		patch_value_64 >>= 32;
 
 	if (pp_desc->bit_offset) {
-		patch_value_64 >>= sizeof(cve_virtual_address_t) *
-		BITS_PER_BYTE - pp_desc->num_bits;
+		if (!pp_desc->is_msb)
+			patch_value_64 >>= sizeof(cve_virtual_address_t) *
+			BITS_PER_BYTE - pp_desc->num_bits;
+		else
+			patch_value_64 &= BIT_ULL(pp_desc->num_bits) - 1;
+
 		patch_value_64 <<= (u64)(pp_desc->bit_offset);
 	} else {
 		patch_value_64 &= BIT_ULL(pp_desc->num_bits) - 1;
@@ -968,7 +980,7 @@ static int  __create_pp_mirror_image(
 	struct ice_pp_copy *pp = NULL;
 	struct ice_network *ntw = job->jobgroup->network;
 	int ret = 0;
-	u32 sz = 0;
+	size_t sz = 0;
 
 	/* allocate structure for the counter patch point mirror image */
 	sz = (sizeof(*pp));
@@ -1010,6 +1022,9 @@ int ice_mm_patch_inf_pp_arr(struct ice_infer *inf)
 
 		/* IAVA and Value of PP is stored in this object */
 		pp_value = &inf->inf_pp_arr[i];
+
+		if (!pp_value->ntw_buf)
+			continue;
 
 		ret = __patch_surface(pp_value->ntw_buf,
 				pp_value->pp_address, pp_value->pp_value);
@@ -1058,47 +1073,6 @@ static int __process_inf_surf_pp(struct cve_patch_point_descriptor *cur_pp_desc,
 	pp_value->ntw_buf = ntw_buf;
 	pp_value->pp_address = patch_address;
 	pp_value->pp_value = ks_value;
-
-out:
-	return ret;
-}
-
-int ice_mm_process_inf_pp_arr(struct ice_infer *inf)
-{
-	u32 i;
-	int ret = 0;
-	struct ice_network *ntw = inf->ntw;
-	struct ice_pp_copy *pp_copy = ntw->ntw_surf_pp_list;
-	struct ice_pp_value *pp_value;
-	struct cve_patch_point_descriptor *pp_desc;
-	struct cve_ntw_buffer *ntw_buf, *ntw_buf_user;
-	struct cve_inf_buffer *inf_buf;
-
-	for (i = 0; i < ntw->ntw_surf_pp_count; i++) {
-
-		/* PP desc for this iteration */
-		pp_desc = &pp_copy->pp_desc;
-
-		/* IAVA and Value of PP will be store in this object */
-		pp_value = &inf->inf_pp_arr[i];
-
-		/* Get CB buffer from Ntw list */
-		ntw_buf = &ntw->buf_list[pp_desc->patching_buf_index];
-
-		/* Get User buffer from Inf list*/
-		ntw_buf_user = &ntw->buf_list[pp_desc->allocation_buf_index];
-		inf_buf = &inf->buf_list[ntw_buf_user->index_in_inf];
-
-		ret = __process_inf_surf_pp(pp_desc, ntw_buf, inf_buf,
-				pp_value);
-		if (ret < 0) {
-			cve_os_log(CVE_LOGLEVEL_ERROR,
-				"__process_inf_surf_pp failed %d\n", ret);
-			goto out;
-		}
-
-		pp_copy = cve_dle_next(pp_copy, list);
-	}
 
 out:
 	return ret;
@@ -1172,6 +1146,56 @@ static int __process_surf_pp(struct cve_patch_point_descriptor *cur_pp_desc,
 		cve_os_log(CVE_LOGLEVEL_ERROR,
 				"ERROR:%d __patch_surface() failed\n", ret);
 		goto out;
+	}
+
+out:
+	return ret;
+}
+
+int ice_mm_process_inf_pp_arr(struct ice_infer *inf)
+{
+	u32 i;
+	int ret = 0;
+	struct ice_network *ntw = inf->ntw;
+	struct ice_pp_copy *pp_copy = ntw->ntw_surf_pp_list;
+	struct ice_pp_value *pp_value;
+	struct cve_patch_point_descriptor *pp_desc;
+	struct cve_ntw_buffer *ntw_buf, *ntw_buf_user;
+	struct cve_inf_buffer *inf_buf;
+
+	for (i = 0; i < ntw->ntw_surf_pp_count; i++) {
+
+		/* PP desc for this iteration */
+		pp_desc = &pp_copy->pp_desc;
+
+		/* IAVA and Value of PP will be store in this object */
+		pp_value = &inf->inf_pp_arr[i];
+		pp_value->ntw_buf = NULL;
+
+		/* Get CB buffer from Ntw list */
+		ntw_buf = &ntw->buf_list[pp_desc->patching_buf_index];
+
+		/* Get User buffer from Inf list*/
+		ntw_buf_user = &ntw->buf_list[pp_desc->allocation_buf_index];
+		inf_buf = &inf->buf_list[ntw_buf_user->index_in_inf];
+
+		if (ntw_buf_user->is_shared_surf) {
+
+			ret = __process_surf_pp(pp_desc, ntw->buf_list, NULL);
+
+		} else {
+
+			ret = __process_inf_surf_pp(pp_desc, ntw_buf, inf_buf,
+					pp_value);
+		}
+
+		if (ret < 0) {
+			cve_os_log(CVE_LOGLEVEL_ERROR,
+				"__process_inf_surf_pp failed %d\n", ret);
+			goto out;
+		}
+
+		pp_copy = cve_dle_next(pp_copy, list);
 	}
 
 out:
@@ -1390,3 +1414,21 @@ void dump_patched_surf(struct ice_network *ntw)
 		}
 	}
 }
+
+void ice_mm_get_buf_sizes(cve_mm_allocation_t halloc,
+		u64 *size_bytes, u32 *page_size, u8 *pid)
+{
+	struct allocation_desc *alloc = (struct allocation_desc *)halloc;
+
+	*size_bytes = alloc->size_bytes;
+	ice_osmm_get_page_size(alloc->halloc, page_size, pid);
+}
+
+void ice_mm_use_extended_iceva(struct cve_ntw_buffer *ntw_buf)
+{
+	struct allocation_desc *alloc =
+		(struct allocation_desc *)ntw_buf->ntw_buf_alloc;
+
+	ice_osmm_use_extended_iceva(alloc->halloc);
+}
+

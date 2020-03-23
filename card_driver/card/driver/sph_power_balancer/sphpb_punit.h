@@ -32,6 +32,7 @@
 /* uncore clock ticks msr's */
 #define RING_FREQ_MSR 0x620
 #define MSR_UNC_PERF_UNCORE_CLOCK_TICKS 0x395
+#define SPH_MSR_CORE_PERF_LIMIT_REASONS 0x64F
 
 
 struct UNC_PERF_GLOBAL_CTRL_MSR {
@@ -100,6 +101,52 @@ struct RING_FREQUENCY_MSR {
 	};
 };
 CHECK_MSR_SIZE(struct RING_FREQUENCY_MSR, 1);
+
+struct CORE_PERF_LIMIT_REASONS_MSR {
+	union {
+		uint64_t value;
+
+		struct {
+			/* status */
+			uint64_t prochot_status				: 1; // 0
+			uint64_t thermal_status				: 1; // 1
+			uint64_t unused1				: 2; // 2-3
+			uint64_t residency_state_regulation_status	: 1; // 4
+			uint64_t ratl_status				: 1; // 5
+			uint64_t vr_therm_alert_status			: 1; // 6
+			uint64_t vr_therm_design_current_status		: 1; // 7
+			uint64_t other_status				: 1; // 8
+			uint64_t unused2				: 1; // 9
+			uint64_t pl1_status				: 1; //10
+			uint64_t pl2_status				: 1; //11
+			uint64_t max_turbo_limit_status			: 1; //12
+			uint64_t turbo_transition_attenuation_status	: 1; //13
+			uint64_t unused3				: 2; //14-15
+
+			/* log */
+			uint64_t prochot_log				: 1; //16
+			uint64_t thermal_log				: 1; //17
+			uint64_t unused4				: 2; //18-19
+			uint64_t residency_state_regulation_log		: 1; //20
+			uint64_t ratl_log				: 1; //21
+			uint64_t vr_therm_alert_log			: 1; //22
+			uint64_t vr_therm_design_current_log		: 1; //23
+			uint64_t other_log				: 1; //24
+			uint64_t unused5				: 1; //25
+			uint64_t pl1_log				: 1; //26
+			uint64_t pl2_log				: 1; //27
+			uint64_t max_turbo_limit_log			: 1; //28
+			uint64_t turbo_transition_attenuation_log	: 1; //29
+			uint64_t unused6				: 34;//30-63
+		} BitField;
+
+		struct {
+			uint64_t low					:32;
+			uint64_t high					:32;
+		} U64;
+	};
+};
+CHECK_MSR_SIZE(struct CORE_PERF_LIMIT_REASONS_MSR, 1);
 
 #endif //_INTEL_SPHPB_PUNIT_H_
 

@@ -414,6 +414,20 @@ struct cve_create_infer {
 	struct ice_infer_descriptor infer;
 };
 
+struct ice_ss_descriptor {
+	__u32 *index_list;
+	__u32 num_index;
+};
+
+struct ice_report_ss {
+	/*in, context id*/
+	__u64 contextid;
+	/*in, network id*/
+	__u64 networkid;
+	/*inout*/
+	struct ice_ss_descriptor ss_desc;
+};
+
 struct ice_execute_infer_data {
 	/*in*/
 	__u8 enable_bp;
@@ -641,6 +655,8 @@ struct cve_get_version_params {
 struct cve_get_metadata_params {
 	/* out, icemask */
 	__u32 icemask;
+	/* out, ice dump buffer size */
+	__u32 ice_dump_buf_size;
 };
 
 /*
@@ -823,6 +839,7 @@ struct cve_ioctl_param {
 		struct cve_destroy_context_params destroy_context;
 		struct cve_create_network create_network;
 		struct cve_create_infer create_infer;
+		struct ice_report_ss report_ss;
 		struct cve_execute_infer execute_infer;
 		struct cve_destroy_infer destroy_infer;
 		struct ice_manage_resource manage_resource;
@@ -882,4 +899,6 @@ struct cve_ioctl_param {
 	_IOW(CVE_IOCTL_SEQ_NUM, 20, struct cve_ioctl_param)
 #define ICE_IOCTL_RESET_NETWORK \
 	_IOW(CVE_IOCTL_SEQ_NUM, 21, struct cve_ioctl_param)
+#define CVE_IOCTL_REPORT_SHARED_SURFACES \
+	_IOW(CVE_IOCTL_SEQ_NUM, 22, struct cve_ioctl_param)
 #endif /* _CVE_DRIVER_H_ */

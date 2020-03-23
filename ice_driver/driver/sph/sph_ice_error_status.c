@@ -49,7 +49,7 @@ static ssize_t show_ice_error(struct kobject *kobj,
 	u32 dev_index;
 	int ret = 0;
 
-	ret = sscanf(attr->attr.name, "ice%d", &dev_index);
+	ret = sscanf(attr->attr.name, "ice%u", &dev_index);
 	if (ret < 1) {
 		cve_os_log(CVE_LOGLEVEL_ERROR, "failed getting ice id %s\n",
 			kobj->name);
@@ -82,7 +82,7 @@ static ssize_t store_ice_error(struct kobject *kobj,
 		return ret;
 	}
 
-	ret = sscanf(attr->attr.name, "ice%d", &dev_index);
+	ret = sscanf(attr->attr.name, "ice%u", &dev_index);
 	if (ret < 1) {
 		cve_os_log(CVE_LOGLEVEL_ERROR, "failed getting ice id %s\n",
 			kobj->name);

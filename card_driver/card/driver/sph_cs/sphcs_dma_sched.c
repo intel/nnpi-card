@@ -132,6 +132,7 @@ struct sphcs_dma_sched_priority_queue {
 	u32 allowed_hw_channels;
 	u32 reqList_size;
 	u32 reqList_max_size;
+	u32 wait_ticks;
 	spinlock_t lock_irq;
 };
 
@@ -161,6 +162,7 @@ struct spcs_dma_direction_info {
 	atomic_t active_high_priority_transactions;
 	struct completion dma_engine_idle;
 	struct reset_work reset_work;
+	u32 sched_q_start_idx;
 };
 
 #define MAX_USER_DATA_SIZE 64
@@ -220,7 +222,7 @@ static void reset_handler(struct work_struct *work)
 
 #define DMA_DIRECTION_INFO_PTR(dma_schedualer, dma_direction) (&DMA_DIRECTION_INFO(dma_schedualer, dma_direction))
 
-#define DMA_QUEUE_INFO(dma_schedualer, dma_direction, dma_priority) ((dma_schedualer)->direction[(dma_direction)].reqQueue[dma_priority])
+#define DMA_QUEUE_INFO(dma_schedualer, dma_direction, dma_priority) ((dma_schedualer)->direction[(dma_direction)].reqQueue[(dma_priority)])
 
 #define DMA_QUEUE_INFO_PTR(dma_schedualer, dma_direction, dma_priority) (&DMA_QUEUE_INFO(dma_schedualer, dma_direction, dma_priority))
 
@@ -378,7 +380,10 @@ static void do_schedule(struct sphcs_dma_sched *dmaSched,
 			enum sphcs_dma_direction direction)
 {
 	unsigned long flags;
+	struct spcs_dma_direction_info *dir_info = DMA_DIRECTION_INFO_PTR(dmaSched, direction);
 	struct sphcs_dma_sched_priority_queue *high_q = DMA_QUEUE_INFO_PTR(dmaSched, direction, SPHCS_DMA_PRIORITY_HIGH);
+	struct sphcs_dma_sched_priority_queue *low_q = DMA_QUEUE_INFO_PTR(dmaSched, direction, SPHCS_DMA_PRIORITY_LOW);
+	u32 n = 0;
 	u32 priority_queue = 0;
 
 	/* lock current request type schedualer */
@@ -386,14 +391,16 @@ static void do_schedule(struct sphcs_dma_sched *dmaSched,
 
 	if (DMA_DIRECTION_INFO(dmaSched, direction).dma_engine_state == SPHCS_DMA_ENGINE_STATE_ENABLED) {
 
-		for (priority_queue = 0; priority_queue < SPHCS_DMA_NUM_PRIORITIES; priority_queue++) {
-			struct sphcs_dma_sched_priority_queue *q = DMA_QUEUE_INFO_PTR(dmaSched, direction, priority_queue);
+		for (n = 0; n < SPHCS_DMA_NUM_PRIORITIES; n++) {
+			struct sphcs_dma_sched_priority_queue *q;
 			unsigned long queue_flags;
 			u32 hw_channel = 0;
 			struct sphcs_dma_req *req, *tmpReq;
 			u32 skipped_serial_channels[MAX_SKIPPED_SERIAL];
 			u32 s, num_skipped_serial = 0;
 
+			priority_queue = (dir_info->sched_q_start_idx + n) % SPHCS_DMA_NUM_PRIORITIES;
+			q = DMA_QUEUE_INFO_PTR(dmaSched, direction, priority_queue);
 
 			if (priority_queue != SPHCS_DMA_PRIORITY_HIGH) {
 				SPH_SPIN_LOCK_IRQSAVE(&high_q->lock_irq, queue_flags);
@@ -451,6 +458,7 @@ static void do_schedule(struct sphcs_dma_sched *dmaSched,
 								     &hw_channel,
 								     req)) {
 					/* if no available channels for request - break current queue request processing and proceed to next queue check */
+					q->wait_ticks++;
 					break;
 				}
 				/* remove from the queue and send the request */
@@ -459,9 +467,14 @@ static void do_schedule(struct sphcs_dma_sched *dmaSched,
 					atomic_inc(&DMA_DIRECTION_INFO(dmaSched, direction).active_high_priority_transactions);
 				start_request(dmaSched, req, hw_channel);
 				q->reqList_size--;
+				q->wait_ticks = 0;
 			}
 			SPH_SPIN_UNLOCK_IRQRESTORE(&q->lock_irq, queue_flags);
 		}
+		if (low_q->wait_ticks >= 3)
+			dir_info->sched_q_start_idx = SPHCS_DMA_PRIORITY_LOW;
+		else
+			dir_info->sched_q_start_idx = 0;
 	}
 
 	SPH_SPIN_UNLOCK_IRQRESTORE(&DMA_DIRECTION_INFO(dmaSched, direction).lock_irq, flags);
@@ -784,9 +797,7 @@ int sphcs_dma_sched_start_xfer_single(struct sphcs_dma_sched *dmaSched,
 	unsigned long lock_flags;
 	bool cache_alloc = user_data_size <= MAX_USER_DATA_SIZE;
 
-	if (unlikely(desc == NULL))
-		return -EINVAL;
-
+	SPH_ASSERT(desc != NULL);
 	SPH_ASSERT(desc->dma_direction < SPHCS_DMA_NUM_DIRECTIONS);
 	SPH_ASSERT(desc->dma_priority < SPHCS_DMA_NUM_PRIORITIES);
 

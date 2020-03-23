@@ -23,8 +23,8 @@
 #ifdef TRACE
 #define DO_TRACE(x) (x)
 #define DO_TRACE_IF(cond, x) do {\
-	if (cond) \
-		x; \
+	if (cond) {\
+		x; } \
 	} while (0)
 #else
 #define DO_TRACE(x)
@@ -64,8 +64,8 @@ TRACE_EVENT(SPH_TRACE_INFREQ,
 
 
 TRACE_EVENT(SPH_TRACE_COPY,
-	TP_PROTO(u8 state, u32 ctxID, u32 copyID, int cmdlistID, u8 isC2H, u64 size, int n_copies, u8 n_dma),
-	TP_ARGS(state, ctxID, copyID, cmdlistID, isC2H, size, n_copies, n_dma),
+	TP_PROTO(u8 state, u32 ctxID, u32 copyID, int cmdlistID, u8 isC2H, u64 size, int n_copies, u8 n_dma, u32 n_elems),
+	TP_ARGS(state, ctxID, copyID, cmdlistID, isC2H, size, n_copies, n_dma, n_elems),
 	SPH_TP_STRUCT__entry(
 			__field(u64, size)
 			__field(u32, ctxID)
@@ -75,6 +75,7 @@ TRACE_EVENT(SPH_TRACE_COPY,
 			__field(u8, isC2H)
 			__field(u8, state)
 			__field(u8, n_dma)
+			__field(u32, n_elems)
 	),
 	SPH_TP_fast_assign(
 			__entry->state = state;
@@ -85,8 +86,9 @@ TRACE_EVENT(SPH_TRACE_COPY,
 			__entry->size = size;
 			__entry->n_copies = n_copies;
 			__entry->n_dma = n_dma;
+			__entry->n_elems = n_elems;
 	),
-	SPH_TP_printk("state=%s ctxID=%u copyID=%u cmdlistID=%d isC2H=%d size=0x%llx, n_copies=%d, n_dma=%d",
+	SPH_TP_printk("state=%s ctxID=%u copyID=%u cmdlistID=%d isC2H=%d size=%llu n_copies=%d n_dma=%d n_elems=%u",
 		  sph_trace_op_to_str[__entry->state],
 		  __entry->ctxID,
 		  __entry->copyID,
@@ -94,7 +96,8 @@ TRACE_EVENT(SPH_TRACE_COPY,
 		  __entry->isC2H,
 		  __entry->size,
 		  __entry->n_copies,
-		  __entry->n_dma)
+		  __entry->n_dma,
+		  __entry->n_elems)
 );
 
 TRACE_EVENT(SPH_TRACE_CMDLIST,
@@ -223,6 +226,32 @@ TRACE_EVENT(SPH_TRACE_INF_NET_SUBRES,
 		  __entry->host_pool_idx,
 		  __entry->size,
 		  __entry->dma_addr)
+);
+
+TRACE_EVENT(SPH_TRACE_USER_DATA,
+	TP_PROTO(u16 key, u16 ctxID, u16 id1, u16 id2, u64 user_data),
+	TP_ARGS(key, ctxID, id1, id2, user_data),
+	SPH_TP_STRUCT__entry(
+			__field(u16, key)
+			__field(u16, ctxID)
+			__field(u16, id1)
+			__field(u16, id2)
+			__field(u64, user_data)
+	),
+	SPH_TP_fast_assign(
+		       __entry->key = key;
+		       __entry->ctxID = ctxID;
+		       __entry->id1 = id1;
+		       __entry->id2 = id2;
+		       __entry->user_data = user_data;
+	),
+	SPH_TP_printk("key=%c%c ctxID=%u user_data=%llu id1=%u id2=%u",
+		  (__entry->key & 0xFF00) >> 8,
+		  __entry->key & 0x00FF,
+		  __entry->ctxID,
+		  __entry->user_data,
+		  __entry->id1,
+		  __entry->id2)
 );
 
 TRACE_EVENT(SPH_TRACE_IPC,

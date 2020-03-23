@@ -133,6 +133,9 @@ int cve_osmm_get_domain(u8 id, u64 *sz_per_page_alignment,
 		u64 *infer_buf_page_config,
 		os_domain_handle *out_hdomain);
 
+int cve_osmm_extend_domain(u64 *infer_buf_page_config,
+		os_domain_handle hdomain);
+
 /* free a iommu domain
  * inputs : hdom - a handle to the domain
  * outputs:
@@ -227,11 +230,14 @@ void ice_osmm_domain_get_page_sz_list(os_domain_handle hdomain,
 
 void cve_osmm_print_page_table(os_domain_handle hdomain);
 
-int cve_osmm_domain_copy(os_domain_handle *hdom_src,
-		os_domain_handle *hdom_dst,
-		u32 domain_array_size);
-
 void cve_osmm_domain_destroy(os_domain_handle *hdom,
 		u32 domain_array_size);
 
+void ice_osmm_get_page_size(os_allocation_handle halloc,
+		u32 *page_sz, u8 *pid);
+
+void ice_osmm_dma_buf_transfer(os_allocation_handle *hdst,
+		os_allocation_handle *hsrc);
+
+void ice_osmm_use_extended_iceva(os_allocation_handle halloc);
 #endif /* _OS_MM_DMA_H_ */

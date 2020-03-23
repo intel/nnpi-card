@@ -31,6 +31,10 @@
 #ifndef SPRINTF_S_H_
 #define SPRINTF_S_H_
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #include <safe_lib_errno.h>
 
 
@@ -43,6 +47,8 @@ int snprintf_s_si(char *dest, rsize_t dmax, const char *format, char *s, int a);
 int snprintf_s_l(char *dest, rsize_t dmax, const char *format, long a);
 int snprintf_s_sl(char *dest, rsize_t dmax, const char *format, char *s, long a);
 
-
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* SPRINTF_S_H_ */

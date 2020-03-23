@@ -10,10 +10,6 @@
 #include <linux/jiffies.h>
 #include <linux/workqueue.h>
 #include "ipc_protocol.h"
-#ifdef ULT
-#include "sphcs_ult.h"
-#include "ipc_protocol_ult.h"
-#endif
 #include "sph_log.h"
 #include "sphcs_cs.h"
 #include <linux/delay.h>
@@ -39,7 +35,7 @@ struct host_response_pages_entry {
 	struct response_list_entry  pages[1];      /* real size depends on n_pages */
 };
 
-#define SPHCS_RESPONSE_POOLS_SIZE 2
+#define SPHCS_RESPONSE_POOLS_SIZE 1
 
 struct sphcs_response_page_pool *g_sphcs_response_pools[SPHCS_RESPONSE_POOLS_SIZE];
 
@@ -53,7 +49,17 @@ static int sphcs_response_page_list_dma_completed(struct sphcs *sphcs, void *ctx
 	pool = g_sphcs_response_pools[*response_pool_index];
 
 	SPH_ASSERT(pool != NULL);
+	if (unlikely(pool == NULL))
+		return -EINVAL;
+
+	SPH_ASSERT(ent != NULL);
+	if (unlikely(ent == NULL))
+		return -EINVAL;
+
 	SPH_ASSERT(ent->dma_vptr != NULL);
+	if (unlikely(ent->dma_vptr == NULL))
+		return -EINVAL;
+
 	if (status == SPHCS_DMA_STATUS_FAILED) {
 		/* dma failed */
 		/* return the dma page back to the pool */
@@ -95,7 +101,7 @@ static void process_host_response_pages_message(struct work_struct *work)
 		if (!ent) {
 			sph_log_err(SERVICE_LOG, "FAILED to allocate space for response pages list\n");
 			/* TODO: send error event to host */
-			return;
+			goto done;
 		}
 
 		ent->n_pages = host_response_pages_work->num_of_pages;
@@ -108,7 +114,7 @@ static void process_host_response_pages_message(struct work_struct *work)
 			sph_log_err(SERVICE_LOG, "Failed to get free dma page for transfer\n");
 			kfree(ent);
 			/* TODO: send error event to host */
-			return;
+			goto done;
 		}
 
 		/* start the dma transfer */
@@ -123,7 +129,7 @@ static void process_host_response_pages_message(struct work_struct *work)
 						  sizeof(host_response_pages_work->response_pool_index));
 
 	}
-
+done:
 	kfree(host_response_pages_work);
 }
 
@@ -151,7 +157,16 @@ int sphcs_create_response_page_pool(struct msg_scheduler_queue *msg_queue, uint3
 {
 	struct sphcs_response_page_pool *pool;
 
-	SPH_ASSERT(index >= 0 && index < SPHCS_RESPONSE_POOLS_SIZE);
+	SPH_ASSERT(index < SPHCS_RESPONSE_POOLS_SIZE);
+	if (unlikely(index >= SPHCS_RESPONSE_POOLS_SIZE)) {
+		sph_log_err(SERVICE_LOG, "index too big");
+		return -EINVAL;
+	}
+
+	if (g_sphcs_response_pools[index] != NULL) {
+		sph_log_err(SERVICE_LOG, "override existing pool");
+		return -EFAULT;
+	}
 
 	pool = kmalloc(sizeof(struct sphcs_response_page_pool), GFP_KERNEL);
 	if (pool == NULL)
@@ -163,11 +178,6 @@ int sphcs_create_response_page_pool(struct msg_scheduler_queue *msg_queue, uint3
 	spin_lock_init(&pool->host_response_pages_list_lock_irq);
 	init_waitqueue_head(&pool->hrp_waitq);
 
-	if (g_sphcs_response_pools[index] != NULL) {
-		sph_log_err(SERVICE_LOG, "override existing pool");
-		return -EFAULT;
-	}
-
 	g_sphcs_response_pools[index] = pool;
 	return 0;
 }
@@ -178,8 +188,17 @@ static void sphcs_clean_host_resp_page_list(uint32_t index)
 	struct sphcs_response_page_pool *pool = g_sphcs_response_pools[index];
 	unsigned long flags;
 
-	SPH_ASSERT(index >= 0 && index < SPHCS_RESPONSE_POOLS_SIZE);
+	SPH_ASSERT(index < SPHCS_RESPONSE_POOLS_SIZE);
+	if (unlikely(index >= SPHCS_RESPONSE_POOLS_SIZE)) {
+		sph_log_err(SERVICE_LOG, "index too big");
+		return;
+	}
+
 	SPH_ASSERT(pool != NULL);
+	if (unlikely(pool == NULL)) {
+		sph_log_err(SERVICE_LOG, "no pool in index");
+		return;
+	}
 	SPH_SPIN_LOCK_IRQSAVE(&pool->host_response_pages_list_lock_irq, flags);
 	while (!list_empty(&pool->host_response_pages_list)) {
 		ent = list_first_entry(&pool->host_response_pages_list,
@@ -192,7 +211,11 @@ static void sphcs_clean_host_resp_page_list(uint32_t index)
 
 void sphcs_response_pool_clean_page_pool(uint32_t index)
 {
-	SPH_ASSERT(index >= 0 && index < SPHCS_RESPONSE_POOLS_SIZE);
+	SPH_ASSERT(index < SPHCS_RESPONSE_POOLS_SIZE);
+	if (unlikely(index >= SPHCS_RESPONSE_POOLS_SIZE)) {
+		sph_log_err(SERVICE_LOG, "index too big");
+		return;
+	}
 	sphcs_clean_host_resp_page_list(index);
 }
 
@@ -200,9 +223,18 @@ void sphcs_response_pool_destroy_page_pool(uint32_t index)
 {
 	struct sphcs_response_page_pool *pool;
 
-	SPH_ASSERT(index >= 0 && index < SPHCS_RESPONSE_POOLS_SIZE);
+	SPH_ASSERT(index < SPHCS_RESPONSE_POOLS_SIZE);
+	if (unlikely(index >= SPHCS_RESPONSE_POOLS_SIZE)) {
+		sph_log_err(SERVICE_LOG, "index too big");
+		return;
+	}
 	pool = g_sphcs_response_pools[index];
+
 	SPH_ASSERT(pool != NULL);
+	if (unlikely(pool == NULL)) {
+		sph_log_err(SERVICE_LOG, "no pool in index");
+		return;
+	}
 	sphcs_clean_host_resp_page_list(index);
 	kfree(pool);
 	g_sphcs_response_pools[index] = NULL;
@@ -215,9 +247,17 @@ int sphcs_response_pool_get_response_page(uint32_t index, dma_addr_t *out_host_d
 	struct sphcs_response_page_pool *pool;
 	unsigned long flags;
 
-	SPH_ASSERT(index >= 0 && index < SPHCS_RESPONSE_POOLS_SIZE);
+	SPH_ASSERT(index < SPHCS_RESPONSE_POOLS_SIZE);
+	if (unlikely(index >= SPHCS_RESPONSE_POOLS_SIZE)) {
+		sph_log_err(SERVICE_LOG, "index too big");
+		return -EINVAL;
+	}
 	pool = g_sphcs_response_pools[index];
 	SPH_ASSERT(pool != NULL);
+	if (unlikely(pool == NULL)) {
+		sph_log_err(SERVICE_LOG, "no pool in index");
+		return -EINVAL;
+	}
 
 	SPH_SPIN_LOCK_IRQSAVE(&pool->host_response_pages_list_lock_irq, flags);
 	if (list_empty(&pool->host_response_pages_list)) {
@@ -241,105 +281,4 @@ int sphcs_response_pool_get_response_page(uint32_t index, dma_addr_t *out_host_d
 	kfree(ent_to_free);
 
 	return ret;
-}
-
-int sphcs_response_pool_get_response_page_wait(uint32_t index, dma_addr_t *out_host_dma_addr, page_handle *out_host_page_hndl)
-{
-	int ret;
-	struct sphcs_response_page_pool *pool;
-
-	SPH_ASSERT(index >= 0 && index < SPHCS_RESPONSE_POOLS_SIZE);
-	pool = g_sphcs_response_pools[index];
-	SPH_ASSERT(pool != NULL);
-
-	ret = sphcs_response_pool_get_response_page(index, out_host_dma_addr, out_host_page_hndl);
-	while (ret == -ENOENT) {
-		ret = wait_event_interruptible(pool->hrp_waitq,
-					 !list_empty(&pool->host_response_pages_list));
-		if (ret)
-			return -EINTR;
-
-		ret = sphcs_response_pool_get_response_page(index, out_host_dma_addr, out_host_page_hndl);
-	}
-
-	return ret;
-}
-
-static inline int sphcs_response_pool_msg_scheduler_queue_add_msg(struct msg_scheduler_queue *queue, u64 *msg, int size)
-{
-	if (SPH_SW_GROUP_IS_ENABLE(g_sph_sw_counters, SPHCS_SW_COUNTERS_GROUP_IPC))
-		SPH_SW_COUNTER_INC(g_sph_sw_counters, SPHCS_SW_COUNTERS_IPC_COMMANDS_SCHEDULED_COUNT);
-
-	return msg_scheduler_queue_add_msg(queue, msg, size);
-}
-
-void sphcs_response_pool_put_back_response_page(uint32_t index,
-				       dma_addr_t    host_dma_addr,
-				       page_handle   host_page_hndl)
-{
-	bool added_back = false;
-	struct host_response_pages_entry *ent;
-	struct sphcs_response_page_pool *pool;
-	unsigned long flags;
-
-	SPH_ASSERT(index >= 0 && index < SPHCS_RESPONSE_POOLS_SIZE);
-	pool = g_sphcs_response_pools[index];
-	SPH_ASSERT(pool != NULL);
-
-	SPH_SPIN_LOCK_IRQSAVE(&pool->host_response_pages_list_lock_irq, flags);
-	if (!list_empty(&pool->host_response_pages_list)) {
-		ent = list_first_entry(&pool->host_response_pages_list,
-				       struct host_response_pages_entry, node);
-		if (ent->next_to_use > 0) {
-			ent->next_to_use--;
-			ent->pages[ent->next_to_use].page_hdl = host_page_hndl;
-			ent->pages[ent->next_to_use].dma_pfn = SPH_IPC_DMA_ADDR_TO_PFN(host_dma_addr);
-			added_back = true;
-		}
-	}
-
-	SPH_SPIN_UNLOCK_IRQRESTORE(&pool->host_response_pages_list_lock_irq, flags);
-
-	if (!added_back) {
-		/* add new entry with a single page */
-		ent = kzalloc(sizeof(*ent), GFP_KERNEL);
-		if (!ent) {
-			union c2h_DmaPageHandleFree msg;
-			/*
-			 * 0 :  SPH_MAIN_RESPONSE_POOL_INDEX
-			 * 1 :  SPH_NET_RESPONSE_POOL_INDEX
-			 */
-			uint8_t  is_net_response_index = 0;
-
-			if (index == SPH_NET_RESPONSE_POOL_INDEX)
-				is_net_response_index = 1;
-
-			/* No memory to store back the page!
-			 * The only option is to send a message to host to
-			 * release the page.
-			 */
-			msg.value = 0;
-			msg.opcode = SPH_IPC_C2H_OP_DMA_PAGE_HANDLE_FREE;
-			msg.host_page_hndl = host_page_hndl;
-			msg.is_response_page = 1;
-			msg.is_net_response_page = is_net_response_index;
-
-			sphcs_response_pool_msg_scheduler_queue_add_msg(pool->msg_queue,
-						    &msg.value,
-						    1);
-
-			sph_log_debug(SERVICE_LOG, "Failed to allocate memory\n");
-
-			return;
-		}
-
-		ent->n_pages = 1;
-		ent->next_to_use = 0;
-		ent->pages[0].page_hdl = host_page_hndl;
-		ent->pages[0].dma_pfn = SPH_IPC_DMA_ADDR_TO_PFN(host_dma_addr);
-		INIT_LIST_HEAD(&ent->node);
-		SPH_SPIN_LOCK_IRQSAVE(&pool->host_response_pages_list_lock_irq, flags);
-		list_add_tail(&ent->node, &pool->host_response_pages_list);
-		SPH_SPIN_UNLOCK_IRQRESTORE(&pool->host_response_pages_list_lock_irq, flags);
-	}
 }

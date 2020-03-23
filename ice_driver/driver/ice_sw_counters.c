@@ -285,6 +285,10 @@ int _swc_check_node(enum ICEDRV_SWC_CLASS class,
 		parent = cve_dle_lookup(
 				g_swc_value_list[ICEDRV_SWC_CLASS_GLOBAL],
 				list, node_id, 0);
+	if (!parent) {
+		cve_os_log(CVE_LOGLEVEL_ERROR, "Parent is NULL");
+		return -EINVAL;
+	}
 
 	if (class == ICEDRV_SWC_CLASS_INFER_DEVICE ||
 			class == ICEDRV_SWC_CLASS_DEVICE) {

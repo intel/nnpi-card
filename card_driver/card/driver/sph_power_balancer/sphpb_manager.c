@@ -254,13 +254,13 @@ static int update_ddr_request(struct sphpb_pb *sphpb,
 					     "set ddr frequency mode to %s\n",
 					     sph_ddr_bw_to_str[ddr_value_to_set]);
 
-			DO_TRACE(trace_power_set(SPH_TRACE_OP_STATUS_STOP,
+			DO_TRACE(trace__power_set(SPH_TRACE_OP_STATUS_STOP,
 						 SPH_TRACE_OP_POWER_SET_DRAM_LEVEL,
 						 sphpb->icebo_ring_divisor,
 						 pre_ddr_value));
 
 
-			DO_TRACE(trace_power_set(SPH_TRACE_OP_STATUS_START,
+			DO_TRACE(trace__power_set(SPH_TRACE_OP_STATUS_START,
 						 SPH_TRACE_OP_POWER_SET_DRAM_LEVEL,
 						 sphpb->icebo_ring_divisor,
 						 sphpb->request_ddr_value));
@@ -337,22 +337,22 @@ static int update_ring_divisor(struct sphpb_pb *sphpb,
 					     "set icebo to ring ratio to 0x%x - fixed_point(U1.15)\n", ring_divisor);
 
 			if (sphpb->throttle_data.curr_state != SPHPB_NO_THROTTLE) {
-				DO_TRACE(trace_power_set(SPH_TRACE_OP_STATUS_STOP,
+				DO_TRACE(trace__power_set(SPH_TRACE_OP_STATUS_STOP,
 							 SPH_TRACE_OP_POWER_SET_ICEBO2RING,
 							 current_ring_ratio_value,
 							 SAGV_POLICY_FIXED_LOW));
 
-				DO_TRACE(trace_power_set(SPH_TRACE_OP_STATUS_START,
+				DO_TRACE(trace__power_set(SPH_TRACE_OP_STATUS_START,
 							 SPH_TRACE_OP_POWER_SET_ICEBO2RING,
 							 sphpb->icebo_ring_divisor,
 							 SAGV_POLICY_FIXED_LOW));
 			} else {
-				DO_TRACE(trace_power_set(SPH_TRACE_OP_STATUS_STOP,
+				DO_TRACE(trace__power_set(SPH_TRACE_OP_STATUS_STOP,
 							 SPH_TRACE_OP_POWER_SET_ICEBO2RING,
 							 current_ring_ratio_value,
 							 sphpb->request_ddr_value));
 
-				DO_TRACE(trace_power_set(SPH_TRACE_OP_STATUS_START,
+				DO_TRACE(trace__power_set(SPH_TRACE_OP_STATUS_START,
 							 SPH_TRACE_OP_POWER_SET_ICEBO2RING,
 							 sphpb->icebo_ring_divisor,
 							 sphpb->request_ddr_value));
@@ -443,38 +443,94 @@ int sphpb_mng_request_ice_dvfs_values(struct sphpb_pb *sphpb,
 	return ret;
 }
 
+static void update_counters(struct sphpb_pb *sphpb, uint64_t delta_t_us)
+{
+	struct CORE_PERF_LIMIT_REASONS_MSR freq_reason;
+	bool any_throttle = false;
+
+	if (sphpb->throttle_data.curr_state != SPHPB_NO_THROTTLE) {
+		SPH_SW_COUNTER_ADD(g_sph_sw_pb_counters, SPHCS_SW_COUNTERS_IPC_OVERSHOOT_PROTECTION_TIME, delta_t_us);
+		any_throttle = true;
+	}
+
+	rdmsrl(SPH_MSR_CORE_PERF_LIMIT_REASONS, freq_reason.value);
+	if (freq_reason.BitField.prochot_log != 0) {
+		freq_reason.BitField.prochot_log = 0;
+		SPH_SW_COUNTER_ADD(g_sph_sw_pb_counters, SPHCS_SW_COUNTERS_IPC_PROCHOT_TIME, delta_t_us);
+		any_throttle = true;
+	}
+	if (freq_reason.BitField.thermal_log != 0) {
+		freq_reason.BitField.thermal_log = 0;
+		SPH_SW_COUNTER_ADD(g_sph_sw_pb_counters, SPHCS_SW_COUNTERS_IPC_THERMAL_TIME, delta_t_us);
+		any_throttle = true;
+	}
+	if (freq_reason.BitField.residency_state_regulation_log != 0) {
+		freq_reason.BitField.residency_state_regulation_log = 0;
+		SPH_SW_COUNTER_ADD(g_sph_sw_pb_counters, SPHCS_SW_COUNTERS_IPC_RESIDENCY_STATE_REG_TIME, delta_t_us);
+		any_throttle = true;
+	}
+	if (freq_reason.BitField.ratl_log != 0) {
+		freq_reason.BitField.ratl_log = 0;
+		SPH_SW_COUNTER_ADD(g_sph_sw_pb_counters, SPHCS_SW_COUNTERS_IPC_RATL_TIME, delta_t_us);
+		any_throttle = true;
+	}
+	if (freq_reason.BitField.pl1_log != 0) {
+		freq_reason.BitField.pl1_log = 0;
+		SPH_SW_COUNTER_ADD(g_sph_sw_pb_counters, SPHCS_SW_COUNTERS_IPC_PL1_TIME, delta_t_us);
+		any_throttle = true;
+	}
+	if (freq_reason.BitField.pl2_log != 0) {
+		freq_reason.BitField.pl2_log = 0;
+		SPH_SW_COUNTER_ADD(g_sph_sw_pb_counters, SPHCS_SW_COUNTERS_IPC_PL2_TIME, delta_t_us);
+		any_throttle = true;
+	}
+	if (freq_reason.BitField.vr_therm_alert_log != 0 ||
+	    freq_reason.BitField.vr_therm_design_current_log != 0 ||
+	    freq_reason.BitField.max_turbo_limit_log != 0 ||
+	    freq_reason.BitField.turbo_transition_attenuation_log != 0 ||
+	    freq_reason.BitField.other_log != 0) {
+		freq_reason.BitField.vr_therm_alert_log = 0;
+		freq_reason.BitField.vr_therm_design_current_log = 0;
+		freq_reason.BitField.max_turbo_limit_log = 0;
+		freq_reason.BitField.turbo_transition_attenuation_log = 0;
+		freq_reason.BitField.other_log = 0;
+		SPH_SW_COUNTER_ADD(g_sph_sw_pb_counters, SPHCS_SW_COUNTERS_IPC_OTHER_TIME, delta_t_us);
+		any_throttle = true;
+	}
+
+	if (any_throttle) {
+		SPH_SW_COUNTER_ADD(g_sph_sw_pb_counters,
+				   SPHCS_SW_COUNTERS_IPC_THROTTLING_TIME, delta_t_us);
+		wrmsrl(SPH_MSR_CORE_PERF_LIMIT_REASONS, freq_reason.value);
+	}
+}
 
 int do_throttle(struct sphpb_pb *sphpb,
 		uint32_t avg_power_mW,
 		uint32_t power_limit1_mW)
 {
-	uint64_t ring_clock_ticks, ring_freq, time_us;
+	uint64_t ring_clock_ticks, ring_freq, time_us, delta_t_us;
 	uint32_t cpu, icebo, ice_freq;
 	uint8_t new_state;
 	bool all_min = true;
 	int ret = 0;
 
-	if (unlikely(sphpb->icedrv_cb == NULL ||
-		     sphpb->icedrv_cb->get_icebo_frequency == NULL ||
-		     sphpb->icedrv_cb->set_clock_squash == NULL)) {
-		if (sphpb->debug_log)
-			sph_log_info(POWER_BALANCER_LOG, "Failed - Ice Driver Not Registered\n");
+	time_us = sph_time_us();
+	delta_t_us = time_us - sphpb->throttle_data.time_us;
+	sphpb->throttle_data.time_us = time_us;
 
-		return ret;
-	}
+	update_counters(sphpb, delta_t_us);
 
 	/*
 	 * RING
 	 * check if ring frequency is set at minimum.
 	 */
 	rdmsrl(MSR_UNC_PERF_UNCORE_CLOCK_TICKS, ring_clock_ticks);
-	time_us = local_clock() / 1000u; //ns -> us
 	ring_freq = (ring_clock_ticks - sphpb->throttle_data.ring_clock_ticks) /
-		    ((time_us - sphpb->throttle_data.time_us));
+		    delta_t_us;
 	if (ring_freq > RING_THRESHOLD) //400MHz
 		all_min = false;
 	sphpb->throttle_data.ring_clock_ticks = ring_clock_ticks;
-	sphpb->throttle_data.time_us = time_us;
 
 	/*
 	 * IA
@@ -504,13 +560,21 @@ int do_throttle(struct sphpb_pb *sphpb,
 		}
 	}
 
+	mutex_lock(&sphpb->mutex_lock);
+
+	if (unlikely(sphpb->icedrv_cb == NULL ||
+		     sphpb->icedrv_cb->get_icebo_frequency == NULL ||
+		     sphpb->icedrv_cb->set_clock_squash == NULL)) {
+		if (sphpb->debug_log)
+			sph_log_info(POWER_BALANCER_LOG, "Failed - Ice Driver Not Registered\n");
+
+		goto end_func;
+	}
 
 	/*
 	 * ICES
 	 * check if active ICEBOs frequency are set at minimum.
 	 */
-	mutex_lock(&sphpb->mutex_lock);
-
 	if (all_min) {
 		for (icebo = 0; icebo < SPHPB_MAX_ICEBO_COUNT; ++icebo) {
 			if (sphpb->icebo[icebo].enabled_ices_mask != 0) {
@@ -527,12 +591,7 @@ int do_throttle(struct sphpb_pb *sphpb,
 		}
 	}
 
-	if (sphpb->throttle_data.curr_state != SPHPB_NO_THROTTLE) {
-		time_us = sph_time_us();
-		SPH_SW_COUNTER_ADD(g_sph_sw_pb_counters,
-				   SPHCS_SW_COUNTERS_IPC_THROTTLING_TIME, time_us - sphpb->throttle_data.begin_throttling_us);
-		sphpb->throttle_data.begin_throttling_us = time_us;
-	}
+
 	/*
 	 * Decide on throttle state:
 	 * supported states:
@@ -584,10 +643,6 @@ int do_throttle(struct sphpb_pb *sphpb,
 	}
 
 
-	if (sphpb->throttle_data.curr_state == SPHPB_NO_THROTTLE &&
-	    new_state != SPHPB_NO_THROTTLE)
-		sphpb->throttle_data.begin_throttling_us = sph_time_us();
-
 	sphpb->throttle_data.curr_state = new_state;
 
 	mutex_unlock(&sphpb->mutex_lock);
@@ -598,7 +653,7 @@ int do_throttle(struct sphpb_pb *sphpb,
 				     "throttling is enabled: state(%u), p(%umW), set ddr mode to %s\n",
 				     sphpb->throttle_data.curr_state, avg_power_mW, sph_ddr_bw_to_str[SAGV_POLICY_FIXED_LOW]);
 
-		DO_TRACE(trace_power_set(SPH_TRACE_OP_STATUS_START,
+		DO_TRACE(trace__power_set(SPH_TRACE_OP_STATUS_START,
 					 SPH_TRACE_OP_POWER_SET_THROTTLE,
 					 sphpb->icebo_ring_divisor,
 					 SAGV_POLICY_FIXED_LOW));
@@ -609,7 +664,7 @@ int do_throttle(struct sphpb_pb *sphpb,
 				     sphpb->throttle_data.curr_state, avg_power_mW, sph_ddr_bw_to_str[sphpb->request_ddr_value]);
 
 
-		DO_TRACE(trace_power_set(SPH_TRACE_OP_STATUS_STOP,
+		DO_TRACE(trace__power_set(SPH_TRACE_OP_STATUS_STOP,
 					 SPH_TRACE_OP_POWER_SET_THROTTLE,
 					 sphpb->icebo_ring_divisor,
 					 sphpb->request_ddr_value));

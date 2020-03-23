@@ -82,7 +82,4 @@ void inf_devres_del_req_from_queue(struct inf_devres   *devres,
 void inf_devres_try_execute(struct inf_devres *devres);
 bool inf_devres_req_ready(struct inf_devres *devres, struct inf_exec_req *req, bool for_read);
 
-void inf_devres_add_to_p2p(struct inf_devres *devres);
-void inf_devres_remove_from_p2p(struct inf_devres *devres);
-
 #endif

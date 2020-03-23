@@ -198,6 +198,11 @@ struct config {
 	uint32_t mmio_intr_status_offset;
 	uint32_t mmio_hw_revision_offset;
 	uint32_t mmio_wd_intr_mask;
+	uint32_t mmio_btrs_wd_intr_mask;
+	uint32_t mmio_sec_wd_intr_mask;
+	uint32_t mmio_cnc_wd_intr_mask;
+	uint32_t mmio_asip2host_intr_mask;
+	uint32_t mmio_ivp2host_intr_mask;
 	uint32_t mmio_dtf_ctrl_offset;
 	uint32_t mmio_ecc_serrcount_offset;
 	uint32_t mmio_ecc_derrcount_offset;
@@ -314,6 +319,11 @@ struct config {
 	uint32_t a2i_icebo_pmon_status_offset;
 	uint32_t ice_delphi_dbg_perf_status_total_cyc_cnt_saturated_mask;
 	uint32_t ice_delphi_bdg_perf_status_per_lyr_cyc_cnt_saturated_mask;
+	uint32_t mmio_hub_p_wait_mode_offset;
+	uint32_t mmio_prog_cores_control_tlc_runstall_mask;
+	uint32_t mmio_prog_cores_control_ivp_runstall_mask;
+	uint32_t mmio_prog_cores_control_asip0_runstall_mask;
+	uint32_t mmio_prog_cores_control_asip1_runstall_mask;
 };
 
 typedef union {
@@ -785,18 +795,28 @@ union mem_iccp_config3_t {
 typedef struct __attribute__((aligned(64))){
 	uint8_t		tlcRawDram[TLC_DRAM_SIZE] __attribute__((aligned(64)));
 	uint8_t 	scratchPad[COMPUTECLUSTER_SP_SIZE_IN_KB*1024] __attribute__((aligned(64)));
-	uint8_t		tlcTraceMem[TLC_TRAX_MEM_SIZE+TRAX_HEADER_SIZE_IN_BYTES] __attribute__((aligned(64)));
+	uint8_t		tlcTraceMem[TLC_TRAX_MEM_SIZE+TRAX_HEADER_SIZE_IN_BYTES] __attribute__((aligned(64))); //Leave room (256B) for header
 	uint8_t		creditAccRegisters[(CNC_CR_NUMBER_OF_BIDS*CNC_CR_NUM_OF_REGS_PER_BID+CNC_CR_NUM_OF_REGS)*CREDIT_ACC_REG_SIZE] __attribute__((aligned(64)));
+	uint32_t	sectionID __attribute__((aligned(64)));
+	uint32_t	creditAccBidCnt;
+	uint32_t	caShadeReg;
+	uint32_t	caSyncVal;
+	uint32_t	isCbbReadyMaskLow;
+	uint32_t	isCbbReadyMaskHigh;
+	uint32_t	fifoStatusMask;
+	uint32_t	cveId;
+	uint32_t	reserved[8];
 	uint32_t	controlRegValue __attribute__((aligned(64)));
 	uint32_t	dumpReason;
 	uint32_t	marker;
 	uint32_t	dumpCounter;
 	uint32_t	cycleCount;
-	uint32_t	version;
+	uint32_t	cveVersion;
 	uint32_t	profile;
 	uint32_t	compilationDate;
 	uint32_t	compilationTime;
-	uint32_t 	magicValue[7];
+	uint32_t	fwVersion;
+	uint32_t 	magicValue[6]; //TBD: use HAL value
 }CVECOREBLOB_T;
 
 
@@ -810,5 +830,20 @@ union tlc_error_handling_reg_t {
 
 	uint32_t val;
 };
+
+union mmio_hub_mem_p_wait_mode_t {
+        struct {
+		uint32_t  TLC_P_WAIT_MODE      :   1;
+		uint32_t  IVP_P_WAIT_MODE      :   1;
+		uint32_t  ASIP_P_WAIT_MODE     :   1;
+		uint32_t  DSE_GCLK_DISABLE     :   1;
+		uint32_t  MMU_DONE             :   1;
+		uint32_t  ALL_CORES_DONE       :   1;
+		uint32_t  DELPHI_DONE          :   1;
+		uint32_t  RSVD_0               :  25;
+        }                                field;
+uint32_t                         val;
+};
+
 
 #endif /* _SPH_DEVICE_REGS_H_ */

@@ -125,11 +125,13 @@ static int extract_free_pages_from_pool(struct dma_page_pool *p,
 
 	SPH_ASSERT(p != NULL);
 	SPH_ASSERT(free_pages != NULL);
+
 	SPH_ASSERT(min <= wanted);
+	if (unlikely(min > wanted))
+		return -EINVAL;
 
 	if (unlikely(wanted == 0))
 		return 0;
-
 
 	SPH_SPIN_LOCK(&p->lock);
 
@@ -643,6 +645,7 @@ int dma_page_pool_get_page_pointer(pool_handle pool, page_handle page, const voi
 		dma_page_pool_set_response_page_full(pool, page);
 
 	SPH_ASSERT(pool->hash_table[page].state == p_full);
+
 	*p = pool->hash_table[page].vaddr;
 	return 0;
 }
@@ -653,6 +656,7 @@ int dma_page_pool_get_page_addr(pool_handle pool, page_handle page, dma_addr_t *
 		return -EINVAL;
 
 	SPH_ASSERT(pool->hash_table[page].state == p_full);
+
 	*addr = pool->hash_table[page].dma_addr;
 	return 0;
 }

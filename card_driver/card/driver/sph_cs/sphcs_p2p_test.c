@@ -141,7 +141,6 @@ failed_to_start_dma:
 	dma_free_coherent(g_the_sphcs->hw_device, param->peer_buf_size, buf_vaddr, buf_dma_addr);
 
 	return rc;
-	return 0;
 }
 
 static long ioctl_misc(struct file *file, unsigned int cmd, unsigned long arg)

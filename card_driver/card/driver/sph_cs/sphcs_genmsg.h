@@ -14,9 +14,6 @@
 int sphcs_init_genmsg_interface(void);
 void sphcs_release_genmsg_interface(void);
 
-void IPC_OPCODE_HANDLER(GENERIC_MSG_PACKET)(struct sphcs               *sphcs,
-					    union h2c_GenericMessaging *msg);
-
 void IPC_OPCODE_HANDLER(CHAN_GENERIC_MSG_PACKET)(struct sphcs                   *sphcs,
 						 union h2c_ChanGenericMessaging *msg);
 #endif

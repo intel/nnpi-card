@@ -69,57 +69,57 @@ int sph_remove_sw_counters_values_node(struct sph_sw_counters *counters);
 /* MACROS FOR SW COUNTER - g_sph_sw_counters */
 
 #define SPH_SW_GROUP_IS_ENABLE(_obj, _index)    \
-	((_obj->groups[(_index)] != 0) ||       \
-	 (_obj->global_groups[(_index)] != 0))
+	(((_obj)->groups[(_index)] != 0) ||       \
+	 ((_obj)->global_groups[(_index)] != 0))
 
 #define SPH_SW_GROUP_SET(_obj, _index, _val)                               \
 	((_val) ? ++((_obj)->groups[(_index)]) :                           \
 	 (((_obj)->groups[(_index)]) ? --((_obj)->groups[(_index)]) : 0))
 
 #define SPH_SW_COUNTER_SET(_obj, _index, _val) \
-	(_obj->values[_index] = (_val))
+	((_obj)->values[(_index)] = (_val))
 
 #define SPH_SW_COUNTER_GET(_obj, _index) \
-	(_obj->values[_index])
+	((_obj)->values[(_index)])
 
 #define SPH_SW_COUNTER_INC(_obj, _index) \
 	(_obj->values[_index]++)
 
 #define SPH_SW_COUNTER_DEC(_obj, _index) \
-	(_obj->values[_index]--)
+	((_obj)->values[(_index)]--)
 
 #define SPH_SW_COUNTER_ADD(_obj, _index, _val) \
-	(_obj->values[_index] += (_val))
+	((_obj)->values[(_index)] += (_val))
 
 #define SPH_SW_COUNTER_DEC_VAL(_obj, _index, _val) \
-	(_obj->values[_index] -= (_val))
+	((_obj)->values[(_index)] -= (_val))
 
 #define SPH_SW_COUNTER_ATOMIC_INC(_obj, _index)            \
 	do {                                               \
-		spin_lock(&((_obj)->spinlocks[_index]));   \
-		(_obj->values[_index]++);                  \
-		spin_unlock(&((_obj)->spinlocks[_index])); \
+		spin_lock(&((_obj)->spinlocks[(_index)]));   \
+		((_obj)->values[(_index)]++);                  \
+		spin_unlock(&((_obj)->spinlocks[(_index)])); \
 	} while (0)
 
 #define SPH_SW_COUNTER_ATOMIC_DEC(_obj, _index)            \
 	do {                                               \
-		spin_lock(&((_obj)->spinlocks[_index]));   \
-		(_obj->values[_index]--);                  \
-		spin_unlock(&((_obj)->spinlocks[_index])); \
+		spin_lock(&((_obj)->spinlocks[(_index)]));   \
+		((_obj)->values[(_index)]--);                  \
+		spin_unlock(&((_obj)->spinlocks[(_index)])); \
 	} while (0)
 
 #define SPH_SW_COUNTER_ATOMIC_ADD(_obj, _index, _val)        \
 	do {                                                 \
-		spin_lock(&((_obj)->spinlocks[_index]));     \
-		(_obj->values[_index] += (_val));            \
-		spin_unlock(&((_obj)->spinlocks[_index]));   \
+		spin_lock(&((_obj)->spinlocks[(_index)]));     \
+		((_obj)->values[(_index)] += (_val));            \
+		spin_unlock(&((_obj)->spinlocks[(_index)]));   \
 	} while (0)
 
 #define SPH_SW_COUNTER_ATOMIC_DEC_VAL(_obj, _index, _val)         \
 	do {                                                      \
-		spin_lock(&((_obj)->spinlocks[_index]));          \
-		(_obj->values[_index] -= (_val));                 \
-		spin_unlock(&((_obj)->spinlocks[_index]));        \
+		spin_lock(&((_obj)->spinlocks[(_index)]));          \
+		((_obj)->values[(_index)] -= (_val));                 \
+		spin_unlock(&((_obj)->spinlocks[(_index)]));        \
 	} while (0)
 
 

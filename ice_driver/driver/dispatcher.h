@@ -97,6 +97,12 @@ int cve_ds_handle_execute_infer(
 		cve_infer_id_t inf_id,
 		struct ice_execute_infer_data *data);
 
+int cve_ds_handle_shared_surfaces(
+		cve_context_process_id_t context_pid,
+		cve_context_id_t context_id,
+		cve_network_id_t ntw_id,
+		struct ice_ss_descriptor *ss_desc);
+
 int cve_ds_handle_destroy_infer(
 		cve_context_process_id_t context_pid,
 		cve_context_id_t context_id,
@@ -191,9 +197,9 @@ int cve_ds_get_version(cve_context_process_id_t context_pid,
  * Get metadata
  * This function is a placeholder to provide metadata to user.
  * outputs:
- *  icemask - [out] bitmap of masked ICEs
+ * metadata - [out] struct of metadata (icemask , icedumpbufsize)
  */
-int cve_ds_get_metadata(u32 *icemask);
+int cve_ds_get_metadata(struct cve_get_metadata_params *metadata);
 
 int ice_ds_reset_network(
 		cve_context_process_id_t context_pid,

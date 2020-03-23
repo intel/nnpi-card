@@ -27,7 +27,6 @@
 #include "inf_exec_req.h"
 
 struct sph_device;
-struct inf_subres_load_session;
 
 enum context_state {
 	CONTEXT_STATE_MIN = 0,
@@ -55,7 +54,6 @@ struct inf_context {
 	DECLARE_HASHTABLE(devnet_hash, 6);
 	DECLARE_HASHTABLE(copy_hash, 6);
 
-	struct workqueue_struct *wq;
 	struct list_head     sync_points;
 	struct list_head     active_seq_list;
 	wait_queue_head_t    sched_waitq;
@@ -67,8 +65,6 @@ struct inf_context {
 
 	struct inf_cmd_queue cmdq;
 
-	struct list_head subresload_sessions;
-
 	struct sph_sw_counters *sw_counters;
 	u64                 runtime_busy_starttime;
 	u32                 infreq_counter;
@@ -79,21 +75,10 @@ struct inf_context {
 	bool daemon_ref_released;
 };
 
-struct inf_subres_load_session {
-	uint16_t             sessionID;
-	struct inf_devres *devres;
-
-	dma_addr_t lli_addr;
-	size_t lli_size;
-	void *lli_buf;
-
-	int                lli_space_need_wake;
-	wait_queue_head_t  lli_waitq;
-
-	struct list_head lli_space_list;
-	spinlock_t       lock;
-
+struct inf_sync_point {
 	struct list_head node;
+	u32              seq_id;
+	u16              host_sync_id;
 };
 
 int inf_context_create(uint16_t             protocolID,
@@ -164,13 +149,4 @@ struct inf_copy *inf_context_find_and_get_copy(struct inf_context *context, uint
 void destroy_copy_on_create_failed(struct inf_copy *copy);
 int inf_context_find_and_destroy_copy(struct inf_context *context,
 				      uint16_t            copyID);
-
-struct inf_subres_load_session *inf_context_create_subres_load_session(struct inf_context *context,
-								       struct inf_devres *devres,
-								       union h2c_SubResourceLoadCreateRemoveSession *cmd);
-
-struct inf_subres_load_session *inf_context_get_subres_load_session(struct inf_context *context, uint16_t sessionID);
-
-void inf_context_remove_subres_load_session(struct inf_context *context, uint16_t sessionID);
-
 #endif

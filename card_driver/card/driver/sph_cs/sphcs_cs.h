@@ -56,6 +56,9 @@ struct sphcs {
 	size_t inbound_mem_size;
 	dma_addr_t inbound_mem_dma_addr;
 
+	dma_addr_t host_sys_info_dma_addr;
+	bool       host_sys_info_dma_addr_valid;
+
 	spinlock_t lock_bh;
 	DECLARE_HASHTABLE(cmd_chan_hash, 6);
 
@@ -70,18 +73,20 @@ extern struct sphcs *g_the_sphcs;   /* a  global pointer to the sphcs object - c
 typedef int (*sphcs_command_handler)(struct sphcs *sphcs, u64 *msg, u32 size);
 typedef int (*sphcs_chan_command_handler)(struct sphcs *sphcs, struct sphcs_cmd_chan *chan, u64 *msg, u32 size);
 
-void sphcs_send_event_report(struct sphcs *sphcs,
-			      uint16_t      eventCode,
-			      uint16_t      eventVal,
-			      int           contextID,
-			      int           objID);
+void sphcs_send_event_report(struct sphcs			*sphcs,
+			      uint16_t				eventCode,
+			      uint16_t				eventVal,
+			      struct msg_scheduler_queue	*respq,
+			      int				contextID,
+			      int				objID);
 
-void sphcs_send_event_report_ext(struct sphcs *sphcs,
-				 uint16_t eventCode,
-				 uint16_t eventVal,
-				 int contextID,
-				 int objID_1,
-				 int objID_2);
+void sphcs_send_event_report_ext(struct sphcs			*sphcs,
+				 uint16_t			eventCode,
+				 uint16_t			eventVal,
+				 struct msg_scheduler_queue	*respq,
+				 int				contextID,
+				 int				objID_1,
+				 int				objID_2);
 
 struct msg_scheduler_queue *sphcs_create_response_queue(struct sphcs *sphcs,
 							       u32 weight);

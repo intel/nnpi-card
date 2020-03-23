@@ -53,7 +53,7 @@
 #define EVENT_CARD_FATAL_START        112
 #define EVENT_CARD_FATAL_DRV_START    120
 
-#define is_context_fatal_event(e)  ((e) >= EVENT_CONTEXT_FATAL_START && e < EVENT_CARD_FATAL_START)
+#define is_context_fatal_event(e)  ((e) >= EVENT_CONTEXT_FATAL_START && (e) < EVENT_CARD_FATAL_START)
 #define is_card_fatal_event(e)     ((e) >= EVENT_CARD_FATAL_START)
 #define is_card_fatal_drv_event(e)     ((e) >= EVENT_CARD_FATAL_DRV_START)
 

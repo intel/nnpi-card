@@ -62,7 +62,7 @@ int inf_d2d_copy_create(uint16_t protocolCopyID,
 int inf_copy_create(uint16_t            protocolCopyID,
 		    struct inf_context *context,
 		    struct inf_devres  *devres,
-		    uint64_t            hostDmaAddr,
+		    uint16_t            hostres_map_id,
 		    bool                card2Host,
 		    bool                subres_copy,
 		    struct inf_copy   **out_copy);

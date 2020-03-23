@@ -39,9 +39,6 @@ struct inf_cmd_list {
 	// list of devres ids acccessed by this command list.
 	// Used for devres_group optimization
 	struct list_head     devres_id_ranges;
-
-	/* used only for "UMD1" implementation - remove once moved to UMD2 */
-	struct sphcs_dma_desc h2c_dma_desc;
 };
 
 int inf_cmd_create(uint16_t              protocolID,

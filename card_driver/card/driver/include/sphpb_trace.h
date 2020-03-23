@@ -21,8 +21,8 @@
 #ifdef TRACE
 #define DO_TRACE(x) (x)
 #define DO_TRACE_IF(cond, x) do {\
-	if (cond) \
-		x; \
+	if (cond) {\
+		x; } \
 	} while (0)
 #else
 #define DO_TRACE(x)

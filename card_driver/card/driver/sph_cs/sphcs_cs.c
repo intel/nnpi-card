@@ -12,7 +12,7 @@
 #include "ipc_chan_protocol.h"
 #ifdef ULT
 #include "sphcs_ult.h"
-#include "ipc_protocol_ult.h"
+#include "ipc_chan_protocol_ult.h"
 #endif
 #include "sph_log.h"
 #include "sphcs_genmsg.h"
@@ -70,12 +70,14 @@ static void *p2p_heap_handle;
 void sphcs_send_event_report(struct sphcs *sphcs,
 			     uint16_t eventCode,
 			     uint16_t eventVal,
+			     struct msg_scheduler_queue *respq,
 			     int contextID,
 			     int objID)
 {
 	sphcs_send_event_report_ext(sphcs,
 				    eventCode,
 				    eventVal,
+				    respq,
 				    contextID,
 				    objID,
 				    -1);
@@ -84,6 +86,7 @@ void sphcs_send_event_report(struct sphcs *sphcs,
 void sphcs_send_event_report_ext(struct sphcs *sphcs,
 				 uint16_t eventCode,
 				 uint16_t eventVal,
+				 struct msg_scheduler_queue *respq,
 				 int contextID,
 				 int objID_1,
 				 int objID_2)
@@ -109,7 +112,10 @@ void sphcs_send_event_report_ext(struct sphcs *sphcs,
 
 	log_c2h_event("Sending event", &event);
 
-	sphcs_msg_scheduler_queue_add_msg(sphcs->public_respq, &event.value, 1);
+	if (respq)
+		sphcs_msg_scheduler_queue_add_msg(respq, &event.value, 1);
+	else
+		sphcs_msg_scheduler_queue_add_msg(sphcs->public_respq, &event.value, 1);
 }
 
 static void IPC_OPCODE_HANDLER(QUERY_VERSION)(
@@ -118,6 +124,7 @@ static void IPC_OPCODE_HANDLER(QUERY_VERSION)(
 {
 	union c2h_QueryVersionReplyMsg replyMsg;
 
+	replyMsg.value = 0;
 	// respond with the driver and protocol versions
 	replyMsg.opcode = SPH_IPC_C2H_OP_QUERY_VERSION_REPLY;
 	replyMsg.driverVersion = SPH_IPC_PROTOCOL_VERSION;
@@ -134,6 +141,21 @@ static void IPC_OPCODE_HANDLER(SETUP_CRASH_DUMP)(
 	sph_log_info(CREATE_COMMAND_LOG, "Setup Crash dump received\n");
 
 	sphcs_crash_dump_setup_host_addr(SPH_IPC_DMA_PFN_TO_ADDR(setup_msg->dma_addr));
+
+}
+
+static void IPC_OPCODE_HANDLER(SETUP_SYS_INFO_PAGE)(
+			struct sphcs *sphcs,
+			union h2c_setup_sys_info_page *msg)
+{
+
+	sph_log_info(CREATE_COMMAND_LOG, "Setup sys info page received\n");
+
+	sphcs->host_sys_info_dma_addr = SPH_IPC_DMA_PFN_TO_ADDR(msg->dma_addr);
+	sphcs->host_sys_info_dma_addr_valid = true;
+
+	/* send host sys_info packet, if available */
+	sphcs_maint_send_sys_info();
 
 }
 
@@ -255,6 +277,7 @@ static void channel_op_work_handler(struct work_struct *work)
 		sphcs_send_event_report(sphcs,
 					SPH_IPC_CREATE_CHANNEL_SUCCESS,
 					0,
+					NULL,
 					-1,
 					op->cmd.protocolID);
 	}
@@ -262,7 +285,7 @@ static void channel_op_work_handler(struct work_struct *work)
 	goto done;
 
 send_error:
-	sphcs_send_event_report(sphcs, event, val, -1, op->cmd.protocolID);
+	sphcs_send_event_report(sphcs, event, val, NULL, -1, op->cmd.protocolID);
 done:
 	kfree(op);
 }
@@ -283,6 +306,7 @@ static void IPC_OPCODE_HANDLER(CHANNEL_OP)(
 		sphcs_send_event_report(sphcs,
 					event,
 					SPH_IPC_NO_MEMORY,
+					NULL,
 					-1,
 					cmd->protocolID);
 		return;
@@ -291,31 +315,6 @@ static void IPC_OPCODE_HANDLER(CHANNEL_OP)(
 	work->cmd.value = cmd->value;
 	INIT_WORK(&work->work, channel_op_work_handler);
 	queue_work(sphcs->wq, &work->work);
-}
-
-/*
- * process_bios_message - process a message from HWQ coming from bios.
- * bios protocol may have different size messages.
- * This function should not normally be called since the host should not
- * communicate with bios when the card driver is already up. Just make sure to
- * remove the message from queue if it does been sent.
- * avail_size is the number of 64-bit units available from the msg pointer
- * if the message size is larger, the function should return 0 and do not process
- * the message, otherwise the function should process the message and return the
- * actual processed message size (in 64-bit units).
- */
-static int process_bios_message(union sph_bios_ipc_header *msg,
-				uint32_t                   avail_size)
-{
-	int msg_size = ((msg->size + 7) / 8) + 1; /* size field does not include header */
-
-	if (msg_size > avail_size)
-		return 0;
-
-	sph_log_err(CREATE_COMMAND_LOG, "Got Bios protocol H2C message type 0x%x (header=0x%llx)\n",
-		    msg->msgType, msg->value);
-
-	return msg_size;
 }
 
 /*
@@ -329,7 +328,7 @@ static int sphcs_process_messages(struct sphcs *sphcs, u64 *hw_msg, u32 hw_size)
 {
 	static u64 s_msgs[32];
 	static u64 s_num_msgs = 0;
-	int j = 0;
+	u32 j = 0;
 	u64 *msg;
 	u32 size;
 	u64 start_time;
@@ -349,6 +348,8 @@ static int sphcs_process_messages(struct sphcs *sphcs, u64 *hw_msg, u32 hw_size)
 	 */
 	if (s_num_msgs > 0) {
 		SPH_ASSERT( hw_size + s_num_msgs < 32 );
+		if (unlikely(hw_size + s_num_msgs >= 32))
+			return 0; // prevent buffer overrun
 
 		memcpy(&s_msgs[s_num_msgs], hw_msg, hw_size*sizeof(u64));
 		msg = s_msgs;
@@ -364,7 +365,7 @@ static int sphcs_process_messages(struct sphcs *sphcs, u64 *hw_msg, u32 hw_size)
 	 */
 	do {
 		int opCode = ((union h2c_QueryVersionMsg *)&msg[j])->opcode;
-		int msg_size = 0;
+		u32 msg_size = 0;
 		int partial_msg = 0;
 
 		/* dispatch the message request */
@@ -374,7 +375,7 @@ static int sphcs_process_messages(struct sphcs *sphcs, u64 *hw_msg, u32 hw_size)
 			if (msg_size > (size-j))                                     \
 				partial_msg = 1;                                     \
 			else {                                                        \
-				DO_TRACE(trace_ipc(0, &msg[j], msg_size));           \
+				DO_TRACE(trace__ipc(0, &msg[j], msg_size));           \
 				CALL_IPC_OPCODE_HANDLER(name, type, sphcs, &msg[j]); \
 			} \
 			break;
@@ -383,17 +384,6 @@ static int sphcs_process_messages(struct sphcs *sphcs, u64 *hw_msg, u32 hw_size)
 		switch(opCode) {
 		#include "ipc_h2c_opcodes.h"
 		#include "ipc_chan_h2c_opcodes.h"
-		case SPH_IPC_H2C_OP_BIOS_PROTOCOL:
-			msg_size = process_bios_message((union sph_bios_ipc_header *)&msg[j], (size-j));
-			partial_msg = (msg_size == 0);
-			#ifdef ULT
-			if (partial_msg == 0) {
-				DO_TRACE(trace_ipc(0, &msg[j], msg_size));
-				sphcs_ult_process_bios_message(sphcs, &msg[j]);
-			}
-			#endif
-			break;
-
 		default:
 			/* Should not happen! */
 			SPH_ASSERT(0);
@@ -433,7 +423,7 @@ static int respq_sched_handler(u64 *msg, int size, void *hw_data)
 	struct sphcs *sphcs = (struct sphcs *)hw_data;
 	int ret;
 
-	DO_TRACE(trace_ipc(1, msg, size));
+	DO_TRACE(trace__ipc(1, msg, size));
 
 	ret = sphcs->hw_ops->write_mesg(sphcs->hw_handle, msg, size);
 
@@ -503,13 +493,6 @@ static int handle_mce_event(struct notifier_block *nb, unsigned long val, void *
 				     mce->misc);
 			eventCode = SPH_IPC_ERROR_MCE_UNCORRECTABLE_FATAL;
 
-			if (is_ecc_err)
-				SPH_SW_COUNTER_ATOMIC_INC(g_sph_sw_counters,
-							  SPHCS_SW_COUNTERS_ECC_UNCORRECTABLE_ERROR_FATAL);
-			else
-				SPH_SW_COUNTER_ATOMIC_INC(g_sph_sw_counters,
-							  SPHCS_SW_COUNTERS_MCE_UNCORRECTABLE_ERROR_FATAL);
-
 			/* report event to host */
 			event.value = 0;
 			event.opcode = SPH_IPC_C2H_OP_EVENT_REPORT;
@@ -559,7 +542,7 @@ static int handle_mce_event(struct notifier_block *nb, unsigned long val, void *
 		eventCode = SPH_IPC_ERROR_MCE_CORRECTABLE;
 
 		/* report event to host */
-		sphcs_send_event_report(g_the_sphcs, eventCode, eventVal, -1, -1);
+		sphcs_send_event_report(g_the_sphcs, eventCode, eventVal, NULL, -1, -1);
 	}
 
 	return NOTIFY_OK;
@@ -890,18 +873,13 @@ static int sphcs_create_sphcs(void                           *hw_handle,
 		goto free_respq_sched;
 	}
 
-	if (sphcs_create_response_page_pool(sphcs->public_respq, 0) < 0) {
-		sph_log_err(START_UP_LOG, "Failed to create main response pool\n");
-		goto free_public_respq;
-	}
-
 	sphcs->net_respq = sphcs_create_response_queue(sphcs, 1);
 	if (!sphcs->net_respq) {
 		sph_log_err(START_UP_LOG, "Failed to create net response q\n");
 		goto free_public_respq;
 	}
 
-	if (sphcs_create_response_page_pool(sphcs->net_respq, 1) < 0) {
+	if (sphcs_create_response_page_pool(sphcs->net_respq, 0) < 0) {
 		sph_log_err(START_UP_LOG, "Failed to create net response pool\n");
 		goto free_net_respq;
 	}
@@ -919,7 +897,7 @@ static int sphcs_create_sphcs(void                           *hw_handle,
 				     sphcs->debugfs_dir,
 				     "dma_sched");
 
-	sphcs->wq = create_workqueue("sphcs_wq");
+	sphcs->wq = alloc_workqueue("sphcs_wq", WQ_UNBOUND, 0);
 	if (!sphcs->wq) {
 		sph_log_err(START_UP_LOG, "Failed to initialize workqueue\n");
 		goto free_sched;
@@ -1052,7 +1030,6 @@ free_counters_info_global:
 free_inference:
 	inference_fini(sphcs);
 free_sched:
-	sphcs_response_pool_destroy_page_pool(1);
 	sphcs_dma_sched_destroy(sphcs->dmaSched);
 free_net_respq:
 	sphcs_response_pool_destroy_page_pool(0);
@@ -1075,10 +1052,7 @@ free_mem:
 
 static void sphcs_clean_host_resp_pages_list(struct sphcs *sphcs)
 {
-	int i;
-
-	for (i = 0; i < 2; i++)
-		sphcs_response_pool_clean_page_pool(i);
+	sphcs_response_pool_clean_page_pool(0);
 }
 
 void sphcs_host_doorbell_value_changed(struct sphcs *sphcs,
@@ -1101,6 +1075,7 @@ void sphcs_host_doorbell_value_changed(struct sphcs *sphcs,
 		sphcs_clean_host_resp_pages_list(sphcs);
 
 		sphcs_crash_dump_setup_host_addr(0);
+		sphcs->host_sys_info_dma_addr_valid = false;
 	} else if (!sphcs->host_connected &&
 		   host_drv_state == SPH_HOST_DRV_STATE_READY) {
 
@@ -1111,9 +1086,6 @@ void sphcs_host_doorbell_value_changed(struct sphcs *sphcs,
 		 * as we probably allowed for bus master operations
 		 */
 		sphcs->hw_ops->dma.init_dma_engine(sphcs->hw_handle);
-
-		/* send host sys_info packet, if available */
-		sphcs_maint_send_sys_info();
 	}
 }
 
@@ -1147,7 +1119,6 @@ static int sphcs_destroy_sphcs(struct sphcs *sphcs)
 	sph_remove_sw_counters_info_node(g_hSwCountersInfo_context);
 	sph_remove_sw_counters_info_node(g_hSwCountersInfo_global);
 	sphcs_response_pool_destroy_page_pool(0);
-	sphcs_response_pool_destroy_page_pool(1);
 	sphcs_deinit_th_driver();
 	g_the_sphcs = NULL;
 	debugfs_remove_recursive(sphcs->debugfs_dir);

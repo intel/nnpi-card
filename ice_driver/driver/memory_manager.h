@@ -290,15 +290,20 @@ void print_cur_page_table(os_domain_handle hdom);
 
 cve_virtual_address_t ice_mm_get_iova(struct cve_ntw_buffer *buffer);
 
-int ice_mm_domain_copy(os_domain_handle *hdom_src,
-	void **hdom_inf,
-	u32 domain_array_size);
-
 void ice_mm_domain_destroy(void *hdom_inf,
 	u32 domain_array_size);
 
 int ice_mm_process_inf_pp_arr(struct ice_infer *inf);
 int ice_mm_patch_inf_pp_arr(struct ice_infer *inf);
+
+void ice_mm_get_buf_sizes(cve_mm_allocation_t halloc,
+	u64 *size_bytes, u32 *page_size, u8 *pid);
+
+void ice_mm_transfer_shared_surface(
+	struct cve_ntw_buffer *ntw_buf,
+	struct cve_inf_buffer *inf_buf);
+
+void ice_mm_use_extended_iceva(struct cve_ntw_buffer *ntw_buf);
 
 #endif /* _MEMORY_MANAMGER_H_ */
 

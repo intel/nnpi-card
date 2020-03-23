@@ -1420,6 +1420,22 @@ int cve_fw_init(void)
 		cve_os_log(CVE_LOGLEVEL_INFO, "A STEP ENABLED\n");
 	}
 
+	/* Check if the worst case scenario length is not exceeding
+	 * MAX_NAME_LEN
+	 */
+	if (strnlen(workspace, MAX_NAME_LEN) + strlen(FW_PACK_DIR_BASE)
+		+ strlen(RTL_A_STEP_FW_BASE_PACKAGE_DIR)
+		+ strlen("/rtl/release") > MAX_NAME_LEN - 1) {
+
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+			"workspace is too long(%d), should be under %d\n",
+			strnlen(workspace, MAX_NAME_LEN),
+			MAX_NAME_LEN - 1 - strlen(FW_PACK_DIR_BASE)
+			- strlen(RTL_A_STEP_FW_BASE_PACKAGE_DIR)
+			- strlen("/rtl/release"));
+		goto out;
+	}
+
 	if (fw_dir_path || fw_selection || stepping) {
 		if (fw_selection) {
 

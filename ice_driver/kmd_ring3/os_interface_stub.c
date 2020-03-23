@@ -67,7 +67,7 @@ u32 core_mask;
 u32 disable_clk_gating;
 bool print_debug;
 static u32 icemask;
-u32 block_mmu;
+u32 block_mmu = 1;
 struct config cfg_default;
 u32 pin_atu = 1;
 
@@ -104,7 +104,7 @@ static pthread_mutex_t m_mutex;
 struct task current_task = {NULL};
 struct task *current = &current_task;
 
-void * kzalloc(uint32_t size_bytes, int flags) {
+void * kzalloc(size_t size_bytes, int flags) {
 	uint32_t * p;
 	int retval = OS_ALLOC_ZERO(size_bytes + sizeof(uint32_t), (void**) &p);
 	if (retval != 0)
@@ -488,6 +488,14 @@ int cve_os_interface_init(void)
 		cve_os_log(CVE_LOGLEVEL_ERROR, "No Active ICE\n");
 		goto out;
 	}
+
+	core_mask |= (cfg_default.mmio_prog_cores_control_asip0_runstall_mask |
+		cfg_default.mmio_prog_cores_control_asip1_runstall_mask);
+
+	cve_os_log(CVE_LOGLEVEL_DEBUG,
+		"DISABLE_EMBCB=%u, CORE_MASK=0x%x\n",
+		disable_embcb, core_mask);
+
 	pe_reg_value = cve_os_read_idc_mmio(
 		&idc_os_device->idc_dev.cve_dev[0],
 			cfg_default.bar0_mem_icepe_offset);
@@ -713,7 +721,7 @@ int cve_os_write_user_memory(void *base_address, uint32_t size_bytes, void *kern
 	return 0;
 }
 
-int __cve_os_malloc_zero(uint32_t size_bytes, void ** out_ptr)
+int __cve_os_malloc_zero(size_t size_bytes, void ** out_ptr)
 {
 	uint32_t sb = round_up_os_pagesize(size_bytes);
 
@@ -912,6 +920,14 @@ int cve_ioctl_misc(int fd, int request, struct cve_ioctl_param *param)
 				&param->create_infer.infer,
 				(uint64_t *)&param->create_infer.infer.infer_id);
 		break;
+	case CVE_IOCTL_REPORT_SHARED_SURFACES:
+		cve_os_log(CVE_LOGLEVEL_DEBUG,
+				"Simulation mode - CVE_IOCTL_REPORT_SHARED_SURFACES\n");
+		retval = cve_ds_handle_shared_surfaces(context_pid,
+				param->report_ss.contextid,
+				param->report_ss.networkid,
+				&param->report_ss.ss_desc);
+		break;
 	case CVE_IOCTL_EXECUTE_INFER:
 		cve_os_log(CVE_LOGLEVEL_DEBUG,
 				"Simulation mode - CVE_IOCTL_EXECUTE_INFER\n");
@@ -977,7 +993,7 @@ int cve_ioctl_misc(int fd, int request, struct cve_ioctl_param *param)
 		cve_os_log(CVE_LOGLEVEL_DEBUG,
 				"Simulation mode - CVE_IOCTL_GET_METADATA\n");
 		retval = cve_ds_get_metadata(
-				&param->get_metadata.icemask);
+				&param->get_metadata);
 		break;
 	case ICE_IOCTL_WAIT_FOR_DEBUG_EVENT:
 		cve_os_log(CVE_LOGLEVEL_DEBUG,

@@ -239,7 +239,7 @@ union h2c_ChanSync {
 
 	u64 value;
 };
-CHECK_MESSAGE_SIZE(union h2c_Sync, 1);
+CHECK_MESSAGE_SIZE(union h2c_ChanSync, 1);
 
 union h2c_ChanInferenceNetworkSetProperty {
 	struct {
@@ -474,6 +474,20 @@ union h2c_ChanUpdatePeerDev {
 	u64 value[3];
 };
 CHECK_MESSAGE_SIZE(union h2c_ChanUpdatePeerDev, 3);
+
+union h2c_ChanTraceUserData {
+	struct {
+		u64 opcode		: 6;  /* SPH_IPC_H2C_OP_CHAN_TRACE_USER_DATA */
+		u64 chanID		: SPH_IPC_CHANNEL_BITS;
+		u64 key			: 16;
+		u64 val1		: SPH_IPC_INF_DEVNET_BITS;
+		u64 val2		: SPH_IPC_INF_DEVNET_BITS;
+
+		u64 user_data;
+	};
+	u64 value[2];
+};
+CHECK_MESSAGE_SIZE(union h2c_ChanTraceUserData, 2);
 
 #ifdef ULT
 union ult2_message {
