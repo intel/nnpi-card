@@ -12,18 +12,11 @@
 #include "inf_devnet.h"
 #include "inf_copy.h"
 #include "ioctl_inf.h"
-#include "inf_subresload.h"
 #include "inf_req.h"
 #include "sph_time.h"
 #include "periodic_timer.h"
 #include "sph_error.h"
 #include "sphcs_inf.h"
-
-struct inf_sync_point {
-	struct list_head node;
-	u32              seq_id;
-	u16              host_sync_id;
-};
 
 static void update_sw_counters(void *ctx)
 {
@@ -91,7 +84,6 @@ int inf_context_create(uint16_t             protocolID,
 	context->daemon_ref_released = true;
 	INIT_LIST_HEAD(&context->sync_points);
 	INIT_LIST_HEAD(&context->active_seq_list);
-	INIT_LIST_HEAD(&context->subresload_sessions);
 	init_waitqueue_head(&context->sched_waitq);
 
 	inf_exec_error_list_init(&context->error_list, context);
@@ -113,14 +105,6 @@ int inf_context_create(uint16_t             protocolID,
 		goto free_counters;
 	}
 
-	if (!context->chan) {
-		context->wq = create_singlethread_workqueue("sph_ctx_wq");
-		if (unlikely(context->wq == NULL)) {
-			ret = -ENOMEM;
-			goto freeCb;
-		}
-	}
-
 	SPH_SPIN_LOCK_BH(&g_the_sphcs->inf_data->lock_bh);
 	hash_add(g_the_sphcs->inf_data->context_hash,
 		 &context->hash_node,
@@ -131,8 +115,6 @@ int inf_context_create(uint16_t             protocolID,
 	SPH_SW_COUNTER_ATOMIC_INC(g_sph_sw_counters, SPHCS_SW_COUNTERS_INFERENCE_NUM_CONTEXTS);
 	return 0;
 
-freeCb:
-	periodic_timer_remove_data(&g_the_sphcs->periodic_timer, context->counters_cb_data_handler);
 free_counters:
 	sph_remove_sw_counters_values_node(context->sw_counters);
 free_kmem_cache:
@@ -201,20 +183,13 @@ static void release_context(struct kref *kref)
 	struct inf_copy *copy;
 	struct inf_sync_point *sync_point;
 	struct inf_sync_point *n;
-	struct inf_subres_load_session *subresload_sessions;
-	struct inf_subres_load_session *m;
 	int i;
 
 	SPH_SPIN_LOCK_BH(&g_the_sphcs->inf_data->lock_bh);
 	hash_del(&context->hash_node);
 	SPH_SPIN_UNLOCK_BH(&g_the_sphcs->inf_data->lock_bh);
 
-	if (!context->chan) {
-		drain_workqueue(context->wq);
-		destroy_workqueue(context->wq);
-	} else {
-		context->chan->destroy_cb = NULL;
-	}
+	context->chan->destroy_cb = NULL;
 
 	inf_cmd_queue_fini(&context->cmdq);
 
@@ -229,10 +204,6 @@ static void release_context(struct kref *kref)
 	list_for_each_entry_safe(sync_point, n, &context->sync_points, node) {
 		list_del(&sync_point->node);
 		kfree(sync_point);
-	}
-	list_for_each_entry_safe(subresload_sessions, m, &context->subresload_sessions, node) {
-		list_del(&subresload_sessions->node);
-		kfree(subresload_sessions);
 	}
 	SPH_SW_COUNTER_ATOMIC_DEC(g_sph_sw_counters, SPHCS_SW_COUNTERS_INFERENCE_NUM_CONTEXTS);
 
@@ -250,11 +221,11 @@ static void release_context(struct kref *kref)
 		sphcs_send_event_report(g_the_sphcs,
 					SPH_IPC_CONTEXT_DESTROYED,
 					0,
+					context->chan->respq,
 					context->protocolID,
 					-1);
 
-	if (context->chan != NULL)
-		sphcs_cmd_chan_put(context->chan);
+	sphcs_cmd_chan_put(context->chan);
 
 	kfree(context);
 }
@@ -400,6 +371,7 @@ static void evaluate_sync_points(struct inf_context *context)
 {
 	struct inf_sync_point *sync_point;
 	struct inf_req_sequence *oldest;
+	union c2h_ChanSyncDone msg;
 
 	oldest = list_first_entry_or_null(&context->active_seq_list,
 					  struct inf_req_sequence,
@@ -413,27 +385,13 @@ static void evaluate_sync_points(struct inf_context *context)
 		if (oldest != NULL && sync_point->seq_id >= oldest->seq_id)
 			break; /* no need to test rest of sync points */
 
-		if (context->chan == NULL) {
-			union c2h_SyncDone msg;
+		msg.value = 0;
+		msg.opcode = SPH_IPC_C2H_OP_CHAN_SYNC_DONE;
+		msg.chanID = context->chan->protocolID;
+		msg.syncSeq = sync_point->host_sync_id;
 
-			msg.value = 0;
-			msg.opcode = SPH_IPC_C2H_OP_SYNC_DONE;
-			msg.contextID = context->protocolID;
-			msg.syncSeq = sync_point->host_sync_id;
-
-			sphcs_msg_scheduler_queue_add_msg(g_the_sphcs->public_respq,
-							  &msg.value, 1);
-		} else {
-			union c2h_ChanSyncDone msg;
-
-			msg.value = 0;
-			msg.opcode = SPH_IPC_C2H_OP_CHAN_SYNC_DONE;
-			msg.chanID = context->chan->protocolID;
-			msg.syncSeq = sync_point->host_sync_id;
-
-			sphcs_msg_scheduler_queue_add_msg(context->chan->respq,
-							  &msg.value, 1);
-		}
+		sphcs_msg_scheduler_queue_add_msg(context->chan->respq,
+						  &msg.value, 1);
 
 		list_del(&sync_point->node);
 		kfree(sync_point);
@@ -651,6 +609,7 @@ void inf_context_add_sync_point(struct inf_context *context,
 		sphcs_send_event_report(g_the_sphcs,
 					SPH_IPC_CREATE_SYNC_FAILED,
 					SPH_IPC_NO_MEMORY,
+					context->chan->respq,
 					context->protocolID,
 					host_sync_id);
 		return;
@@ -1014,85 +973,3 @@ int inf_context_find_and_destroy_copy(struct inf_context *context,
 	return 0;
 }
 
-static struct inf_subres_load_session *create_subres_load_session(struct inf_context *context, uint16_t sessionID, struct inf_devres *devres)
-{
-	struct inf_subres_load_session *session;
-
-	session = kzalloc(sizeof(*session), GFP_KERNEL);
-	if (!session) {
-		sph_log_err(CREATE_COMMAND_LOG, "Failed to create subres_load session object\n");
-		return NULL;
-	}
-
-	memset(session, 0, sizeof(*session));
-	session->sessionID = sessionID;
-	session->devres = devres;
-	session->lli_size = SPH_PAGE_SIZE;
-	session->lli_buf = dma_alloc_coherent(g_the_sphcs->hw_device, session->lli_size, &session->lli_addr, GFP_KERNEL);
-	INIT_LIST_HEAD(&session->lli_space_list);
-	spin_lock_init(&session->lock);
-	init_waitqueue_head(&session->lli_waitq);
-
-	return session;
-}
-
-struct inf_subres_load_session *inf_context_create_subres_load_session(struct inf_context *context,
-								       struct inf_devres *devres,
-								       union h2c_SubResourceLoadCreateRemoveSession *cmd)
-{
-	struct inf_subres_load_session *session;
-
-	session = inf_context_get_subres_load_session(context, cmd->sessionID);
-	if (session != NULL) {
-		sph_log_err(CREATE_COMMAND_LOG, "WARNING: session id %hu allready exist\n", cmd->sessionID);
-		return session;
-	}
-	session = create_subres_load_session(context, cmd->sessionID, devres);
-
-	SPH_SPIN_LOCK(&context->lock);
-	list_add_tail(&session->node, &context->subresload_sessions);
-	SPH_SPIN_UNLOCK(&context->lock);
-
-	return session;
-}
-
-struct inf_subres_load_session *inf_context_get_subres_load_session(struct inf_context *context, uint16_t sessionID)
-{
-	struct inf_subres_load_session *session;
-
-	SPH_SPIN_LOCK(&context->lock);
-	list_for_each_entry(session, &context->subresload_sessions, node) {
-		if (session->sessionID == sessionID)
-			break;
-	}
-	// Check if nothing found
-	if (&session->node == &context->subresload_sessions)
-		session = NULL;
-	SPH_SPIN_UNLOCK(&context->lock);
-
-	return session;
-}
-
-static void delete_session(struct inf_subres_load_session *session)
-{
-	//All session delete operations are here
-	inf_subresload_delete_lli_space_list(session);
-	dma_free_coherent(g_the_sphcs->hw_device, session->lli_size, session->lli_buf, session->lli_addr);
-	kfree(session);
-}
-
-void inf_context_remove_subres_load_session(struct inf_context *context, uint16_t sessionID)
-{
-	struct inf_subres_load_session *session = NULL;
-
-	SPH_SPIN_LOCK(&context->lock);
-	list_for_each_entry(session, &context->subresload_sessions, node) {
-		if (session->sessionID == sessionID) {
-			list_del(&session->node);
-			SPH_SPIN_UNLOCK(&context->lock);
-			delete_session(session);
-			return;
-		}
-	}
-	SPH_SPIN_UNLOCK(&context->lock);
-}

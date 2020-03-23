@@ -154,7 +154,7 @@ static int ibecc_error_cb(struct notifier_block *nb, unsigned long action, void 
 	}
 
 	/* context_id is passed as objID in purpose! */
-	sphcs_send_event_report(g_the_sphcs, eventCode, 0, -1, context_id);
+	sphcs_send_event_report(g_the_sphcs, eventCode, 0, NULL, -1, context_id);
 
 	return NOTIFY_OK;
 }

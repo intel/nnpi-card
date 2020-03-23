@@ -211,17 +211,13 @@ int ice_trace_config(struct ice_hw_trace_config *cfg)
 
 	unsigned int i;
 	int ret;
-	u32 obs_sz = 0;
-	u32 cntr_sz = 0;
-	u32 daemon_sz = 0;
+	size_t obs_sz = 0, cntr_sz = 0, daemon_sz = 0;
 	struct ice_observer_config *k_observers = NULL;
 	struct ice_perf_counter_setup *k_counter_setups = NULL;
 	struct ice_register_reader_daemon *k_reg_daemons = NULL;
 	u32 device_mask = 0;
 	u32 dev_index;
-	u32 obs_trunc;
-	u32 cntr_trunc;
-	u32 daemon_trunc;
+	u32 obs_trunc, cntr_trunc, daemon_trunc;
 
 	FUNC_ENTER();
 
@@ -253,7 +249,7 @@ int ice_trace_config(struct ice_hw_trace_config *cfg)
 		ret = OS_ALLOC_ZERO(obs_sz, (void **)&k_observers);
 		if (ret < 0) {
 			cve_os_log(CVE_LOGLEVEL_ERROR,
-			     "observer alloc failed:%d SZ:%d\n", ret, obs_sz);
+			     "observer alloc failed:%d SZ:%lu\n", ret, obs_sz);
 			goto unlock;
 		}
 		ret = cve_os_read_user_memory(cfg->observer_list,
@@ -308,7 +304,7 @@ int ice_trace_config(struct ice_hw_trace_config *cfg)
 		ret = OS_ALLOC_ZERO(cntr_sz, (void **)&k_counter_setups);
 		if (ret < 0) {
 			cve_os_log(CVE_LOGLEVEL_ERROR,
-			  "perf cntr alloc failed:%d SZ:%d\n", ret, cntr_sz);
+			  "perf cntr alloc failed:%d SZ:%lu\n", ret, cntr_sz);
 			goto obs_free;
 		}
 		ret = cve_os_read_user_memory(cfg->counter_setup_list,
@@ -349,7 +345,7 @@ int ice_trace_config(struct ice_hw_trace_config *cfg)
 		ret = OS_ALLOC_ZERO(daemon_sz, (void **)&k_reg_daemons);
 		if (ret < 0) {
 			cve_os_log(CVE_LOGLEVEL_ERROR,
-			   "daemons alloc failed:%d SZ:%d\n", ret, daemon_sz);
+			   "daemons alloc failed:%d SZ:%lu\n", ret, daemon_sz);
 			goto cntr_free;
 		}
 		ret = cve_os_read_user_memory(cfg->reg_daemon_list,

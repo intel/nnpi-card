@@ -21,7 +21,7 @@
 
 #define SPH_COUNTER_SIZE			(sizeof(u64))
 
-#define SW_COUNTERS_TO_INTERNAL(a) ((struct sph_internal_sw_counters *)(((char *)a) - offsetof(struct sph_internal_sw_counters, sw_counters)))
+#define SW_COUNTERS_TO_INTERNAL(a) ((struct sph_internal_sw_counters *)(((char *)(a)) - offsetof(struct sph_internal_sw_counters, sw_counters)))
 
 #define MAX_STALE_ATTR_NAME_LEN    32
 
@@ -99,6 +99,8 @@ struct sph_internal_sw_counters {
 	struct sph_internal_sw_counters			*parent;
 	struct gen_sync_attr			        *gen_sync_attr;
 };
+
+static DEFINE_MUTEX(values_tree_sync_mutex);
 
 /* create counters description buffer object */
 int create_sw_counters_description_data(const  struct sph_sw_counters_set *counters_set,
@@ -420,7 +422,6 @@ static void move_to_stale_list(struct gen_sync_attr                 *gen_sync,
 
 fail_create:
 	kobject_put(stale_node->kobj);
-	kfree(stale_node);
 fail_create_list:
 	while (!list_empty(&stale_node->kobject_list)) {
 		kobj_node = list_first_entry(&stale_node->kobject_list, struct kobj_node, node);
@@ -428,6 +429,7 @@ fail_create_list:
 		kobject_put(kobj_node->kobj);
 		kfree(kobj_node);
 	}
+	kfree(stale_node);
 fail_alloc:
 	sph_log_err(GENERAL_LOG, "Failed to create stale attr, removing object!!\n");
 	release_bin_file(kobj, attr);
@@ -475,8 +477,7 @@ static int create_group_files(struct kobject *kobj,
 			      u32 *buffer)
 {
 	int ret;
-	int i;
-	int j;
+	u32 i, j;
 	const u32 groups_count = sw_counters->counters_set->groups_count;
 
 	sw_counters->groups_kobj = kobject_create_and_add("groups", kobj);
@@ -518,7 +519,7 @@ failed_to_allocate_array:
 
 static void remove_group_files(struct sph_internal_sw_counters *sw_counters)
 {
-	int i;
+	u32 i;
 
 	if (sw_counters->groups_kobj == NULL)
 		return;
@@ -533,6 +534,8 @@ static void remove_group_files(struct sph_internal_sw_counters *sw_counters)
 
 static void client_refresh_dirty_updated(struct gen_sync_attr *gen_sync)
 {
+	mutex_lock(&values_tree_sync_mutex);
+
 	if (list_empty(&gen_sync->sync_clients)) {
 		remove_stale_bin_files(gen_sync, 0, true);
 		gen_sync->last_remove_dirty_val = 0;
@@ -552,6 +555,8 @@ static void client_refresh_dirty_updated(struct gen_sync_attr *gen_sync)
 			gen_sync->last_remove_dirty_val = min_dirty_val;
 		}
 	}
+
+	mutex_unlock(&values_tree_sync_mutex);
 }
 
 static int gen_sync_release(struct inode *inode, struct file *f)
@@ -878,12 +883,17 @@ int sph_create_sw_counters_values_node(void *hInfoNode,
 	struct bin_stale_node *stale_node = NULL;
 	bool   dir_exist = false;
 
-	u32 counters_size = sw_counters_info->counters_set->counters_count * SPH_COUNTER_SIZE;
+	u32 counters_size;
 	u32 n;
+
+	mutex_lock(&values_tree_sync_mutex);
+
+	counters_size = sw_counters_info->counters_set->counters_count * SPH_COUNTER_SIZE;
 
 	sw_counters_values = kzalloc(sizeof(*sw_counters_values), GFP_KERNEL);
 	if (!sw_counters_values) {
 		sph_log_err(GENERAL_LOG, "unable to generate sph_sw_counters_object\n");
+		mutex_unlock(&values_tree_sync_mutex);
 		return -ENOMEM;
 	}
 
@@ -918,8 +928,14 @@ int sph_create_sw_counters_values_node(void *hInfoNode,
 				struct kobj_node *new_kobj = kzalloc(sizeof(*new_kobj), GFP_KERNEL);
 				const char *name = sw_counters_info->counters_set->name;
 
+				if (!new_kobj) {
+					sph_log_err(GENERAL_LOG, "unable to allocate kernel object\n");
+					ret = -ENOMEM;
+					goto cleanup_sw_counters_values;
+				}
 				new_kobj->kobj = kobject_create_and_add(name, kobj);
 				if (!new_kobj->kobj) {
+					kfree(new_kobj);
 					sph_log_err(GENERAL_LOG, "unable to create dirname for counters values - %s\n", name);
 					ret = -ENOMEM;
 					goto cleanup_sw_counters_values;
@@ -1119,6 +1135,7 @@ int sph_create_sw_counters_values_node(void *hInfoNode,
 		sw_counters_values = sw_counters_values->parent;
 	}
 
+	mutex_unlock(&values_tree_sync_mutex);
 
 	return 0;
 
@@ -1147,6 +1164,8 @@ cleanup_sw_counters_values_dir_name:
 cleanup_sw_counters_values:
 	kfree(sw_counters_values);
 
+	mutex_unlock(&values_tree_sync_mutex);
+
 	return ret;
 }
 
@@ -1157,6 +1176,8 @@ int sph_sw_counters_release_values_node(struct sph_internal_sw_counters *sw_coun
 	struct sph_internal_sw_counters *tmp_sw_counters_values = sw_counters_values;
 	struct kobj_node *kobjNode;
 	u64 root_dirty = 0;
+
+	mutex_lock(&values_tree_sync_mutex);
 
 	/* once new object was deleted we will update node to root */
 	while (tmp_sw_counters_values->parent != NULL) {
@@ -1219,6 +1240,8 @@ int sph_sw_counters_release_values_node(struct sph_internal_sw_counters *sw_coun
 	mutex_destroy(&sw_counters_values->list_lock);
 	kfree(sw_counters_values);
 
+	mutex_unlock(&values_tree_sync_mutex);
+
 	return 0;
 
 
@@ -1227,12 +1250,11 @@ int sph_sw_counters_release_values_node(struct sph_internal_sw_counters *sw_coun
 int sph_remove_sw_counters_values_node(struct sph_sw_counters *counters)
 {
 	struct sph_internal_sw_counters *sw_counters_values;
-    int ret;
 
 	sw_counters_values = SW_COUNTERS_TO_INTERNAL(counters);
 
-	ret = sph_sw_counters_release_values_node(sw_counters_values);
+	sph_sw_counters_release_values_node(sw_counters_values);
 
 
-	return ret;
+	return 0;
 }

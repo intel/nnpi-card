@@ -111,12 +111,13 @@ static void cmd_chan_release(struct work_struct *work)
 
 	for (i = 0; i < SPH_IPC_MAX_CHANNEL_RINGBUFS; i++) {
 		sphcs_host_rb_init(&cmd_chan->h2c_rb[i], NULL, 0);
-		sphcs_host_rb_init(&cmd_chan->h2c_rb[i], NULL, 0);
+		sphcs_host_rb_init(&cmd_chan->c2h_rb[i], NULL, 0);
 	}
 
 	sphcs_send_event_report(g_the_sphcs,
 				SPH_IPC_CHANNEL_DESTROYED,
 				0,
+				NULL,
 				-1,
 				cmd_chan->protocolID);
 
@@ -360,6 +361,7 @@ static void rb_hostres_pagetable_complete_cb(void                  *cb_ctx,
 		sphcs_send_event_report_ext(g_the_sphcs,
 					    SPH_IPC_CHANNEL_SET_RB_SUCCESS,
 					    0,
+					    NULL,
 					    -1,
 					    op->cmd.chanID,
 					    op->cmd.rbID);
@@ -367,6 +369,7 @@ static void rb_hostres_pagetable_complete_cb(void                  *cb_ctx,
 		sphcs_send_event_report_ext(g_the_sphcs,
 					    SPH_IPC_CHANNEL_SET_RB_FAILED,
 					    status,
+					    NULL,
 					    -1,
 					    op->cmd.chanID,
 					    op->cmd.rbID);
@@ -395,6 +398,7 @@ static void channel_rb_op_work_handler(struct work_struct *work)
 		sphcs_send_event_report_ext(sphcs,
 					    SPH_IPC_CHANNEL_SET_RB_SUCCESS,
 					    0,
+					    NULL,
 					    -1,
 					    op->cmd.chanID,
 					    op->cmd.rbID);
@@ -406,6 +410,7 @@ static void channel_rb_op_work_handler(struct work_struct *work)
 			sphcs_send_event_report_ext(sphcs,
 						    SPH_IPC_CHANNEL_SET_RB_FAILED,
 						    SPH_IPC_NO_MEMORY,
+						    NULL,
 						    -1,
 						    op->cmd.chanID,
 						    op->cmd.rbID);
@@ -429,6 +434,7 @@ void IPC_OPCODE_HANDLER(CHANNEL_RB_OP)(
 		sphcs_send_event_report_ext(sphcs,
 					    SPH_IPC_CHANNEL_SET_RB_FAILED,
 					    SPH_IPC_NO_SUCH_CHANNEL,
+					    NULL,
 					    -1,
 					    cmd->chanID,
 					    cmd->rbID);
@@ -440,6 +446,7 @@ void IPC_OPCODE_HANDLER(CHANNEL_RB_OP)(
 		sphcs_send_event_report_ext(sphcs,
 					    SPH_IPC_CHANNEL_SET_RB_FAILED,
 					    SPH_IPC_NO_MEMORY,
+					    NULL,
 					    -1,
 					    cmd->chanID,
 					    cmd->rbID);
@@ -451,6 +458,7 @@ void IPC_OPCODE_HANDLER(CHANNEL_RB_OP)(
 		sphcs_send_event_report_ext(sphcs,
 					    SPH_IPC_CHANNEL_SET_RB_FAILED,
 					    SPH_IPC_NO_SUCH_CHANNEL,
+					    NULL,
 					    -1,
 					    cmd->chanID,
 					    cmd->rbID);
@@ -545,6 +553,7 @@ static void hostres_pagetable_complete_cb(void                  *cb_ctx,
 			sphcs_send_event_report_ext(g_the_sphcs,
 						    SPH_IPC_CHANNEL_MAP_HOSTRES_FAILED,
 						    SPH_IPC_NO_MEMORY,
+						    NULL,
 						    -1,
 						    op->cmd.chanID,
 						    op->cmd.hostresID);
@@ -565,6 +574,7 @@ static void hostres_pagetable_complete_cb(void                  *cb_ctx,
 		sphcs_send_event_report_ext(g_the_sphcs,
 					    SPH_IPC_CHANNEL_MAP_HOSTRES_SUCCESS,
 					    0,
+					    NULL,
 					    -1,
 					    op->cmd.chanID,
 					    op->cmd.hostresID);
@@ -572,6 +582,7 @@ static void hostres_pagetable_complete_cb(void                  *cb_ctx,
 		sphcs_send_event_report_ext(g_the_sphcs,
 					    SPH_IPC_CHANNEL_MAP_HOSTRES_FAILED,
 					    status,
+					    NULL,
 					    -1,
 					    op->cmd.chanID,
 					    op->cmd.hostresID);
@@ -597,6 +608,7 @@ static void channel_hostres_op_work_handler(struct work_struct *work)
 			sphcs_send_event_report_ext(sphcs,
 						    SPH_IPC_CHANNEL_UNMAP_HOSTRES_SUCCESS,
 						    0,
+						    NULL,
 						    -1,
 						    op->cmd.chanID,
 						    op->cmd.hostresID);
@@ -604,6 +616,7 @@ static void channel_hostres_op_work_handler(struct work_struct *work)
 			sphcs_send_event_report_ext(sphcs,
 						    SPH_IPC_CHANNEL_UNMAP_HOSTRES_FAILED,
 						    SPH_IPC_NO_SUCH_HOSTRES,
+						    NULL,
 						    -1,
 						    op->cmd.chanID,
 						    op->cmd.hostresID);
@@ -615,6 +628,7 @@ static void channel_hostres_op_work_handler(struct work_struct *work)
 			sphcs_send_event_report_ext(sphcs,
 						    SPH_IPC_CHANNEL_MAP_HOSTRES_FAILED,
 						    SPH_IPC_NO_MEMORY,
+						    NULL,
 						    -1,
 						    op->cmd.chanID,
 						    op->cmd.hostresID);
@@ -640,6 +654,7 @@ void IPC_OPCODE_HANDLER(CHANNEL_HOSTRES_OP)(
 					    cmd->unmap ? SPH_IPC_CHANNEL_UNMAP_HOSTRES_FAILED :
 							 SPH_IPC_CHANNEL_MAP_HOSTRES_FAILED,
 					    SPH_IPC_NO_MEMORY,
+					    NULL,
 					    -1,
 					    cmd->chanID,
 					    cmd->hostresID);
@@ -652,6 +667,7 @@ void IPC_OPCODE_HANDLER(CHANNEL_HOSTRES_OP)(
 					    cmd->unmap ? SPH_IPC_CHANNEL_UNMAP_HOSTRES_FAILED :
 							 SPH_IPC_CHANNEL_MAP_HOSTRES_FAILED,
 					    SPH_IPC_NO_SUCH_CHANNEL,
+					    NULL,
 					    -1,
 					    cmd->chanID,
 					    cmd->hostresID);

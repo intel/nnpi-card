@@ -91,7 +91,7 @@ int sphpb_request_ice_dvfs_values(uint32_t ice_index,
 {
 	int ret;
 
-	DO_TRACE(trace_power_request(ice_index,
+	DO_TRACE(trace__power_request(ice_index,
 				     ring_divisor_fx,
 				     ddr_bw));
 
@@ -169,7 +169,7 @@ static void sphpb_throttle_prepare(void)
 	if (unlikely(ret < 0))
 		sph_log_err(POWER_BALANCER_LOG, "Throttling failure: Unable to set Dynamic DRAM frequency. Err(%d)\n", ret);
 
-	g_the_sphpb->throttle_data.time_us = local_clock() / 1000u; //ns -> us
+	g_the_sphpb->throttle_data.time_us = sph_time_us();
 	rdmsrl(MSR_UNC_PERF_UNCORE_CLOCK_TICKS, g_the_sphpb->throttle_data.ring_clock_ticks);
 	if (unlikely(g_the_sphpb->throttle_data.cpu_stat == NULL))
 		return;

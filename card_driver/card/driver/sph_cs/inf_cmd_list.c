@@ -51,18 +51,11 @@ int inf_cmd_create(uint16_t              protocolID,
 	inf_exec_error_list_init(&cmd->error_list, context);
 	INIT_LIST_HEAD(&cmd->devres_id_ranges);
 
-	if (context->chan == NULL) {
-		cmd->h2c_dma_desc.dma_direction = SPHCS_DMA_DIRECTION_HOST_TO_CARD;
-		cmd->h2c_dma_desc.dma_priority = SPHCS_DMA_PRIORITY_NORMAL;
-		cmd->h2c_dma_desc.flags = 0;
-		cmd->h2c_dma_desc.serial_channel =
-			sphcs_dma_sched_create_serial_channel(g_the_sphcs->dmaSched);
-	}
-
 	/* Allocate memory for overwrite DMA */
 	cmd->vptr = dma_alloc_coherent(g_the_sphcs->hw_device, SPH_PAGE_SIZE, &cmd->dma_addr, GFP_KERNEL);
 	if (unlikely(cmd->vptr == NULL)) {
 		kfree(cmd);
+		inf_context_put(context);
 		return -ENOMEM;
 	}
 
@@ -158,6 +151,7 @@ static void release_cmd(struct kref *kref)
 		sphcs_send_event_report(g_the_sphcs,
 					SPH_IPC_CMD_DESTROYED,
 					0,
+					cmd->context->chan->respq,
 					cmd->context->protocolID,
 					cmd->protocolID);
 

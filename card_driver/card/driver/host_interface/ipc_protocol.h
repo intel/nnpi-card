@@ -45,7 +45,7 @@ SPH_STATIC_ASSERT(SPH_PAGE_SHIFT <= PAGE_SHIFT, "SPH_PAGE_SIZE is bigger than PA
 					     ((minor) & 0x1f) << 5 | \
 					     ((dot) & 0x1f))
 
-#define SPH_IPC_PROTOCOL_VERSION SPH_MAKE_VERSION(2, 14, 0)
+#define SPH_IPC_PROTOCOL_VERSION SPH_MAKE_VERSION(2, 15, 0)
 
 /* Maximumum of free pages, which device can hold at any time */
 #define MAX_HOST_RESPONSE_PAGES 32
@@ -61,7 +61,7 @@ SPH_STATIC_ASSERT(SPH_PAGE_SHIFT <= PAGE_SHIFT, "SPH_PAGE_SIZE is bigger than PA
 #define SPH_DMA_ADDR_ALIGN_BITS SPH_PAGE_SHIFT  /* number of zero LSBs in dma physical address */
 #define SPH_IPC_DMA_PFN_MASK              (((1ULL) << SPH_IPC_DMA_PFN_BITS) - 1)
 #define SPH_IPC_DMA_ADDR_ALIGN_MASK       (((1ULL) << SPH_DMA_ADDR_ALIGN_BITS) - 1)
-#define SPH_IPC_DMA_ADDR_TO_PFN(dma_adr)  ((dma_adr >> SPH_DMA_ADDR_ALIGN_BITS) & SPH_IPC_DMA_PFN_MASK)
+#define SPH_IPC_DMA_ADDR_TO_PFN(dma_adr)  (((dma_adr) >> SPH_DMA_ADDR_ALIGN_BITS) & SPH_IPC_DMA_PFN_MASK)
 #define SPH_IPC_DMA_PFN_TO_ADDR(dma_pfn)  (((u64)(dma_pfn)) << SPH_DMA_ADDR_ALIGN_BITS)
 
 #define SPH_IPC_GENMSG_BAD_CLIENT_ID   0xFFF
@@ -128,38 +128,6 @@ union c2h_QueryVersionReplyMsg {
 };
 CHECK_MESSAGE_SIZE(union c2h_QueryVersionReplyMsg, 1);
 
-union c2h_ServiceListMsg {
-	struct {
-		u64 opcode           :  6;   /* SPH_IPC_C2H_OP_SERVICE_LIST */
-		u64 failure          :  3;   /* 0=Valid 1=DmaFailed 2=PullFull 3=TooBig */
-		u64 resp_page_handle : PAGE_HANDLE_BITS;
-		u64 size             : 12;
-		u64 reserved         :  3;
-		u64 num_services     : 32;
-	};
-
-	u64 value;
-};
-CHECK_MESSAGE_SIZE(union c2h_ServiceListMsg, 1);
-
-union c2h_GenericMessaging {
-	struct {
-		u64 opcode          :  6; /* SPH_IPC_C2H_OP_GENERIC_MSG_PACKET */
-		u64 size            : 12;
-		u64 connect         :  1;
-		u64 free_page       :  1;
-		u64 no_such_service :  1;
-		u64 hangup          :  1;
-		u64 host_client_id  : 12;
-		u64 card_client_id  : 12;
-		u64 reserved        : 10;
-		u64 host_page_hndl  : PAGE_HANDLE_BITS;
-	};
-
-	u64 value;
-};
-CHECK_MESSAGE_SIZE(union c2h_GenericMessaging, 1);
-
 union c2h_EventReport {
 	struct {
 		u32 opcode     :  6;  /* SPH_IPC_C2H_OP_EVENT_REPORT */
@@ -201,54 +169,6 @@ union c2h_EthernetMsgDscr {
 };
 CHECK_MESSAGE_SIZE(union c2h_EthernetMsgDscr, 2);
 
-union c2h_SyncDone {
-	struct {
-		u64 opcode      : 6; /* SPH_IPC_C2H_OP_SYNC_DONE */
-		u32 contextID   : SPH_IPC_INF_CONTEXT_BITS;
-		u32 syncSeq     : 16;
-		u64 reserved    : 34;
-	};
-
-	u64 value;
-};
-CHECK_MESSAGE_SIZE(union c2h_SyncDone, 1);
-
-union c2h_InfreqFailed {
-	struct {
-		union c2h_EventReport rep_msg;
-
-		u64 cmdID      : SPH_IPC_INF_CMDS_BITS;
-		u64 unused     : 48;
-	};
-	u64 value[2];
-};
-CHECK_MESSAGE_SIZE(union c2h_InfreqFailed, 2);
-
-union c2h_SubResourceLoadReply {
-	struct {
-		u64 opcode      : 6;  /* SPH_IPC_C2H_OP_INF_SUBRES_LOAD_REPLY */
-		u32 contextID   : SPH_IPC_INF_CONTEXT_BITS;
-		u32 sessionID   : 16;
-		u32 host_pool_index : 2;
-		u64 reserved    : 32;
-	};
-
-	u64  value;
-};
-CHECK_MESSAGE_SIZE(union c2h_SubResourceLoadReply, 1);
-
-union c2h_SubResourceLoadCreateSessionReply {
-	struct {
-		u64 opcode        : 6; /* SPH_IPC_C2H_OP_INF_SUBRES_LOAD_CREATE_REMOVE_SESSION_REPLY */
-		u32 contextID     : SPH_IPC_INF_CONTEXT_BITS;
-		u32 sessionID     : 16;
-		u64 reserved      : 34;
-	};
-
-	u64 value;
-};
-CHECK_MESSAGE_SIZE(union c2h_SubResourceLoadCreateSessionReply, 1);
-
 union c2h_DmaPageHandleFree {
 	struct {
 		u64 opcode          :  6; /* SPH_IPC_C2H_OP_DMA_PAGE_HANDLE_FREE */
@@ -276,9 +196,7 @@ CHECK_MESSAGE_SIZE(union c2h_EthernetConfig, 1);
 union c2h_SysInfo {
 	struct {
 		u64 opcode          :  6; /* SPH_IPC_C2H_OP_SYS_INFO */
-		u64 reserved        :  3;
-		u64 host_page_hndl  :  PAGE_HANDLE_BITS;
-		u64 reserved2       :  47;
+		u64 reserved        :  58;
 	};
 
 	u64 value;
@@ -295,8 +213,7 @@ union h2c_QueryVersionMsg {
 };
 CHECK_MESSAGE_SIZE(union h2c_QueryVersionMsg, 1);
 
-#define SPH_MAIN_RESPONSE_POOL_INDEX 0
-#define SPH_NET_RESPONSE_POOL_INDEX 1
+#define SPH_NET_RESPONSE_POOL_INDEX 0
 
 union h2c_HostResponsePagesMsg {
 	struct {
@@ -311,26 +228,6 @@ union h2c_HostResponsePagesMsg {
 };
 CHECK_MESSAGE_SIZE(union h2c_HostResponsePagesMsg, 1);
 
-union h2c_GenericMessaging {
-	struct {
-		u64 opcode   :  6;   /* SPH_IPC_H2C_OP_GENERIC_MSG_PACKET */
-		u64 size     : 12;
-		u64 connect  :  1;
-		u64 hangup   :  1;
-		u64 host_pfn : SPH_IPC_DMA_PFN_BITS;
-
-		u64 host_client_id  : 12;
-		u64 card_client_id  : 12;
-		u64 host_page_hndl  :  8;
-		u64 reserved        : 29;
-		u64 service_list_req:  1;
-		u64 privileged      :  1;
-	};
-
-	u64 value[2];
-};
-CHECK_MESSAGE_SIZE(union h2c_GenericMessaging, 2);
-
 union h2c_EthernetMsgDscr {
 	struct {
 		u64 opcode      :  6; /* SPH_IPC_H2C_OP_ETH_MSG_DSCR */
@@ -344,21 +241,6 @@ union h2c_EthernetMsgDscr {
 	u64 value[2];
 };
 CHECK_MESSAGE_SIZE(union h2c_EthernetMsgDscr, 2);
-
-union h2c_InferenceContextOp {
-	struct {
-		u64 opcode     : 6;  /* SPH_IPC_H2C_OP_INF_CONTEXT */
-		u64 ctxID      : SPH_IPC_INF_CONTEXT_BITS;
-		u64 destroy    : 1;
-		u64 recover    : 1;
-		u64 cflags     : 8;
-		u64 reserved   : 8;
-		u64 uid        :32;
-	};
-
-	u64 value;
-};
-CHECK_MESSAGE_SIZE(union h2c_InferenceContextOp, 1);
 
 union h2c_EthernetConfig {
 	struct {
@@ -386,113 +268,6 @@ union ClockSyncMsg { //QUERY TIME
 };
 CHECK_MESSAGE_SIZE(union ClockSyncMsg, 2);
 
-union h2c_InferenceResourceOp {
-	struct {
-		u64 opcode      : 6;  /* SPH_IPC_H2C_OP_INF_RESOURCE */
-		u64 ctxID       : SPH_IPC_INF_CONTEXT_BITS;
-		u64 resID       : SPH_IPC_INF_DEVRES_BITS;
-		u64 destroy     : 1;
-		u64 is_input    : 1;
-		u64 is_output   : 1;
-
-		u64 is_network  : 1;
-		u64 is_force_4G : 1;
-		u64 is_ecc      : 1;
-		u64 is_p2p_dst  : 1;
-		u64 is_p2p_src  : 1;
-		u64 depth       : 8;
-		u64 align       : 16;
-		u64 reserved    : 2;
-
-		u64 size        : 64;
-	};
-
-	u64 value[2];
-};
-CHECK_MESSAGE_SIZE(union h2c_InferenceResourceOp, 2);
-
-union h2c_InferenceCmdListOp {
-	struct {
-		u64 opcode      :  6;  /* SPH_IPC_H2C_OP_INF_CMDLIST or
-					* SPH_IPC_H2C_OP_SCHEDULE_CMDLIST
-					*/
-		u64 ctxID       : SPH_IPC_INF_CONTEXT_BITS;
-		u64 cmdID       : SPH_IPC_INF_CMDS_BITS;
-		u64 destroy     :  1;
-		u64 is_first    :  1;
-		u64 is_last     :  1;
-		u64 opt_dependencies : 1;
-		u64 host_page_hndl  :  8;
-		u64 unused      : 22;
-
-		u64 host_pfn    : SPH_IPC_DMA_PFN_BITS;
-		u64 size        : (sizeof(u64) * __CHAR_BIT__ - SPH_IPC_DMA_PFN_BITS);
-	};
-
-	u64 value[2];
-};
-CHECK_MESSAGE_SIZE(union h2c_InferenceCmdListOp, 2);
-
-union h2c_InferenceSchedCmdList {
-	struct {
-		u64 opcode      :  6;  /* SPH_IPC_H2C_OP_SCHEDULE_CMDLIST_NO_OW */
-		u64 ctxID       : SPH_IPC_INF_CONTEXT_BITS;
-		u64 cmdID       : SPH_IPC_INF_CMDS_BITS;
-		u64 unused      : 34;
-	};
-
-	u64 value;
-};
-CHECK_MESSAGE_SIZE(union h2c_InferenceSchedCmdList, 1);
-
-union h2c_InferenceNetworkOp {
-	struct {
-		u64 opcode        : 6; /* SPH_IPC_H2C_OP_INF_NETWORK */
-		u64 ctxID         : SPH_IPC_INF_CONTEXT_BITS;
-		u64 netID         : SPH_IPC_INF_DEVNET_BITS;
-		u64 destroy       : 1;
-		u64 create        : 1;
-		u64 num_res       :24;
-		u64 dma_page_hndl : 8;
-
-		u64 host_pfn      : SPH_IPC_DMA_PFN_BITS;
-		u64 size          : 18;
-		u64 chained       : 1;
-	};
-
-	u64 value[2];
-};
-CHECK_MESSAGE_SIZE(union h2c_InferenceNetworkOp, 2);
-
-union h2c_InferenceNetworkResourceReservation {
-	struct {
-		u64 opcode        : 6; /* SPH_IPC_H2C_OP_INF_NETWORK_RESOURCE_RESERVATION */
-		u64 ctxID         : SPH_IPC_INF_CONTEXT_BITS;
-		u64 netID         : SPH_IPC_INF_DEVNET_BITS;
-		u64 not_used      : 1;
-		u64 reserve       : 1; //reserve or release
-		u64 timeout       : 32;
-	};
-
-	u64 value[1];
-};
-CHECK_MESSAGE_SIZE(union h2c_InferenceNetworkResourceReservation, 1);
-
-union h2c_InferenceNetworkProperty {
-	struct {
-		u64 opcode        : 6; /* SPH_IPC_H2C_OP_NETWORK_PROPERTY */
-		u64 ctxID         : SPH_IPC_INF_CONTEXT_BITS;
-		u64 netID         : SPH_IPC_INF_DEVNET_BITS;
-		u64 not_used      : 2;
-		u64 timeout       : 32;
-		u64 property	  : 32;
-		u64 property_val  : 32;
-	};
-
-	u64 value[2];
-};
-CHECK_MESSAGE_SIZE(union h2c_InferenceNetworkProperty, 2);
-
 /**
  * @brief Network properties
  */
@@ -514,134 +289,16 @@ union h2c_setup_crash_dump_msg {
 };
 CHECK_MESSAGE_SIZE(union h2c_setup_crash_dump_msg, 2);
 
-union h2c_InferenceCopyOp {
+union h2c_setup_sys_info_page {
 	struct {
-		u64 opcode     :  6;  /* SPH_IPC_H2C_OP_COPY_OP */
-		u64 ctxID      : SPH_IPC_INF_CONTEXT_BITS;
-		u64 protResID  : 16;
-		u64 protCopyID : 16;
-		u64 d2d        :  1;
-		u64 c2h        :  1; /* if d2d = 0, c2h defines the copy direction */
-		u64 destroy    :  1;
-		u64 reserved1  : 15;
-		u64 hostPtr    : SPH_IPC_DMA_PFN_BITS;
-		u64 reserved2  : 19;
-	};
-
-	u64 value[2];
-};
-CHECK_MESSAGE_SIZE(union h2c_InferenceCopyOp, 2);
-
-union h2c_InferenceSchedCopy {
-	struct {
-		u64 opcode     : 6;  /* SPH_IPC_H2C_OP_SCHEDULE_COPY */
-		u64 ctxID      : SPH_IPC_INF_CONTEXT_BITS;
-		u64 protCopyID : 16;
-		u64 copySize   : 32;
-		u64 priority   : 2;  /* TBD: change back to 3 in new proto */
+		u64 opcode    :  6;   /* SPH_IPC_H2C_OP_SETUP_SYS_INFO_PAGE */
+		u64 reserved  :  13;
+		u64 dma_addr  : SPH_IPC_DMA_PFN_BITS;
 	};
 
 	u64 value;
 };
-CHECK_MESSAGE_SIZE(union h2c_InferenceSchedCopy, 1);
-
-union h2c_Sync {
-	struct {
-		u64 opcode      : 6; /* SPH_IPC_H2C_OP_SYNC */
-		u32 contextID   : SPH_IPC_INF_CONTEXT_BITS;
-		u32 syncSeq     : 16;
-		u64 reserved    : 34;
-	};
-
-	u64 value;
-};
-CHECK_MESSAGE_SIZE(union h2c_Sync, 1);
-
-union h2c_SubResourceLoadOp {
-	struct {
-		u64 opcode       : 6; /* SPH_IPC_H2C_OP_INF_SUBRES_LOAD */
-		u32 contextID    : SPH_IPC_INF_CONTEXT_BITS;
-		u64 sessionID    : 16;
-		u32 host_pool_index : 2;
-		u64 host_pool_dma_address  : SPH_IPC_DMA_PFN_BITS;
-		u32 n_pages : 8;
-		u32 byte_size : 12;
-		u64 reserved : 31;
-		u64 res_offset : 64;
-	};
-
-	u64 value[3];
-};
-CHECK_MESSAGE_SIZE(union h2c_SubResourceLoadOp, 3);
-
-union h2c_SubResourceLoadCreateRemoveSession {
-	struct {
-		u64 opcode        : 6; /* SPH_IPC_H2C_OP_INF_SUBRES_LOAD_CREATE_REMOVE_SESSION */
-		u32 contextID     : SPH_IPC_INF_CONTEXT_BITS;
-		u32 sessionID     : 16;
-		u32 remove        : 1;
-		u64 resID         : SPH_IPC_INF_DEVRES_BITS;
-		u64 reserved      : 17;
-	};
-
-	u64 value;
-};
-CHECK_MESSAGE_SIZE(union h2c_SubResourceLoadCreateRemoveSession, 1);
-
-union h2c_InferenceReqOp {
-	struct {
-		u64 opcode            :  6; /* SPH_IPC_H2C_OP_INF_REQ_OP */
-		u64 host_page_hndl    : PAGE_HANDLE_BITS;
-		u64 host_pfn          : SPH_IPC_DMA_PFN_BITS;
-		u64 destroy           :  1;
-		u64 reserved1         :  4;
-
-		u64 ctxID             : SPH_IPC_INF_CONTEXT_BITS;
-		u64 netID             : SPH_IPC_INF_DEVNET_BITS;
-		u64 infreqID          : SPH_IPC_INF_REQ_BITS;
-		u64 size              : 12;
-		u64 reserved2         : 12;
-	};
-
-	u64 value[2];
-};
-CHECK_MESSAGE_SIZE(union h2c_InferenceReqOp, 2);
-
-union h2c_InferenceReqSchedule {
-	struct {
-		u64 opcode            :  6; /* SPH_IPC_H2C_OP_SCHEDULE_INF_REQ */
-		u64 netID             : SPH_IPC_INF_DEVNET_BITS;
-		u64 infreqID          : SPH_IPC_INF_REQ_BITS;
-		u64 reserved          : 26;
-
-		u64 ctxID             : SPH_IPC_INF_CONTEXT_BITS;
-		//schedParams
-		u64 batchSize         : 16;
-		u64 priority          :  8; /* 0 == normal, 1 == high */
-		u64 debugOn           :  1;
-		u64 collectInfo       :  1;
-		u64 schedParamsIsNull :  1;
-		u64 reserve           : 29;
-	};
-
-	u64 value[2];
-};
-CHECK_MESSAGE_SIZE(union h2c_InferenceReqSchedule, 2);
-
-
-union h2c_HwTraceAddResource {
-	struct {
-		u64 opcode          : 6;  /* SPH_IPC_H2C_OP_HWTRACE_ADD_RESOURCE */
-		u64 descriptor_addr : SPH_IPC_DMA_PFN_BITS;
-		u64 resourceIndex   : 8;  /* resource index */
-		u64 reserved1       : 5;
-		u64 reserved	    : 32;
-		u64 resource_size   : 32;
-	};
-
-	u64 value[2];
-};
-CHECK_MESSAGE_SIZE(union h2c_HwTraceAddResource, 2);
+CHECK_MESSAGE_SIZE(union h2c_setup_sys_info_page, 1);
 
 union h2c_ChannelOp {
 	struct {
@@ -686,32 +343,6 @@ union h2c_ChannelHostresOp {
 	u64 value[2];
 };
 CHECK_MESSAGE_SIZE(union h2c_ChannelHostresOp, 2);
-
-union c2h_HwTraceState {
-	struct {
-		u64 opcode		: 6;  /* SPH_IPC_C2H_OP_HWTRACE_STATE */
-		u64 reserved		: 5;
-		u64 subOpcode		: 5;
-		u64 val1		: 32;
-		u64 val2		: 8;
-		u64 err			: 8;
-	};
-
-	u64 value;
-};
-CHECK_MESSAGE_SIZE(union c2h_HwTraceState, 1);
-
-union h2c_HwTraceState {
-	struct {
-		u64 opcode		: 6;  /* SPH_IPC_H2C_OP_HWTRACE_STATE */
-		u64 reserved		: 21;
-		u64 subOpcode		: 5;
-		u64 val			: 32;
-	};
-
-	u64 value;
-};
-CHECK_MESSAGE_SIZE(union h2c_HwTraceState, 1);
 
 union h2c_P2PDev {
 	struct {
@@ -799,7 +430,7 @@ enum sph_c2h_opcode {
 #undef H2C_OPCODE
 #undef C2H_OPCODE
 
-#if defined(_SPHCS_TRACE_H) || defined(_SPHDRV_TRACE_H)
+#if defined(_SPHCS_TRACE_H) || defined(_SPHDRV_TRACE_H) || defined(IPC_PARSER)
 
 #define H2C_OPCODE(name, val, type) /* SPH_IGNORE_STYLE_CHECK */\
 	case (val):                   \

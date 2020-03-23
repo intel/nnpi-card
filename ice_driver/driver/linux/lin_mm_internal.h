@@ -32,7 +32,10 @@ enum iova_partition_list {
 	MEM_PARTITION_LOW_32KB_HW,
 	MEM_PARTITION_HIGH_32KB,
 	MEM_PARTITION_HIGH_16MB,
-	MEM_PARTITION_HIGH_32MB
+	MEM_PARTITION_HIGH_32MB,
+	MEM_PARTITION_HIGHER_32KB,
+	MEM_PARTITION_HIGHER_16MB,
+	MEM_PARTITION_HIGHER_32MB,
 };
 
 enum iova_page_sz_type {
@@ -99,25 +102,6 @@ struct cve_lin_mm_domain {
 	struct ice_mmu_config mmu_config[ICE_MEM_MAX_PARTITION];
 	u32 page_sz_reg_config_arr[ICE_PAGE_SZ_CONFIG_REG_COUNT];
 };
-
-/*
- * initialize a memory domain
- * inputs :
- * outputs: out_cve_domain - the new domain
- * returns: 0 on success, a negative error code on failure
- */
-int lin_mm_domain_init(u8 id, u64 *sz_per_page_alignment,
-		u64 *infer_buf_page_config,
-		struct cve_lin_mm_domain **out_cve_domain);
-
-/*
- * Prepares a copy of memory domain
- * inputs: adom_src
- * outputs: adom_dst
- */
-int lin_mm_domain_copy(
-	struct cve_lin_mm_domain *adom_src,
-	struct cve_lin_mm_domain **adom_dst);
 
 /*
  * destroys a memory domain

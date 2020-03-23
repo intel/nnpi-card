@@ -52,7 +52,8 @@
 
 
 
-#define HWTRACE_STATE_RESOURCES_BUSY(flag)	(flag & (HWTRACE_STATE_NPK_RESOURCE_BUSY | HWTRACE_STATE_HOST_RESOURCE_BUSY | HWTRACE_STATE_DMA_INFO_DIRTY))
+#define HWTRACE_STATE_RESOURCES_BUSY(flag)	((flag) & (HWTRACE_STATE_NPK_RESOURCE_BUSY | HWTRACE_STATE_HOST_RESOURCE_BUSY | HWTRACE_STATE_DMA_INFO_DIRTY))
+
 
 //dtf channel config for dma engine
 const struct sphcs_dma_desc g_dma_desc_c2h_dtf_nowait = {
@@ -342,6 +343,10 @@ struct dma_res_info *sphcs_hwtrace_alloc_dma_info(struct sphcs_dma_res_info *r)
 					 &dma->lli,
 					 0);
 	SPH_ASSERT(transfer_size > 0);
+	if (unlikely(transfer_size == 0)) {
+		sph_log_err(HWTRACE_LOG, "gen_lli returned 0\n");
+		goto cleanup_dma_map;
+	}
 
 	sphcs_dma_multi_xfer_handle_init(&dma->multi_xfer_handle);
 
@@ -513,7 +518,6 @@ static int sphcs_hwtrace_dma_stream_complete_cb(struct sphcs *sphcs, void *ctx, 
 	struct sphcs_cmd_chan *chan = hw_tracing->chan;
 	struct sphcs_dma_res_info *r = (struct sphcs_dma_res_info *)ctx;
 	unsigned long flags;
-	union c2h_HwTraceState response_msg;
 	union c2h_ChanHwTraceState chan_response_msg;
 	int hwtrace_err = SPH_HWTRACE_ERR_NO_ERR;
 	bool bIsLast = true;
@@ -567,40 +571,22 @@ static int sphcs_hwtrace_dma_stream_complete_cb(struct sphcs *sphcs, void *ctx, 
 	}
 
 	//send notification to host that resource is ready for read.
-	if (chan) {
-		memset(chan_response_msg.value, 0x0, sizeof(chan_response_msg.value));
+	memset(chan_response_msg.value, 0x0, sizeof(chan_response_msg.value));
 
-		chan_response_msg.chanID	= chan->protocolID;
-		chan_response_msg.opcode	= SPH_IPC_C2H_OP_CHAN_HWTRACE_STATE;
+	chan_response_msg.chanID	= chan->protocolID;
+	chan_response_msg.opcode	= SPH_IPC_C2H_OP_CHAN_HWTRACE_STATE;
 
-		//in case of last resource, set appropriate sub_opcode
-		if (bIsLast)
-			chan_response_msg.subOpcode = HWTRACE_LAST_RESOURCE_READY;
-		else
-			chan_response_msg.subOpcode = HWTRACE_RESOURCE_READY;
+	//in case of last resource, set appropriate sub_opcode
+	if (bIsLast)
+		chan_response_msg.subOpcode = HWTRACE_LAST_RESOURCE_READY;
+	else
+		chan_response_msg.subOpcode = HWTRACE_RESOURCE_READY;
 
-		chan_response_msg.val1	= bytes;
-		chan_response_msg.val2	= index;
-		chan_response_msg.err	= hwtrace_err;
+	chan_response_msg.val1	= bytes;
+	chan_response_msg.val2	= index;
+	chan_response_msg.err	= hwtrace_err;
 
-		sphcs_msg_scheduler_queue_add_msg(chan->respq, chan_response_msg.value, 2);
-	} else {
-		memset(&response_msg.value, 0x0, sizeof(response_msg));
-
-		response_msg.opcode	= SPH_IPC_C2H_OP_HWTRACE_STATE;
-
-		//in case of last resource, set appropriate sub_opcode
-		if (bIsLast)
-			response_msg.subOpcode = HWTRACE_LAST_RESOURCE_READY;
-		else
-			response_msg.subOpcode = HWTRACE_RESOURCE_READY;
-
-		response_msg.val1	= bytes;
-		response_msg.val2	= index;
-		response_msg.err	= hwtrace_err;
-
-		sphcs_msg_scheduler_queue_add_msg(sphcs->public_respq, &response_msg.value, 1);
-	}
+	sphcs_msg_scheduler_queue_add_msg(chan->respq, chan_response_msg.value, 2);
 
 	return 0;
 }
@@ -612,7 +598,8 @@ void do_stream_hwtrace(struct sphcs_dma_res_info *r)
 	struct sphcs_hwtrace_data *hw_tracing = &g_the_sphcs->hw_tracing;
 
 	SPH_ASSERT(r != NULL);
-
+	if (unlikely(r == NULL))
+		return;
 
 	if (!r->host_res || !r->npk_res || !r->dma_res)
 		return;
@@ -892,7 +879,6 @@ void sphcs_hwtrace_cleanup_resources_request(struct sphcs *sphcs)
 {
 	struct sphcs_hwtrace_data *hw_tracing = &sphcs->hw_tracing;
 	struct sphcs_cmd_chan *chan = hw_tracing->chan;
-	union c2h_HwTraceState response_msg;
 	union c2h_ChanHwTraceState chan_response_msg;
 	struct sphcs_dma_res_info *r;
 	unsigned long flags;
@@ -908,33 +894,22 @@ void sphcs_hwtrace_cleanup_resources_request(struct sphcs *sphcs)
 
 	sphcs_hwtrace_update_state();
 
-	if (chan) {
-		memset(chan_response_msg.value, 0x0, sizeof(chan_response_msg));
+	memset(chan_response_msg.value, 0x0, sizeof(chan_response_msg));
 
-		chan_response_msg.chanID	= chan->protocolID;
-		chan_response_msg.opcode	= SPH_IPC_C2H_OP_CHAN_HWTRACE_STATE;
-		chan_response_msg.subOpcode	= HWTRACE_RESOURCE_CLEANUP;
-		chan_response_msg.err		= SPH_HWTRACE_ERR_NO_ERR;
+	chan_response_msg.chanID	= chan->protocolID;
+	chan_response_msg.opcode	= SPH_IPC_C2H_OP_CHAN_HWTRACE_STATE;
+	chan_response_msg.subOpcode	= HWTRACE_RESOURCE_CLEANUP;
+	chan_response_msg.err		= SPH_HWTRACE_ERR_NO_ERR;
 
-		sphcs_msg_scheduler_queue_add_msg(chan->respq, chan_response_msg.value, 2);
+	sphcs_msg_scheduler_queue_add_msg(chan->respq, chan_response_msg.value, 2);
 
-		hw_tracing->chan = NULL;
-	} else {
-		memset(&response_msg.value, 0x0, sizeof(response_msg));
-
-		response_msg.opcode	= SPH_IPC_C2H_OP_HWTRACE_STATE;
-		response_msg.subOpcode	= HWTRACE_RESOURCE_CLEANUP;
-		response_msg.err	= SPH_HWTRACE_ERR_NO_ERR;
-
-		sphcs_msg_scheduler_queue_add_msg(sphcs->public_respq, &response_msg.value, 1);
-	}
+	hw_tracing->chan = NULL;
 }
 
 int sphcs_hwtrace_init(struct sphcs *sphcs, struct sphcs_cmd_chan *chan)
 {
 	struct sphcs_hwtrace_data *hw_tracing = &sphcs->hw_tracing;
 	int hwtrace_err = SPH_HWTRACE_ERR_NO_ERR;
-	union c2h_HwTraceState response_msg;
 	union c2h_ChanHwTraceState chan_response_msg;
 	unsigned long flags;
 	struct sphcs_dma_res_info *r;
@@ -967,24 +942,14 @@ int sphcs_hwtrace_init(struct sphcs *sphcs, struct sphcs_cmd_chan *chan)
 	hw_tracing->hwtrace_status = SPHCS_HWTRACE_INITIALIZED;
 
 reply_message:
-	if (chan) {
-		memset(chan_response_msg.value, 0x0, sizeof(chan_response_msg.value));
+	memset(chan_response_msg.value, 0x0, sizeof(chan_response_msg.value));
 
-		chan_response_msg.chanID	= chan->protocolID;
-		chan_response_msg.opcode	= SPH_IPC_C2H_OP_CHAN_HWTRACE_STATE;
-		chan_response_msg.subOpcode	= HWTRACE_INIT;
-		chan_response_msg.err	= hwtrace_err;
+	chan_response_msg.chanID	= chan->protocolID;
+	chan_response_msg.opcode	= SPH_IPC_C2H_OP_CHAN_HWTRACE_STATE;
+	chan_response_msg.subOpcode	= HWTRACE_INIT;
+	chan_response_msg.err	= hwtrace_err;
 
-		sphcs_msg_scheduler_queue_add_msg(chan->respq, chan_response_msg.value, 2);
-	} else {
-		memset(&response_msg.value, 0x0, sizeof(response_msg));
-
-		response_msg.opcode	= SPH_IPC_C2H_OP_HWTRACE_STATE;
-		response_msg.subOpcode	= HWTRACE_INIT;
-		response_msg.err	= hwtrace_err;
-
-		sphcs_msg_scheduler_queue_add_msg(sphcs->public_respq, &response_msg.value, 1);
-	}
+	sphcs_msg_scheduler_queue_add_msg(chan->respq, chan_response_msg.value, 2);
 
 	return 0;
 }
@@ -995,7 +960,6 @@ int sphcs_hwtrace_deinit(struct sphcs *sphcs)
 	struct sphcs_hwtrace_data *hw_tracing = &sphcs->hw_tracing;
 	struct sphcs_cmd_chan *chan = hw_tracing->chan;
 	int hwtrace_err = SPH_HWTRACE_ERR_NO_ERR;
-	union c2h_HwTraceState response_msg;
 	union c2h_ChanHwTraceState chan_response_msg;
 	struct sphcs_dma_res_info *r;
 	unsigned long flags;
@@ -1024,148 +988,16 @@ int sphcs_hwtrace_deinit(struct sphcs *sphcs)
 
 reply_message:
 
-	if (chan) {
-		memset(chan_response_msg.value, 0x0, sizeof(chan_response_msg.value));
+	memset(chan_response_msg.value, 0x0, sizeof(chan_response_msg.value));
 
-		chan_response_msg.chanID	= chan->protocolID;
-		chan_response_msg.opcode	= SPH_IPC_C2H_OP_CHAN_HWTRACE_STATE;
-		chan_response_msg.subOpcode	= HWTRACE_DEINIT;
-		chan_response_msg.err	= hwtrace_err;
+	chan_response_msg.chanID	= chan->protocolID;
+	chan_response_msg.opcode	= SPH_IPC_C2H_OP_CHAN_HWTRACE_STATE;
+	chan_response_msg.subOpcode	= HWTRACE_DEINIT;
+	chan_response_msg.err	= hwtrace_err;
 
-		sphcs_msg_scheduler_queue_add_msg(chan->respq, chan_response_msg.value, 2);
-	} else {
-		memset(&response_msg.value, 0x0, sizeof(response_msg));
-
-		response_msg.opcode	= SPH_IPC_C2H_OP_HWTRACE_STATE;
-		response_msg.subOpcode	= HWTRACE_DEINIT;
-		response_msg.err	= hwtrace_err;
-
-		sphcs_msg_scheduler_queue_add_msg(sphcs->public_respq, &response_msg.value, 1);
-	}
+	sphcs_msg_scheduler_queue_add_msg(chan->respq, chan_response_msg.value, 2);
 
 	return 0;
-}
-
-//get host resource dma data.
-static int sphcs_hwtrace_get_hostres_complete_cb(struct sphcs *sphcs,
-						 void *ctx,
-						 const void *user_data,
-						 int status,
-						 u32 timeUS)
-{
-	struct sphcs_hwtrace_data *hw_tracing = &sphcs->hw_tracing;
-	struct dma_chain_header *chain_header;
-	struct dma_chain_entry *chain_entry;
-	struct scatterlist *current_sgl;
-	struct sphcs_hwtrace_res_add_req *dma_req_data = (struct sphcs_hwtrace_res_add_req *)user_data;
-	struct host_res_info *host = dma_req_data->res_info;
-	struct sphcs_dma_res_info *r;
-	struct sg_table *sgt = &(host->sgt);
-	struct scatterlist *sgl_curr;
-	int hwtrace_err = SPH_HWTRACE_ERR_NO_ERR;
-	int i, ret = 0;
-	uint64_t total_entries_bytes = 0;
-	unsigned long flags;
-	bool bFound = false;
-
-	chain_header = (struct dma_chain_header *)dma_req_data->vptr;
-	chain_entry = (struct dma_chain_entry *)(dma_req_data->vptr + sizeof(struct dma_chain_header));
-
-	if (status != SPHCS_DMA_STATUS_DONE) {
-		sph_log_err(HWTRACE_LOG, "%s, dma_failed\n", __func__);
-		goto err;
-	}
-
-	ret = sg_alloc_table(sgt, chain_header->total_nents, GFP_NOWAIT);
-	if (ret) {
-		hwtrace_err = SPH_HWTRACE_ERR_ADD_RESOURCE_FAIL;
-		goto err;
-	}
-
-	sgl_curr = &(sgt->sgl[0]);
-
-	// iterate over host's DMA address entries, and fill host sg_table
-	// make sure we are not reading last entry, in a non-full page
-	// make sure we are not reading more than one page
-	current_sgl = sgl_curr;
-
-	for (i = 0; !sg_is_last(current_sgl) && i < NENTS_PER_PAGE; i++) {
-		current_sgl->length = chain_entry[i].n_pages * SPH_PAGE_SIZE;
-		current_sgl->dma_address = SPH_IPC_DMA_PFN_TO_ADDR(chain_entry[i].dma_chunk_pfn);
-
-		total_entries_bytes = total_entries_bytes + current_sgl->length;
-
-		SPH_ASSERT(chain_header->size >= total_entries_bytes);
-
-		current_sgl = sg_next(current_sgl);
-	}
-
-	// might need to fix the size of last entry
-	// this is a bit confusing, need to remember that last entry in current page
-	// doesn't necessarily mean last in sg table. But last in sg table for sure
-	// means this is last enrty in the last page.
-	if (sg_is_last(current_sgl)) {
-		SPH_ASSERT(chain_header->size > total_entries_bytes);
-		current_sgl->dma_address = SPH_IPC_DMA_PFN_TO_ADDR(chain_entry[i].dma_chunk_pfn);
-
-		// update the length of last entry
-		SPH_ASSERT(chain_entry[i].n_pages * SPH_PAGE_SIZE >= chain_header->size - total_entries_bytes);
-		current_sgl->length = chain_header->size - total_entries_bytes;
-	} else {
-		SPH_ASSERT(chain_header->size == total_entries_bytes);
-		sgl_curr = current_sgl;
-	}
-
-	SPH_SPIN_LOCK_IRQSAVE(&hw_tracing->lock_irq, flags);
-
-	list_for_each_entry(r,
-			    &hw_tracing->dma_stream_list,
-			    node) {
-		if (r->host_res == NULL &&
-		    ~(r->state & HWTRACE_STATE_NPK_RESOURCE_CLEANUP)) {
-			bFound = true;
-			r->host_res = host;
-			r->state |= HWTRACE_STATE_DMA_INFO_DIRTY;
-			break;
-		}
-	}
-
-	SPH_SPIN_UNLOCK_IRQRESTORE(&hw_tracing->lock_irq, flags);
-
-
-	if (!bFound) {
-		r = kzalloc(sizeof(*r), GFP_NOWAIT);
-		if (unlikely(r == NULL)) {
-			hwtrace_err = SPH_HWTRACE_ERR_NO_MEMORY;
-			goto err;
-		}
-
-		r->state |= HWTRACE_STATE_DMA_INFO_DIRTY;
-		r->host_res = host;
-
-		SPH_SPIN_LOCK_IRQSAVE(&hw_tracing->lock_irq, flags);
-
-		host->resource_index = hw_tracing->host_resource_count++;
-		list_add_tail(&r->node, &hw_tracing->dma_stream_list);
-
-		SPH_SPIN_UNLOCK_IRQRESTORE(&hw_tracing->lock_irq, flags);
-	}
-
-	dma_page_pool_set_page_free(sphcs->dma_page_pool,
-				    dma_req_data->card_dma_page_hndl);
-
-	sphcs_hwtrace_wakeup_clients();
-
-	return ret;
-
-err:
-	hw_tracing->hwtrace_status = SPHCS_HWTRACE_ERR;
-
-	kfree(host);
-
-	sphcs_hwtrace_wakeup_clients();
-
-	return ret;
 }
 
 void sphcs_hwtrace_unlock_host_res(struct sphcs *sphcs,
@@ -1173,7 +1005,6 @@ void sphcs_hwtrace_unlock_host_res(struct sphcs *sphcs,
 {
 	struct sphcs_hwtrace_data *hw_tracing = &sphcs->hw_tracing;
 	struct sphcs_cmd_chan *chan = hw_tracing->chan;
-	union c2h_HwTraceState response_msg;
 	union c2h_ChanHwTraceState chan_response_msg;
 	unsigned long flags;
 	int hwtrace_err = SPH_HWTRACE_ERR_NO_ERR;
@@ -1210,83 +1041,48 @@ void sphcs_hwtrace_unlock_host_res(struct sphcs *sphcs,
 
 
 reply_message:
-	if (chan) {
-		memset(chan_response_msg.value, 0x0, sizeof(chan_response_msg.value));
+	memset(chan_response_msg.value, 0x0, sizeof(chan_response_msg.value));
 
-		chan_response_msg.chanID	= chan->protocolID;
-		chan_response_msg.opcode	= SPH_IPC_C2H_OP_CHAN_HWTRACE_STATE;
-		chan_response_msg.subOpcode	= HWTRACE_UNLOCK_RESOURCE;
-		chan_response_msg.val1		= resource_index;
-		chan_response_msg.err		= hwtrace_err;
+	chan_response_msg.chanID	= chan->protocolID;
+	chan_response_msg.opcode	= SPH_IPC_C2H_OP_CHAN_HWTRACE_STATE;
+	chan_response_msg.subOpcode	= HWTRACE_UNLOCK_RESOURCE;
+	chan_response_msg.val1		= resource_index;
+	chan_response_msg.err		= hwtrace_err;
 
-		sphcs_msg_scheduler_queue_add_msg(chan->respq, chan_response_msg.value, 2);
-	} else {
-		memset(&response_msg.value, 0x0, sizeof(response_msg));
-
-		response_msg.opcode	= SPH_IPC_C2H_OP_HWTRACE_STATE;
-		response_msg.subOpcode	= HWTRACE_UNLOCK_RESOURCE;
-		response_msg.val1	= resource_index;
-		response_msg.err	= hwtrace_err;
-
-		sphcs_msg_scheduler_queue_add_msg(sphcs->public_respq, &response_msg.value, 1);
-	}
+	sphcs_msg_scheduler_queue_add_msg(chan->respq, chan_response_msg.value, 2);
 }
 
 void sphcs_hwtrace_query_state(struct sphcs *sphcs, struct sphcs_cmd_chan *chan)
 {
 	struct sphcs_hwtrace_data *hw_tracing = &sphcs->hw_tracing;
-	union c2h_HwTraceState response_msg;
 	union c2h_ChanHwTraceState chan_response_msg;
 
-	if (chan) {
-		memset(chan_response_msg.value, 0x0, sizeof(chan_response_msg.value));
+	memset(chan_response_msg.value, 0x0, sizeof(chan_response_msg.value));
 
-		chan_response_msg.chanID	= chan->protocolID;
-		chan_response_msg.opcode	= SPH_IPC_C2H_OP_CHAN_HWTRACE_STATE;
-		chan_response_msg.subOpcode	= HWTRACE_QUERY_STATE;
-		chan_response_msg.val1		= hw_tracing->hwtrace_status;
-		chan_response_msg.val2		= hw_tracing->host_resource_count;
-		chan_response_msg.val3		= hw_tracing->resource_max_size;
+	chan_response_msg.chanID	= chan->protocolID;
+	chan_response_msg.opcode	= SPH_IPC_C2H_OP_CHAN_HWTRACE_STATE;
+	chan_response_msg.subOpcode	= HWTRACE_QUERY_STATE;
+	chan_response_msg.val1	= hw_tracing->hwtrace_status;
+	chan_response_msg.val2	= hw_tracing->host_resource_count;
+	chan_response_msg.val3	= hw_tracing->resource_max_size;
 
-		sphcs_msg_scheduler_queue_add_msg(chan->respq, chan_response_msg.value, 2);
-	} else {
-		memset(&response_msg.value, 0x0, sizeof(response_msg));
-
-		response_msg.opcode	= SPH_IPC_C2H_OP_HWTRACE_STATE;
-		response_msg.subOpcode	= HWTRACE_QUERY_STATE;
-		response_msg.val1	= hw_tracing->hwtrace_status;
-		response_msg.val2	= hw_tracing->host_resource_count;
-
-		sphcs_msg_scheduler_queue_add_msg(sphcs->public_respq, &response_msg.value, 1);
-	}
+	sphcs_msg_scheduler_queue_add_msg(chan->respq, chan_response_msg.value, 2);
 }
 
 void sphcs_hwtrace_query_mem_pool_info(struct sphcs *sphcs, struct sphcs_cmd_chan *chan)
 {
 	struct sphcs_hwtrace_data *hw_tracing = &sphcs->hw_tracing;
-	union c2h_HwTraceState response_msg;
 	union c2h_ChanHwTraceState chan_response_msg;
 
-	if (chan) {
-		memset(chan_response_msg.value, 0x0, sizeof(chan_response_msg.value));
+	memset(chan_response_msg.value, 0x0, sizeof(chan_response_msg.value));
 
-		chan_response_msg.chanID	= chan->protocolID;
-		chan_response_msg.opcode	= SPH_IPC_C2H_OP_CHAN_HWTRACE_STATE;
-		chan_response_msg.subOpcode	= HWTRACE_GET_MEM_POOL_INFO;
-		chan_response_msg.val1		= hw_tracing->nr_pool_pages;
-		chan_response_msg.val2		= SPHCS_HWTRACING_MAX_POOL_LENGTH;
+	chan_response_msg.chanID	= chan->protocolID;
+	chan_response_msg.opcode	= SPH_IPC_C2H_OP_CHAN_HWTRACE_STATE;
+	chan_response_msg.subOpcode	= HWTRACE_GET_MEM_POOL_INFO;
+	chan_response_msg.val1		= hw_tracing->nr_pool_pages;
+	chan_response_msg.val2		= SPHCS_HWTRACING_MAX_POOL_LENGTH;
 
-		sphcs_msg_scheduler_queue_add_msg(chan->respq, chan_response_msg.value, 2);
-	} else {
-		memset(&response_msg.value, 0x0, sizeof(response_msg));
-
-		response_msg.opcode	= SPH_IPC_C2H_OP_HWTRACE_STATE;
-		response_msg.subOpcode	= HWTRACE_GET_MEM_POOL_INFO;
-		response_msg.val1	= hw_tracing->nr_pool_pages;
-		response_msg.val2	= SPHCS_HWTRACING_MAX_POOL_LENGTH;
-
-		sphcs_msg_scheduler_queue_add_msg(sphcs->public_respq, &response_msg.value, 1);
-	}
+	sphcs_msg_scheduler_queue_add_msg(chan->respq, chan_response_msg.value, 2);
 }
 
 void sphcs_hwtrace_add_resource_2(struct sphcs *sphcs,
@@ -1385,107 +1181,6 @@ reply_message:
 	return;
 }
 
-// opcode for adding new host resource for streaming data
-void sphcs_hwtrace_add_resource(struct sphcs *sphcs,
-				struct sphcs_add_resource_cmd *res_data)
-{
-	struct sphcs_hwtrace_data *hw_tracing = &sphcs->hw_tracing;
-	struct sphcs_hwtrace_res_add_req *dma_req_data;
-	struct host_res_info *res_info;
-	union c2h_HwTraceState response_msg;
-	dma_addr_t dma_src_addr;
-	int hwtrace_err = SPH_HWTRACE_ERR_NO_ERR;
-	uint32_t resources_count = hw_tracing->host_resource_count;
-	int ret;
-	unsigned long timeout = usecs_to_jiffies(5000000);
-
-	switch (hw_tracing->hwtrace_status) {
-	case SPHCS_HWTRACE_INITIALIZED:
-	case SPHCS_HWTRACE_ASIGNED:
-	case SPHCS_HWTRACE_DEACTIVATED:
-		break;
-	default:
-		hwtrace_err = SPH_HWTRACE_ERR_INVALID_OPCODE;
-		sph_log_err(HWTRACE_LOG, "add resource request in a bad state\n");
-		goto reply_message;
-	}
-
-	//allocate dma request data object
-	dma_req_data = kzalloc(sizeof(*dma_req_data), GFP_KERNEL);
-	if (unlikely(dma_req_data == NULL)) {
-		sph_log_err(HWTRACE_LOG, "allocation failed\n");
-		hwtrace_err = SPH_HWTRACE_ERR_NO_MEMORY;
-		goto reply_message;
-	}
-
-	//allocate new resource info.
-	res_info = kzalloc(sizeof(*res_info), GFP_KERNEL);
-	if (unlikely(res_info == NULL)) {
-		sph_log_err(HWTRACE_LOG, "allocation failed\n");
-		hwtrace_err = SPH_HWTRACE_ERR_NO_MEMORY;
-		goto cleanup_dma_req_data;
-	}
-
-	dma_req_data->res_info = res_info;
-	dma_req_data->res_info->resource_size = res_data->resource_size;
-	dma_src_addr = res_data->descriptor_addr;
-
-	ret = dma_page_pool_get_free_page(sphcs->dma_page_pool,
-					  &dma_req_data->card_dma_page_hndl,
-					  &dma_req_data->vptr,
-					  &dma_req_data->card_dma_addr);
-	if (ret) {
-		sph_log_err(HWTRACE_LOG, "ERROR %d: unable to allocate memory from pool\n", ret);
-		hwtrace_err = SPH_HWTRACE_ERR_NO_MEMORY;
-		goto cleanup_dma_req_data;
-	}
-
-	ret = sphcs_dma_sched_start_xfer_single(sphcs->dmaSched,
-						&g_dma_desc_h2c_normal,
-						dma_src_addr,
-						dma_req_data->card_dma_addr,
-						SPH_PAGE_SIZE,
-						sphcs_hwtrace_get_hostres_complete_cb,
-						NULL,
-						dma_req_data,
-						sizeof(*dma_req_data));
-	if (ret) {
-		sph_log_err(HWTRACE_LOG, "ERROR %d: unable to get reousce information from host\n", ret);
-		hwtrace_err = SPH_HWTRACE_ERR_ADD_RESOURCE_FAIL;
-		goto cleanup_dma_allocation;
-	}
-
-	ret = wait_event_interruptible_timeout(hw_tracing->waitq,
-					       (resources_count < hw_tracing->host_resource_count),
-					       timeout);
-	if (ret <= 0) {
-		sph_log_err(HWTRACE_LOG, "Wait failed/timeout ret=%d\n", ret);
-		hwtrace_err = SPH_HWTRACE_ERR_ADD_RESOURCE_FAIL;
-		goto cleanup_dma_allocation;
-	}
-
-	sphcs_hwtrace_update_state();
-
-	kfree(dma_req_data);
-
-	goto reply_message;
-
-cleanup_dma_allocation:
-	dma_page_pool_set_page_free(sphcs->dma_page_pool,
-				    dma_req_data->card_dma_page_hndl);
-cleanup_dma_req_data:
-	kfree(dma_req_data);
-
-reply_message:
-	memset(&response_msg.value, 0x0, sizeof(response_msg));
-
-	response_msg.opcode	= SPH_IPC_C2H_OP_HWTRACE_STATE;
-	response_msg.subOpcode	= HWTRACE_ADD_RESOURCE;
-	response_msg.err	= hwtrace_err;
-
-	sphcs_msg_scheduler_queue_add_msg(sphcs->public_respq, &response_msg.value, 1);
-}
-
 static void cleanup_hwtrace(struct sphcs_cmd_chan *chan, void *cb_ctx)
 {
 	struct sphcs *sphcs = (struct sphcs *)cb_ctx;
@@ -1498,7 +1193,6 @@ void sphcs_hwtrace_state(struct sphcs *sphcs,
 				struct sphcs_state_cmd	*state_cmd,
 				struct sphcs_cmd_chan	*chan)
 {
-	union c2h_HwTraceState response_msg;
 	union c2h_ChanHwTraceState chan_response_msg;
 	struct sphcs_hwtrace_data *hw_tracing = &sphcs->hw_tracing;
 	int hwtrace_err = SPH_HWTRACE_ERR_NO_ERR;
@@ -1511,8 +1205,7 @@ void sphcs_hwtrace_state(struct sphcs *sphcs,
 	switch (state_cmd->subOpcode) {
 	case HWTRACE_INIT:
 		sphcs_hwtrace_init(sphcs, chan);
-		if (chan &&
-			hw_tracing->hwtrace_status == SPHCS_HWTRACE_INITIALIZED) {
+		if (chan && hw_tracing->hwtrace_status == SPHCS_HWTRACE_INITIALIZED) {
 			chan->destroy_cb = cleanup_hwtrace;
 			chan->destroy_cb_ctx = sphcs;
 		}
@@ -1564,24 +1257,14 @@ void sphcs_hwtrace_state(struct sphcs *sphcs,
 
 	return;
 reply_message:
-	if (chan) {
-		memset(chan_response_msg.value, 0x0, sizeof(chan_response_msg.value));
+	memset(chan_response_msg.value, 0x0, sizeof(chan_response_msg.value));
 
-		chan_response_msg.chanID	= chan->protocolID;
-		chan_response_msg.opcode	= SPH_IPC_C2H_OP_CHAN_HWTRACE_STATE;
-		chan_response_msg.subOpcode	= state_cmd->subOpcode;
-		chan_response_msg.err	= hwtrace_err;
+	chan_response_msg.chanID	= chan->protocolID;
+	chan_response_msg.opcode	= SPH_IPC_C2H_OP_CHAN_HWTRACE_STATE;
+	chan_response_msg.subOpcode	= state_cmd->subOpcode;
+	chan_response_msg.err	= hwtrace_err;
 
-		sphcs_msg_scheduler_queue_add_msg(chan->respq, chan_response_msg.value, 2);
-	} else {
-		memset(&response_msg.value, 0x0, sizeof(response_msg));
-
-		response_msg.opcode	= SPH_IPC_C2H_OP_HWTRACE_STATE;
-		response_msg.subOpcode	= state_cmd->subOpcode;
-		response_msg.err	= hwtrace_err;
-
-		sphcs_msg_scheduler_queue_add_msg(sphcs->public_respq, &response_msg.value, 1);
-	}
+	sphcs_msg_scheduler_queue_add_msg(chan->respq, chan_response_msg.value, 2);
 }
 
 static void hwtrace_op_work_handler(struct work_struct *work)
@@ -1593,18 +1276,14 @@ static void hwtrace_op_work_handler(struct work_struct *work)
 
 	switch (op->type) {
 	case SPH_HWTRACE_WORK_ADD_RESOURCE:
-		if (op->chan)
-			sphcs_hwtrace_add_resource_2(sphcs, &op->add_resource_cmd);
-		else
-			sphcs_hwtrace_add_resource(sphcs, &op->add_resource_cmd);
+		sphcs_hwtrace_add_resource_2(sphcs, &op->add_resource_cmd);
 		break;
 	case SPH_HWTRACE_WORK_STATE:
 		sphcs_hwtrace_state(sphcs, &op->state_cmd, op->chan);
 		break;
 	};
 
-	if (op->chan)
-		sphcs_cmd_chan_put(op->chan);
+	sphcs_cmd_chan_put(op->chan);
 	kfree(op);
 }
 
@@ -1623,7 +1302,7 @@ void IPC_OPCODE_HANDLER(CHAN_HWTRACE_ADD_RESOURCE)(struct sphcs *sphcs,
 		return;
 	}
 
-	if ((chan && !hw_tracing->chan) || (chan->protocolID != hw_tracing->chan->protocolID)) {
+	if ((!hw_tracing->chan) || (chan->protocolID != hw_tracing->chan->protocolID)) {
 		sph_log_err(HWTRACE_LOG, "Err: add resource Invalid channel\n");
 		hwtrace_err = SPH_HWTRACE_ERR_INVALID_VALUE;
 		goto reply_err;
@@ -1655,41 +1334,6 @@ reply_err:
 
 	sphcs_msg_scheduler_queue_add_msg(chan->respq, response_msg.value, 2);
 	sphcs_cmd_chan_put(chan);
-}
-
-void IPC_OPCODE_HANDLER(HWTRACE_ADD_RESOURCE)(struct sphcs *sphcs,
-					      union h2c_HwTraceAddResource *msg)
-{
-	struct sphcs_hwtrace_cmd_work *work;
-	union c2h_HwTraceState response_msg;
-	struct sphcs_hwtrace_data *hw_tracing = &sphcs->hw_tracing;
-
-
-	work = kzalloc(sizeof(*work), GFP_NOWAIT);
-	if (unlikely(work == NULL)) {
-		sph_log_err(HWTRACE_LOG, "unable to allocate hwtrace_cmd_work object\n");
-		goto reply_err;
-	}
-
-	work->type = SPH_HWTRACE_WORK_ADD_RESOURCE;
-	work->add_resource_cmd.resource_size = msg->resource_size;
-	work->add_resource_cmd.descriptor_addr = msg->descriptor_addr;
-
-	INIT_WORK(&work->work, hwtrace_op_work_handler);
-	queue_work(hw_tracing->cmd_wq, &work->work);
-
-
-	return;
-
-
-reply_err:
-	memset(&response_msg.value, 0x0, sizeof(response_msg));
-
-	response_msg.opcode	= SPH_IPC_C2H_OP_HWTRACE_STATE;
-	response_msg.subOpcode	= HWTRACE_ADD_RESOURCE;
-	response_msg.err	= SPH_HWTRACE_ERR_NO_MEMORY;
-
-	sphcs_msg_scheduler_queue_add_msg(sphcs->public_respq, &response_msg.value, 1);
 }
 
 void IPC_OPCODE_HANDLER(CHAN_HWTRACE_STATE)(struct sphcs *sphcs,
@@ -1730,41 +1374,6 @@ reply_err:
 
 	sphcs_msg_scheduler_queue_add_msg(chan->respq, response_msg.value, 2);
 	sphcs_cmd_chan_put(chan);
-}
-
-void IPC_OPCODE_HANDLER(HWTRACE_STATE)(struct sphcs *sphcs,
-				       union h2c_HwTraceState *msg)
-{
-	struct sphcs_hwtrace_cmd_work *work;
-	union c2h_HwTraceState response_msg;
-	struct sphcs_hwtrace_data *hw_tracing = &sphcs->hw_tracing;
-
-
-	work = kzalloc(sizeof(*work), GFP_NOWAIT);
-	if (unlikely(work == NULL)) {
-		sph_log_err(HWTRACE_LOG, "unable to allocate hwtrace_cmd_work object\n");
-		goto reply_err;
-	}
-
-	work->type = SPH_HWTRACE_WORK_STATE;
-	work->state_cmd.subOpcode = msg->subOpcode;
-	work->state_cmd.resource_index = msg->val;
-
-	INIT_WORK(&work->work, hwtrace_op_work_handler);
-	queue_work(hw_tracing->cmd_wq, &work->work);
-
-
-	return;
-
-
-reply_err:
-	memset(&response_msg.value, 0x0, sizeof(response_msg));
-
-	response_msg.opcode	= SPH_IPC_C2H_OP_HWTRACE_STATE;
-	response_msg.subOpcode	= msg->subOpcode;
-	response_msg.err	= SPH_HWTRACE_ERR_NO_MEMORY;
-
-	sphcs_msg_scheduler_queue_add_msg(sphcs->public_respq, &response_msg.value, 1);
 }
 
 static int debug_status_show(struct seq_file *m, void *v)

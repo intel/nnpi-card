@@ -126,4 +126,6 @@ int cve_dev_alloc_and_map_cbdt(cve_dev_context_handle_t dev_ctx,
 int cve_dev_dealloc_and_unmap_cbdt(cve_dev_context_handle_t dev_ctx,
 			struct fifo_descriptor *fifo_desc);
 
+int ice_extend_sw_dev_contexts(struct ice_network *ntw);
+
 #endif /* _DEVICE_CONTEXT_H_ */

@@ -23,6 +23,10 @@ int inf_devres_create(uint16_t            protocolID,
 		      struct inf_devres **out_devres)
 {
 	struct inf_devres *devres;
+	int rc;
+
+	if ((usage_flags & IOCTL_INF_RES_P2P_SRC) && (usage_flags & IOCTL_INF_RES_P2P_DST))
+		return -EINVAL;
 
 	devres = kzalloc(sizeof(*devres), GFP_KERNEL);
 	if (unlikely(devres == NULL))
@@ -57,13 +61,22 @@ int inf_devres_create(uint16_t            protocolID,
 	devres->is_p2p_src = (devres->usage_flags & IOCTL_INF_RES_P2P_SRC) ? true : false;
 	devres->is_p2p_dst = (devres->usage_flags & IOCTL_INF_RES_P2P_DST) ? true : false;
 
-	if (inf_devres_is_p2p(devres))
-		sphcs_p2p_init_p2p_buf(devres->is_p2p_src, &devres->p2p_buf);
+	if (inf_devres_is_p2p(devres)) {
+		rc = sphcs_p2p_init_p2p_buf(devres->is_p2p_src, &devres->p2p_buf);
+		if (rc)
+			goto failed_to_init_p2p_buf;
+	}
 
 	SPH_SW_COUNTER_ADD(context->sw_counters, CTX_SPHCS_SW_COUNTERS_INFERENCE_DEVICE_RESOURCE_SIZE, size);
 
 	*out_devres = devres;
 	return 0;
+
+failed_to_init_p2p_buf:
+	kfree(devres);
+	inf_context_put(context);
+
+	return rc;
 }
 
 int inf_devres_attach_buf(struct inf_devres *devres,
@@ -190,7 +203,7 @@ static void release_devres(struct kref *kref)
 	SPH_SPIN_UNLOCK(&devres->context->lock);
 
 	if (inf_devres_is_p2p(devres))
-		inf_devres_remove_from_p2p(devres);
+		sphcs_p2p_remove_buffer(&devres->p2p_buf);
 
 	if (likely(devres->status == CREATED)) {
 		inf_devres_detach_buf(devres);
@@ -204,6 +217,7 @@ static void release_devres(struct kref *kref)
 		sphcs_send_event_report(g_the_sphcs,
 					SPH_IPC_DEVRES_DESTROYED,
 					0,
+					devres->context->chan->respq,
 					devres->context->protocolID,
 					devres->protocolID);
 
@@ -283,18 +297,14 @@ void inf_devres_del_req_from_queue(struct inf_devres   *devres,
 	list_del(&pos->node);
 	++devres->queue_version;
 
-	if (inf_devres_is_p2p(devres)) {
-		/* Notify src device */
-		if (devres->is_p2p_dst) {
-			sphcs_p2p_send_rel_cr(&devres->p2p_buf);
-			sphcs_p2p_ring_doorbell(&devres->p2p_buf);
-		}
-
-		/* On dst side - no data ready to read,
-		 * on src side - the dst side is not ready
-		 */
-		if (pos->read)
-			devres->p2p_buf.ready = false;
+	/* If the completed request has read from the dev res
+	 * and this dev res is p2p destination resource, mark the
+	 * resource as empty
+	 */
+	if (devres->is_p2p_dst && pos->read) {
+		sphcs_p2p_send_rel_cr(&devres->p2p_buf);
+		sphcs_p2p_ring_doorbell(&devres->p2p_buf);
+		devres->p2p_buf.ready = false;
 	}
 
 	SPH_SPIN_UNLOCK_IRQRESTORE(&devres->lock_irq, flags);
@@ -368,14 +378,4 @@ bool inf_devres_req_ready(struct inf_devres *devres, struct inf_exec_req *req, b
 
 	return ready;
 
-}
-
-void inf_devres_add_to_p2p(struct inf_devres *devres)
-{
-	sphcs_p2p_add_buffer(&devres->p2p_buf);
-}
-
-void inf_devres_remove_from_p2p(struct inf_devres *devres)
-{
-	sphcs_p2p_remove_buffer(&devres->p2p_buf);
 }

@@ -490,7 +490,8 @@ struct cve_device_group {
 	 */
 	u32 ice_max_freq;
 	struct debug_dump_conf dump_conf;
-	bool dump_ice_pmon;
+	bool dump_ice_mmu_pmon;
+	bool dump_ice_delphi_pmon;
 
 	/* PBO = BO with two ICEs */
 	/* Total PBO in system */
@@ -518,7 +519,7 @@ struct cve_device_group {
 	u8 in_pool_cntr;
 	u8 non_res_cntr;
 #endif
-	int trace_node_cnt;
+	u32 trace_node_cnt;
 	int trace_update_status;
 	struct trace_node_sysfs *node_group_sysfs;
 
@@ -926,6 +927,10 @@ struct ice_network {
 
 	/* Flag to disallow fw loading after exIR */
 	u8 exIR_performed;
+
+	u64 infer_buf_page_config[ICEDRV_PAGE_ALIGNMENT_MAX];
+	/* Number of buffers every CreateInfer desc must send */
+	u32 num_inf_buf;
 };
 
 struct ice_infer {
@@ -986,7 +991,9 @@ struct cve_ntw_buffer {
 	/* the allocation which is associated with this buffer */
 	cve_mm_allocation_t ntw_buf_alloc;
 	/* If positive, then this is InferBuffer. Index in Infer list. */
-	u64 index_in_inf;
+	int index_in_inf;
+	/* Is this a shared Infer surface*/
+	bool is_shared_surf;
 	u8 dump;
 };
 

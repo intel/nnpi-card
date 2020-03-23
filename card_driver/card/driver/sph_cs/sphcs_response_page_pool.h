@@ -30,12 +30,6 @@ struct sphcs_response_page_pool {
 extern struct sphcs_response_page_pool *g_sphcs_response_pools[];
 
 extern int sphcs_response_pool_get_response_page(uint32_t index, dma_addr_t *out_host_dma_addr, page_handle *out_host_page_hndl);
-extern int sphcs_response_pool_get_response_page_wait(uint32_t index, dma_addr_t *out_host_dma_addr, page_handle *out_host_page_hndl);
-
-void sphcs_response_pool_put_back_response_page(uint32_t index,
-				       dma_addr_t    pool_dma_addr,
-				       page_handle   pool_page_hndl);
-
 
 void IPC_OPCODE_HANDLER(HOST_RESPONSE_PAGES)(struct sphcs *sphcs,
 					union h2c_HostResponsePagesMsg *req);

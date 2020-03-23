@@ -449,7 +449,8 @@ static int inf_cpylst_req_sched(struct inf_exec_req *req)
 		 cpylst->copies[0]->card2Host,
 		 req->size,
 		 cpylst->n_copies,
-		 req->lli->num_lists));
+		 req->lli->num_lists,
+		 req->lli->num_elements));
 
 #if 0
 	if (SPH_SW_GROUP_IS_ENABLE(copy->sw_counters,
@@ -526,7 +527,8 @@ static int inf_cpylst_req_execute(struct inf_exec_req *req)
 		 cpylst->copies[0]->card2Host,
 		 req->size,
 		 req->cpylst->n_copies,
-		 req->lli->num_lists));
+		 req->lli->num_lists,
+		 req->lli->num_elements));
 
 #if 0
 
@@ -629,7 +631,8 @@ static void inf_cpylst_req_complete(struct inf_exec_req *req,
 		 cpylst->copies[0]->card2Host,
 		 req->size,
 		 req->cpylst->n_copies,
-		 req->lli->num_lists));
+		 req->lli->num_lists,
+		 req->lli->num_elements));
 
 #if 0
 	//TODO CPYLST counters
@@ -713,6 +716,7 @@ static void inf_cpylst_req_complete(struct inf_exec_req *req,
 					    //eventVal isn't 0 to differentiate
 					    //between CMD and cpylst
 					    SPH_IPC_CMDLIST_FINISHED,
+					    cmd->context->chan->respq,
 					    cmd->context->protocolID,
 					    cmd->protocolID,
 					    cpylst->idx_in_cmd);
@@ -723,6 +727,7 @@ static void inf_cpylst_req_complete(struct inf_exec_req *req,
 			sphcs_send_event_report(g_the_sphcs,
 						SPH_IPC_EXECUTE_CMD_COMPLETE,
 						0,
+						cmd->context->chan->respq,
 						cmd->context->protocolID,
 						cmd->protocolID);
 	}
@@ -754,6 +759,7 @@ static void send_cpylst_report(struct inf_exec_req *req,
 	sphcs_send_event_report_ext(g_the_sphcs,
 				    eventCode,
 				    eventVal,
+				    req->context->chan->respq,
 				    req->context->protocolID,
 				    req->cmd->protocolID,
 				    cpylst->idx_in_cmd);

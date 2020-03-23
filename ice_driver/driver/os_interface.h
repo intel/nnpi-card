@@ -321,8 +321,8 @@ struct ice_drv_memleak {
 	int ret = __cve_os_malloc_zero(size_bytes, out_ptr); \
 	if (mem_detect_en) \
 		cve_os_log(CVE_LOGLEVEL_ERROR, \
-		"Allocated non-dma block. size=%u vaddress=%p\n", \
-		(u32)size_bytes, *out_ptr); \
+		"Allocated non-dma block. size=%lu vaddress=%p\n", \
+		size_bytes, *out_ptr); \
 	ret; \
 })
 
@@ -520,7 +520,7 @@ int cve_os_write_user_memory(
  * returns : 0 on success, one of the following on error:
  *		   -ENOMEM : failed to allocate the memory
  */
-int __cve_os_malloc_zero(u32 size_bytes,
+int __cve_os_malloc_zero(size_t size_bytes,
 		void **out_ptr);
 
 /*

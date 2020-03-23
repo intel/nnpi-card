@@ -161,7 +161,7 @@ module_param(disable_embcb, int, 0);
 MODULE_PARM_DESC(disable_embcb, "Disable Embedded CB");
 
 module_param(core_mask, int, 0);
-MODULE_PARM_DESC(core_mask, "Disable TLC (0x1) | Disable IVP (0x2) | Disable ASIP0 (0x4) | Disable ASIP1 (0x8)");
+MODULE_PARM_DESC(core_mask, "Disable TLC (0x1) | Disable IVP (0x2)");
 
 module_param(enable_llc_config_via_axi_reg, int, 0);
 MODULE_PARM_DESC(enable_llc_config_via_axi_reg, "Enable llc config via axi regsiter");
@@ -722,7 +722,7 @@ struct ice_drv_memleak *g_leak_list;
 u32 mem_leak_count;
 #endif
 
-int __cve_os_malloc_zero(u32 size_bytes, void **out_ptr)
+int __cve_os_malloc_zero(size_t size_bytes, void **out_ptr)
 {
 	void *p = NULL;
 
@@ -1558,14 +1558,19 @@ int cve_probe_common(struct cve_os_device *linux_device, int dev_ind)
 	store_llc_max_freq();
 	store_ice_max_freq();
 
-	/* Keep only relevant bits */
-	core_mask = (core_mask & 0xF);
+	/* Keep only relevant bits and disable ASIP */
+	core_mask = (core_mask & 0x3);
+
 	if (core_mask)
 		disable_embcb = 1;
 
-	cve_os_log(CVE_LOGLEVEL_DEBUG,
+	core_mask |= (cfg_default.mmio_prog_cores_control_asip0_runstall_mask |
+		cfg_default.mmio_prog_cores_control_asip1_runstall_mask);
+
+	cve_os_log_default(CVE_LOGLEVEL_INFO,
 		"DISABLE_EMBCB=%u, CORE_MASK=0x%x\n",
 		disable_embcb, core_mask);
+
 	pe_reg_value = cve_os_read_idc_mmio(
 		&linux_device->idc_dev.cve_dev[0],
 			cfg_default.bar0_mem_icepe_offset);
@@ -2026,6 +2031,18 @@ static long cve_ioctl_misc(
 
 		}
 		break;
+	case CVE_IOCTL_REPORT_SHARED_SURFACES:
+		{
+			struct ice_report_ss *p = &kparam.report_ss;
+
+			cve_os_log(CVE_LOGLEVEL_DEBUG,
+					"CVE_IOCTL_REPORT_SHARED_SURFACES\n");
+			retval = cve_ds_handle_shared_surfaces(context_pid,
+					p->contextid,
+					p->networkid,
+					&p->ss_desc);
+		}
+		break;
 	case CVE_IOCTL_EXECUTE_INFER:
 		{
 			struct cve_execute_infer *p = &kparam.execute_infer;
@@ -2121,9 +2138,7 @@ static long cve_ioctl_misc(
 
 			cve_os_log(CVE_LOGLEVEL_DEBUG,
 					"CVE_IOCTL_GET_METADATA\n");
-			retval = cve_ds_get_metadata(
-					&p->icemask
-					);
+			retval = cve_ds_get_metadata(p);
 		}
 		break;
 	case ICE_IOCTL_HW_TRACE_CONFIG:

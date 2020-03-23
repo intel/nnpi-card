@@ -126,6 +126,7 @@ void inf_exec_error_list_add(struct inf_exec_error_list    *error_list,
 		sphcs_send_event_report_ext(g_the_sphcs,
 					    SPH_IPC_CONTEXT_EXEC_ERROR,
 					    err->cmd_type,
+					    error_list->context->chan->respq,
 					    error_list->context->protocolID,
 					    err->obj_id,
 					    err->devnet_id);

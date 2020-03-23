@@ -62,11 +62,11 @@
 #else
 #define SPH_SPIN_LOCK(x)            spin_lock(x)
 #define SPH_SPIN_LOCK_BH(x)         spin_lock_bh(x)
-#define SPH_SPIN_LOCK_IRQSAVE(x, f) spin_lock_irqsave(x, f)
+#define SPH_SPIN_LOCK_IRQSAVE(x, f) spin_lock_irqsave((x), (f))
 #endif
 
 #define SPH_SPIN_UNLOCK(x)               spin_unlock(x)
 #define SPH_SPIN_UNLOCK_BH(x)            spin_unlock_bh(x)
-#define SPH_SPIN_UNLOCK_IRQRESTORE(x, f) spin_unlock_irqrestore(x, f)
+#define SPH_SPIN_UNLOCK_IRQRESTORE(x, f) spin_unlock_irqrestore((x), (f))
 
 #endif

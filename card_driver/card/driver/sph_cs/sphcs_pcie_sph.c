@@ -57,25 +57,25 @@
 #define DMA_WRITE_INT_CLEAR_OFF         0x380058
 #define DMA_WRITE_ERR_STATUS_OFF        0x38005C
 
-#define DMA_CH_CONTROL1_OFF_WRCH(i)     (0x380200 + i*0x200)
-#define DMA_CH_CONTROL2_OFF_WRCH(i)     (0x380204 + i*0x200)
-#define DMA_TRANSFER_SIZE_OFF_WRCH(i)   (0x380208 + i*0x200)
-#define DMA_SAR_LOW_OFF_WRCH(i)         (0x38020C + i*0x200)
-#define DMA_SAR_HIGH_OFF_WRCH(i)        (0x380210 + i*0x200)
-#define DMA_DAR_LOW_OFF_WRCH(i)         (0x380214 + i*0x200)
-#define DMA_DAR_HIGH_OFF_WRCH(i)        (0x380218 + i*0x200)
-#define DMA_LLP_LOW_OFF_WRCH(i)         (0x38021C + i*0x200)
-#define DMA_LLP_HIGH_OFF_WRCH(i)        (0x380220 + i*0x200)
+#define DMA_CH_CONTROL1_OFF_WRCH(i)     (0x380200 + (i)*0x200)
+#define DMA_CH_CONTROL2_OFF_WRCH(i)     (0x380204 + (i)*0x200)
+#define DMA_TRANSFER_SIZE_OFF_WRCH(i)   (0x380208 + (i)*0x200)
+#define DMA_SAR_LOW_OFF_WRCH(i)         (0x38020C + (i)*0x200)
+#define DMA_SAR_HIGH_OFF_WRCH(i)        (0x380210 + (i)*0x200)
+#define DMA_DAR_LOW_OFF_WRCH(i)         (0x380214 + (i)*0x200)
+#define DMA_DAR_HIGH_OFF_WRCH(i)        (0x380218 + (i)*0x200)
+#define DMA_LLP_LOW_OFF_WRCH(i)         (0x38021C + (i)*0x200)
+#define DMA_LLP_HIGH_OFF_WRCH(i)        (0x380220 + (i)*0x200)
 
-#define DMA_CH_CONTROL1_OFF_RDCH(i)     (0x380300 + i*0x200)
-#define DMA_CH_CONTROL2_OFF_RDCH(i)     (0x380304 + i*0x200)
-#define DMA_TRANSFER_SIZE_OFF_RDCH(i)   (0x380308 + i*0x200)
-#define DMA_SAR_LOW_OFF_RDCH(i)         (0x38030C + i*0x200)
-#define DMA_SAR_HIGH_OFF_RDCH(i)        (0x380310 + i*0x200)
-#define DMA_DAR_LOW_OFF_RDCH(i)         (0x380314 + i*0x200)
-#define DMA_DAR_HIGH_OFF_RDCH(i)        (0x380318 + i*0x200)
-#define DMA_LLP_LOW_OFF_RDCH(i)         (0x38031C + i*0x200)
-#define DMA_LLP_HIGH_OFF_RDCH(i)        (0x380320 + i*0x200)
+#define DMA_CH_CONTROL1_OFF_RDCH(i)     (0x380300 + (i)*0x200)
+#define DMA_CH_CONTROL2_OFF_RDCH(i)     (0x380304 + (i)*0x200)
+#define DMA_TRANSFER_SIZE_OFF_RDCH(i)   (0x380308 + (i)*0x200)
+#define DMA_SAR_LOW_OFF_RDCH(i)         (0x38030C + (i)*0x200)
+#define DMA_SAR_HIGH_OFF_RDCH(i)        (0x380310 + (i)*0x200)
+#define DMA_DAR_LOW_OFF_RDCH(i)         (0x380314 + (i)*0x200)
+#define DMA_DAR_HIGH_OFF_RDCH(i)        (0x380318 + (i)*0x200)
+#define DMA_LLP_LOW_OFF_RDCH(i)         (0x38031C + (i)*0x200)
+#define DMA_LLP_HIGH_OFF_RDCH(i)        (0x380320 + (i)*0x200)
 
 /* LL mode local abort interrupt*/
 #define DMA_WRITE_LL_ERR_EN_OFF 0x380090
@@ -142,14 +142,14 @@
 /*
  * iATU registers
  */
-#define IATU_REGION_CTRL_1_INBOUND_OFF(i)    (0x300000 + 0x100 + i*0x200)
-#define IATU_REGION_CTRL_2_INBOUND_OFF(i)    (0x300000 + 0x104 + i*0x200)
-#define IATU_LWR_BASE_ADDR_INBOUND_OFF(i)    (0x300000 + 0x108 + i*0x200)
-#define IATU_UPPER_BASE_ADDR_INBOUND_OFF(i)  (0x300000 + 0x10C + i*0x200)
-#define IATU_LIMIT_ADDR_INBOUND_OFF(i)       (0x300000 + 0x110 + i*0x200)
-#define IATU_UPPER_LIMIT_ADDR_INBOUND_OFF(i) (0x300000 + 0x120 + i*0x200)
-#define IATU_LWR_TARGET_ADDR_INBOUND_OFF(i)  (0x300000 + 0x114 + i*0x200)
-#define IATU_UPPER_TARGET_ADDR_INBOUND_OFF(i)  (0x300000 + 0x118 + i*0x200)
+#define IATU_REGION_CTRL_1_INBOUND_OFF(i)    (0x300000 + 0x100 + (i)*0x200)
+#define IATU_REGION_CTRL_2_INBOUND_OFF(i)    (0x300000 + 0x104 + (i)*0x200)
+#define IATU_LWR_BASE_ADDR_INBOUND_OFF(i)    (0x300000 + 0x108 + (i)*0x200)
+#define IATU_UPPER_BASE_ADDR_INBOUND_OFF(i)  (0x300000 + 0x10C + (i)*0x200)
+#define IATU_LIMIT_ADDR_INBOUND_OFF(i)       (0x300000 + 0x110 + (i)*0x200)
+#define IATU_UPPER_LIMIT_ADDR_INBOUND_OFF(i) (0x300000 + 0x120 + (i)*0x200)
+#define IATU_LWR_TARGET_ADDR_INBOUND_OFF(i)  (0x300000 + 0x114 + (i)*0x200)
+#define IATU_UPPER_TARGET_ADDR_INBOUND_OFF(i)  (0x300000 + 0x118 + (i)*0x200)
 
 /* Amount of mapped memory - 64 MB */
 #define MAPPED_MEMORY_SIZE (64ULL << 20)
@@ -464,7 +464,7 @@ static void sph_warm_reset(void)
 	} else if (s_flr_mode != SPH_FLR_MODE_IGNORE) {
 		/*
 		 * Warm reset
-		 * Here we assume that the following argument was givven
+		 * Here we assume that the following argument was given
 		 * in the linux command line: "reboot=p,w"
 		 * That ensures that a warm reset will be initiated.
 		 */

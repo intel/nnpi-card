@@ -96,7 +96,7 @@ static inline long IS_ERR(const void *ptr) {
 #define ARRAY_SIZE(_a) (sizeof(_a) / sizeof(_a[0]))
 #endif
 
-void * kzalloc(uint32_t size_bytes, int flags);
+void * kzalloc(size_t size_bytes, int flags);
 void kfree(void * p);
 void * __get_free_page(int flags);
 void free_page(unsigned long p);

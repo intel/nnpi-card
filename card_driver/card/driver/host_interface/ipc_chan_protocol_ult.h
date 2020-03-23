@@ -39,7 +39,7 @@ union ULT2HwQMsg {
 
 	u64 value;
 };
-CHECK_MESSAGE_SIZE(union ULTHwQMsg, 1);
+CHECK_MESSAGE_SIZE(union ULT2HwQMsg, 1);
 
 union ULT2DmaPingMsg {
 	struct {
@@ -54,7 +54,7 @@ union ULT2DmaPingMsg {
 
 	u64 value;
 };
-CHECK_MESSAGE_SIZE(union ULTHwQMsg, 1);
+CHECK_MESSAGE_SIZE(union ULT2HwQMsg, 1);
 
 #pragma pack(pop)
 

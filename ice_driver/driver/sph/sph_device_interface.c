@@ -895,6 +895,30 @@ void ice_dump_hw_err_info(struct cve_device *ice)
 	__dump_gp_reg(ice);
 }
 
+void ice_dump_hw_cntr_info(struct ice_network *ntw)
+{
+	struct cve_hw_cntr_descriptor *head, *next;
+	uint32_t offset = IA_IICS_BASE +
+			cfg_default.bar0_mem_evctice0_offset;
+	uint32_t read_val;
+
+	head = ntw->cntr_list;
+	if (!head)
+		return;
+
+	next = head;
+
+	do {
+		read_val = cve_os_read_idc_mmio(ice_get_first_dev(),
+				offset + (32 * next->hw_cntr_id));
+
+		cve_os_log_default(CVE_LOGLEVEL_ERROR,
+			"Cntr[%d] = %d\n", next->hw_cntr_id, read_val);
+
+		next = cve_dle_next(next, list);
+	} while (next != head);
+}
+
 int init_platform_data(struct cve_device *cve_dev)
 {
 	return 0;
@@ -924,6 +948,14 @@ int set_ice_freq(void *ice_freq_config)
 	uint32_t ice_index = freq_config->ice_num;
 	uint32_t pcu_cr_thread_num = ice_index + 4;
 	struct cve_device_group *device_group = g_cve_dev_group_list;
+
+	if (ice_index >= NUM_ICE_UNIT) {
+		retval = -ICEDRV_KERROR_ICE_NODEV;
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+				"Error:%d ICE%d does not exist\n",
+				retval, ice_index);
+		return retval;
+	}
 
 	dev = cve_device_get(ice_index);
 	/* Check if this device is valid, might be NULL in case its masked */
@@ -1505,7 +1537,7 @@ static ssize_t store_ice_freq(struct kobject *kobj,
 	struct ice_hw_config_ice_freq freq_conf;
 	int ret = 0;
 
-	ret = sscanf(kobj->name, "ice%d", &dev_index);
+	ret = sscanf(kobj->name, "ice%u", &dev_index);
 	if (ret < 1) {
 		cve_os_log(CVE_LOGLEVEL_ERROR, "failed getting ice id %s\n",
 						kobj->name);
@@ -1659,11 +1691,13 @@ static int icebo_hw_config_llc_pmoninfo_sysfs_init(void)
 	return ret;
 }
 
+#if 0
 static void icebo_hw_config_llc_pmoninfo_sysfs_term(void)
 {
 	/*Remove the pmoninfo file in hwconfig kobject */
 	sysfs_remove_group(hwconfig_kobj, &llcpmon_attr_group);
 }
+#endif
 
 static int icebo_hw_config_llc_pmon_sysfs_init(struct icebo_desc *bo)
 {
@@ -1892,8 +1926,9 @@ ice_sysfs:
 		}
 		goto out;
 	}
-
+#if 0
 	icebo_hw_config_llc_pmoninfo_sysfs_term();
+#endif
 llcfreq_sysfs_free:
 	ice_hw_config_llc_sysfs_term();
 llcfreq_kobj_free:

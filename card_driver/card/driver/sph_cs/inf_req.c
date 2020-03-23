@@ -213,6 +213,7 @@ static void release_infreq(struct kref *kref)
 		sphcs_send_event_report_ext(g_the_sphcs,
 					SPH_IPC_INFREQ_DESTROYED,
 					0,
+					infreq->devnet->context->chan->respq,
 					infreq->devnet->context->protocolID,
 					infreq->protocolID,
 					infreq->devnet->protocolID);
@@ -598,60 +599,26 @@ static int inf_req_execute(struct inf_exec_req *req)
 static inline void infreq_send_req_fail(struct inf_exec_req *req,
 					enum event_val       eventVal)
 {
-	union c2h_InfreqFailed msg;
+	union c2h_ChanInfReqFailed chan_msg;
 	struct inf_req *infreq;
 
 	SPH_ASSERT(req->cmd_type == CMDLIST_CMD_INFREQ);
 
 	infreq = req->infreq;
-	if (infreq->devnet->context->chan != NULL) {
-		union c2h_ChanInfReqFailed chan_msg;
 
-		memset(chan_msg.value, 0, sizeof(chan_msg.value));
-		chan_msg.opcode = SPH_IPC_C2H_OP_CHAN_INFREQ_FAILED;
-		chan_msg.chanID = infreq->devnet->context->chan->protocolID;
-		chan_msg.netID = infreq->devnet->protocolID;
-		chan_msg.infreqID = infreq->protocolID;
-		chan_msg.reason = eventVal;
-		if (req->cmd != NULL) {
-			chan_msg.cmdID_valid = 1;
-			chan_msg.cmdID = req->cmd->protocolID;
-		}
-		sphcs_msg_scheduler_queue_add_msg(g_the_sphcs->public_respq,
-						  &chan_msg.value[0],
-						  sizeof(chan_msg.value) / sizeof(u64));
-		return;
-	} else if (req->cmd == NULL) {
-		sphcs_send_event_report_ext(g_the_sphcs,
-				SPH_IPC_SCHEDULE_INFREQ_FAILED,
-				eventVal,
-				infreq->devnet->context->protocolID,
-				infreq->protocolID,
-				infreq->devnet->protocolID);
-		return;
+	memset(chan_msg.value, 0, sizeof(chan_msg.value));
+	chan_msg.opcode = SPH_IPC_C2H_OP_CHAN_INFREQ_FAILED;
+	chan_msg.chanID = infreq->devnet->context->chan->protocolID;
+	chan_msg.netID = infreq->devnet->protocolID;
+	chan_msg.infreqID = infreq->protocolID;
+	chan_msg.reason = eventVal;
+	if (req->cmd != NULL) {
+		chan_msg.cmdID_valid = 1;
+		chan_msg.cmdID = req->cmd->protocolID;
 	}
-
-	msg.rep_msg.opcode = SPH_IPC_C2H_OP_INFREQ_FAILED;
-	msg.rep_msg.eventCode = SPH_IPC_SCHEDULE_INFREQ_FAILED;
-	msg.rep_msg.eventVal = eventVal;
-	msg.rep_msg.contextID = infreq->devnet->context->protocolID;
-	msg.rep_msg.ctxValid = 1;
-	msg.rep_msg.objID = infreq->protocolID;
-	msg.rep_msg.objValid = 1;
-	msg.rep_msg.objID_2 = infreq->devnet->protocolID;
-	msg.rep_msg.objValid_2 = 1;
-
-	msg.cmdID = req->cmd->protocolID;
-
-	sph_log_debug(SCHEDULE_COMMAND_LOG,
-		      "Sending infreq failure(%u) val=%u ctx_id=%u (valid=%u) objID=%u (valid=%u) objID_2=%u (valid=%u) cmdID=%u.\n",
-		      msg.rep_msg.eventCode,
-		      msg.rep_msg.eventVal,
-		      msg.rep_msg.contextID, msg.rep_msg.ctxValid,
-		      msg.rep_msg.objID, msg.rep_msg.objValid,
-		      msg.rep_msg.objID_2, msg.rep_msg.objValid_2,
-		      msg.cmdID);
-	sphcs_msg_scheduler_queue_add_msg(g_the_sphcs->public_respq, &msg.value[0], sizeof(msg));
+	sphcs_msg_scheduler_queue_add_msg(g_the_sphcs->public_respq,
+					  &chan_msg.value[0],
+					  sizeof(chan_msg.value) / sizeof(u64));
 }
 
 static void send_infreq_report(struct inf_exec_req *req,
@@ -819,6 +786,7 @@ static void inf_req_complete(struct inf_exec_req *req,
 			sphcs_send_event_report(g_the_sphcs,
 						SPH_IPC_ERROR_FATAL_ICE_ERROR,
 						infreq->devnet->context->protocolID,
+						NULL,
 						-1,
 						-1);
 
@@ -841,6 +809,7 @@ static void inf_req_complete(struct inf_exec_req *req,
 		sphcs_send_event_report(g_the_sphcs,
 					SPH_IPC_EXECUTE_CMD_COMPLETE,
 					0,
+					cmd->context->chan->respq,
 					cmd->context->protocolID,
 					cmd->protocolID);
 		DO_TRACE(trace_cmdlist(SPH_TRACE_OP_STATUS_COMPLETE,

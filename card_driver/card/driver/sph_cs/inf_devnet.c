@@ -226,6 +226,7 @@ static void release_devnet(struct kref *kref)
 		sphcs_send_event_report(g_the_sphcs,
 					SPH_IPC_DEVNET_DESTROYED,
 					0,
+					devnet->context->chan->respq,
 					devnet->context->protocolID,
 					devnet->protocolID);
 
@@ -246,7 +247,6 @@ int inf_devnet_put(struct inf_devnet *devnet)
 
 struct infreq_dma_data {
 	void           *vptr;
-	page_handle     host_dma_page_hndl;
 	page_handle     card_dma_page_hndl;
 	dma_addr_t      host_dma_addr;
 	dma_addr_t      card_dma_addr;
@@ -278,10 +278,9 @@ static int inf_req_create_dma_complete_callback(struct sphcs *sphcs,
 	unsigned long flags;
 	enum event_val val;
 
-	if (infreq->devnet->context->chan != NULL)
-		sphcs_cmd_chan_update_cmd_head(infreq->devnet->context->chan,
-					       0,  /* TODO: change to real rbID */
-					       SPH_PAGE_SIZE);
+	sphcs_cmd_chan_update_cmd_head(infreq->devnet->context->chan,
+				       0,  /* TODO: change to real rbID */
+				       SPH_PAGE_SIZE);
 
 	if (unlikely(status == SPHCS_DMA_STATUS_FAILED)) {
 		val = SPH_IPC_DMA_ERROR;
@@ -443,7 +442,7 @@ free_out:
 free_in:
 	kfree(inputs);
 send_error:
-	sphcs_send_event_report_ext(sphcs, SPH_IPC_CREATE_INFREQ_FAILED, val,
+	sphcs_send_event_report_ext(sphcs, SPH_IPC_CREATE_INFREQ_FAILED, val, infreq->devnet->context->chan->respq,
 				infreq->devnet->context->protocolID,
 				infreq->protocolID,
 				infreq->devnet->protocolID);
@@ -459,7 +458,6 @@ done:
 int inf_devnet_create_infreq(struct inf_devnet *devnet,
 			     uint16_t           protocolID,
 			     dma_addr_t         host_dma_addr,
-			     page_handle        host_page_hndl,
 			     uint16_t           dma_size)
 {
 	struct infreq_dma_data dma_data;
@@ -487,7 +485,6 @@ int inf_devnet_create_infreq(struct inf_devnet *devnet,
 		goto free_infreq;
 
 	dma_data.host_dma_addr = host_dma_addr;
-	dma_data.host_dma_page_hndl = host_page_hndl;
 	dma_data.infreq = infreq;
 #ifdef _DEBUG
 	dma_data.size = dma_size;

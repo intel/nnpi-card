@@ -128,7 +128,15 @@ enum ice_kerror_type {
 	/** Invalid MMU Conf reg offset */
 	ICEDRV_KERROR_INVALID_MMU_REG_OFFSET, /*[1146]*/
 	/** Network Reset not required */
-	ICEDRV_KERROR_NTW_RESET_NA /*[1147]*/
+	ICEDRV_KERROR_NTW_RESET_NA, /*[1147]*/
+	/** Invalid API Call */
+	ICEDRV_KERROR_INVALID_API_CALL, /*[1148]*/
+	/** Unexpected number of Buffers */
+	ICEDRV_KERROR_BUFFER_COUNT_MISMATCH, /*[1149]*/
+	/** Invalid Buffer index */
+	ICEDRV_KERROR_INVALID_BUFFER_IDX, /*[1150]*/
+	/** Invalid Buffer */
+	ICEDRV_KERROR_INVALID_BUFFER, /*[1151]*/
 };
 
 #endif /* _ICE_DRIVER_ERROR_H_ */

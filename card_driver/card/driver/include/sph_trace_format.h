@@ -33,8 +33,9 @@
 #define SPH_TRACE_DMA			 dma
 #define SPH_TRACE_INF_CREATE	 infer_create
 #define SPH_TRACE_INF_NET_SUBRES inf_net_subres
-#define SPH_TRACE_IPC			 ipc
+#define SPH_TRACE_IPC			 _ipc
 #define SPH_TRACE_MMIO			 pep_mmio
+#define SPH_TRACE_USER_DATA		 user_data
 
 #define SPH_TRACE_FIELD_STATE		"state"
 

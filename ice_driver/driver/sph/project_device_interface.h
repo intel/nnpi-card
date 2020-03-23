@@ -75,7 +75,7 @@ void perform_daemon_reset_node(struct hwtrace_job *job);
 void perform_daemon_reset(struct cve_device *ice_dev);
 int sw_debug_sysfs_init(void);
 void sw_debug_sysfs_term(void);
-
+void ice_dump_hw_cntr_info(struct ice_network *ntw);
 
 /* Init cve_dump register in the device
  * inputs: os_dev - os device handle;

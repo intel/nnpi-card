@@ -440,6 +440,32 @@ out:
 	return retval;
 }
 
+int ice_extend_sw_dev_contexts(struct ice_network *ntw)
+{
+	u32 i;
+	int retval = CVE_DEFAULT_ERROR_CODE;
+	struct dev_context *nc = NULL;
+
+	/* Create domain equal to number of ICE requirements of the network*/
+	for (i = 0; i < ntw->num_ice; i++) {
+
+		nc = ntw->dev_ctx[i];
+
+		retval = cve_osmm_extend_domain(
+				(uint64_t *)ntw->infer_buf_page_config,
+				nc->hdom);
+		if (retval < 0) {
+			cve_os_log(CVE_LOGLEVEL_ERROR,
+					"osmm_get_domain failed %d\n",
+					retval);
+			goto out;
+		}
+	}
+
+out:
+	return retval;
+}
+
 void cve_dev_get_emb_cb_list(cve_dev_context_handle_t hcontext,
 		cve_di_subjob_handle_t **out_embedded_cbs_subjobs)
 {

@@ -21,7 +21,7 @@
 
 #define SPH_COUNTER_SIZE			(sizeof(u64))
 
-#define SW_COUNTERS_TO_INTERNAL(a) ((struct sph_internal_sw_counters *)(((char *)a) - offsetof(struct sph_internal_sw_counters, sw_counters)))
+#define SW_COUNTERS_TO_INTERNAL(a) ((struct sph_internal_sw_counters *)(((char *)(a)) - offsetof(struct sph_internal_sw_counters, sw_counters)))
 
 #define MAX_STALE_ATTR_NAME_LEN    32
 

@@ -59,7 +59,7 @@ static int cve_dg_add_hw_counter(struct cve_device_group *p)
 {
 	int retval = CVE_DEFAULT_ERROR_CODE;
 	uint16_t i;
-	uint32_t sz;
+	size_t sz;
 	struct cve_hw_cntr_descriptor *hw_cntr_list;
 
 	sz = (sizeof(*hw_cntr_list) * NUM_COUNTER_REG);
@@ -116,7 +116,8 @@ static void cve_dg_remove_hw_counter(struct cve_device_group *p)
 static int __add_icebo_list(struct cve_device_group *dg)
 {
 	int retval = 0;
-	uint32_t sz, i;
+	size_t sz;
+	uint32_t i;
 	struct icebo_desc *bo_list;
 
 	sz = (sizeof(*bo_list) * MAX_NUM_ICEBO);
@@ -985,6 +986,11 @@ bool ice_dg_can_lazy_capture_ice(struct ice_network *ntw)
 		 *	2. In free list
 		 *	3. Last executing Ntw must be same as this
 		 */
+		if (!dev) {
+			cve_os_log(CVE_LOGLEVEL_ERROR,
+				"cve dev is NULL");
+			ASSERT(false);
+		}
 		if ((dev->power_state == ICE_POWER_OFF) ||
 			(dev->dev_ntw_id != ntw->network_id) ||
 			!dev->in_free_pool) {

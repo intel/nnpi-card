@@ -73,15 +73,8 @@ void hwtrace_init_debugfs(struct sphcs_hwtrace_data *hw_tracing,
 void IPC_OPCODE_HANDLER(CHAN_HWTRACE_ADD_RESOURCE)(struct sphcs *sphcs,
 						     union h2c_ChanHwTraceAddResource *msg);
 
-void IPC_OPCODE_HANDLER(HWTRACE_ADD_RESOURCE)(struct sphcs *sphcs,
-						     union h2c_HwTraceAddResource *msg);
-
 void IPC_OPCODE_HANDLER(CHAN_HWTRACE_STATE)(struct sphcs *sphcs,
 					    union h2c_ChanHwTraceState *msg);
-
-
-void IPC_OPCODE_HANDLER(HWTRACE_STATE)(struct sphcs *sphcs,
-					    union h2c_HwTraceState *msg);
 
 
 #endif //_SPHCS_HWTRACE_H

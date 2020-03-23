@@ -15,7 +15,7 @@ int sphcs_ctx_uids_init(void);
 void sphcs_ctx_uids_fini(void);
 
 #define CTX_UIDS_SET_UID(ctxid, uid) \
-	if (ctxid < 256) \
-		SPH_SW_COUNTER_SET(g_ctx_uids_counters, ctxid, uid)
+	if ((ctxid) < 256) \
+		SPH_SW_COUNTER_SET((g_ctx_uids_counters), (ctxid), (uid))
 
 #endif

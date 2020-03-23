@@ -323,43 +323,6 @@ out:
 	return ret;
 }
 
-static int __create_pt_copy(struct cve_lin_mm_domain *adom_src,
-		struct ice_mmu_config *mmu_config,
-		struct cve_lin_mm_domain *adom_dst)
-{
-	u32 i, l1_idx;
-	int retval = 0;
-
-	for (l1_idx = mmu_config->pde_start_idx;
-			l1_idx <= mmu_config->pde_end_idx;
-			l1_idx++) {
-
-		if (adom_src->pgd_vaddr[l1_idx] == INVALID_PAGE)
-			continue;
-
-		/* Allocate memory for new PT */
-		retval = __alloc_new_l2_page(adom_dst, mmu_config, l1_idx);
-		if (retval != 0) {
-			cve_os_log(CVE_LOGLEVEL_ERROR,
-				"__alloc_new_l2_page failed %d\n", retval);
-			goto release_pte;
-		}
-
-		/* Copy the contents of old PT to new PT */
-		memcpy(adom_dst->virtual_l1[l1_idx],
-			adom_src->virtual_l1[l1_idx],
-			PAGE_SIZE);
-	}
-
-	goto out;
-
-release_pte:
-	for (i = mmu_config->pde_start_idx; i < l1_idx; i++)
-		__dealloc_l2_page(adom_dst, i);
-out:
-	return retval;
-}
-
 /*
  * free a page in a page table
  * inputs : pt - the page to free
@@ -651,7 +614,6 @@ rollback:
 	goto out;
 }
 
-
 static void __configure_partition_sz(u64 *sz_per_page_alignment,
 		u64 *infer_buf_page_config, u64 *partition_sz_list)
 {
@@ -679,7 +641,15 @@ static void __configure_partition_sz(u64 *sz_per_page_alignment,
 	}
 
 	/* Divide the unused VA space among the partitions used for inference*/
-	max_active_infer = ((ICE_VA_HIGH_TOTAL_SZ - total_sz)/infer_sz);
+	max_active_infer = ((ICE_VA_HIGH_PHY_SZ - total_sz)/infer_sz);
+
+	cve_os_log(CVE_LOGLEVEL_DEBUG,
+		"Infer size requirement (Low, 32K, 16M, 32M) = (0x%llx, 0x%llx, 0x%llx, 0x%llx).MaxNumInfer=%d.\n)",
+		infer_buf_page_config[IOVA_PAGE_ALIGNMENT_LOW_32K],
+		infer_buf_page_config[IOVA_PAGE_ALIGNMENT_32K],
+		infer_buf_page_config[IOVA_PAGE_ALIGNMENT_16M],
+		infer_buf_page_config[IOVA_PAGE_ALIGNMENT_32M],
+		max_active_infer);
 
 	for (i = IOVA_PAGE_ALIGNMENT_32K; i < IOVA_PAGE_ALIGNMENT_MAX; i++) {
 		sz = (sz_per_page_alignment[i] +
@@ -693,6 +663,54 @@ static void __configure_partition_sz(u64 *sz_per_page_alignment,
 				"partition_sz_list[%d]:%llu MaxActiveInfer:%d\n",
 				i, partition_sz_list[i], max_active_infer);
 	}
+}
+
+static void __configure_extended_partition_sz(
+		u64 *infer_buf_page_config, u64 *partition_sz_list)
+{
+	u8 i;
+	u32 max_active_infer;
+	u64 sz, infer_sz = 0;
+	u64 sum = 0;
+
+	for (i = IOVA_PAGE_ALIGNMENT_32K; i < IOVA_PAGE_ALIGNMENT_MAX; i++)
+		infer_sz += infer_buf_page_config[i];
+
+	if (!infer_sz) {
+		cve_os_log(CVE_LOGLEVEL_DEBUG,
+			"Infer has zero buff size requirement\n");
+
+		memset(partition_sz_list, 0, IOVA_PAGE_ALIGNMENT_MAX *
+			sizeof(u64));
+
+		goto end;
+	}
+
+	/* Divide the unused VA space among the partitions used for inference*/
+	max_active_infer = ((ICE_VA_HIGH_TOTAL_SZ - ICE_VA_HIGH_PHY_SZ) /
+				infer_sz);
+
+	cve_os_log(CVE_LOGLEVEL_DEBUG,
+		"Infer size requirement (Low, 32K, 16M, 32M) = (0x%llx, 0x%llx, 0x%llx, 0x%llx).MaxNumInfer=%d.\n)",
+		infer_buf_page_config[IOVA_PAGE_ALIGNMENT_LOW_32K],
+		infer_buf_page_config[IOVA_PAGE_ALIGNMENT_32K],
+		infer_buf_page_config[IOVA_PAGE_ALIGNMENT_16M],
+		infer_buf_page_config[IOVA_PAGE_ALIGNMENT_32M],
+		max_active_infer);
+
+	for (i = IOVA_PAGE_ALIGNMENT_32K; i < IOVA_PAGE_ALIGNMENT_MAX; i++) {
+
+		sz = (infer_buf_page_config[i] * max_active_infer);
+
+		partition_sz_list[i] = round_up_cve_pagesize(sz,
+						ICE_PAGE_SZ_256M);
+		sum += partition_sz_list[i];
+	}
+
+	ASSERT(sum <= (ICE_VA_HIGH_TOTAL_SZ - ICE_VA_HIGH_PHY_SZ));
+
+end:
+	return;
 }
 
 static void __do_mmu_config(struct cve_lin_mm_domain *domain,
@@ -742,6 +760,21 @@ static void __do_mmu_config(struct cve_lin_mm_domain *domain,
 				_sz_per_page_alignment[IOVA_PAGE_ALIGNMENT_32M];
 			end = round_up_cve_pagesize(end, ICE_PAGE_SZ_256M);
 			mmu_config->va_end = end;
+			break;
+		case MEM_PARTITION_HIGHER_32KB:
+			__mmu_config_35bit_va_page_32K_high(mmu_config);
+			mmu_config->va_start = end;
+			mmu_config->va_end = end;
+			break;
+		case MEM_PARTITION_HIGHER_16MB:
+			__mmu_config_35bit_va_page_16M(mmu_config);
+			mmu_config->va_start = end;
+			mmu_config->va_end = end;
+			break;
+		case MEM_PARTITION_HIGHER_32MB:
+			__mmu_config_35bit_va_page_32M(mmu_config);
+			mmu_config->va_start = end;
+			mmu_config->va_end = end;
 		}
 
 		mmu_config->pde_start_idx =
@@ -759,7 +792,59 @@ static void __do_mmu_config(struct cve_lin_mm_domain *domain,
 
 }
 
-int lin_mm_domain_init(u8 id, u64 *sz_per_page_alignment,
+static void __do_extended_mmu_config(struct cve_lin_mm_domain *domain,
+		u64 *infer_buf_page_config)
+{
+	u8 partition = MEM_PARTITION_HIGHER_32KB;
+	struct ice_mmu_config *mmu_config;
+	u64 end = 0;
+	u64 _sz_per_page_alignment[IOVA_PAGE_ALIGNMENT_MAX] = {0};
+
+	__configure_extended_partition_sz(infer_buf_page_config,
+			_sz_per_page_alignment);
+
+	for (; partition < ICE_MEM_MAX_PARTITION; partition++) {
+		mmu_config = &domain->mmu_config[partition];
+		switch (partition) {
+		case MEM_PARTITION_HIGHER_32KB:
+			__mmu_config_35bit_va_page_32K_high(mmu_config);
+			mmu_config->va_start = ICE_VA_RANGE_HIGHER_32KB_START;
+			end = mmu_config->va_start +
+				_sz_per_page_alignment[IOVA_PAGE_ALIGNMENT_32K];
+			mmu_config->va_end = end;
+			break;
+		case MEM_PARTITION_HIGHER_16MB:
+			__mmu_config_35bit_va_page_16M(mmu_config);
+			mmu_config->va_start = end;
+			end += _sz_per_page_alignment[IOVA_PAGE_ALIGNMENT_16M];
+			mmu_config->va_end = end;
+			break;
+		case MEM_PARTITION_HIGHER_32MB:
+			__mmu_config_35bit_va_page_32M(mmu_config);
+			mmu_config->va_start = end;
+			end += _sz_per_page_alignment[IOVA_PAGE_ALIGNMENT_32M];
+			mmu_config->va_end = end;
+			break;
+		default:
+			ASSERT(false);
+		}
+
+		mmu_config->pde_start_idx =
+			(mmu_config->va_start/ICE_PAGE_SZ_32M);
+		mmu_config->pde_end_idx =
+			((mmu_config->va_end - 1)/ICE_PAGE_SZ_32M);
+		cve_os_log(CVE_LOGLEVEL_DEBUG,
+				"pa_width:%d pa_shift:%d page_shift:%d va_width:%d, page_sz:%u VaStart:0x%llx VaEnd:0x%llx\n",
+				ICE_DEFAULT_PA_WIDTH, ICE_DEFAULT_PA_SHIFT,
+				mmu_config->page_shift, ICE_DEFAULT_VA_WIDTH,
+				mmu_config->page_sz,
+				mmu_config->va_start,
+				mmu_config->va_end);
+	}
+
+}
+
+static int lin_mm_domain_init(u8 id, u64 *sz_per_page_alignment,
 		u64 *infer_buf_page_config,
 		struct cve_lin_mm_domain **out_cve_domain)
 {
@@ -784,6 +869,10 @@ int lin_mm_domain_init(u8 id, u64 *sz_per_page_alignment,
 	mmu_config = &cve_domain->mmu_config[ICE_MEM_BASE_PARTITION];
 	__do_mmu_config(cve_domain, sz_per_page_alignment,
 			infer_buf_page_config);
+
+	memset(cve_domain->page_sz_reg_config_arr, 0,
+		ICE_PAGE_SZ_CONFIG_REG_COUNT *
+		sizeof(cve_domain->page_sz_reg_config_arr[0]));
 
 	__config_page_sz_reg_array(cve_domain);
 
@@ -812,7 +901,7 @@ int lin_mm_domain_init(u8 id, u64 *sz_per_page_alignment,
 		goto out;
 	}
 
-	for (; index < ICE_MEM_MAX_PARTITION; index++) {
+	for (; index < MEM_PARTITION_HIGHER_32KB; index++) {
 		page_shift = mmu_config[index].page_shift;
 		va_end_page = ICE_VA_LAST_PAGE(mmu_config[index].va_end,
 				page_shift);
@@ -873,6 +962,75 @@ out:
 			OS_FREE(cve_domain, sizeof(*cve_domain));
 		}
 	}
+	FUNC_LEAVE();
+	return retval;
+}
+
+/* Do not call if CreateInfer does not contain unique IFM/OFM */
+static int lin_mm_domain_extend(u64 *infer_buf_page_config,
+		struct cve_lin_mm_domain *cve_domain)
+{
+	struct ice_mmu_config *mmu_config = NULL;
+	int retval;
+	u64 va_start_page, va_end_page;
+	u8 page_shift, index = 0;
+
+	FUNC_ENTER();
+
+	__do_extended_mmu_config(cve_domain, infer_buf_page_config);
+
+	__config_page_sz_reg_array(cve_domain);
+
+	mmu_config = &cve_domain->mmu_config[ICE_MEM_BASE_PARTITION];
+
+	for (index = MEM_PARTITION_HIGHER_32KB; index < ICE_MEM_MAX_PARTITION;
+		index++) {
+
+		page_shift = mmu_config[index].page_shift;
+		va_end_page = ICE_VA_LAST_PAGE(mmu_config[index].va_end,
+				page_shift);
+		va_start_page = ICE_VA_FIRST_PAGE(mmu_config[index].va_start,
+				page_shift);
+
+
+		/* Ensure that ranges starts/end on 32 MB (1 << 25) boundary:
+		 * - each PD entry defines 4MB address space
+		 * - each PAGE_SIZE MMU register define page size for 8 entries
+		 */
+		ASSERT(IS_ALIGNED(mmu_config[index].va_start,
+					BIT(ICE_PAGE_SIZE_REG_SHIFT)));
+		ASSERT(IS_ALIGNED((mmu_config[index].va_end),
+					BIT(ICE_PAGE_SIZE_REG_SHIFT)));
+
+
+		cve_os_log(CVE_LOGLEVEL_DEBUG,
+				"[PT] Init iova allocator bottom=0x%llx top=0x%llx\n",
+				va_start_page, va_end_page);
+		retval = cve_iova_allocator_init(va_start_page, va_end_page,
+				&cve_domain->iova_allocator[index]);
+		if (retval != 0) {
+			cve_os_log(CVE_LOGLEVEL_ERROR,
+					"cve_iova_allocator_init failed %d\n",
+					retval);
+			goto err_iova_init;
+		}
+
+	}
+
+	retval = 0;
+
+	FUNC_LEAVE();
+	return retval;
+
+err_iova_init:
+	{
+		u32 i = MEM_PARTITION_HIGHER_32KB;
+
+		for (; i < index; i++)
+			cve_iova_allocator_destroy(
+					&cve_domain->iova_allocator[i]);
+	}
+
 	FUNC_LEAVE();
 	return retval;
 }
@@ -939,6 +1097,28 @@ out:
 	return retval;
 }
 
+int cve_osmm_extend_domain(u64 *infer_buf_page_config,
+		os_domain_handle hdomain)
+{
+	int retval = -ENOMEM;
+	struct cve_lin_mm_domain *cve_domain =
+		(struct cve_lin_mm_domain *)hdomain;
+
+	FUNC_ENTER();
+
+	retval = lin_mm_domain_extend(infer_buf_page_config, cve_domain);
+	if (retval != 0) {
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+			"lin_mm_domain_extend failed %d\n", retval);
+		goto out;
+	}
+
+	retval = 0;
+out:
+	FUNC_LEAVE();
+	return retval;
+}
+
 void cve_osmm_put_domain(os_domain_handle hdom)
 {
 	struct cve_lin_mm_domain *cve_domain = (struct cve_lin_mm_domain *)hdom;
@@ -996,86 +1176,5 @@ static void __config_page_sz_for_partition(struct cve_lin_mm_domain *domain,
 			(val << 4) | val;
 		domain->page_sz_reg_config_arr[idx] = reg_val;
 	}
-}
-
-int lin_mm_domain_copy(
-	struct cve_lin_mm_domain *adom_src,
-	struct cve_lin_mm_domain **adom_dst)
-{
-	int retval = 0;
-	struct ice_mmu_config hw_reserved_mmu_config;
-	struct ice_mmu_config *mmu_config =
-		&adom_src->mmu_config[ICE_MEM_BASE_PARTITION];
-	u8 partition_id = ICE_MEM_BASE_PARTITION;
-	struct cve_lin_mm_domain *dom = NULL;
-
-	FUNC_ENTER();
-	cve_os_log(CVE_LOGLEVEL_DEBUG, "Copying Domain info\n");
-
-	retval = OS_ALLOC_ZERO(sizeof(*dom), (void **)&dom);
-	if (retval != 0) {
-		cve_os_log(CVE_LOGLEVEL_ERROR, "os_alloc_zero failed %d\n",
-			retval);
-		goto out;
-	}
-	/* Creating page Directory */
-	retval = alloc_page_table(&dom->pgd_vaddr,
-			&dom->pgd_dma_handle);
-	if (retval != 0) {
-		cve_os_log(CVE_LOGLEVEL_ERROR,
-				"alloc_page_table failed %d\n", retval);
-		goto free_dom;
-	}
-
-	/* Allocate memory for Page Table VA's placeholder */
-	retval = OS_ALLOC_ZERO(PAGE_SIZE * 2,
-			(void **)&dom->virtual_l1);
-	if (retval != 0) {
-		cve_os_log(CVE_LOGLEVEL_ERROR,
-				"OS_ALLOC_ZERO failed %d\n", retval);
-		goto free_pt;
-	}
-
-	memcpy(dom->mmu_config, adom_src->mmu_config,
-		sizeof(struct ice_mmu_config) * ICE_MEM_MAX_PARTITION);
-	memcpy(dom->page_sz_reg_config_arr, adom_src->page_sz_reg_config_arr,
-		sizeof(u32) * ICE_PAGE_SZ_CONFIG_REG_COUNT);
-
-	for (; partition_id < ICE_MEM_MAX_PARTITION; partition_id++) {
-		mmu_config = &dom->mmu_config[partition_id];
-		retval = __create_pt_copy(adom_src, mmu_config, dom);
-		if (retval != 0) {
-			cve_os_log(CVE_LOGLEVEL_ERROR,
-					"__create_pt_copy failed %d\n", retval);
-			goto release_mem;
-		}
-	}
-
-	/* Copy ICE BAR1 mapping */
-	mmu_config = &hw_reserved_mmu_config;
-	__mmu_config_35bit_va_page_32K_BAR1(mmu_config);
-
-	retval = __create_pt_copy(adom_src, mmu_config, dom);
-	if (retval != 0) {
-		cve_os_log(CVE_LOGLEVEL_ERROR,
-				"__create_pt_copy failed %d\n", retval);
-		goto release_mem;
-	}
-
-	*adom_dst = dom;
-
-	cve_os_log(CVE_LOGLEVEL_DEBUG, "Domain info copied\n");
-	goto out;
-
-release_mem:
-	OS_FREE(dom->virtual_l1, PAGE_SIZE * 2);
-free_pt:
-	free_page_table(dom->pgd_vaddr,
-		&dom->pgd_dma_handle);
-free_dom:
-	OS_FREE(dom, sizeof(*dom));
-out:
-	FUNC_LEAVE();
-	return retval;
 }
 

@@ -32,10 +32,10 @@
 	u32 i;                                           \
 	for (i = 0; i < name.len; i++) {                 \
 		if (!name.elem[i].count) {               \
-			name.elem[i].mask = imask;       \
+			name.elem[i].mask = (imask);       \
 			name.elem[i].count = 1;          \
 			break;                           \
-		} else if (name.elem[i].mask == imask) { \
+		} else if (name.elem[i].mask == (imask)) { \
 			name.elem[i].count++;            \
 			break;                           \
 		}                                        \

@@ -61,12 +61,10 @@ enum SPHCS_SW_COUNTERS_GLOBAL {
 	SPHCS_SW_COUNTERS_INFERENCE_COMPLETED_INF_REQ,
 	SPHCS_SW_COUNTERS_ECC_CORRECTABLE_ERROR,
 	SPHCS_SW_COUNTERS_ECC_UNCORRECTABLE_ERROR,
-	SPHCS_SW_COUNTERS_ECC_UNCORRECTABLE_ERROR_FATAL,
 	SPHCS_SW_COUNTERS_MCE_UNCORRECTABLE_ERROR,
-	SPHCS_SW_COUNTERS_MCE_UNCORRECTABLE_ERROR_FATAL,
 };
 
-#define SPHCS_SW_DMA_GLOBAL_COUNTER_H2C_COUNT(channel) (SPHCS_SW_COUNTERS_DMA_0_H2C_COUNT + channel * 6)
+#define SPHCS_SW_DMA_GLOBAL_COUNTER_H2C_COUNT(channel) (SPHCS_SW_COUNTERS_DMA_0_H2C_COUNT + (channel) * 6)
 #define SPHCS_SW_DMA_GLOBAL_COUNTER_H2C_BYTES(channel) (SPHCS_SW_DMA_GLOBAL_COUNTER_H2C_COUNT(channel) + 1)
 #define SPHCS_SW_DMA_GLOBAL_COUNTER_H2C_BUSY(channel)  (SPHCS_SW_DMA_GLOBAL_COUNTER_H2C_COUNT(channel) + 2)
 #define SPHCS_SW_DMA_GLOBAL_COUNTER_C2H_COUNT(channel) (SPHCS_SW_DMA_GLOBAL_COUNTER_H2C_COUNT(channel) + 3)
@@ -176,15 +174,9 @@ static const struct sph_sw_counter_info g_sphcs_sw_counters_info[] = {
 	 /* SPHCS_SW_COUNTERS_ECC_UNCORRECTABLE_ERROR */
 	 {SPHCS_SW_COUNTERS_GROUP_MCE, "uncorrectable_ecc",
 	 "[r]number of uncorrectable ecc errors"},
-	 /* SPHCS_SW_COUNTERS_ECC_UNCORRECTABLE_ERROR_FATAL */
-	 {SPHCS_SW_COUNTERS_GROUP_MCE, "uncorrectable_fatal_ecc",
-	 "[r]number of fatal uncorrectable ecc errors"},
 	 /* SPHCS_SW_COUNTERS_MCE_UNCORRECTABLE_ERROR */
 	 {SPHCS_SW_COUNTERS_GROUP_MCE, "uncorrectable",
 	 "[r]number of uncorrectable general MCE event (not ecc related)"},
-	 /* SPHCS_SW_COUNTERS_MCE_UNCORRECTABLE_ERROR_FATAL */
-	 {SPHCS_SW_COUNTERS_GROUP_MCE, "uncorrectable_fatal",
-	 "[r]number of fatal uncorrectable general MCE events (not ecc related)"},
 };
 
 static const struct sph_sw_counters_set g_sw_counters_set_global = {

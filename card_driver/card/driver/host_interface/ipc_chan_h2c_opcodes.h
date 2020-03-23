@@ -53,6 +53,7 @@ H2C_OPCODE(CHAN_EXEC_ERROR_LIST, 50, union h2c_ExecErrorList)
 H2C_OPCODE(CHAN_P2P_GET_CR_FIFO, 51, union h2c_ChanGetCrFIFO)
 H2C_OPCODE(CHAN_P2P_CONNECT_PEERS, 52, union h2c_ChanConnectPeers)
 H2C_OPCODE(CHAN_P2P_UPDATE_PEER_DEV, 53, union h2c_ChanUpdatePeerDev)
+H2C_OPCODE(CHAN_TRACE_USER_DATA, 54, union h2c_ChanTraceUserData)
 
 
 #ifdef ULT

@@ -76,6 +76,25 @@ static inline int is_dsram_error(u32 status)
 			!= 0);
 }
 
+static inline int is_fatal_error_in_ice(u32 status)
+{
+	return ((status &
+		(cfg_default.mmio_asip2host_intr_mask |
+		cfg_default.mmio_ivp2host_intr_mask |
+		cfg_default.mmio_intr_status_mmu_page_no_exe_perm_mask |
+		cfg_default.mmio_intr_status_mmu_err_mask |
+		cfg_default.mmio_intr_status_mmu_page_none_perm_mask |
+		cfg_default.mmio_intr_status_mmu_soc_bus_err_mask |
+		cfg_default.mmio_intr_status_tlc_panic_mask)) != 0);
+}
+
+static inline int is_other_wd_error(u32 status)
+{
+	return ((status & (cfg_default.mmio_btrs_wd_intr_mask |
+		cfg_default.mmio_sec_wd_intr_mask |
+		cfg_default.mmio_cnc_wd_intr_mask)) != 0);
+}
+
 static inline int is_tlc_bp_interrupt(u32 status)
 {
 	return ((status &
@@ -165,8 +184,9 @@ static inline int is_cve_error(u32 status)
 			is_wd_error(status) ||
 			is_ice_dump_completed(status) ||
 			is_tlc_panic(status) ||
-			is_dsram_error(status)
-	);
+			is_dsram_error(status) ||
+			is_other_wd_error(status) ||
+			is_fatal_error_in_ice(status));
 }
 
 static inline u32 is_single_ecc_err(u32 status)

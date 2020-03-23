@@ -60,7 +60,7 @@ void aperfmperf_snapshot_khz(void *ptr)
 	cpu_stat->aperf *= cpu_khz;
 
 	//Frequency calculation
-	//aperf_delta / mperf_delta = frequency in Khz
+	//aperf_delta / mperf_delta = frequency in Mhz
 }
 
 

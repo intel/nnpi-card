@@ -21,8 +21,8 @@
 #ifndef _SPHPB_TRACE_FORMAT_H
 #define _SPHPB_TRACE_FORMAT_H
 
-#define SPHPB_TRACE_POWER_REQUEST		power_request
-#define SPHPB_TRACE_POWER_SET			power_set
+#define SPHPB_TRACE_POWER_REQUEST		_power_request
+#define SPHPB_TRACE_POWER_SET			_power_set
 
 #define SPH_TRACE_STR_POWER_START		"s"   //start	- power setting setup start
 #define SPH_TRACE_STR_POWER_STOP		"c"   //stop	- power setting setup stop
