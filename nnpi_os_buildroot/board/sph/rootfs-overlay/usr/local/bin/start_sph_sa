@@ -5,12 +5,12 @@ echo "sph_platform_start_sa Enter"
 
 # load sph_local module
 echo "initializing sph_local"
-insmod /opt/intel_nnpi/modules/sph_local.ko
-error_check "insmod sph_local.ko"
+modprobe sph_local.ko
+error_check "modprobe sph_local.ko"
 
 # load host modules
 echo "initializing sphdrv"
-insmod /opt/intel_nnpi/modules/sphdrv.ko
-error_check "insmod sphdrv.ko"
+modprobe sphdrv.ko
+error_check "modprobe sphdrv.ko"
 
 echo "sph_platform_start_sa Exit"

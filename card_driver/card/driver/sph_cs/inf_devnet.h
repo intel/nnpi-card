@@ -29,6 +29,7 @@ struct inf_devnet {
 	void               *magic;
 	struct kref         ref;
 	uint16_t            protocolID;
+	uint64_t            user_handle;
 	struct inf_context *context;
 	struct list_head    devres_list;
 	uint32_t            num_devres;
@@ -45,7 +46,7 @@ struct inf_devnet {
 
 	void               *edit_data;
 
-	struct sph_sw_counters *sw_counters;
+	struct nnp_sw_counters *sw_counters;
 	bool serial_infreq_exec;
 };
 

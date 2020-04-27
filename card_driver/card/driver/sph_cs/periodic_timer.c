@@ -12,7 +12,7 @@
 #include "periodic_timer.h"
 #include <linux/kernel.h>
 #include <linux/slab.h>
-#include "sph_debug.h"
+#include "nnp_debug.h"
 #include "sph_log.h"
 
 
@@ -32,27 +32,27 @@ static void periodic_timer_handler(struct timer_list *timer)
 #else  // timer_setup starting linux kernel V4.15
 	timer_data = from_timer(timer_data, timer, periodic_timer);
 #endif
-	SPH_SPIN_LOCK_IRQSAVE(&timer_data->lock_irq, flags);
+	spin_lock_irqsave(&timer_data->lock_irq, flags);
 	if (list_empty(&timer_data->cb_data_list)) {
-		SPH_SPIN_UNLOCK_IRQRESTORE(&timer_data->lock_irq, flags);
+		spin_unlock_irqrestore(&timer_data->lock_irq, flags);
 		return;
 	}
 
 	list_for_each_entry_safe(data, m, &timer_data->cb_data_list, node) {
 		if (data->removed) {
 			list_del(&data->node);
-			SPH_SPIN_UNLOCK_IRQRESTORE(&timer_data->lock_irq, flags);
+			spin_unlock_irqrestore(&timer_data->lock_irq, flags);
 			kfree(data); //TODO GLEB: not safe unlock in list iteration
-			SPH_SPIN_LOCK_IRQSAVE(&timer_data->lock_irq, flags);
+			spin_lock_irqsave(&timer_data->lock_irq, flags);
 		}
 	}
 
 	if (list_empty(&timer_data->cb_data_list)) {
-		SPH_SPIN_UNLOCK_IRQRESTORE(&timer_data->lock_irq, flags);
+		spin_unlock_irqrestore(&timer_data->lock_irq, flags);
 		return;
 	}
 
-	SPH_SPIN_UNLOCK_IRQRESTORE(&timer_data->lock_irq, flags);
+	spin_unlock_irqrestore(&timer_data->lock_irq, flags);
 
 
 	list_for_each_entry(data, &timer_data->cb_data_list, node) {
@@ -73,9 +73,9 @@ static uint64_t add_cb_data(struct periodic_timer *timer, struct periodic_timer_
 	memcpy(new_data, data, sizeof(*data));
 	new_data->removed = false;
 
-	SPH_SPIN_LOCK_IRQSAVE(&timer->lock_irq, flags);
+	spin_lock_irqsave(&timer->lock_irq, flags);
 	list_add_tail(&new_data->node, &timer->cb_data_list);
-	SPH_SPIN_UNLOCK_IRQRESTORE(&timer->lock_irq, flags);
+	spin_unlock_irqrestore(&timer->lock_irq, flags);
 
 	return (uint64_t)(uintptr_t)new_data;
 }
@@ -122,13 +122,13 @@ void periodic_timer_remove_data(struct periodic_timer *timer, uint64_t data_hand
 	struct periodic_timer_data *data;
 	bool   allDataRemoved = true;
 
-	SPH_SPIN_LOCK_IRQSAVE(&timer->lock_irq, flags);
+	spin_lock_irqsave(&timer->lock_irq, flags);
 	list_for_each_entry(data, &timer->cb_data_list, node) {
 		if ((uint64_t)(uintptr_t)data == data_handler)
 			data->removed = true;
 		allDataRemoved &= data->removed;
 	}
-	SPH_SPIN_UNLOCK_IRQRESTORE(&timer->lock_irq, flags);
+	spin_unlock_irqrestore(&timer->lock_irq, flags);
 
 	if (allDataRemoved) //call timer handler immediately
 		mod_timer(&timer->periodic_timer, jiffies);

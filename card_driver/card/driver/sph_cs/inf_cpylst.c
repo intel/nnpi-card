@@ -16,11 +16,11 @@
 #include "inf_context.h"
 #include "inf_copy.h"
 #include "inf_exec_req.h"
-#include "sph_error.h"
+#include "nnp_error.h"
 #include "sphcs_trace.h"
 
 static int inf_cpylst_req_sched(struct inf_exec_req *req);
-static bool inf_cpylst_req_ready(struct inf_exec_req *req);
+static enum EXEC_REQ_READINESS inf_cpylst_req_ready(struct inf_exec_req *req);
 static int inf_cpylst_req_execute(struct inf_exec_req *req);
 static void inf_cpylst_req_complete(struct inf_exec_req *req,
 				    int                  err,
@@ -30,6 +30,11 @@ static void send_cpylst_report(struct inf_exec_req *req,
 			       enum event_val       eventVal);
 static int inf_req_cpylst_put(struct inf_exec_req *req);
 static int inf_cpylst_migrate_priority(struct inf_exec_req *req, uint8_t priority);
+static void treat_cpylst_failure(struct inf_exec_req *req,
+				 enum event_val       eventVal,
+				 const void          *error_msg,
+				 int32_t              error_msg_size);
+
 static void inf_cpylst_req_release(struct kref *kref);
 
 struct func_table const s_cpylst_funcs = {
@@ -40,6 +45,7 @@ struct func_table const s_cpylst_funcs = {
 	.send_report = send_cpylst_report,
 	.obj_put = inf_req_cpylst_put,
 	.migrate_priority = inf_cpylst_migrate_priority,
+	.treat_req_failure = treat_cpylst_failure,
 
 	/* This function should not be called directly, use inf_exec_req_put instead */
 	.release = inf_cpylst_req_release
@@ -51,22 +57,22 @@ static int cpylst_complete_cb(struct sphcs *sphcs, void *ctx, const void *user_d
 	struct inf_exec_req *req = (struct inf_exec_req *)ctx;
 //	struct inf_cpylst *cpylst;
 
-	SPH_ASSERT(req != NULL);
+	NNP_ASSERT(req != NULL);
 
 	if (unlikely(status == SPHCS_DMA_STATUS_FAILED)) {
-		err = -SPHER_DMA_ERROR;
+		err = -NNPER_DMA_ERROR;
 	} else {
 		/* if status is not an error - it must be done */
-		SPH_ASSERT(status == SPHCS_DMA_STATUS_DONE);
+		NNP_ASSERT(status == SPHCS_DMA_STATUS_DONE);
 		err = 0;
 	}
 
 #if 0
 	cpylst = req->cpylst;
 	if (xferTimeUS > 0 &&
-	    SPH_SW_GROUP_IS_ENABLE(cpylst->sw_counters,
+	    NNP_SW_GROUP_IS_ENABLE(cpylst->sw_counters,
 				   COPY_SPHCS_SW_COUNTERS_GROUP)) {
-		SPH_SW_COUNTER_ADD(cpylst->sw_counters,
+		NNP_SW_COUNTER_ADD(cpylst->sw_counters,
 					COPY_SPHCS_SW_COUNTERS_HWEXEC_TOTAL_TIME,
 					xferTimeUS);
 
@@ -158,7 +164,7 @@ int inf_cpylst_create(struct inf_cmd_list *cmd,
 	sphcs_dma_multi_xfer_handle_init(&cpylst->multi_xfer_handle);
 
 #if 0
-	res = sph_create_sw_counters_values_node(g_hSwCountersInfo_copy,
+	res = nnp_create_sw_counters_values_node(g_hSwCountersInfo_copy,
 						 (u32)protocolCopyID,
 						 context->sw_counters,
 						 &copy->sw_counters);
@@ -269,7 +275,7 @@ static int inf_cpylst_init_llis(struct inf_cpylst *cpylst)
 								   0,
 								   genlli_get_next,
 								   &it);
-	SPH_ASSERT(total_entries_bytes > 0);
+	NNP_ASSERT(total_entries_bytes > 0);
 
 	return 0;
 }
@@ -308,7 +314,7 @@ int inf_cpylst_build_cur_lli(struct inf_cpylst *cpylst)
 								   0,
 								   genlli_get_next,
 								   &it);
-	SPH_ASSERT(total_entries_bytes > 0);
+	NNP_ASSERT(total_entries_bytes > 0);
 
 	return 0;
 }
@@ -327,7 +333,7 @@ int inf_cpylst_add_copy(struct inf_cpylst *cpylst,
 		return -EXFULL;
 
 	// Cannot batch different direction copies
-	SPH_ASSERT(cpylst->added_copies == 0 ||
+	NNP_ASSERT(cpylst->added_copies == 0 ||
 		   cpylst->copies[cpylst->added_copies - 1]->card2Host == copy->card2Host);
 
 	inf_copy_get(copy);
@@ -365,7 +371,7 @@ static void release_cpylst(struct inf_cpylst *cpylst)
 #if 0
 	//TODO CPYLST counters
 	if (copy->sw_counters)
-		sph_remove_sw_counters_values_node(copy->sw_counters);
+		nnp_remove_sw_counters_values_node(copy->sw_counters);
 #endif
 
 	for (i = 0; i < cpylst->n_copies; ++i) {
@@ -391,8 +397,8 @@ static void inf_cpylst_req_release(struct kref *kref)
 	struct inf_cmd_list *cmd = req->cmd;
 	uint16_t i;
 
-	SPH_ASSERT(req->cmd_type == CMDLIST_CMD_COPYLIST);
-	SPH_ASSERT(cmd != NULL);
+	NNP_ASSERT(req->cmd_type == CMDLIST_CMD_COPYLIST);
+	NNP_ASSERT(cmd != NULL);
 
 	cpylst = req->cpylst;
 	for (i = 0; i < req->num_opt_depend_devres; ++i)
@@ -434,8 +440,8 @@ static int inf_cpylst_req_sched(struct inf_exec_req *req)
 	uint16_t i;
 	int err;
 
-	SPH_ASSERT(req->cmd_type == CMDLIST_CMD_COPYLIST);
-	SPH_ASSERT(req->cmd != NULL);
+	NNP_ASSERT(req->cmd_type == CMDLIST_CMD_COPYLIST);
+	NNP_ASSERT(req->cmd != NULL);
 
 	cpylst = req->cpylst;
 	inf_cmd_get(req->cmd);
@@ -447,15 +453,16 @@ static int inf_cpylst_req_sched(struct inf_exec_req *req)
 		 cpylst->idx_in_cmd,
 		 req->cmd->protocolID,
 		 cpylst->copies[0]->card2Host,
+		 cpylst->copies[0]->d2d ? sphcs_p2p_get_peer_dev_id(&(cpylst->copies[0]->devres->p2p_buf)) : -1,
 		 req->size,
 		 cpylst->n_copies,
 		 req->lli->num_lists,
 		 req->lli->num_elements));
 
 #if 0
-	if (SPH_SW_GROUP_IS_ENABLE(copy->sw_counters,
+	if (NNP_SW_GROUP_IS_ENABLE(copy->sw_counters,
 				   COPY_SPHCS_SW_COUNTERS_GROUP)) {
-		req->time = sph_time_us();
+		req->time = nnp_time_us();
 	}
 #endif
 
@@ -470,7 +477,7 @@ static int inf_cpylst_req_sched(struct inf_exec_req *req)
 
 #if 0
 	// Request scheduled
-	SPH_SW_COUNTER_INC(infreq->devnet->context->sw_counters,
+	NNP_SW_COUNTER_INC(infreq->devnet->context->sw_counters,
 			   CTX_SPHCS_SW_COUNTERS_INFERENCE_SUBMITTED_INF_REQ);
 #endif
 
@@ -491,23 +498,33 @@ fail:
 	return err;
 }
 
-static bool inf_cpylst_req_ready(struct inf_exec_req *req)
+static enum EXEC_REQ_READINESS inf_cpylst_req_ready(struct inf_exec_req *req)
 {
 	bool read;
 	uint16_t i;
+	bool has_dirty_inputs = false;
+	enum DEV_RES_READINESS dev_res_status;
 
-	SPH_ASSERT(req->cmd_type == CMDLIST_CMD_COPYLIST);
+	NNP_ASSERT(req->cmd_type == CMDLIST_CMD_COPYLIST);
 
 	if (req->cpylst->active)
-		return false;
+		return EXEC_REQ_READINESS_NOT_READY;
 
 	read = req->cpylst->copies[0]->card2Host;
 	for (i = 0; i < req->num_opt_depend_devres; ++i) {
-		if (!inf_devres_req_ready(req->opt_depend_devres[i], req, read))
-			return false;
+		dev_res_status = inf_devres_req_ready(req->opt_depend_devres[i], req, read);
+		if (dev_res_status == DEV_RES_READINESS_NOT_READY)
+			return EXEC_REQ_READINESS_NOT_READY;
+		if (read)
+			has_dirty_inputs |= (dev_res_status == DEV_RES_READINESS_READY_BUT_DIRTY);
+
 	}
 
-	return true;
+	/* The cpylist is ready, check whether it has some dirty input */
+	if (has_dirty_inputs)
+		return EXEC_REQ_READINESS_READY_HAS_DIRTY_INPUTS;
+	else
+		return EXEC_REQ_READINESS_READY_NO_DIRTY_INPUTS;
 }
 
 static int inf_cpylst_req_execute(struct inf_exec_req *req)
@@ -515,8 +532,8 @@ static int inf_cpylst_req_execute(struct inf_exec_req *req)
 	struct sphcs_dma_desc const *desc;
 	struct inf_cpylst *cpylst;
 
-	SPH_ASSERT(req->cmd_type == CMDLIST_CMD_COPYLIST);
-	SPH_ASSERT(req->in_progress);
+	NNP_ASSERT(req->cmd_type == CMDLIST_CMD_COPYLIST);
+	NNP_ASSERT(req->in_progress);
 
 	cpylst = req->cpylst;
 
@@ -525,6 +542,7 @@ static int inf_cpylst_req_execute(struct inf_exec_req *req)
 		 cpylst->idx_in_cmd,
 		 req->cmd->protocolID,
 		 cpylst->copies[0]->card2Host,
+		 cpylst->copies[0]->d2d ? sphcs_p2p_get_peer_dev_id(&(cpylst->copies[0]->devres->p2p_buf)) : -1,
 		 req->size,
 		 req->cpylst->n_copies,
 		 req->lli->num_lists,
@@ -533,20 +551,20 @@ static int inf_cpylst_req_execute(struct inf_exec_req *req)
 #if 0
 
 	TODO CPYLST counters
-	if (SPH_SW_GROUP_IS_ENABLE(copy->sw_counters,
+	if (NNP_SW_GROUP_IS_ENABLE(copy->sw_counters,
 				   COPY_SPHCS_SW_COUNTERS_GROUP)) {
 		u64 now;
 
-		now = sph_time_us();
+		now = nnp_time_us();
 		if (req->time) {
 			u64 dt;
 
 			dt = now - req->time;
-			SPH_SW_COUNTER_ADD(copy->sw_counters,
+			NNP_SW_COUNTER_ADD(copy->sw_counters,
 					   COPY_SPHCS_SW_COUNTERS_BLOCK_TOTAL_TIME,
 					   dt);
 
-			SPH_SW_COUNTER_INC(copy->sw_counters,
+			NNP_SW_COUNTER_INC(copy->sw_counters,
 					   COPY_SPHCS_SW_COUNTERS_BLOCK_COUNT);
 
 			if (dt < copy->min_block_time) {
@@ -593,7 +611,7 @@ static int inf_cpylst_req_execute(struct inf_exec_req *req)
 	cpylst->active = true;
 
 	if (inf_context_get_state(req->context) != CONTEXT_OK)
-		return -SPHER_CONTEXT_BROKEN;
+		return -NNPER_CONTEXT_BROKEN;
 
 	return sphcs_dma_sched_start_xfer_multi(g_the_sphcs->dmaSched,
 						&req->cpylst->multi_xfer_handle,
@@ -604,6 +622,39 @@ static int inf_cpylst_req_execute(struct inf_exec_req *req)
 						req);
 }
 
+static void treat_cpylst_failure(struct inf_exec_req *req,
+				 enum event_val       eventVal,
+				 const void          *error_msg,
+				 int32_t              error_msg_size)
+{
+	struct inf_cpylst *cpylst;
+	struct inf_exec_error_details *err_details;
+	uint32_t i;
+	int rc;
+
+	NNP_ASSERT(req->cmd_type == CMDLIST_CMD_COPYLIST);
+
+	cpylst = req->cpylst;
+
+	rc = inf_exec_error_details_alloc(CMDLIST_CMD_COPYLIST,
+					  cpylst->idx_in_cmd,
+					  req->cmd->protocolID,
+					  eventVal,
+					  error_msg_size > 0 ? error_msg_size : 0,
+					  &err_details);
+	if (likely(rc == 0)) {
+		if (error_msg_size > 0)
+			memcpy(err_details->error_msg, error_msg, error_msg_size);
+
+		inf_exec_error_list_add(&req->cmd->error_list, err_details);
+	}
+
+	if (!cpylst->copies[0]->card2Host) {
+		for (i = 0; i < cpylst->n_copies; i++)
+			inf_devres_set_dirty(cpylst->devreses[i], true);
+	}
+}
+
 static void inf_cpylst_req_complete(struct inf_exec_req *req,
 				    int                  err,
 				    const void          *error_msg,
@@ -612,14 +663,13 @@ static void inf_cpylst_req_complete(struct inf_exec_req *req,
 	enum event_val eventVal;
 	struct inf_cpylst *cpylst;
 	struct inf_cmd_list *cmd;
-	unsigned long flags;
 	bool send_cmdlist_event_report = false;
-	struct inf_exec_error_details *err_details = NULL;
-	int rc;
+	uint32_t i;
+	bool has_dirty_outputs = false;
 
-	SPH_ASSERT(req->cmd_type == CMDLIST_CMD_COPYLIST);
-	SPH_ASSERT(req->cmd != NULL);
-	SPH_ASSERT(req->in_progress);
+	NNP_ASSERT(req->cmd_type == CMDLIST_CMD_COPYLIST);
+	NNP_ASSERT(req->cmd != NULL);
+	NNP_ASSERT(req->in_progress);
 
 	cpylst = req->cpylst;
 	cmd = req->cmd;
@@ -629,6 +679,7 @@ static void inf_cpylst_req_complete(struct inf_exec_req *req,
 		 cpylst->idx_in_cmd,
 		 req->cmd->protocolID,
 		 cpylst->copies[0]->card2Host,
+		 cpylst->copies[0]->d2d ? sphcs_p2p_get_peer_dev_id(&(cpylst->copies[0]->devres->p2p_buf)) : -1,
 		 req->size,
 		 req->cpylst->n_copies,
 		 req->lli->num_lists,
@@ -636,20 +687,20 @@ static void inf_cpylst_req_complete(struct inf_exec_req *req,
 
 #if 0
 	//TODO CPYLST counters
-	if (SPH_SW_GROUP_IS_ENABLE(copy->sw_counters,
+	if (NNP_SW_GROUP_IS_ENABLE(copy->sw_counters,
 				   COPY_SPHCS_SW_COUNTERS_GROUP)) {
 		u64 now;
 
-		now = sph_time_us();
+		now = nnp_time_us();
 		if (req->time) {
 			u64 dt;
 
 			dt = now - req->time;
-			SPH_SW_COUNTER_ADD(copy->sw_counters,
+			NNP_SW_COUNTER_ADD(copy->sw_counters,
 					   COPY_SPHCS_SW_COUNTERS_EXEC_TOTAL_TIME,
 					   dt);
 
-			SPH_SW_COUNTER_INC(copy->sw_counters,
+			NNP_SW_COUNTER_INC(copy->sw_counters,
 					   COPY_SPHCS_SW_COUNTERS_EXEC_COUNT);
 
 			if (dt < copy->min_exec_time) {
@@ -674,58 +725,57 @@ static void inf_cpylst_req_complete(struct inf_exec_req *req,
 		sph_log_err(EXECUTE_COMMAND_LOG, "Execute coylst failed with err=%d\n", err);
 		switch (err) {
 		case -ENOMEM:
-			eventVal = SPH_IPC_NO_MEMORY;
+			eventVal = NNP_IPC_NO_MEMORY;
 			break;
-		case -SPHER_CONTEXT_BROKEN:
-			eventVal = SPH_IPC_CONTEXT_BROKEN;
+		case -NNPER_CONTEXT_BROKEN:
+			eventVal = NNP_IPC_CONTEXT_BROKEN;
+			break;
+		case -NNPER_INPUT_IS_DIRTY:
+			eventVal = NNP_IPC_INPUT_IS_DIRTY;
 			break;
 		default:
-			eventVal = SPH_IPC_DMA_ERROR;
+			eventVal = NNP_IPC_DMA_ERROR;
 		}
 
-		rc = inf_exec_error_details_alloc(CMDLIST_CMD_COPYLIST,
-						  cpylst->idx_in_cmd,
-						  req->cmd->protocolID,
-						  eventVal,
-						  error_msg_size > 0 ? error_msg_size : 0,
-						  &err_details);
-		if (rc == 0) {
-			if (error_msg_size > 0)
-				memcpy(err_details->error_msg, error_msg, error_msg_size);
-
-			inf_exec_error_list_add(&cmd->error_list,
-						err_details);
-		}
-
-		//TODO GLEB: Decide if copy failed brakes context or cmd or ...
+		treat_cpylst_failure(req, eventVal, error_msg, error_msg_size);
 	} else {
 		eventVal = 0;
+		if (!cpylst->copies[0]->card2Host) {
+			for (i = 0; i < req->num_opt_depend_devres; ++i) {
+				has_dirty_outputs = req->opt_depend_devres[i]->is_dirty ||
+						    req->opt_depend_devres[i]->group_dirty_count > 0;
+				if (has_dirty_outputs)
+					break;
+			}
+
+			if (has_dirty_outputs) {
+				for (i = 0; i < cpylst->n_copies; i++)
+					inf_devres_set_dirty(cpylst->devreses[i], false);
+			}
+		}
+
 	}
-	if (cmd != NULL) {
-		SPH_SPIN_LOCK_IRQSAVE(&cmd->lock_irq, flags);
-		if (--cmd->num_left == 0)
-			send_cmdlist_event_report = true;
-		SPH_SPIN_UNLOCK_IRQRESTORE(&cmd->lock_irq, flags);
-	}
+	if (cmd != NULL)
+		send_cmdlist_event_report = atomic_dec_and_test(&cmd->num_left);
 
 	if (eventVal == 0 && send_cmdlist_event_report) {
 		// if success and should send both cmd and copy reports,
 		// send one merged report
 		sphcs_send_event_report_ext(g_the_sphcs,
-					    SPH_IPC_EXECUTE_CPYLST_SUCCESS,
+					    NNP_IPC_EXECUTE_CPYLST_SUCCESS,
 					    //eventVal isn't 0 to differentiate
 					    //between CMD and cpylst
-					    SPH_IPC_CMDLIST_FINISHED,
+					    NNP_IPC_CMDLIST_FINISHED,
 					    cmd->context->chan->respq,
 					    cmd->context->protocolID,
 					    cmd->protocolID,
 					    cpylst->idx_in_cmd);
 	} else {
-		req->f->send_report(req, eventVal);
+		send_cpylst_report(req, eventVal);
 
 		if (send_cmdlist_event_report)
 			sphcs_send_event_report(g_the_sphcs,
-						SPH_IPC_EXECUTE_CMD_COMPLETE,
+						NNP_IPC_EXECUTE_CMD_COMPLETE,
 						0,
 						cmd->context->chan->respq,
 						cmd->context->protocolID,
@@ -750,10 +800,10 @@ static void send_cpylst_report(struct inf_exec_req *req,
 			       enum event_val       eventVal)
 {
 	struct inf_cpylst *cpylst;
-	uint16_t eventCode = eventVal == 0 ? SPH_IPC_EXECUTE_CPYLST_SUCCESS : SPH_IPC_EXECUTE_CPYLST_FAILED;
+	uint16_t eventCode = eventVal == 0 ? NNP_IPC_EXECUTE_CPYLST_SUCCESS : NNP_IPC_EXECUTE_CPYLST_FAILED;
 
-	SPH_ASSERT(req->cmd_type == CMDLIST_CMD_COPYLIST);
-	SPH_ASSERT(req->cmd != NULL);
+	NNP_ASSERT(req->cmd_type == CMDLIST_CMD_COPYLIST);
+	NNP_ASSERT(req->cmd != NULL);
 
 	cpylst = req->cpylst;
 	sphcs_send_event_report_ext(g_the_sphcs,

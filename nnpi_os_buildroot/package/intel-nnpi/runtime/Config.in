@@ -1,0 +1,7 @@
+config BR2_PACKAGE_RUNTIME
+        bool "intel_nnpi_runtime"
+	depends on BR2_PACKAGE_ICE_DRIVER_USER
+        help
+
+          http://www.intel.com
+

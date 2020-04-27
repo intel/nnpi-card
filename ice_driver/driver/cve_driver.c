@@ -1,17 +1,10 @@
-/*
- * NNP-I Linux Driver
- * Copyright (c) 2017-2019, Intel Corporation.
+/********************************************
+ * Copyright (C) 2019-2020 Intel Corporation
  *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms and conditions of the GNU General Public License,
- * version 2, as published by the Free Software Foundation.
- *
- * This program is distributed in the hope it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
- *
- */
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ ********************************************/
+
+
 
 #include "os_interface.h"
 #include "dispatcher.h"
@@ -24,6 +17,7 @@
 #include "cve_linux_internal.h"
 #include "cve_device_group.h"
 #include "project_settings.h"
+#include "scheduler.h"
 #ifdef RING3_VALIDATION
 #include "coral_memory.h"
 #endif
@@ -92,6 +86,13 @@ int cve_driver_init(void)
 		cve_os_log(CVE_LOGLEVEL_ERROR,
 				"os_driver_init failed %d\n", retval);
 		goto dg_cleanup;
+	}
+
+	retval = ice_sch_init();
+	if (retval != 0) {
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+				"ice_sch_init failed %d\n", retval);
+		goto os_interface_cleanup;
 	}
 
 	retval = cve_os_lock_init(&g_cve_driver_biglock);

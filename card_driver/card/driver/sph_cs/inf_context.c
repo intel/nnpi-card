@@ -13,9 +13,9 @@
 #include "inf_copy.h"
 #include "ioctl_inf.h"
 #include "inf_req.h"
-#include "sph_time.h"
+#include "nnp_time.h"
 #include "periodic_timer.h"
-#include "sph_error.h"
+#include "nnp_error.h"
 #include "sphcs_inf.h"
 
 static void update_sw_counters(void *ctx)
@@ -24,13 +24,13 @@ static void update_sw_counters(void *ctx)
 	u64 current_time;
 	unsigned long flags;
 
-	SPH_SPIN_LOCK_IRQSAVE(&context->sw_counters_lock_irq, flags);
+	NNP_SPIN_LOCK_IRQSAVE(&context->sw_counters_lock_irq, flags);
 	if (context->infreq_counter > 0 &&
-	    SPH_SW_GROUP_IS_ENABLE(context->sw_counters,
+	    NNP_SW_GROUP_IS_ENABLE(context->sw_counters,
 				   CTX_SPHCS_SW_COUNTERS_GROUP_INFERENCE)) {
-		current_time = sph_time_us();
+		current_time = nnp_time_us();
 		if (context->runtime_busy_starttime) {
-			SPH_SW_COUNTER_ADD(context->sw_counters,
+			NNP_SW_COUNTER_ADD(context->sw_counters,
 					   CTX_SPHCS_SW_COUNTERS_INFERENCE_RUNTIME_BUSY_TIME,
 					   current_time - context->runtime_busy_starttime);
 		}
@@ -38,7 +38,7 @@ static void update_sw_counters(void *ctx)
 	} else {
 		context->runtime_busy_starttime = 0;
 	}
-	SPH_SPIN_UNLOCK_IRQRESTORE(&context->sw_counters_lock_irq, flags);
+	NNP_SPIN_UNLOCK_IRQRESTORE(&context->sw_counters_lock_irq, flags);
 }
 
 int inf_context_create(uint16_t             protocolID,
@@ -88,9 +88,9 @@ int inf_context_create(uint16_t             protocolID,
 
 	inf_exec_error_list_init(&context->error_list, context);
 
-	ret = sph_create_sw_counters_values_node(g_hSwCountersInfo_context,
+	ret = nnp_create_sw_counters_values_node(g_hSwCountersInfo_context,
 						 (u32)protocolID,
-						 g_sph_sw_counters,
+						 g_nnp_sw_counters,
 						 &context->sw_counters);
 	if (unlikely(ret < 0))
 		goto free_kmem_cache;
@@ -105,18 +105,18 @@ int inf_context_create(uint16_t             protocolID,
 		goto free_counters;
 	}
 
-	SPH_SPIN_LOCK_BH(&g_the_sphcs->inf_data->lock_bh);
+	NNP_SPIN_LOCK_BH(&g_the_sphcs->inf_data->lock_bh);
 	hash_add(g_the_sphcs->inf_data->context_hash,
 		 &context->hash_node,
 		 context->protocolID);
-	SPH_SPIN_UNLOCK_BH(&g_the_sphcs->inf_data->lock_bh);
+	NNP_SPIN_UNLOCK_BH(&g_the_sphcs->inf_data->lock_bh);
 
 	*out_context = context;
-	SPH_SW_COUNTER_ATOMIC_INC(g_sph_sw_counters, SPHCS_SW_COUNTERS_INFERENCE_NUM_CONTEXTS);
+	SPH_SW_COUNTER_ATOMIC_INC(g_nnp_sw_counters, SPHCS_SW_COUNTERS_INFERENCE_NUM_CONTEXTS);
 	return 0;
 
 free_counters:
-	sph_remove_sw_counters_values_node(context->sw_counters);
+	nnp_remove_sw_counters_values_node(context->sw_counters);
 free_kmem_cache:
 	kmem_cache_destroy(context->exec_req_slab_cache);
 freeCtx:
@@ -126,20 +126,20 @@ freeCtx:
 
 int inf_context_runtime_attach(struct inf_context *context)
 {
-	SPH_SPIN_LOCK(&context->lock);
+	NNP_SPIN_LOCK(&context->lock);
 	if (unlikely(context->attached != 0)) {
-		SPH_SPIN_UNLOCK(&context->lock);
+		NNP_SPIN_UNLOCK(&context->lock);
 		return -EBUSY;
 	}
-	SPH_SPIN_LOCK_BH(&g_the_sphcs->inf_data->lock_bh);
+	NNP_SPIN_LOCK_BH(&g_the_sphcs->inf_data->lock_bh);
 	if (unlikely(context->destroyed)) {
-		SPH_SPIN_UNLOCK_BH(&g_the_sphcs->inf_data->lock_bh);
-		SPH_SPIN_UNLOCK(&context->lock);
+		NNP_SPIN_UNLOCK_BH(&g_the_sphcs->inf_data->lock_bh);
+		NNP_SPIN_UNLOCK(&context->lock);
 		return -EPERM;
 	}
 	context->attached = 1;
-	SPH_SPIN_UNLOCK_BH(&g_the_sphcs->inf_data->lock_bh);
-	SPH_SPIN_UNLOCK(&context->lock);
+	NNP_SPIN_UNLOCK_BH(&g_the_sphcs->inf_data->lock_bh);
+	NNP_SPIN_UNLOCK(&context->lock);
 
 	/* Take kref, dedicated to runtime */
 	inf_context_get(context);
@@ -185,19 +185,19 @@ static void release_context(struct kref *kref)
 	struct inf_sync_point *n;
 	int i;
 
-	SPH_SPIN_LOCK_BH(&g_the_sphcs->inf_data->lock_bh);
+	NNP_SPIN_LOCK_BH(&g_the_sphcs->inf_data->lock_bh);
 	hash_del(&context->hash_node);
-	SPH_SPIN_UNLOCK_BH(&g_the_sphcs->inf_data->lock_bh);
+	NNP_SPIN_UNLOCK_BH(&g_the_sphcs->inf_data->lock_bh);
 
 	context->chan->destroy_cb = NULL;
 
 	inf_cmd_queue_fini(&context->cmdq);
 
-	SPH_ASSERT(hash_empty(context->copy_hash));
+	NNP_ASSERT(hash_empty(context->copy_hash));
 	hash_for_each(context->copy_hash, i, copy, hash_node) {
 		inf_copy_put(copy);
 	}
-	SPH_ASSERT(hash_empty(context->devres_hash));
+	NNP_ASSERT(hash_empty(context->devres_hash));
 	hash_for_each(context->devres_hash, i, devres, hash_node) {
 		inf_devres_put(devres);
 	}
@@ -205,13 +205,13 @@ static void release_context(struct kref *kref)
 		list_del(&sync_point->node);
 		kfree(sync_point);
 	}
-	SPH_SW_COUNTER_ATOMIC_DEC(g_sph_sw_counters, SPHCS_SW_COUNTERS_INFERENCE_NUM_CONTEXTS);
+	SPH_SW_COUNTER_ATOMIC_DEC(g_nnp_sw_counters, SPHCS_SW_COUNTERS_INFERENCE_NUM_CONTEXTS);
 
-	sph_remove_sw_counters_values_node(context->sw_counters);
+	nnp_remove_sw_counters_values_node(context->sw_counters);
 
 	periodic_timer_remove_data(&g_the_sphcs->periodic_timer, context->counters_cb_data_handler);
 
-	SPH_ASSERT(context->attached != 1);
+	NNP_ASSERT(context->attached != 1);
 
 	kmem_cache_destroy(context->exec_req_slab_cache);
 
@@ -219,7 +219,7 @@ static void release_context(struct kref *kref)
 
 	if (likely(context->destroyed == 1))
 		sphcs_send_event_report(g_the_sphcs,
-					SPH_IPC_CONTEXT_DESTROYED,
+					NNP_IPC_CONTEXT_DESTROYED,
 					0,
 					context->chan->respq,
 					context->protocolID,
@@ -243,30 +243,30 @@ void inf_context_destroy_objects(struct inf_context *context)
 
 	do {
 		found = false;
-		SPH_SPIN_LOCK(&context->lock);
+		NNP_SPIN_LOCK(&context->lock);
 		hash_for_each(context->cmd_hash, i, cmd, hash_node) {
-			SPH_SPIN_LOCK_IRQSAVE(&cmd->lock_irq, flags);
+			NNP_SPIN_LOCK_IRQSAVE(&cmd->lock_irq, flags);
 			if (cmd->destroyed == 0)
 				found = true;
 			cmd->destroyed = -1;
-			SPH_SPIN_UNLOCK_IRQRESTORE(&cmd->lock_irq, flags);
+			NNP_SPIN_UNLOCK_IRQRESTORE(&cmd->lock_irq, flags);
 
 			if (found) {
-				SPH_SPIN_UNLOCK(&context->lock);
+				NNP_SPIN_UNLOCK(&context->lock);
 				inf_cmd_put(cmd);
 				break;
 			}
 		}
 	} while (found);
-	SPH_SPIN_UNLOCK(&context->lock);
+	NNP_SPIN_UNLOCK(&context->lock);
 
 	do {
 		found = false;
-		SPH_SPIN_LOCK(&context->lock);
+		NNP_SPIN_LOCK(&context->lock);
 		hash_for_each(context->copy_hash, i, copy, hash_node) {
 			if (copy->destroyed == 0) {
 				copy->destroyed = -1;
-				SPH_SPIN_UNLOCK(&context->lock);
+				NNP_SPIN_UNLOCK(&context->lock);
 				inf_copy_put(copy);
 				found = true;
 				break;
@@ -274,64 +274,64 @@ void inf_context_destroy_objects(struct inf_context *context)
 			copy->destroyed = -1;
 		}
 	} while (found);
-	SPH_SPIN_UNLOCK(&context->lock);
+	NNP_SPIN_UNLOCK(&context->lock);
 
 	do {
 		found = false;
-		SPH_SPIN_LOCK(&context->lock);
+		NNP_SPIN_LOCK(&context->lock);
 		hash_for_each(context->devnet_hash, i, devnet, hash_node) {
-			SPH_SPIN_LOCK(&devnet->lock);
+			NNP_SPIN_LOCK(&devnet->lock);
 			if (devnet->destroyed == 0)
 				found = true;
 			devnet->destroyed = -1;
-			SPH_SPIN_UNLOCK(&devnet->lock);
+			NNP_SPIN_UNLOCK(&devnet->lock);
 
-			SPH_SPIN_UNLOCK(&context->lock);
+			NNP_SPIN_UNLOCK(&context->lock);
 			inf_devnet_destroy_all_infreq(devnet);
 			if (found) {
 				inf_devnet_put(devnet);
 				break;
 			}
-			SPH_SPIN_LOCK(&context->lock);
+			NNP_SPIN_LOCK(&context->lock);
 		}
 	} while (found);
-	SPH_SPIN_UNLOCK(&context->lock);
+	NNP_SPIN_UNLOCK(&context->lock);
 
 
 	do {
 		found = false;
-		SPH_SPIN_LOCK(&context->lock);
+		NNP_SPIN_LOCK(&context->lock);
 		hash_for_each(context->devres_hash, i, devres, hash_node) {
-			SPH_SPIN_LOCK_IRQSAVE(&devres->lock_irq, flags);
+			NNP_SPIN_LOCK_IRQSAVE(&devres->lock_irq, flags);
 			if (devres->destroyed == 0)
 				found = true;
 			devres->destroyed = -1;
-			SPH_SPIN_UNLOCK_IRQRESTORE(&devres->lock_irq, flags);
+			NNP_SPIN_UNLOCK_IRQRESTORE(&devres->lock_irq, flags);
 
 			if (found) {
-				SPH_SPIN_UNLOCK(&context->lock);
+				NNP_SPIN_UNLOCK(&context->lock);
 				inf_devres_put(devres);
 				break;
 			}
 		}
 	} while (found);
-	SPH_SPIN_UNLOCK(&context->lock);
+	NNP_SPIN_UNLOCK(&context->lock);
 
 	do {
 		found = false;
-		SPH_SPIN_LOCK(&context->lock);
+		NNP_SPIN_LOCK(&context->lock);
 		if (!list_empty(&context->sync_points)) {
 			sync_point = list_first_entry(&context->sync_points,
 						      struct inf_sync_point,
 						      node);
 			list_del(&sync_point->node);
-			SPH_SPIN_UNLOCK(&context->lock);
+			NNP_SPIN_UNLOCK(&context->lock);
 			kfree(sync_point);
 			found = true;
 			break;
 		}
 	} while (found);
-	SPH_SPIN_UNLOCK(&context->lock);
+	NNP_SPIN_UNLOCK(&context->lock);
 }
 
 int inf_context_get(struct inf_context *context)
@@ -350,11 +350,11 @@ int inf_context_put(struct inf_context *context)
 	 * send runtime detach request to runtime
 	 * if only runtime and daemon will remain attached after the put
 	 */
-	SPH_SPIN_LOCK(&context->lock);
+	NNP_SPIN_LOCK(&context->lock);
 	if (context->attached > 0 &&
 	    !context->runtime_detach_sent)
 		send_runtime = context->runtime_detach_sent = (kref_read(&context->ref) <= (context->daemon_ref_released ? 2 : 3));
-	SPH_SPIN_UNLOCK(&context->lock);
+	NNP_SPIN_UNLOCK(&context->lock);
 
 	if (send_runtime)
 		inf_context_runtime_detach(context);
@@ -386,7 +386,7 @@ static void evaluate_sync_points(struct inf_context *context)
 			break; /* no need to test rest of sync points */
 
 		msg.value = 0;
-		msg.opcode = SPH_IPC_C2H_OP_CHAN_SYNC_DONE;
+		msg.opcode = NNP_IPC_C2H_OP_CHAN_SYNC_DONE;
 		msg.chanID = context->chan->protocolID;
 		msg.syncSeq = sync_point->host_sync_id;
 
@@ -417,26 +417,26 @@ static void handle_seq_id_wrap(struct inf_context    *context)
 		u16 max_seq_id;
 
 		list_for_each_entry(req, &context->active_seq_list, node) {
-			SPH_ASSERT(req->seq_id >= min_seq_id);
+			NNP_ASSERT(req->seq_id >= min_seq_id);
 			req->seq_id -= min_seq_id;
 		}
 
 		list_for_each_entry(sync_point, &context->sync_points, node) {
-			SPH_ASSERT(sync_point->seq_id >= min_seq_id);
+			NNP_ASSERT(sync_point->seq_id >= min_seq_id);
 			sync_point->seq_id -= min_seq_id;
 		}
 
 		max_seq_id = list_last_entry(&context->active_seq_list,
 					     struct inf_req_sequence,
 					     node)->seq_id;
-		SPH_ASSERT(max_seq_id + 2 > max_seq_id + 1);
+		NNP_ASSERT(max_seq_id + 2 > max_seq_id + 1);
 		context->next_seq_id = max_seq_id + 1;
 	} else {
 		/* if no active requests are in flight, all sync points must
 		 * have been completed as well.
 		 * safe to reset the seq_id counter
 		 */
-		SPH_ASSERT(list_empty(&context->sync_points));
+		NNP_ASSERT(list_empty(&context->sync_points));
 		context->next_seq_id = 0;
 	}
 }
@@ -446,14 +446,14 @@ void inf_context_seq_id_init(struct inf_context      *context,
 {
 	unsigned long flags;
 
-	SPH_SPIN_LOCK_IRQSAVE(&context->sync_lock_irq, flags);
+	NNP_SPIN_LOCK_IRQSAVE(&context->sync_lock_irq, flags);
 
 	if (context->next_seq_id + 1 < context->next_seq_id)
 		handle_seq_id_wrap(context);
 
 	seq->seq_id = context->next_seq_id++;
 	list_add_tail(&seq->node, &context->active_seq_list);
-	SPH_SPIN_UNLOCK_IRQRESTORE(&context->sync_lock_irq, flags);
+	NNP_SPIN_UNLOCK_IRQRESTORE(&context->sync_lock_irq, flags);
 }
 
 void inf_context_seq_id_fini(struct inf_context      *context,
@@ -461,11 +461,11 @@ void inf_context_seq_id_fini(struct inf_context      *context,
 {
 	unsigned long flags;
 
-	SPH_SPIN_LOCK_IRQSAVE(&context->sync_lock_irq, flags);
+	NNP_SPIN_LOCK_IRQSAVE(&context->sync_lock_irq, flags);
 	list_del(&seq->node);
 	if (!list_empty(&context->sync_points))
 		evaluate_sync_points(context);
-	SPH_SPIN_UNLOCK_IRQRESTORE(&context->sync_lock_irq, flags);
+	NNP_SPIN_UNLOCK_IRQRESTORE(&context->sync_lock_irq, flags);
 	wake_up_all(&context->sched_waitq);
 }
 
@@ -500,30 +500,30 @@ void del_all_active_create_and_inf_requests(struct inf_context *context)
 	unsigned long flags;
 	bool found;
 
-	SPH_SPIN_LOCK(&context->lock);
+	NNP_SPIN_LOCK(&context->lock);
 	hash_for_each(context->devnet_hash, i, devnet, hash_node) {
-		SPH_SPIN_LOCK(&devnet->lock);
+		NNP_SPIN_LOCK(&devnet->lock);
 		// Complete all active infreq
 		do {
 			found = false;
 			hash_for_each(devnet->infreq_hash, j, infreq, hash_node) {
-				SPH_SPIN_LOCK_IRQSAVE(&infreq->lock_irq, flags);
+				NNP_SPIN_LOCK_IRQSAVE(&infreq->lock_irq, flags);
 				if (infreq->active_req != NULL) {
-					SPH_ASSERT(infreq->status == CREATED);
+					NNP_ASSERT(infreq->status == CREATED);
 					active_req = infreq->active_req;
 					infreq->active_req = NULL;
-					SPH_SPIN_UNLOCK_IRQRESTORE(&infreq->lock_irq, flags);
-					SPH_SPIN_UNLOCK(&devnet->lock);
+					NNP_SPIN_UNLOCK_IRQRESTORE(&infreq->lock_irq, flags);
+					NNP_SPIN_UNLOCK(&devnet->lock);
 					found = true;
-					SPH_SPIN_UNLOCK(&context->lock);
+					NNP_SPIN_UNLOCK(&context->lock);
 					active_req->f->complete(active_req,
-								-SPHER_CONTEXT_BROKEN,
+								-NNPER_CONTEXT_BROKEN,
 								NULL, 0);
-					SPH_SPIN_LOCK(&context->lock);
-					SPH_SPIN_LOCK(&devnet->lock);
+					NNP_SPIN_LOCK(&context->lock);
+					NNP_SPIN_LOCK(&devnet->lock);
 					break;
 				}
-				SPH_SPIN_UNLOCK_IRQRESTORE(&infreq->lock_irq, flags);
+				NNP_SPIN_UNLOCK_IRQRESTORE(&infreq->lock_irq, flags);
 			}
 		} while (found);
 		// Destroy not fully created infreqs
@@ -531,25 +531,25 @@ void del_all_active_create_and_inf_requests(struct inf_context *context)
 			found = false;
 			hash_for_each(devnet->infreq_hash, j, infreq, hash_node) {
 				if (infreq->status != CREATED) {
-					SPH_SPIN_UNLOCK(&devnet->lock);
+					NNP_SPIN_UNLOCK(&devnet->lock);
 					found = true;
 					destroy_infreq_on_create_failed(infreq);
-					SPH_SPIN_LOCK(&devnet->lock);
+					NNP_SPIN_LOCK(&devnet->lock);
 					break;
 				}
 			}
 		} while (found);
-		SPH_SPIN_UNLOCK(&devnet->lock);
+		NNP_SPIN_UNLOCK(&devnet->lock);
 	}
 	// Destroy not fully created devnets / devnets with not added resources
 	do {
 		found = false;
 		hash_for_each(context->devnet_hash, i, devnet, hash_node) {
 			if (devnet->edit_status != CREATED) {
-				SPH_SPIN_UNLOCK(&context->lock);
+				NNP_SPIN_UNLOCK(&context->lock);
 				found = true;
 				inf_devnet_on_create_or_add_res_failed(devnet);
-				SPH_SPIN_LOCK(&context->lock);
+				NNP_SPIN_LOCK(&context->lock);
 				break;
 			}
 		}
@@ -559,24 +559,24 @@ void del_all_active_create_and_inf_requests(struct inf_context *context)
 		found = false;
 		hash_for_each(context->devres_hash, i, devres, hash_node) {
 			if (devres->status != CREATED) {
-				SPH_SPIN_UNLOCK(&context->lock);
+				NNP_SPIN_UNLOCK(&context->lock);
 				found = true;
 				destroy_devres_on_create_failed(devres);
-				SPH_SPIN_LOCK(&context->lock);
+				NNP_SPIN_LOCK(&context->lock);
 				break;
 			}
 		}
 	} while (found);
-	SPH_SPIN_UNLOCK(&context->lock);
+	NNP_SPIN_UNLOCK(&context->lock);
 }
 
 void inf_context_set_state(struct inf_context *context, enum context_state state)
 {
 	unsigned long flags;
 
-	SPH_ASSERT(state >= CONTEXT_STATE_MIN && state <= CONTEXT_STATE_MAX); //check range
+	NNP_ASSERT(state >= CONTEXT_STATE_MIN && state <= CONTEXT_STATE_MAX); //check range
 
-	SPH_SPIN_LOCK_IRQSAVE(&context->sync_lock_irq, flags);
+	NNP_SPIN_LOCK_IRQSAVE(&context->sync_lock_irq, flags);
 
 	if (context->state == state) // nothing to change: return
 		goto unlock;
@@ -590,7 +590,7 @@ void inf_context_set_state(struct inf_context *context, enum context_state state
 	context->state = state;
 
 unlock:
-	SPH_SPIN_UNLOCK_IRQRESTORE(&context->sync_lock_irq, flags);
+	NNP_SPIN_UNLOCK_IRQRESTORE(&context->sync_lock_irq, flags);
 }
 
 enum context_state inf_context_get_state(struct inf_context *context)
@@ -607,8 +607,8 @@ void inf_context_add_sync_point(struct inf_context *context,
 	sync_point = kzalloc(sizeof(*sync_point), GFP_NOWAIT);
 	if (!sync_point) {
 		sphcs_send_event_report(g_the_sphcs,
-					SPH_IPC_CREATE_SYNC_FAILED,
-					SPH_IPC_NO_MEMORY,
+					NNP_IPC_CREATE_SYNC_FAILED,
+					NNP_IPC_NO_MEMORY,
 					context->chan->respq,
 					context->protocolID,
 					host_sync_id);
@@ -616,11 +616,11 @@ void inf_context_add_sync_point(struct inf_context *context,
 	}
 
 	sync_point->host_sync_id = host_sync_id;
-	SPH_SPIN_LOCK_IRQSAVE(&context->sync_lock_irq, flags);
+	NNP_SPIN_LOCK_IRQSAVE(&context->sync_lock_irq, flags);
 	sync_point->seq_id = context->next_seq_id > 0 ? context->next_seq_id - 1 : 0;
 	list_add_tail(&sync_point->node, &context->sync_points);
 	evaluate_sync_points(context);
-	SPH_SPIN_UNLOCK_IRQRESTORE(&context->sync_lock_irq, flags);
+	NNP_SPIN_UNLOCK_IRQRESTORE(&context->sync_lock_irq, flags);
 }
 
 int inf_context_create_devres(struct inf_context *context,
@@ -651,17 +651,17 @@ int inf_context_create_devres(struct inf_context *context,
 	cmd_args.align = align;
 	cmd_args.usage_flags = usage_flags;
 
-	SPH_SPIN_LOCK(&context->lock);
+	NNP_SPIN_LOCK(&context->lock);
 	hash_add(context->devres_hash,
 		 &devres->hash_node,
 		 devres->protocolID);
 
-	SPH_ASSERT(devres->status == CREATE_STARTED);
+	NNP_ASSERT(devres->status == CREATE_STARTED);
 	devres->status = DMA_COMPLETED; //sent to rt
 	// get kref to prevent the devres to be destroyed,
 	// when it is waiting for response from runtime
 	inf_devres_get(devres);
-	SPH_SPIN_UNLOCK(&context->lock);
+	NNP_SPIN_UNLOCK(&context->lock);
 
 	ret = inf_cmd_queue_add(&context->cmdq,
 				SPHCS_RUNTIME_CMD_CREATE_RESOURCE,
@@ -684,7 +684,7 @@ int inf_context_find_and_destroy_devres(struct inf_context *context,
 	struct inf_devres *iter, *devres = NULL;
 	unsigned long flags;
 
-	SPH_SPIN_LOCK(&context->lock);
+	NNP_SPIN_LOCK(&context->lock);
 	hash_for_each_possible(context->devres_hash, iter, hash_node, devresID)
 		if (iter->protocolID == devresID) {
 			devres = iter;
@@ -692,20 +692,20 @@ int inf_context_find_and_destroy_devres(struct inf_context *context,
 		}
 
 	if (unlikely(devres == NULL)) {
-		SPH_SPIN_UNLOCK(&context->lock);
+		NNP_SPIN_UNLOCK(&context->lock);
 		return -ENXIO;
 	}
 
-	SPH_SPIN_LOCK_IRQSAVE(&devres->lock_irq, flags);
+	NNP_SPIN_LOCK_IRQSAVE(&devres->lock_irq, flags);
 	if (unlikely(devres->destroyed != 0)) {
-		SPH_SPIN_UNLOCK_IRQRESTORE(&devres->lock_irq, flags);
-		SPH_SPIN_UNLOCK(&context->lock);
+		NNP_SPIN_UNLOCK_IRQRESTORE(&devres->lock_irq, flags);
+		NNP_SPIN_UNLOCK(&context->lock);
 		return -ENXIO;
 	}
 
 	devres->destroyed = 1;
-	SPH_SPIN_UNLOCK_IRQRESTORE(&devres->lock_irq, flags);
-	SPH_SPIN_UNLOCK(&context->lock);
+	NNP_SPIN_UNLOCK_IRQRESTORE(&devres->lock_irq, flags);
+	NNP_SPIN_UNLOCK(&context->lock);
 
 	// kref for host
 	inf_devres_put(devres);
@@ -718,17 +718,17 @@ struct inf_devres *inf_context_find_devres(struct inf_context *context,
 {
 	struct inf_devres *devres;
 
-	SPH_SPIN_LOCK(&context->lock);
+	NNP_SPIN_LOCK(&context->lock);
 	hash_for_each_possible(context->devres_hash,
 			       devres,
 			       hash_node,
 			       protocolID)
 		if (devres->protocolID == protocolID) {
-			SPH_ASSERT(devres->status == CREATED);
-			SPH_SPIN_UNLOCK(&context->lock);
+			NNP_ASSERT(devres->status == CREATED);
+			NNP_SPIN_UNLOCK(&context->lock);
 			return devres;
 		}
-	SPH_SPIN_UNLOCK(&context->lock);
+	NNP_SPIN_UNLOCK(&context->lock);
 
 	return NULL;
 }
@@ -738,19 +738,19 @@ struct inf_devres *inf_context_find_and_get_devres(struct inf_context *context,
 {
 	struct inf_devres *devres;
 
-	SPH_SPIN_LOCK(&context->lock);
+	NNP_SPIN_LOCK(&context->lock);
 	hash_for_each_possible(context->devres_hash,
 			       devres,
 			       hash_node,
 			       protocolID)
 		if (devres->protocolID == protocolID) {
-			SPH_ASSERT(devres->status == CREATED);
+			NNP_ASSERT(devres->status == CREATED);
 			if (unlikely(devres->destroyed || inf_devres_get(devres) == 0))
 				break; //destroyed
-			SPH_SPIN_UNLOCK(&context->lock);
+			NNP_SPIN_UNLOCK(&context->lock);
 			return devres;
 		}
-	SPH_SPIN_UNLOCK(&context->lock);
+	NNP_SPIN_UNLOCK(&context->lock);
 
 	return NULL;
 }
@@ -778,7 +778,7 @@ int inf_context_find_and_destroy_cmd(struct inf_context *context,
 	struct inf_cmd_list *iter, *cmd = NULL;
 	unsigned long flags;
 
-	SPH_SPIN_LOCK(&context->lock);
+	NNP_SPIN_LOCK(&context->lock);
 	hash_for_each_possible(context->cmd_hash, iter, hash_node, cmdID)
 		if (iter->protocolID == cmdID) {
 			cmd = iter;
@@ -786,20 +786,20 @@ int inf_context_find_and_destroy_cmd(struct inf_context *context,
 		}
 
 	if (unlikely(cmd == NULL)) {
-		SPH_SPIN_UNLOCK(&context->lock);
+		NNP_SPIN_UNLOCK(&context->lock);
 		return -ENXIO;
 	}
 
-	SPH_SPIN_LOCK_IRQSAVE(&cmd->lock_irq, flags);
+	NNP_SPIN_LOCK_IRQSAVE(&cmd->lock_irq, flags);
 	if (unlikely(cmd->destroyed != 0)) {
-		SPH_SPIN_UNLOCK_IRQRESTORE(&cmd->lock_irq, flags);
-		SPH_SPIN_UNLOCK(&context->lock);
+		NNP_SPIN_UNLOCK_IRQRESTORE(&cmd->lock_irq, flags);
+		NNP_SPIN_UNLOCK(&context->lock);
 		return -ENXIO;
 	}
 
 	cmd->destroyed = 1;
-	SPH_SPIN_UNLOCK_IRQRESTORE(&cmd->lock_irq, flags);
-	SPH_SPIN_UNLOCK(&context->lock);
+	NNP_SPIN_UNLOCK_IRQRESTORE(&cmd->lock_irq, flags);
+	NNP_SPIN_UNLOCK(&context->lock);
 
 	// kref for host
 	inf_cmd_put(cmd);
@@ -812,15 +812,15 @@ struct inf_cmd_list *inf_context_find_cmd(struct inf_context *context,
 {
 	struct inf_cmd_list *cmd;
 
-	SPH_SPIN_LOCK(&context->lock);
+	NNP_SPIN_LOCK(&context->lock);
 	hash_for_each_possible(context->cmd_hash, cmd, hash_node, protocolID)
 		if (cmd->protocolID == protocolID) {
 			if (cmd->destroyed)
 				break; //destroyed
-			SPH_SPIN_UNLOCK(&context->lock);
+			NNP_SPIN_UNLOCK(&context->lock);
 			return cmd;
 		}
-	SPH_SPIN_UNLOCK(&context->lock);
+	NNP_SPIN_UNLOCK(&context->lock);
 
 	return NULL;
 }
@@ -830,7 +830,7 @@ int inf_context_find_and_destroy_devnet(struct inf_context *context,
 {
 	struct inf_devnet *iter, *devnet = NULL;
 
-	SPH_SPIN_LOCK(&context->lock);
+	NNP_SPIN_LOCK(&context->lock);
 	hash_for_each_possible(context->devnet_hash, iter, hash_node, devnetID)
 		if (iter->protocolID == devnetID) {
 			devnet = iter;
@@ -838,20 +838,20 @@ int inf_context_find_and_destroy_devnet(struct inf_context *context,
 		}
 
 	if (unlikely(devnet == NULL)) {
-		SPH_SPIN_UNLOCK(&context->lock);
+		NNP_SPIN_UNLOCK(&context->lock);
 		return -ENXIO;
 	}
 
-	SPH_SPIN_LOCK(&devnet->lock);
+	NNP_SPIN_LOCK(&devnet->lock);
 	if (unlikely(devnet->destroyed != 0)) {
-		SPH_SPIN_UNLOCK(&devnet->lock);
-		SPH_SPIN_UNLOCK(&context->lock);
+		NNP_SPIN_UNLOCK(&devnet->lock);
+		NNP_SPIN_UNLOCK(&context->lock);
 		return -ENXIO;
 	}
 
 	devnet->destroyed = 1;
-	SPH_SPIN_UNLOCK(&devnet->lock);
-	SPH_SPIN_UNLOCK(&context->lock);
+	NNP_SPIN_UNLOCK(&devnet->lock);
+	NNP_SPIN_UNLOCK(&context->lock);
 
 	// kref for host
 	inf_devnet_put(devnet);
@@ -863,13 +863,13 @@ struct inf_devnet *inf_context_find_devnet(struct inf_context *context, uint16_t
 {
 	struct inf_devnet *devnet;
 
-	SPH_SPIN_LOCK(&context->lock);
+	NNP_SPIN_LOCK(&context->lock);
 	hash_for_each_possible(context->devnet_hash, devnet, hash_node, protocolID)
 		if (devnet->protocolID == protocolID) {
-			SPH_SPIN_UNLOCK(&context->lock);
+			NNP_SPIN_UNLOCK(&context->lock);
 			return devnet;
 		}
-	SPH_SPIN_UNLOCK(&context->lock);
+	NNP_SPIN_UNLOCK(&context->lock);
 
 	return NULL;
 }
@@ -878,7 +878,7 @@ struct inf_devnet *inf_context_find_and_get_devnet(struct inf_context *context, 
 {
 	struct inf_devnet *devnet;
 
-	SPH_SPIN_LOCK(&context->lock);
+	NNP_SPIN_LOCK(&context->lock);
 	hash_for_each_possible(context->devnet_hash, devnet, hash_node, protocolID)
 		if (devnet->protocolID == protocolID) {
 			if (created && !devnet->created)
@@ -887,10 +887,10 @@ struct inf_devnet *inf_context_find_and_get_devnet(struct inf_context *context, 
 				break;
 			if (unlikely(inf_devnet_get(devnet) == 0))
 				break;
-			SPH_SPIN_UNLOCK(&context->lock);
+			NNP_SPIN_UNLOCK(&context->lock);
 			return devnet;
 		}
-	SPH_SPIN_UNLOCK(&context->lock);
+	NNP_SPIN_UNLOCK(&context->lock);
 
 	return NULL;
 }
@@ -899,14 +899,14 @@ struct inf_copy *inf_context_find_copy(struct inf_context *context, uint16_t pro
 {
 	struct inf_copy *copy;
 
-	SPH_SPIN_LOCK(&context->lock);
+	NNP_SPIN_LOCK(&context->lock);
 	hash_for_each_possible(context->copy_hash, copy, hash_node, protocolID) {
 		if (copy->protocolID == protocolID) {
-			SPH_SPIN_UNLOCK(&context->lock);
+			NNP_SPIN_UNLOCK(&context->lock);
 			return copy;
 		}
 	}
-	SPH_SPIN_UNLOCK(&context->lock);
+	NNP_SPIN_UNLOCK(&context->lock);
 
 	return NULL;
 }
@@ -915,16 +915,16 @@ struct inf_copy *inf_context_find_and_get_copy(struct inf_context *context, uint
 {
 	struct inf_copy *copy;
 
-	SPH_SPIN_LOCK(&context->lock);
+	NNP_SPIN_LOCK(&context->lock);
 	hash_for_each_possible(context->copy_hash, copy, hash_node, protocolID) {
 		if (copy->protocolID == protocolID) {
 			if (unlikely(copy->destroyed || inf_copy_get(copy) == 0))
 				break;
-			SPH_SPIN_UNLOCK(&context->lock);
+			NNP_SPIN_UNLOCK(&context->lock);
 			return copy;
 		}
 	}
-	SPH_SPIN_UNLOCK(&context->lock);
+	NNP_SPIN_UNLOCK(&context->lock);
 
 	return NULL;
 }
@@ -934,12 +934,12 @@ struct inf_copy *inf_context_find_and_get_copy(struct inf_context *context, uint
  */
 void destroy_copy_on_create_failed(struct inf_copy *copy)
 {
-	SPH_SPIN_LOCK(&copy->context->lock);
+	NNP_SPIN_LOCK(&copy->context->lock);
 	if (copy->destroyed) {
-		SPH_SPIN_UNLOCK(&copy->context->lock);
+		NNP_SPIN_UNLOCK(&copy->context->lock);
 		return;
 	}
-	SPH_SPIN_UNLOCK(&copy->context->lock);
+	NNP_SPIN_UNLOCK(&copy->context->lock);
 
 	inf_copy_put(copy);
 }
@@ -949,7 +949,7 @@ int inf_context_find_and_destroy_copy(struct inf_context *context,
 {
 	struct inf_copy *iter, *copy = NULL;
 
-	SPH_SPIN_LOCK(&context->lock);
+	NNP_SPIN_LOCK(&context->lock);
 	hash_for_each_possible(context->copy_hash, iter, hash_node, copyID) {
 		if (iter->protocolID == copyID) {
 			copy = iter;
@@ -958,15 +958,15 @@ int inf_context_find_and_destroy_copy(struct inf_context *context,
 	}
 
 	if (unlikely(copy == NULL)) {
-		SPH_SPIN_UNLOCK(&context->lock);
+		NNP_SPIN_UNLOCK(&context->lock);
 		return -ENXIO;
 	} else if (copy->destroyed) {
-		SPH_SPIN_UNLOCK(&context->lock);
+		NNP_SPIN_UNLOCK(&context->lock);
 		return -ENXIO;
 	}
 
 	copy->destroyed = 1;
-	SPH_SPIN_UNLOCK(&copy->context->lock);
+	NNP_SPIN_UNLOCK(&copy->context->lock);
 
 	inf_copy_put(copy);
 

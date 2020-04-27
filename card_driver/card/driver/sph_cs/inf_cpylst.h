@@ -35,7 +35,7 @@ struct inf_cpylst {
 	struct lli_desc cur_lli;
 	struct sphcs_dma_multi_xfer_handle multi_xfer_handle;
 
-	struct sph_sw_counters *sw_counters;
+	struct nnp_sw_counters *sw_counters;
 
 	int destroyed;
 	u64 min_block_time;

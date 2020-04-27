@@ -314,10 +314,18 @@ static int update_ring_divisor(struct sphpb_pb *sphpb,
 			break;
 		};
 
-		icebo->ring_divisor = tmp_ring_ratio_value;
+		if (sphpb->max_icebo_ratio)
+			icebo->ring_divisor = (uint16_t) mul_u64_u32_div((uint64_t)tmp_ring_ratio_value,
+					((uint32_t)sphpb->icebo[icebo_number].ratio * sphpb->icebo[icebo_number].ratio),
+					((uint32_t)sphpb->max_icebo_ratio * sphpb->max_icebo_ratio));
+		else
+			icebo->ring_divisor = tmp_ring_ratio_value;
 
-		if (icebo->ring_divisor > max_ring_ratio_value)
+		if (icebo->ring_divisor > max_ring_ratio_value) {
 			max_ring_ratio_value = icebo->ring_divisor;
+			if (sphpb->debug_log)
+				sph_log_info(POWER_BALANCER_LOG, "update new ring divisor to val = 0x%x", max_ring_ratio_value);
+		}
 	}
 
 	if (!bActiveIce)
@@ -365,6 +373,105 @@ end_func:
 	return ret;
 }
 
+static int update_icebo_ratio(struct sphpb_pb *sphpb,
+			       uint32_t       ice_index,
+			       uint8_t        ratio_fx,
+			       uint8_t        off)
+{
+	uint32_t icebo_number = (ice_index / SPHPB_MAX_ICE_PER_ICEBO);
+	uint32_t ice_in_icebo = (ice_index % SPHPB_MAX_ICE_PER_ICEBO);
+	uint32_t i;
+	uint32_t other_ice_in_icebo = ice_in_icebo ^ 0x1;
+	uint32_t other_ice_busy_mask = (1 << other_ice_in_icebo);
+	uint8_t need_to_update_ice_driver = off ? 0 : 1;
+	int ret = 0;
+
+	if (!off)
+		sphpb->icebo[icebo_number].ice[ice_in_icebo].requested_ratio = ratio_fx;
+
+	if (ratio_fx == 0) {
+		//check the other ice in icebo if exist and set icebo ratio according to it,
+		//otherwise, set current max ratio between all cores.
+		if ((sphpb->icebo[icebo_number].enabled_ices_mask & other_ice_busy_mask) &&
+		     sphpb->icebo[icebo_number].ice[other_ice_in_icebo].requested_ratio)
+			sphpb->icebo[icebo_number].ratio = sphpb->icebo[icebo_number].ice[other_ice_in_icebo].requested_ratio;
+		else
+			sphpb->icebo[icebo_number].ratio = sphpb->max_icebo_ratio;
+
+		if (sphpb->debug_log)
+			sph_log_info(POWER_BALANCER_LOG, "ratio_fx = 0, new_ratio 0x%x\n", sphpb->icebo[icebo_number].ratio);
+	} else {
+		if (abs(ratio_fx - sphpb->icebo[icebo_number].ratio) >= sphpb->ratio_epsilon || off) {
+			uint8_t tmp_hold_max = sphpb->max_icebo_ratio;
+
+			/* Update max inside the icebo */
+			if (off) {
+				if (sphpb->icebo[icebo_number].enabled_ices_mask & other_ice_busy_mask)
+					sphpb->icebo[icebo_number].ratio = sphpb->icebo[icebo_number].ice[other_ice_in_icebo].requested_ratio;
+			} else {
+				if (ratio_fx > sphpb->icebo[icebo_number].ratio)
+					sphpb->icebo[icebo_number].ratio = ratio_fx;
+			}
+
+			if (sphpb->debug_log)
+				sph_log_info(POWER_BALANCER_LOG, " update core ratio value = 0x%x, current max = 0x%x\n", ratio_fx, sphpb->max_icebo_ratio);
+
+			if (off && ratio_fx == sphpb->max_icebo_ratio) {
+				mutex_lock(&sphpb->mutex_lock);
+
+				/* Find the maximum ratio */
+				for (i = 0; i < SPHPB_MAX_ICEBO_COUNT; i++) {
+					if (sphpb->icebo[i].enabled_ices_mask &&
+					   (sphpb->icebo[i].ratio > sphpb->max_icebo_ratio))
+						sphpb->max_icebo_ratio = sphpb->icebo[i].ratio;
+				}
+
+				if (sphpb->current_cores_ratios.freqRatio.ia0 > sphpb->max_icebo_ratio)
+					sphpb->max_icebo_ratio = sphpb->current_cores_ratios.freqRatio.ia0;
+
+				if (sphpb->current_cores_ratios.freqRatio.ia1 > sphpb->max_icebo_ratio)
+					sphpb->max_icebo_ratio = sphpb->current_cores_ratios.freqRatio.ia1;
+
+				mutex_unlock(&sphpb->mutex_lock);
+			} else if (sphpb->icebo[icebo_number].ratio > sphpb->max_icebo_ratio) {
+				sphpb->max_icebo_ratio = sphpb->icebo[icebo_number].ratio;
+			}
+
+			if (tmp_hold_max != sphpb->max_icebo_ratio && !sphpb->ia_changed_by_user) {
+				/* Update IA cores ratio value according to the new max in the system */
+				sphpb->current_cores_ratios.freqRatio.ia0 = sphpb->max_icebo_ratio / 2;
+				sphpb->current_cores_ratios.freqRatio.ia1 = sphpb->max_icebo_ratio / 2;
+			}
+
+			if (sphpb->debug_log)
+				sph_log_info(POWER_BALANCER_LOG, "lets update core ratio value = 0x%x, new max = 0x%x\n",
+						ratio_fx, sphpb->max_icebo_ratio);
+		} else {
+			sphpb->icebo[icebo_number].ice[ice_in_icebo].requested_ratio = ratio_fx;
+			need_to_update_ice_driver = 0;
+			if (sphpb->debug_log)
+				sph_log_info(POWER_BALANCER_LOG, "just keep ratio in requested value 0x%x, current ratio= 0x%x",
+						ratio_fx, sphpb->icebo[icebo_number].ratio);
+		}
+	}
+
+	if (need_to_update_ice_driver) {
+		//update all 64 bit
+		sphpb->current_cores_ratios.freqRatio.icebo0 = sphpb->icebo[0].ratio ? sphpb->icebo[0].ratio : sphpb->max_icebo_ratio;
+		sphpb->current_cores_ratios.freqRatio.icebo1 = sphpb->icebo[1].ratio ? sphpb->icebo[1].ratio : sphpb->max_icebo_ratio;
+		sphpb->current_cores_ratios.freqRatio.icebo2 = sphpb->icebo[2].ratio ? sphpb->icebo[2].ratio : sphpb->max_icebo_ratio;
+		sphpb->current_cores_ratios.freqRatio.icebo3 = sphpb->icebo[3].ratio ? sphpb->icebo[3].ratio : sphpb->max_icebo_ratio;
+		sphpb->current_cores_ratios.freqRatio.icebo4 = sphpb->icebo[4].ratio ? sphpb->icebo[4].ratio : sphpb->max_icebo_ratio;
+		sphpb->current_cores_ratios.freqRatio.icebo5 = sphpb->icebo[5].ratio ? sphpb->icebo[5].ratio : sphpb->max_icebo_ratio;
+
+		ret = sphpb->icedrv_cb->set_icebo_to_icebo_ratio(sphpb->current_cores_ratios);
+		if (ret)
+			sph_log_err(POWER_BALANCER_LOG, "failed to set set_icebo_to_icebo_ratio (0x%llx)", sphpb->current_cores_ratios.val);
+	}
+
+	return ret;
+}
+
 /* set icebo active state */
 int sphpb_mng_set_icebo_enable(struct sphpb_pb *sphpb,
 			       uint32_t ice_index,
@@ -398,11 +505,12 @@ int sphpb_mng_set_icebo_enable(struct sphpb_pb *sphpb,
 		 */
 		update_ddr_request(sphpb, ice_index, 0x0);
 
-		ret = update_ring_divisor(sphpb, ice_index, SPHPB_MIN_RING_POSSIBLE_VALUE);
+		/* Need to check if max ratio in system affected by this ice off.
+		 * If max has changed, then update_ring_divisor will be called inside update_icebo_ratio below.
+		 */
+		update_icebo_ratio(sphpb, ice_index, sphpb->icebo[icebo_number].ice[ice_in_icebo].requested_ratio, /*off*/ 1);
 
-		sphpb->icebo[icebo_number].enabled_ices_mask &= ~new_enable_mask;
-
-
+		update_ring_divisor(sphpb, ice_index, SPHPB_MIN_RING_POSSIBLE_VALUE);
 	}
 
 	return ret;
@@ -414,7 +522,7 @@ int sphpb_mng_request_ice_dvfs_values(struct sphpb_pb *sphpb,
 				      uint32_t ice_index,
 				      uint32_t ddr_bw_req,
 				      uint16_t ring_divisor,
-				      uint32_t ice_ratio)
+				      uint8_t ice_ratio)
 {
 	uint32_t icebo_number = (ice_index / SPHPB_MAX_ICE_PER_ICEBO);
 	uint32_t ice_in_icebo = (ice_index % SPHPB_MAX_ICE_PER_ICEBO);
@@ -424,6 +532,13 @@ int sphpb_mng_request_ice_dvfs_values(struct sphpb_pb *sphpb,
 	if (!(sphpb->icebo[icebo_number].enabled_ices_mask & ice_busy_mask)) {
 		sph_log_err(POWER_BALANCER_LOG, "Error: Bad FSM - request ICE ratio while ICE is not set to busy state - ice #%d\n", ice_index);
 		return -EINVAL;
+	}
+
+	/* update icebo core max ratio */
+	ret = update_icebo_ratio(sphpb, ice_index, ice_ratio, 0);
+	if (ret) {
+		sph_log_err(POWER_BALANCER_LOG, "Error: Failed to update ice %d - icebo ratio value %x, Error(0x%x)\n", ice_index, ice_ratio, ret);
+		return ret;
 	}
 
 	ret = update_ring_divisor(sphpb, ice_index, ring_divisor);
@@ -449,39 +564,39 @@ static void update_counters(struct sphpb_pb *sphpb, uint64_t delta_t_us)
 	bool any_throttle = false;
 
 	if (sphpb->throttle_data.curr_state != SPHPB_NO_THROTTLE) {
-		SPH_SW_COUNTER_ADD(g_sph_sw_pb_counters, SPHCS_SW_COUNTERS_IPC_OVERSHOOT_PROTECTION_TIME, delta_t_us);
+		NNP_SW_COUNTER_ADD(g_sph_sw_pb_counters, SPHCS_SW_COUNTERS_IPC_OVERSHOOT_PROTECTION_TIME, delta_t_us);
 		any_throttle = true;
 	}
 
 	rdmsrl(SPH_MSR_CORE_PERF_LIMIT_REASONS, freq_reason.value);
 	if (freq_reason.BitField.prochot_log != 0) {
 		freq_reason.BitField.prochot_log = 0;
-		SPH_SW_COUNTER_ADD(g_sph_sw_pb_counters, SPHCS_SW_COUNTERS_IPC_PROCHOT_TIME, delta_t_us);
+		NNP_SW_COUNTER_ADD(g_sph_sw_pb_counters, SPHCS_SW_COUNTERS_IPC_PROCHOT_TIME, delta_t_us);
 		any_throttle = true;
 	}
 	if (freq_reason.BitField.thermal_log != 0) {
 		freq_reason.BitField.thermal_log = 0;
-		SPH_SW_COUNTER_ADD(g_sph_sw_pb_counters, SPHCS_SW_COUNTERS_IPC_THERMAL_TIME, delta_t_us);
+		NNP_SW_COUNTER_ADD(g_sph_sw_pb_counters, SPHCS_SW_COUNTERS_IPC_THERMAL_TIME, delta_t_us);
 		any_throttle = true;
 	}
 	if (freq_reason.BitField.residency_state_regulation_log != 0) {
 		freq_reason.BitField.residency_state_regulation_log = 0;
-		SPH_SW_COUNTER_ADD(g_sph_sw_pb_counters, SPHCS_SW_COUNTERS_IPC_RESIDENCY_STATE_REG_TIME, delta_t_us);
+		NNP_SW_COUNTER_ADD(g_sph_sw_pb_counters, SPHCS_SW_COUNTERS_IPC_RESIDENCY_STATE_REG_TIME, delta_t_us);
 		any_throttle = true;
 	}
 	if (freq_reason.BitField.ratl_log != 0) {
 		freq_reason.BitField.ratl_log = 0;
-		SPH_SW_COUNTER_ADD(g_sph_sw_pb_counters, SPHCS_SW_COUNTERS_IPC_RATL_TIME, delta_t_us);
+		NNP_SW_COUNTER_ADD(g_sph_sw_pb_counters, SPHCS_SW_COUNTERS_IPC_RATL_TIME, delta_t_us);
 		any_throttle = true;
 	}
 	if (freq_reason.BitField.pl1_log != 0) {
 		freq_reason.BitField.pl1_log = 0;
-		SPH_SW_COUNTER_ADD(g_sph_sw_pb_counters, SPHCS_SW_COUNTERS_IPC_PL1_TIME, delta_t_us);
+		NNP_SW_COUNTER_ADD(g_sph_sw_pb_counters, SPHCS_SW_COUNTERS_IPC_PL1_TIME, delta_t_us);
 		any_throttle = true;
 	}
 	if (freq_reason.BitField.pl2_log != 0) {
 		freq_reason.BitField.pl2_log = 0;
-		SPH_SW_COUNTER_ADD(g_sph_sw_pb_counters, SPHCS_SW_COUNTERS_IPC_PL2_TIME, delta_t_us);
+		NNP_SW_COUNTER_ADD(g_sph_sw_pb_counters, SPHCS_SW_COUNTERS_IPC_PL2_TIME, delta_t_us);
 		any_throttle = true;
 	}
 	if (freq_reason.BitField.vr_therm_alert_log != 0 ||
@@ -494,12 +609,12 @@ static void update_counters(struct sphpb_pb *sphpb, uint64_t delta_t_us)
 		freq_reason.BitField.max_turbo_limit_log = 0;
 		freq_reason.BitField.turbo_transition_attenuation_log = 0;
 		freq_reason.BitField.other_log = 0;
-		SPH_SW_COUNTER_ADD(g_sph_sw_pb_counters, SPHCS_SW_COUNTERS_IPC_OTHER_TIME, delta_t_us);
+		NNP_SW_COUNTER_ADD(g_sph_sw_pb_counters, SPHCS_SW_COUNTERS_IPC_OTHER_TIME, delta_t_us);
 		any_throttle = true;
 	}
 
 	if (any_throttle) {
-		SPH_SW_COUNTER_ADD(g_sph_sw_pb_counters,
+		NNP_SW_COUNTER_ADD(g_sph_sw_pb_counters,
 				   SPHCS_SW_COUNTERS_IPC_THROTTLING_TIME, delta_t_us);
 		wrmsrl(SPH_MSR_CORE_PERF_LIMIT_REASONS, freq_reason.value);
 	}
@@ -515,7 +630,7 @@ int do_throttle(struct sphpb_pb *sphpb,
 	bool all_min = true;
 	int ret = 0;
 
-	time_us = sph_time_us();
+	time_us = nnp_time_us();
 	delta_t_us = time_us - sphpb->throttle_data.time_us;
 	sphpb->throttle_data.time_us = time_us;
 

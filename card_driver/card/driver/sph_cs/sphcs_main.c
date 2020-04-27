@@ -17,7 +17,6 @@
 #ifdef ULT
 #include "sphcs_ult.h"
 #endif
-#include "sphcs_net.h"
 #include "sph_version.h"
 #include "sphcs_maintenance.h"
 #include "sphcs_trace.h"
@@ -138,7 +137,7 @@ int sphcs_init_module(void)
 {
 	int ret = 0;
 
-	sph_log_debug(START_UP_LOG, "module (version %s) started\n", SPH_VERSION);
+	sph_log_debug(START_UP_LOG, "module (version %s) started\n", NNP_VERSION);
 
 	DO_TRACE(sphcs_trace_init());
 
@@ -200,8 +199,6 @@ void sphcs_cleanup(void)
 
 	sphcs_fini_ult_module();
 #endif
-	sphcs_net_dev_exit();
-
 	sphcs_release_maint_interface();
 
 	sphcs_release_genmsg_interface();
@@ -220,7 +217,7 @@ module_exit(sphcs_cleanup);
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("SpringHill Card Driver");
 MODULE_AUTHOR("Intel Corporation");
-MODULE_VERSION(SPH_VERSION);
+MODULE_VERSION(NNP_VERSION);
 #ifdef DEBUG
 MODULE_INFO(git_hash, SPH_GIT_HASH);
 #endif

@@ -9,7 +9,7 @@
 
 #ifdef ULT
 
-#include "sph_types.h"
+#include "nnp_types.h"
 #include "ipc_chan_protocol_ult.h"
 
 struct sphcs;

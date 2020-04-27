@@ -10,8 +10,8 @@
 #include <linux/limits.h>
 #include "sphcs_cs.h"
 #include "sph_log.h"
-#include "sph_error.h"
-#include "sph_time.h"
+#include "nnp_error.h"
+#include "nnp_time.h"
 #include "inf_context.h"
 #include "inf_devnet.h"
 #include "inf_devres.h"
@@ -24,7 +24,7 @@ static struct inf_devres *devres_for_err_inj;
 static void *addr_for_err_inj;
 
 static int infreq_req_sched(struct inf_exec_req *req);
-static bool inf_req_ready(struct inf_exec_req *req);
+static enum EXEC_REQ_READINESS inf_req_ready(struct inf_exec_req *req);
 static int inf_req_execute(struct inf_exec_req *req);
 static void inf_req_complete(struct inf_exec_req *req,
 			     int                  err,
@@ -34,9 +34,12 @@ static void send_infreq_report(struct inf_exec_req *req,
 			       enum event_val       eventVal);
 static int inf_req_infreq_put(struct inf_exec_req *req);
 static int inf_req_migrate_priority(struct inf_exec_req *req, uint8_t priority);
+static void treat_infreq_failure(struct inf_exec_req *req,
+				 enum event_val       eventVal,
+				 const void          *error_msg,
+				 int32_t              error_msg_size);
+
 static void inf_req_release(struct kref *kref);
-static void ibecc_inject_error(struct inf_devnet *);
-static void ibecc_clean_error(void);
 
 struct func_table const s_req_funcs = {
 	.schedule = infreq_req_sched,
@@ -45,12 +48,16 @@ struct func_table const s_req_funcs = {
 	.complete = inf_req_complete,
 	.send_report = send_infreq_report,
 	.obj_put = inf_req_infreq_put,
-	//not used for infreq
+	/* not used for infreq */
 	.migrate_priority = inf_req_migrate_priority,
+	.treat_req_failure = treat_infreq_failure,
 
 	/* This function should not be called directly, use inf_exec_req_put instead */
 	.release = inf_req_release
 };
+
+static void ibecc_inject_error(struct inf_devnet *);
+static void ibecc_clean_error(void);
 
 int inf_req_create(uint16_t            protocolID,
 		   struct inf_devnet  *devnet,
@@ -80,14 +87,14 @@ int inf_req_create(uint16_t            protocolID,
 	infreq->min_exec_time = U64_MAX;
 	infreq->max_exec_time = 0;
 
-	ret = sph_create_sw_counters_values_node(g_hSwCountersInfo_infreq,
+	ret = nnp_create_sw_counters_values_node(g_hSwCountersInfo_infreq,
 						 (u32)protocolID,
 						 devnet->sw_counters,
 						 &infreq->sw_counters);
 	if (unlikely(ret < 0))
 		goto free_infreq;
 
-	SPH_SW_COUNTER_INC(devnet->sw_counters,
+	NNP_SW_COUNTER_INC(devnet->sw_counters,
 			   NET_SPHCS_SW_COUNTERS_NUM_INFER_CMDS);
 
 	infreq->devnet = devnet;
@@ -149,7 +156,7 @@ void destroy_infreq_on_create_failed(struct inf_req *infreq)
 	bool dma_completed, should_destroy;
 	unsigned long flags;
 
-	SPH_SPIN_LOCK_IRQSAVE(&infreq->lock_irq, flags);
+	NNP_SPIN_LOCK_IRQSAVE(&infreq->lock_irq, flags);
 
 	dma_completed = (infreq->status == DMA_COMPLETED);
 	// roll back status, to put kref once
@@ -160,7 +167,7 @@ void destroy_infreq_on_create_failed(struct inf_req *infreq)
 	if (likely(should_destroy))
 		infreq->destroyed = -1;
 
-	SPH_SPIN_UNLOCK_IRQRESTORE(&infreq->lock_irq, flags);
+	NNP_SPIN_UNLOCK_IRQRESTORE(&infreq->lock_irq, flags);
 
 
 	if (likely(should_destroy))
@@ -178,9 +185,9 @@ static void release_infreq(struct kref *kref)
 	uint32_t i;
 	int ret;
 
-	SPH_SPIN_LOCK(&infreq->devnet->lock);
+	NNP_SPIN_LOCK(&infreq->devnet->lock);
 	hash_del(&infreq->hash_node);
-	SPH_SPIN_UNLOCK(&infreq->devnet->lock);
+	NNP_SPIN_UNLOCK(&infreq->devnet->lock);
 
 	for (i = 0; i < infreq->n_inputs; i++) {
 		inf_devres_put(infreq->inputs[i]);
@@ -204,14 +211,14 @@ static void release_infreq(struct kref *kref)
 			sph_log_err(CREATE_COMMAND_LOG, "Failed to send destroy network command to runtime\n");
 	}
 
-	sph_remove_sw_counters_values_node(infreq->sw_counters);
+	nnp_remove_sw_counters_values_node(infreq->sw_counters);
 
 	SPH_SW_COUNTER_DEC(infreq->devnet->sw_counters,
 			   NET_SPHCS_SW_COUNTERS_NUM_INFER_CMDS);
 
 	if (likely(infreq->destroyed == 1))
 		sphcs_send_event_report_ext(g_the_sphcs,
-					SPH_IPC_INFREQ_DESTROYED,
+					NNP_IPC_INFREQ_DESTROYED,
 					0,
 					infreq->devnet->context->chan->respq,
 					infreq->devnet->context->protocolID,
@@ -290,12 +297,12 @@ static int infreq_req_sched(struct inf_exec_req *req)
 	int j = 0;
 	int k;
 
-	SPH_ASSERT(req->cmd_type == CMDLIST_CMD_INFREQ);
+	NNP_ASSERT(req->cmd_type == CMDLIST_CMD_INFREQ);
 
 	infreq = req->infreq;
-	if (SPH_SW_GROUP_IS_ENABLE(infreq->sw_counters,
+	if (NNP_SW_GROUP_IS_ENABLE(infreq->sw_counters,
 				   INFREQ_SPHCS_SW_COUNTERS_GROUP))
-		req->time = sph_time_us();
+		req->time = nnp_time_us();
 
 	inf_req_get(req->infreq);
 	spin_lock_init(&req->lock_irq);
@@ -338,7 +345,7 @@ static int infreq_req_sched(struct inf_exec_req *req)
 		migrate_priority(infreq, req);
 
 	// Request scheduled
-	SPH_SW_COUNTER_INC(infreq->devnet->context->sw_counters,
+	NNP_SW_COUNTER_INC(infreq->devnet->context->sw_counters,
 			   CTX_SPHCS_SW_COUNTERS_INFERENCE_SUBMITTED_INF_REQ);
 
 	// First try to execute
@@ -369,7 +376,7 @@ static void inf_req_release(struct kref *kref)
 	struct inf_req *infreq;
 	int i;
 
-	SPH_ASSERT(req->cmd_type == CMDLIST_CMD_INFREQ);
+	NNP_ASSERT(req->cmd_type == CMDLIST_CMD_INFREQ);
 
 	infreq = req->infreq;
 	inf_devres_del_req_from_queue(infreq->devnet->first_devres, req);
@@ -392,31 +399,42 @@ static void inf_req_release(struct kref *kref)
 	inf_req_put(infreq);
 }
 
-static bool inf_req_ready(struct inf_exec_req *req)
+static enum EXEC_REQ_READINESS inf_req_ready(struct inf_exec_req *req)
 {
 	struct inf_req *infreq;
 	int i;
+	bool has_dirty_inputs = false;
+	enum DEV_RES_READINESS dev_res_status;
 
-	SPH_ASSERT(req->cmd_type == CMDLIST_CMD_INFREQ);
+	NNP_ASSERT(req->cmd_type == CMDLIST_CMD_INFREQ);
 
 	infreq = req->infreq;
 	/* cannot start execute if another infreq of the same network is running*/
 	if (!inf_devres_req_ready(infreq->devnet->first_devres,
 				  req,
 				  !infreq->devnet->serial_infreq_exec))
-		return false;
+		return EXEC_REQ_READINESS_NOT_READY;
 
 	/* check input resources dependency */
-	for (i = 0; i < req->i_num_opt_depend_devres; ++i)
-		if (!inf_devres_req_ready(req->i_opt_depend_devres[i], req, true))
-			return false;
+	for (i = 0; i < req->i_num_opt_depend_devres; ++i) {
+		dev_res_status = inf_devres_req_ready(req->i_opt_depend_devres[i], req, true);
+		if (dev_res_status == DEV_RES_READINESS_NOT_READY)
+			return EXEC_REQ_READINESS_NOT_READY;
+		has_dirty_inputs |= (dev_res_status == DEV_RES_READINESS_READY_BUT_DIRTY);
+	}
 
 	/* check output resources dependency */
-	for (i = 0; i < req->o_num_opt_depend_devres; ++i)
-		if (!inf_devres_req_ready(req->o_opt_depend_devres[i], req, false))
-			return false;
+	for (i = 0; i < req->o_num_opt_depend_devres; ++i) {
+		dev_res_status = inf_devres_req_ready(req->o_opt_depend_devres[i], req, false);
+		if (dev_res_status == DEV_RES_READINESS_NOT_READY)
+			return EXEC_REQ_READINESS_NOT_READY;
+	}
 
-	return true;
+	/* All inputs are ready, check whether some of them is dirty */
+	if (has_dirty_inputs)
+		return EXEC_REQ_READINESS_READY_HAS_DIRTY_INPUTS;
+
+	return EXEC_REQ_READINESS_READY_NO_DIRTY_INPUTS;
 }
 
 unsigned long inf_req_read_exec_command(char __user *buf,
@@ -430,7 +448,7 @@ unsigned long inf_req_read_exec_command(char __user *buf,
 
 	if (offset < sizeof(req->infreq->exec_cmd)) {
 
-		SPH_ASSERT(n_to_read >= sizeof(req->infreq->exec_cmd)-offset);
+		NNP_ASSERT(n_to_read >= sizeof(req->infreq->exec_cmd)-offset);
 		n = sizeof(req->infreq->exec_cmd) - offset;
 
 		ret = copy_to_user(buf,
@@ -493,13 +511,13 @@ static int inf_req_execute(struct inf_exec_req *req)
 	unsigned long flags, flags2;
 	int ret;
 
-	SPH_ASSERT(req->cmd_type == CMDLIST_CMD_INFREQ);
-	SPH_ASSERT(req->in_progress);
+	NNP_ASSERT(req->cmd_type == CMDLIST_CMD_INFREQ);
+	NNP_ASSERT(req->in_progress);
 
 	infreq = req->infreq;
 	context = infreq->devnet->context;
 
-	SPH_ASSERT(infreq->active_req == NULL);
+	NNP_ASSERT(infreq->active_req == NULL);
 
 	DO_TRACE(trace_infreq(SPH_TRACE_OP_STATUS_START,
 		     infreq->devnet->context->protocolID,
@@ -507,20 +525,20 @@ static int inf_req_execute(struct inf_exec_req *req)
 		     infreq->protocolID,
 		     req->cmd ? req->cmd->protocolID : -1));
 
-	if (SPH_SW_GROUP_IS_ENABLE(infreq->sw_counters,
+	if (NNP_SW_GROUP_IS_ENABLE(infreq->sw_counters,
 				   INFREQ_SPHCS_SW_COUNTERS_GROUP)) {
 		u64 now;
 
-		now = sph_time_us();
+		now = nnp_time_us();
 		if (req->time) {
 			u64 dt;
 
 			dt = now - req->time;
-			SPH_SW_COUNTER_ADD(infreq->sw_counters,
+			NNP_SW_COUNTER_ADD(infreq->sw_counters,
 					   INFREQ_SPHCS_SW_COUNTERS_BLOCK_TOTAL_TIME,
 					   dt);
 
-			SPH_SW_COUNTER_INC(infreq->sw_counters,
+			NNP_SW_COUNTER_INC(infreq->sw_counters,
 					   INFREQ_SPHCS_SW_COUNTERS_BLOCK_COUNT);
 
 			if (dt < infreq->min_block_time) {
@@ -541,7 +559,7 @@ static int inf_req_execute(struct inf_exec_req *req)
 	} else
 		req->time = 0;
 
-	SPH_SPIN_LOCK_IRQSAVE(&infreq->lock_irq, flags);
+	NNP_SPIN_LOCK_IRQSAVE(&infreq->lock_irq, flags);
 	infreq->exec_cmd.ready_flags = 1;
 	infreq->exec_cmd.sched_params_is_null = req->sched_params_is_null;
 	if (!req->sched_params_is_null) {
@@ -550,16 +568,16 @@ static int inf_req_execute(struct inf_exec_req *req)
 		infreq->exec_cmd.sched_params.debugOn = req->debugOn;
 		infreq->exec_cmd.sched_params.collectInfo = req->collectInfo;
 	}
-	SPH_SPIN_LOCK_IRQSAVE(&context->sw_counters_lock_irq, flags2);
+	NNP_SPIN_LOCK_IRQSAVE(&context->sw_counters_lock_irq, flags2);
 	if (context->infreq_counter == 0 &&
-	    SPH_SW_GROUP_IS_ENABLE(context->sw_counters, CTX_SPHCS_SW_COUNTERS_GROUP_INFERENCE))
-		context->runtime_busy_starttime = sph_time_us();
+	    NNP_SW_GROUP_IS_ENABLE(context->sw_counters, CTX_SPHCS_SW_COUNTERS_GROUP_INFERENCE))
+		context->runtime_busy_starttime = nnp_time_us();
 	context->infreq_counter++;
-	SPH_SPIN_UNLOCK_IRQRESTORE(&context->sw_counters_lock_irq, flags2);
+	NNP_SPIN_UNLOCK_IRQRESTORE(&context->sw_counters_lock_irq, flags2);
 
 	infreq->active_req = req;
 
-	SPH_SPIN_UNLOCK_IRQRESTORE(&infreq->lock_irq, flags);
+	NNP_SPIN_UNLOCK_IRQRESTORE(&infreq->lock_irq, flags);
 
 	/* If the context is broken we don't want to send the request to
 	 * the runtime. Instead, we want to cancel this request by returning
@@ -567,7 +585,7 @@ static int inf_req_execute(struct inf_exec_req *req)
 	 * wasn't added to cmdq.
 	 */
 	if (unlikely(inf_context_get_state(infreq->devnet->context) != CONTEXT_OK)) {
-		ret = -SPHER_CONTEXT_BROKEN;
+		ret = -NNPER_CONTEXT_BROKEN;
 	} else {
 		ibecc_inject_error(infreq->devnet);
 		ret = inf_cmd_queue_add(&infreq->devnet->context->cmdq,
@@ -583,14 +601,14 @@ static int inf_req_execute(struct inf_exec_req *req)
 	 * be canceled when runtime dies.
 	 */
 	if (unlikely(ret < 0)) {
-		SPH_SPIN_LOCK_IRQSAVE(&infreq->lock_irq, flags);
+		NNP_SPIN_LOCK_IRQSAVE(&infreq->lock_irq, flags);
 		if (unlikely(infreq->active_req == NULL))
 			// inf_req_complete will be called
 			// from del_all_active_create_and_inf_requests
 			ret = 0;
 		else
 			infreq->active_req = NULL;
-		SPH_SPIN_UNLOCK_IRQRESTORE(&infreq->lock_irq, flags);
+		NNP_SPIN_UNLOCK_IRQRESTORE(&infreq->lock_irq, flags);
 	}
 
 	return ret;
@@ -602,12 +620,12 @@ static inline void infreq_send_req_fail(struct inf_exec_req *req,
 	union c2h_ChanInfReqFailed chan_msg;
 	struct inf_req *infreq;
 
-	SPH_ASSERT(req->cmd_type == CMDLIST_CMD_INFREQ);
+	NNP_ASSERT(req->cmd_type == CMDLIST_CMD_INFREQ);
 
 	infreq = req->infreq;
 
 	memset(chan_msg.value, 0, sizeof(chan_msg.value));
-	chan_msg.opcode = SPH_IPC_C2H_OP_CHAN_INFREQ_FAILED;
+	chan_msg.opcode = NNP_IPC_C2H_OP_CHAN_INFREQ_FAILED;
 	chan_msg.chanID = infreq->devnet->context->chan->protocolID;
 	chan_msg.netID = infreq->devnet->protocolID;
 	chan_msg.infreqID = infreq->protocolID;
@@ -616,6 +634,15 @@ static inline void infreq_send_req_fail(struct inf_exec_req *req,
 		chan_msg.cmdID_valid = 1;
 		chan_msg.cmdID = req->cmd->protocolID;
 	}
+
+	sph_log_debug(IPC_LOG, "Sending event: SCHEDULE_INFREQ_FAILED(%u) val=%u ctx_id=%u infreqID=%u netID=%u cmdID_2=%u (valid=%u)\n",
+		chan_msg.opcode,
+		chan_msg.reason,
+		chan_msg.chanID,
+		chan_msg.infreqID,
+		chan_msg.netID,
+		chan_msg.cmdID, chan_msg.cmdID_valid);
+
 	sphcs_msg_scheduler_queue_add_msg(g_the_sphcs->public_respq,
 					  &chan_msg.value[0],
 					  sizeof(chan_msg.value) / sizeof(u64));
@@ -628,6 +655,60 @@ static void send_infreq_report(struct inf_exec_req *req,
 		infreq_send_req_fail(req, eventVal);
 }
 
+static void treat_infreq_failure(struct inf_exec_req *req,
+				 enum event_val       eventVal,
+				 const void          *error_msg,
+				 int32_t              error_msg_size)
+{
+	struct inf_req *infreq;
+	struct inf_exec_error_details *err_details;
+	uint32_t i;
+	int rc;
+
+	NNP_ASSERT(req->cmd_type == CMDLIST_CMD_INFREQ);
+
+	infreq = req->infreq;
+	rc = inf_exec_error_details_alloc(CMDLIST_CMD_INFREQ,
+					  infreq->protocolID,
+					  infreq->devnet->protocolID,
+					  eventVal,
+					  error_msg_size < 0 ? -error_msg_size : error_msg_size,
+					  &err_details);
+	if (likely(rc == 0)) {
+		if (error_msg_size < 0) {
+			rc = copy_from_user(err_details->error_msg,
+					    error_msg,
+					    err_details->error_msg_size);
+			if (unlikely(rc != 0))
+				strncpy(err_details->error_msg, "<Failed to get error message>", err_details->error_msg_size);
+		} else if (error_msg_size > 0) {
+			memcpy(err_details->error_msg, error_msg, error_msg_size);
+		}
+
+		inf_exec_error_list_add(req->cmd != NULL ? &req->cmd->error_list :
+							   &infreq->devnet->context->error_list,
+					err_details);
+	}
+
+	if (eventVal == NNP_IPC_ICEDRV_INFER_EXEC_ERROR_NEED_CARD_RESET) {
+		sphcs_send_event_report(g_the_sphcs,
+					NNP_IPC_ERROR_FATAL_ICE_ERROR,
+					infreq->devnet->context->protocolID,
+					NULL,
+					-1,
+					-1);
+
+		inf_context_set_state(infreq->devnet->context,
+				      CONTEXT_BROKEN_NON_RECOVERABLE);
+	} else if (req->cmd == NULL) {
+		inf_context_set_state(infreq->devnet->context,
+				      CONTEXT_BROKEN_RECOVERABLE);
+	}
+
+	for (i = 0; i < infreq->n_outputs; i++)
+		inf_devres_set_dirty(infreq->outputs[i], true);
+}
+
 static void inf_req_complete(struct inf_exec_req *req,
 			     int                  err,
 			     const void          *error_msg,
@@ -636,36 +717,35 @@ static void inf_req_complete(struct inf_exec_req *req,
 	struct inf_req *infreq;
 	struct inf_context *context;
 	struct inf_cmd_list *cmd;
-	bool send_cmdlist_event_report = false;
 	unsigned long flags;
-	uint16_t eventVal;
+	enum event_val eventVal;
 	bool last_completed;
-	struct inf_exec_error_details *err_details;
-	int rc;
+	uint32_t i;
+	bool has_dirty_outputs = false;
 
-	SPH_ASSERT(req->cmd_type == CMDLIST_CMD_INFREQ);
-	SPH_ASSERT(req->in_progress);
+	NNP_ASSERT(req->cmd_type == CMDLIST_CMD_INFREQ);
+	NNP_ASSERT(req->in_progress);
 
 	infreq = req->infreq;
 	context = infreq->devnet->context;
 	cmd = req->cmd;
 
-	SPH_SPIN_LOCK_IRQSAVE(&context->sw_counters_lock_irq, flags);
+	NNP_SPIN_LOCK_IRQSAVE(&context->sw_counters_lock_irq, flags);
 	context->infreq_counter--;
 	last_completed = (context->infreq_counter == 0);
-	SPH_SW_COUNTER_INC(context->sw_counters, CTX_SPHCS_SW_COUNTERS_INFERENCE_COMPLETED_INF_REQ);
+	NNP_SW_COUNTER_INC(context->sw_counters, CTX_SPHCS_SW_COUNTERS_INFERENCE_COMPLETED_INF_REQ);
 
 	if (last_completed &&
-	    SPH_SW_GROUP_IS_ENABLE(context->sw_counters, CTX_SPHCS_SW_COUNTERS_GROUP_INFERENCE) &&
+	    NNP_SW_GROUP_IS_ENABLE(context->sw_counters, CTX_SPHCS_SW_COUNTERS_GROUP_INFERENCE) &&
 	    context->runtime_busy_starttime) {
-		SPH_SW_COUNTER_ADD(context->sw_counters,
+		NNP_SW_COUNTER_ADD(context->sw_counters,
 				   CTX_SPHCS_SW_COUNTERS_INFERENCE_RUNTIME_BUSY_TIME,
-				   sph_time_us() - context->runtime_busy_starttime);
+				   nnp_time_us() - context->runtime_busy_starttime);
 
 		context->runtime_busy_starttime = 0;
 	}
-	SPH_SPIN_UNLOCK_IRQRESTORE(&context->sw_counters_lock_irq, flags);
-	SPH_SW_COUNTER_ATOMIC_INC(g_sph_sw_counters, SPHCS_SW_COUNTERS_INFERENCE_COMPLETED_INF_REQ);
+	NNP_SPIN_UNLOCK_IRQRESTORE(&context->sw_counters_lock_irq, flags);
+	SPH_SW_COUNTER_ATOMIC_INC(g_nnp_sw_counters, SPHCS_SW_COUNTERS_INFERENCE_COMPLETED_INF_REQ);
 
 	 DO_TRACE(trace_infreq(SPH_TRACE_OP_STATUS_COMPLETE,
 				  infreq->devnet->context->protocolID,
@@ -673,20 +753,20 @@ static void inf_req_complete(struct inf_exec_req *req,
 				  infreq->protocolID,
 				  cmd ? cmd->protocolID : -1));
 
-	if (SPH_SW_GROUP_IS_ENABLE(infreq->sw_counters,
+	if (NNP_SW_GROUP_IS_ENABLE(infreq->sw_counters,
 				   INFREQ_SPHCS_SW_COUNTERS_GROUP)) {
 		u64 now;
 
-		now = sph_time_us();
+		now = nnp_time_us();
 		if (req->time) {
 			u64 dt;
 
 			dt = now - req->time;
-			SPH_SW_COUNTER_ADD(infreq->sw_counters,
+			NNP_SW_COUNTER_ADD(infreq->sw_counters,
 					   INFREQ_SPHCS_SW_COUNTERS_EXEC_TOTAL_TIME,
 					   dt);
 
-			SPH_SW_COUNTER_INC(infreq->sw_counters,
+			NNP_SW_COUNTER_INC(infreq->sw_counters,
 					   INFREQ_SPHCS_SW_COUNTERS_EXEC_COUNT);
 
 			if (dt < infreq->min_exec_time) {
@@ -707,117 +787,100 @@ static void inf_req_complete(struct inf_exec_req *req,
 	req->time = 0;
 
 
-	SPH_SPIN_LOCK_IRQSAVE(&infreq->lock_irq, flags);
+	NNP_SPIN_LOCK_IRQSAVE(&infreq->lock_irq, flags);
 	infreq->exec_cmd.ready_flags = 0;
 	infreq->active_req = NULL;
-	SPH_SPIN_UNLOCK_IRQRESTORE(&infreq->lock_irq, flags);
+	NNP_SPIN_UNLOCK_IRQRESTORE(&infreq->lock_irq, flags);
 
 	if (unlikely(err < 0)) {
 		switch (err) {
 		case -ENOMEM: {
-			eventVal = SPH_IPC_NO_MEMORY;
+			eventVal = NNP_IPC_NO_MEMORY;
 			break;
 		}
-		case -SPHER_CONTEXT_BROKEN: {
-			eventVal = SPH_IPC_CONTEXT_BROKEN;
+		case -NNPER_CONTEXT_BROKEN: {
+			eventVal = NNP_IPC_CONTEXT_BROKEN;
 			break;
 		}
-		case -SPHER_DMA_ERROR: {
-			eventVal = SPH_IPC_DMA_ERROR;
+		case -NNPER_DMA_ERROR: {
+			eventVal = NNP_IPC_DMA_ERROR;
 			break;
 		}
-		case -SPHER_NOT_SUPPORTED: {
-			eventVal = SPH_IPC_RUNTIME_NOT_SUPPORTED;
+		case -NNPER_NOT_SUPPORTED: {
+			eventVal = NNP_IPC_RUNTIME_NOT_SUPPORTED;
 			break;
 		}
-		case -SPHER_INFER_EXEC_ERROR: {
-			eventVal = SPH_IPC_RUNTIME_INFER_EXEC_ERROR;
+		case -NNPER_INFER_EXEC_ERROR: {
+			eventVal = NNP_IPC_RUNTIME_INFER_EXEC_ERROR;
 			break;
 		}
-		case -SPHER_INFER_ICEDRV_ERROR: {
-			eventVal = SPH_IPC_ICEDRV_INFER_EXEC_ERROR;
+		case -NNPER_INFER_ICEDRV_ERROR: {
+			eventVal = NNP_IPC_ICEDRV_INFER_EXEC_ERROR;
 			break;
 		}
-		case -SPHER_INFER_ICEDRV_ERROR_RESET: {
-			eventVal = SPH_IPC_ICEDRV_INFER_EXEC_ERROR_NEED_RESET;
+		case -NNPER_INFER_ICEDRV_ERROR_RESET: {
+			eventVal = NNP_IPC_ICEDRV_INFER_EXEC_ERROR_NEED_RESET;
 			break;
 		}
-		case -SPHER_INFER_ICEDRV_ERROR_CARD_RESET: {
-			eventVal = SPH_IPC_ICEDRV_INFER_EXEC_ERROR_NEED_CARD_RESET;
+		case -NNPER_INFER_ICEDRV_ERROR_CARD_RESET: {
+			eventVal = NNP_IPC_ICEDRV_INFER_EXEC_ERROR_NEED_CARD_RESET;
 			break;
 		}
-		case -SPHER_INFER_SCHEDULE_ERROR: {
-			eventVal = SPH_IPC_RUNTIME_INFER_SCHEDULE_ERROR;
+		case -NNPER_INFER_SCHEDULE_ERROR: {
+			eventVal = NNP_IPC_RUNTIME_INFER_SCHEDULE_ERROR;
+			break;
+		}
+		case -NNPER_INPUT_IS_DIRTY: {
+			eventVal = NNP_IPC_INPUT_IS_DIRTY;
 			break;
 		}
 		default:
-			eventVal = SPH_IPC_RUNTIME_FAILED;
+			eventVal = NNP_IPC_RUNTIME_FAILED;
 		}
 
 		sph_log_err(EXECUTE_COMMAND_LOG, "Got Error. errno: %d, eventVal=%u\n", err, eventVal);
 
-		rc = inf_exec_error_details_alloc(CMDLIST_CMD_INFREQ,
-						  infreq->protocolID,
-						  infreq->devnet->protocolID,
-						  eventVal,
-						  error_msg_size < 0 ? -error_msg_size : error_msg_size,
-						  &err_details);
-		if (rc == 0) {
-			if (error_msg_size != 0) {
-				if (error_msg_size < 0) {
-					rc = copy_from_user(err_details->error_msg,
-							    error_msg,
-							    err_details->error_msg_size);
-					if (rc)
-						kfree(err_details);
-				} else
-					memcpy(err_details->error_msg, error_msg, error_msg_size);
+		treat_infreq_failure(req, eventVal, error_msg, error_msg_size);
+
+		infreq_send_req_fail(req, eventVal);
+	} else {
+		for (i = 0; i < req->o_num_opt_depend_devres; ++i) {
+			has_dirty_outputs = req->o_opt_depend_devres[i]->is_dirty ||
+					    req->o_opt_depend_devres[i]->group_dirty_count > 0;
+			if (has_dirty_outputs)
+				break;
+		}
+
+		if (has_dirty_outputs) {
+			for (i = 0; i < infreq->n_outputs; i++)
+				inf_devres_set_dirty(infreq->outputs[i], false);
+		}
+	}
+
+	/* If inference request is completed and some inputs are destination p2p resources */
+	/* TODO: create list of p2p destination inputs on infreq creation and loop over it */
+	for (i = 0; i < infreq->n_inputs; i++) {
+		if (infreq->inputs[i]->is_p2p_dst) {
+			/* Resource will be ready again, once d2d copy will succeed */
+			infreq->inputs[i]->p2p_buf.ready = false;
+
+			if (!infreq->inputs[i]->is_dirty) {
+				/* If inference request is part of command list, the command list completion will be reported
+				 * only when all credits are released
+				 */
+				if (cmd != NULL)
+					atomic_inc(&cmd->num_left);
+				if (inf_devres_send_release_credit(infreq->inputs[i], req) && (cmd != NULL))
+					atomic_dec(&cmd->num_left);
 			}
-
-			if (rc == 0)
-				inf_exec_error_list_add(cmd != NULL ? &cmd->error_list :
-								      &context->error_list,
-							err_details);
-		}
-
-		req->f->send_report(req, eventVal);
-
-		if (eventVal == SPH_IPC_ICEDRV_INFER_EXEC_ERROR_NEED_CARD_RESET) {
-			sphcs_send_event_report(g_the_sphcs,
-						SPH_IPC_ERROR_FATAL_ICE_ERROR,
-						infreq->devnet->context->protocolID,
-						NULL,
-						-1,
-						-1);
-
-			inf_context_set_state(infreq->devnet->context,
-					      CONTEXT_BROKEN_NON_RECOVERABLE);
-		} else if (cmd == NULL) {
-			inf_context_set_state(infreq->devnet->context,
-					      CONTEXT_BROKEN_RECOVERABLE);
 		}
 	}
 
-	if (cmd != NULL) {
-		SPH_SPIN_LOCK_IRQSAVE(&cmd->lock_irq, flags);
-		if (--cmd->num_left == 0)
-			send_cmdlist_event_report = true;
-		SPH_SPIN_UNLOCK_IRQRESTORE(&cmd->lock_irq, flags);
-	}
+	/* If command list execution completed, send completion event */
+	send_cmd_list_completed_event(cmd);
 
-	if (send_cmdlist_event_report) {
-		sphcs_send_event_report(g_the_sphcs,
-					SPH_IPC_EXECUTE_CMD_COMPLETE,
-					0,
-					cmd->context->chan->respq,
-					cmd->context->protocolID,
-					cmd->protocolID);
-		DO_TRACE(trace_cmdlist(SPH_TRACE_OP_STATUS_COMPLETE,
-			 cmd->context->protocolID, cmd->protocolID));
-		// for schedule
-		inf_cmd_put(cmd);
-	}
 	ibecc_clean_error();
+
 	inf_exec_req_put(req);
 }
 
@@ -831,3 +894,4 @@ static int inf_req_migrate_priority(struct inf_exec_req *req, uint8_t priority)
 	// don't migrate priority of infreq
 	return 0;
 }
+

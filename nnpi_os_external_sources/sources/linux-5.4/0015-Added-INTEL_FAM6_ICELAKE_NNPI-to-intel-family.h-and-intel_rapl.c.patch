@@ -1,0 +1,40 @@
+From 1fea18f527be348e918acfb7cd8fccdf0323ddd7 Mon Sep 17 00:00:00 2001
+From: Gil Montag <gil.montag@intel.com>
+Date: Sun, 5 Jan 2020 11:03:43 +0200
+Subject: [PATCH] 
+ Added-INTEL_FAM6_ICELAKE_NNPI-to-intel-family.h-and-intel_rapl.c
+
+---
+ arch/x86/include/asm/intel-family.h  | 2 +-
+ drivers/powercap/intel_rapl_common.c | 2 +-
+ 2 files changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/arch/x86/include/asm/intel-family.h b/arch/x86/include/asm/intel-family.h
+index c606c0b70738..325766321b50 100644
+--- a/arch/x86/include/asm/intel-family.h
++++ b/arch/x86/include/asm/intel-family.h
+@@ -71,7 +71,7 @@
+ #define INTEL_FAM6_SKYLAKE_X		0x55
+ #define INTEL_FAM6_KABYLAKE_L		0x8E
+ #define INTEL_FAM6_KABYLAKE		0x9E
+-
++#define INTEL_FAM6_ICELAKE_NNPI         0x9D /* Icelake Neural NW processor */
+ #define INTEL_FAM6_CANNONLAKE_L		0x66
+ 
+ #define INTEL_FAM6_ICELAKE_X		0x6A
+diff --git a/drivers/powercap/intel_rapl_common.c b/drivers/powercap/intel_rapl_common.c
+index 94ddd7d659c8..65f48fde9b61 100644
+--- a/drivers/powercap/intel_rapl_common.c
++++ b/drivers/powercap/intel_rapl_common.c
+@@ -987,7 +987,7 @@ static const struct x86_cpu_id rapl_ids[] __initconst = {
+ 	INTEL_CPU_FAM6(ATOM_GOLDMONT_PLUS, rapl_defaults_core),
+ 	INTEL_CPU_FAM6(ATOM_GOLDMONT_D, rapl_defaults_core),
+ 	INTEL_CPU_FAM6(ATOM_TREMONT_D, rapl_defaults_core),
+-
++	INTEL_CPU_FAM6(ICELAKE_NNPI, rapl_defaults_core),
+ 	INTEL_CPU_FAM6(XEON_PHI_KNL, rapl_defaults_hsw_server),
+ 	INTEL_CPU_FAM6(XEON_PHI_KNM, rapl_defaults_hsw_server),
+ 	{}
+-- 
+2.17.1
+

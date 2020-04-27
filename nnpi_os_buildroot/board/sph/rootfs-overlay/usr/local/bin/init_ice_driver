@@ -14,7 +14,7 @@ else
    INTEL_NNPI_COMMON_ARGS="sph_soc=1"
 fi
 
-TEST_BOOT_ID="ls /dev/disk/by-id"
+TEST_BOOT_ID="ls /dev/disk/by-id >/dev/null 2>&1"
 TEST_VTECH="Vtech"
 
 #############################
@@ -67,7 +67,7 @@ check_ices() {
 #               echo $mask
 
                 INTEL_NNPI_ARGS="${INTEL_NNPI_COMMON_ARGS} icemask_user=$mask"
-                modprobe intel_nnpi $INTEL_NNPI_ARGS
+                modprobe intel_nnpi.ko $INTEL_NNPI_ARGS
 		if [ $? !=  0 ]
 		then
 			echo "Failed to insmod intel_nnpi driver - aborting!"
@@ -126,7 +126,7 @@ fi
 
 mask_new=$(printf "0x%X\n" $mask_after)
 INTEL_NNPI_ARGS="${INTEL_NNPI_COMMON_ARGS} icemask_user=$mask_new"
-modprobe intel_nnpi ${INTEL_NNPI_ARGS}
+modprobe intel_nnpi.ko ${INTEL_NNPI_ARGS}
 echo "loaded intel_nnpi with args: ${INTEL_NNPI_ARGS}" >> /tmp/Test_all_ICEs.log
 echo "loaded intel_nnpi with args: ${INTEL_NNPI_ARGS}"
 

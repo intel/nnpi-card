@@ -19,7 +19,7 @@
 /* [Description]: HW handler called by the scheduler to send a message.
  * [in]: msg: message.
  * [in]: size[1-2]: size of message.
- * [in]: data: pointer to device specific hw data attached (e.g: struct sph_device).
+ * [in]: data: pointer to device specific hw data attached (e.g: struct nnp_device).
  * [return]: status.
  */
 typedef int (*hw_handle_msg)(u64 *msg, int size, void *hw_data);
@@ -90,7 +90,7 @@ int msg_scheduler_invalidate_all(struct msg_scheduler *scheduler);
  *  [Brief]: create messages queue handled by scheduler.
  *
  *  [in] scheduler: scheduler data  returned by "msg_scheduler_create".
- *  [in] device_hw_data: device specific hw data (e.g: struct sph_device).
+ *  [in] device_hw_data: device specific hw data (e.g: struct nnp_device).
  *  [in] hw_handle_msg: function pointer to HW message handler.
  *  [in] contiMsgs: number of messages scheduler may handle contineously before
  *       moving to next queue.

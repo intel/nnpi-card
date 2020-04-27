@@ -8,9 +8,9 @@
 #include "ipc_chan_protocol_ult.h"
 #include "sphcs_cs.h"
 #include "sph_log.h"
-#include "sph_time.h"
+#include "nnp_time.h"
 #include "sphcs_dma_sched.h"
-#include "sph_boot_defs.h"
+#include "nnp_boot_defs.h"
 #include <linux/slab.h>
 #include <linux/sched.h>
 #include <linux/interrupt.h>
@@ -190,14 +190,14 @@ static int ult2_process_dma_ping(struct sphcs *sphcs, struct sphcs_cmd_chan *cha
 	return 0;
 }
 
-static sphcs_chan_command_handler s_dispatch2[SPH_IPC_ULT2_NUM_OPCODES] = {
-	ult2_process_host_hwQ_msg,  /* SPH_IPC_ULT2_OP_CARD_HWQ_MSG */
-	ult2_process_dma_ping, /* SPH_IPC_ULT2_OP_DMA_PING */
+static sphcs_chan_command_handler s_dispatch2[NNP_IPC_ULT2_NUM_OPCODES] = {
+	ult2_process_host_hwQ_msg,  /* NNP_IPC_ULT2_OP_CARD_HWQ_MSG */
+	ult2_process_dma_ping, /* NNP_IPC_ULT2_OP_DMA_PING */
 };
 
 /*
  * Description:  ULT messages dispatcher, Called to process a
- * SPH_IPC_H2C_OP_ULT_OP message receviced from host.
+ * NNP_IPC_H2C_OP_ULT_OP message receviced from host.
  * identify ULT message sub opcode and call the appropriate handler to handle the message.
  */
 static int sphcs_ult_process_command(struct sphcs *sphcs, u64 *msg, u32 size)
@@ -210,7 +210,7 @@ static int sphcs_ult_process_command(struct sphcs *sphcs, u64 *msg, u32 size)
 		struct sphcs_cmd_chan *chan;
 		int ret;
 
-		if (ultOp >= SPH_IPC_ULT2_NUM_OPCODES || NULL == s_dispatch2[ultOp]) {
+		if (ultOp >= NNP_IPC_ULT2_NUM_OPCODES || NULL == s_dispatch2[ultOp]) {
 			sph_log_err(GENERAL_LOG, "Unsupported ult2 h2c command opcode=%d\n", ultOp);
 			return 0;
 		}
@@ -245,7 +245,7 @@ static void add_pending_ult_command(struct sphcs      *sphcs,
 	entry->msg = msg;
 	INIT_LIST_HEAD(&entry->node);
 
-	SPH_SPIN_LOCK(&g_pending_ult_commands_lock);
+	NNP_SPIN_LOCK(&g_pending_ult_commands_lock);
 
 	list_add_tail(&entry->node, &g_pending_ult_commands);
 	g_num_pending_ult_commands++;
@@ -253,12 +253,12 @@ static void add_pending_ult_command(struct sphcs      *sphcs,
 	if (g_num_pending_ult_commands == 1)
 		queue_work(g_ult_wq, &g_pending_ult_commands_work);
 
-	SPH_SPIN_UNLOCK(&g_pending_ult_commands_lock);
+	NNP_SPIN_UNLOCK(&g_pending_ult_commands_lock);
 }
 
 /*
  * Description: interrupt main thread,called upon receiving ult message(opcode
- * SPH_IPC_H2C_OP_ULT_OP) from host.
+ * NNP_IPC_H2C_OP_ULT_OP) from host.
  * add message to workqueue, to be processed at some time by the workqueue thread.
  */
 void IPC_OPCODE_HANDLER(ULT2_OP)(struct sphcs      *sphcs,
@@ -275,23 +275,23 @@ static void sphcs_ult_process_pending(struct work_struct *work)
 	struct ult_cmd_entry *entry;
 	int rc;
 
-	SPH_SPIN_LOCK(&g_pending_ult_commands_lock);
+	NNP_SPIN_LOCK(&g_pending_ult_commands_lock);
 	while (g_num_pending_ult_commands) {
 	entry = list_first_entry(&g_pending_ult_commands,
 				 struct ult_cmd_entry,
 				 node);
-	SPH_SPIN_UNLOCK(&g_pending_ult_commands_lock);
+	NNP_SPIN_UNLOCK(&g_pending_ult_commands_lock);
 
 	rc = sphcs_ult_process_command(g_the_sphcs, &entry->msg, 1);
 	if (rc)
 		sph_log_err(GENERAL_LOG, "FATAL: process ult message failed rc=%d\n", rc);
 
-	SPH_SPIN_LOCK(&g_pending_ult_commands_lock);
+	NNP_SPIN_LOCK(&g_pending_ult_commands_lock);
 	list_del(&entry->node);
 	kfree(entry);
 	g_num_pending_ult_commands--;
 	}
-	SPH_SPIN_UNLOCK(&g_pending_ult_commands_lock);
+	NNP_SPIN_UNLOCK(&g_pending_ult_commands_lock);
 }
 
 /*

@@ -26,7 +26,7 @@
 #include "sphcs_cmd_chan.h"
 #include "inf_exec_req.h"
 
-struct sph_device;
+struct nnp_device;
 
 enum context_state {
 	CONTEXT_STATE_MIN = 0,
@@ -40,6 +40,7 @@ struct inf_context {
 	void              *magic;
 	struct kref        ref;
 	uint16_t           protocolID;
+	uint64_t           user_handle;
 	struct hlist_node  hash_node;
 	struct sphcs_cmd_chan *chan;
 
@@ -65,7 +66,7 @@ struct inf_context {
 
 	struct inf_cmd_queue cmdq;
 
-	struct sph_sw_counters *sw_counters;
+	struct nnp_sw_counters *sw_counters;
 	u64                 runtime_busy_starttime;
 	u32                 infreq_counter;
 	uint64_t            counters_cb_data_handler;

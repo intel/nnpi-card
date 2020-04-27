@@ -2313,4 +2313,9 @@ menu "Text editors and viewers"
 	source "package/vim/Config.in"
 endmenu
 
+menu "Intel-NNPI"
+	source "package/intel-nnpi/Config.in"
+endmenu
+
+
 endmenu

@@ -1,17 +1,10 @@
-/*
- * NNP-I Linux Driver
- * Copyright (c) 2017-2019, Intel Corporation.
+/********************************************
+ * Copyright (C) 2019-2020 Intel Corporation
  *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms and conditions of the GNU General Public License,
- * version 2, as published by the Free Software Foundation.
- *
- * This program is distributed in the hope it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
- *
- */
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ ********************************************/
+
+
 
 #ifndef CVE_DEVICE_H_
 #define CVE_DEVICE_H_
@@ -214,10 +207,10 @@ struct cve_device {
 	/* List of ICEs to be powered off */
 	struct cve_dle_t poweroff_list;
 	/* Timestamp of when Power Off request was raised */
-	struct timespec poweroff_ts;
+	unsigned long poff_jiffy;
 	/* Pointer to FIFO Descriptor of current Network */
 	struct fifo_descriptor *fifo_desc;
-	struct di_cve_dump_buffer cve_dump_buf;
+	struct di_cve_dump_buffer *cve_dump_buf;
 	/* ice dump buffer descriptor - for GET_ICE_DUMP_NOW debug control*/
 	struct di_cve_dump_buffer debug_control_buf;
 	u32 di_cve_needs_reset;
@@ -272,7 +265,8 @@ struct cve_device {
 	/* Freq sysfs related field */
 	struct kobject *ice_config_kobj;
 #endif
-	struct timespec db_time;
+	/* in Jiffies */
+	unsigned long db_jiffy;
 	struct timespec idle_start_time;
 	struct timespec busy_start_time;
 	/* Is ICE in free pool */
@@ -280,6 +274,7 @@ struct cve_device {
 	struct ice_pmon_config mmu_pmon[ICE_MAX_MMU_PMON];
 	struct ice_pmon_config delphi_pmon[ICE_MAX_DELPHI_PMON];
 };
+
 struct llc_pmon_config {
 	/*LLC PMON config reg 0 value */
 	u64 pmon0_cfg;
@@ -727,22 +722,24 @@ struct execution_node {
 	struct cve_dle_t sch_list[EXE_INF_PRIORITY_MAX];
 	struct cve_dle_t ntw_queue[EXE_INF_PRIORITY_MAX];
 
+	/* Ntw with which this node is associated */
+	struct ice_network *ntw;
+	/* Is this node queued */
+	bool is_queued;
+
 	/* ------------------- */
 	/* Valid for INFERENCE */
 	/* ------------------- */
 	struct ice_infer *inf;
 	/* This flag is bypassed when resources are reserved */
 	bool ready_to_run;
-	/* INFERENCE nodes are also added to ntw->sch_queue */
-	/* Is this inference queued */
-	bool is_queued;
+	/* Is this node added in Ntw's queue */
+	bool in_ntw_queue;
 	/* ------------------- */
 
 	/* ------------------------- */
 	/* Valid for RESERVE/RELEASE */
 	/* ------------------------- */
-	/* Ntw with which this node is associated */
-	struct ice_network *ntw;
 	bool is_success;
 	/* ------------------------- */
 
@@ -758,6 +755,9 @@ struct ice_network {
 
 	/* list of networks to be executed */
 	struct cve_dle_t exe_list;
+
+	/* list of networks to be deleted */
+	struct cve_dle_t del_list;
 
 	/* reference to buffer desc list from UMD,
 	 * used only during network creation
@@ -899,8 +899,6 @@ struct ice_network {
 	/* ------------------------- */
 	/* List of all Infer waiting for execution */
 	struct execution_node *sch_queue[EXE_INF_PRIORITY_MAX];
-	/* Number of Inf queued for execution */
-	u64 sch_queued_inf_count;
 	/* Multi back to back reserve/release will be rejected */
 	/* Initialize to RELEASE */
 	enum node_type last_request_type;
@@ -953,9 +951,6 @@ struct ice_infer {
 
 	/******************************************************/
 	/* Valid only when inf_queued=true || inf_running=true*/
-#ifdef _DEBUG
-	u64 inf_exe_order;
-#endif
 	enum ice_execute_infer_priority inf_pr;
 	/******************************************************/
 

@@ -41,12 +41,16 @@ if [ ! -f /etc/version ]; then
 fi
 #signal /etc/profile.d/sph.sh that this is a full OS
 touch /tmp/THIS_IS_A_FULL_OS
-#platform startup actions
-mv /sph_tmp/* /tmp/ 
-rm -rf /sph_tmp
 
 #symlinks for backward compatibility with modules new location
-ln -s /opt/intel_nnpi/modules /lib/modules/$(uname -r)/extra 
+mkdir -p /lib/modules/${KVER}/extra
+for f in /opt/intel_nnpi/modules/*
+do
+	ln -s ${f} /lib/modules/${KVER}/extra/$(basename ${f})
+done
+#update modules.dep accordingly
+depmod -a
+#symlinks for having nnpi executables and libraries in standard locations
 ln -s /opt/intel_nnpi/lib /usr/local/lib 
 ln -s /opt/intel_nnpi/bin /usr/local/bin
 ln -sf /opt/intel_nnpi/bin/sph_runtime_psw  /usr/bin/sph_runtime_psw
@@ -67,13 +71,13 @@ ln -sf /opt/intel_nnpi/bin/sph_maintenance /usr/bin/sph_maintenance
 
 #initializing SPH card driver
 echo "initializing SPH card driver"
-insmod /opt/intel_nnpi/modules/sphcs.ko mem_thr=75000
-error_check "insmod sphcs.ko"
+modprobe sphcs.ko mem_thr=75000
+error_check "modprobe sphcs.ko"
 
 #initializing SPH power balancing driver
 echo "initializing SPH power balancing driver"
-insmod /opt/intel_nnpi/modules/intel_sphpb.ko
-error_check "insmod intel_sphpb.ko"
+modprobe intel_sphpb.ko
+error_check "modprobe intel_sphpb.ko"
 
 #invoke a wrapper script that calculates cmd line args for insmod sph_memalloc.ko and insmods it accordingly
 . memalloc_sph

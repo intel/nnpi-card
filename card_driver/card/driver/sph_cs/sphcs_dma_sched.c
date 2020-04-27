@@ -13,9 +13,9 @@
 #include <linux/completion.h>
 #include <linux/debugfs.h>
 #include <linux/seq_file.h>
-#include "sph_types.h"
+#include "nnp_types.h"
 #include "sph_log.h"
-#include "sph_debug.h"
+#include "nnp_debug.h"
 #include "sphcs_trace.h"
 #include "sphcs_sw_counters.h"
 
@@ -212,9 +212,9 @@ static void reset_handler(struct work_struct *work)
 	sph_log_err(EXECUTE_COMMAND_LOG, "DMA failed - reset issued\n");
 
 	/* enable DMA engine */
-	SPH_SPIN_LOCK_IRQSAVE(&dir_info->lock_irq, flags);
+	NNP_SPIN_LOCK_IRQSAVE(&dir_info->lock_irq, flags);
 	dir_info->dma_engine_state = SPHCS_DMA_ENGINE_STATE_ENABLED;
-	SPH_SPIN_UNLOCK_IRQRESTORE(&dir_info->lock_irq, flags);
+	NNP_SPIN_UNLOCK_IRQRESTORE(&dir_info->lock_irq, flags);
 }
 
 /* MACROS */
@@ -242,12 +242,12 @@ void free_dma_hw_channel(struct sphcs_dma_sched *dmaSched,
 {
 	unsigned long flags;
 
-	SPH_SPIN_LOCK_IRQSAVE(&(DMA_HW_CHANNEL(dmaSched, direction).lock_irq), flags);
+	NNP_SPIN_LOCK_IRQSAVE(&(DMA_HW_CHANNEL(dmaSched, direction).lock_irq), flags);
 
 	DMA_HW_CHANNEL(dmaSched, direction).busy_mask &= ~(0x1 << channel);
 	DMA_HW_CHANNEL(dmaSched, direction).inflight_req[channel] = NULL;
 
-	SPH_SPIN_UNLOCK_IRQRESTORE(&(DMA_HW_CHANNEL(dmaSched, direction).lock_irq), flags);
+	NNP_SPIN_UNLOCK_IRQRESTORE(&(DMA_HW_CHANNEL(dmaSched, direction).lock_irq), flags);
 }
 
 /* check if there is a free hw channel for dma, if so, it will be reserved for current request */
@@ -262,7 +262,7 @@ bool select_available_dma_hw_channel(struct sphcs_dma_sched *dmaSched,
 	u32 assign_dma_channel_mask = 0x0;
 	bool ret = false;
 
-	SPH_SPIN_LOCK_IRQSAVE(&(DMA_HW_CHANNEL(dmaSched, direction).lock_irq), flags);
+	NNP_SPIN_LOCK_IRQSAVE(&(DMA_HW_CHANNEL(dmaSched, direction).lock_irq), flags);
 
 	assign_dma_channel_mask = (queueChannelMask & ~(DMA_HW_CHANNEL(dmaSched, direction).busy_mask));
 
@@ -275,7 +275,7 @@ bool select_available_dma_hw_channel(struct sphcs_dma_sched *dmaSched,
 		DMA_HW_CHANNEL(dmaSched, direction).busy_mask |= 0x1 << *selectedChannel;
 	}
 
-	SPH_SPIN_UNLOCK_IRQRESTORE(&(DMA_HW_CHANNEL(dmaSched, direction).lock_irq), flags);
+	NNP_SPIN_UNLOCK_IRQRESTORE(&(DMA_HW_CHANNEL(dmaSched, direction).lock_irq), flags);
 
 	return ret;
 }
@@ -294,7 +294,7 @@ bool is_serial_channel_in_use(struct sphcs_dma_sched *dmaSched,
 	if (serialChannel == 0)
 		return false;
 
-	SPH_SPIN_LOCK_IRQSAVE(&(DMA_HW_CHANNEL(dmaSched, direction).lock_irq), flags);
+	NNP_SPIN_LOCK_IRQSAVE(&(DMA_HW_CHANNEL(dmaSched, direction).lock_irq), flags);
 
 	dma_channel_mask = (DMA_HW_CHANNEL(dmaSched, direction).busy_mask);
 
@@ -309,7 +309,7 @@ bool is_serial_channel_in_use(struct sphcs_dma_sched *dmaSched,
 		dma_channel_mask &= ~(1 << channel);
 	}
 
-	SPH_SPIN_UNLOCK_IRQRESTORE(&(DMA_HW_CHANNEL(dmaSched, direction).lock_irq), flags);
+	NNP_SPIN_UNLOCK_IRQRESTORE(&(DMA_HW_CHANNEL(dmaSched, direction).lock_irq), flags);
 
 	return ret;
 }
@@ -387,7 +387,7 @@ static void do_schedule(struct sphcs_dma_sched *dmaSched,
 	u32 priority_queue = 0;
 
 	/* lock current request type schedualer */
-	SPH_SPIN_LOCK_IRQSAVE(&DMA_DIRECTION_INFO(dmaSched, direction).lock_irq, flags);
+	NNP_SPIN_LOCK_IRQSAVE(&DMA_DIRECTION_INFO(dmaSched, direction).lock_irq, flags);
 
 	if (DMA_DIRECTION_INFO(dmaSched, direction).dma_engine_state == SPHCS_DMA_ENGINE_STATE_ENABLED) {
 
@@ -403,16 +403,16 @@ static void do_schedule(struct sphcs_dma_sched *dmaSched,
 			q = DMA_QUEUE_INFO_PTR(dmaSched, direction, priority_queue);
 
 			if (priority_queue != SPHCS_DMA_PRIORITY_HIGH) {
-				SPH_SPIN_LOCK_IRQSAVE(&high_q->lock_irq, queue_flags);
+				NNP_SPIN_LOCK_IRQSAVE(&high_q->lock_irq, queue_flags);
 				if (atomic_read(&DMA_DIRECTION_INFO(dmaSched, direction).active_high_priority_transactions) > 0 ||
 					DMA_QUEUE_INFO_PTR(dmaSched, direction, SPHCS_DMA_PRIORITY_HIGH)->reqList_size > 0) {
-					SPH_SPIN_UNLOCK_IRQRESTORE(&high_q->lock_irq, queue_flags);
+					NNP_SPIN_UNLOCK_IRQRESTORE(&high_q->lock_irq, queue_flags);
 					break;
 				}
-				SPH_SPIN_UNLOCK_IRQRESTORE(&high_q->lock_irq, queue_flags);
+				NNP_SPIN_UNLOCK_IRQRESTORE(&high_q->lock_irq, queue_flags);
 			}
 			/* lock current queue */
-			SPH_SPIN_LOCK_IRQSAVE(&q->lock_irq, queue_flags);
+			NNP_SPIN_LOCK_IRQSAVE(&q->lock_irq, queue_flags);
 
 			list_for_each_entry_safe(req, tmpReq, &q->reqList, node) {
 
@@ -469,7 +469,7 @@ static void do_schedule(struct sphcs_dma_sched *dmaSched,
 				q->reqList_size--;
 				q->wait_ticks = 0;
 			}
-			SPH_SPIN_UNLOCK_IRQRESTORE(&q->lock_irq, queue_flags);
+			NNP_SPIN_UNLOCK_IRQRESTORE(&q->lock_irq, queue_flags);
 		}
 		if (low_q->wait_ticks >= 3)
 			dir_info->sched_q_start_idx = SPHCS_DMA_PRIORITY_LOW;
@@ -477,7 +477,7 @@ static void do_schedule(struct sphcs_dma_sched *dmaSched,
 			dir_info->sched_q_start_idx = 0;
 	}
 
-	SPH_SPIN_UNLOCK_IRQRESTORE(&DMA_DIRECTION_INFO(dmaSched, direction).lock_irq, flags);
+	NNP_SPIN_UNLOCK_IRQRESTORE(&DMA_DIRECTION_INFO(dmaSched, direction).lock_irq, flags);
 }
 
 static bool is_dma_engine_idle(struct sphcs_dma_sched *dmaSched,
@@ -486,9 +486,9 @@ static bool is_dma_engine_idle(struct sphcs_dma_sched *dmaSched,
 	unsigned long flags;
 	u32 busy_mask;
 
-	SPH_SPIN_LOCK_IRQSAVE(&(DMA_HW_CHANNEL(dmaSched, dir).lock_irq), flags);
+	NNP_SPIN_LOCK_IRQSAVE(&(DMA_HW_CHANNEL(dmaSched, dir).lock_irq), flags);
 	busy_mask = DMA_HW_CHANNEL(dmaSched, dir).busy_mask;
-	SPH_SPIN_UNLOCK_IRQRESTORE(&(DMA_HW_CHANNEL(dmaSched, dir).lock_irq), flags);
+	NNP_SPIN_UNLOCK_IRQRESTORE(&(DMA_HW_CHANNEL(dmaSched, dir).lock_irq), flags);
 
 	if (busy_mask != 0)
 		return false;
@@ -621,7 +621,7 @@ void sphcs_dma_sched_destroy(struct sphcs_dma_sched *dmaSched)
 		unsigned long flags;
 		u32 idxPriority = 0x0;
 
-		SPH_SPIN_LOCK_IRQSAVE(&DMA_DIRECTION_INFO(dmaSched, direction_index).lock_irq, flags);
+		NNP_SPIN_LOCK_IRQSAVE(&DMA_DIRECTION_INFO(dmaSched, direction_index).lock_irq, flags);
 
 		for (idxPriority = 0; idxPriority < SPHCS_DMA_NUM_PRIORITIES; idxPriority++) {
 
@@ -632,16 +632,16 @@ void sphcs_dma_sched_destroy(struct sphcs_dma_sched *dmaSched)
 			/* empty work queue and release */
 
 			if (DMA_QUEUE_WORKQUEUE(dmaSched, direction_index, idxPriority) != NULL) {
-				SPH_SPIN_UNLOCK_IRQRESTORE(&DMA_DIRECTION_INFO(dmaSched, direction_index).lock_irq, flags);
+				NNP_SPIN_UNLOCK_IRQRESTORE(&DMA_DIRECTION_INFO(dmaSched, direction_index).lock_irq, flags);
 				flush_workqueue(DMA_QUEUE_WORKQUEUE(dmaSched, direction_index, idxPriority));
 				destroy_workqueue(DMA_QUEUE_WORKQUEUE(dmaSched, direction_index, idxPriority));
-				SPH_SPIN_LOCK_IRQSAVE(&DMA_DIRECTION_INFO(dmaSched, direction_index).lock_irq, flags);
+				NNP_SPIN_LOCK_IRQSAVE(&DMA_DIRECTION_INFO(dmaSched, direction_index).lock_irq, flags);
 				DMA_QUEUE_WORKQUEUE(dmaSched, direction_index, idxPriority) = NULL;
 			}
 
 			/* remove all pending requests from queue */
 
-			SPH_SPIN_LOCK_IRQSAVE(&q->lock_irq, queue_flags);
+			NNP_SPIN_LOCK_IRQSAVE(&q->lock_irq, queue_flags);
 
 			list_for_each_entry_safe(req, tmpReq, &q->reqList, node) {
 				list_del(&req->node);
@@ -653,14 +653,14 @@ void sphcs_dma_sched_destroy(struct sphcs_dma_sched *dmaSched)
 			}
 			q->reqList_size = 0;
 
-			SPH_SPIN_UNLOCK_IRQRESTORE(&q->lock_irq, queue_flags);
+			NNP_SPIN_UNLOCK_IRQRESTORE(&q->lock_irq, queue_flags);
 
 		}
 
 		/* need to handle requests that are currently submitted to dma hw channel */
-		SPH_ASSERT(DMA_HW_CHANNEL(dmaSched, direction_index).busy_mask == 0);
+		NNP_ASSERT(DMA_HW_CHANNEL(dmaSched, direction_index).busy_mask == 0);
 
-		SPH_SPIN_UNLOCK_IRQRESTORE(&DMA_DIRECTION_INFO(dmaSched, direction_index).lock_irq, flags);
+		NNP_SPIN_UNLOCK_IRQRESTORE(&DMA_DIRECTION_INFO(dmaSched, direction_index).lock_irq, flags);
 	}
 
 	kmem_cache_destroy(dmaSched->slab_cache_ptr);
@@ -673,11 +673,11 @@ u32 sphcs_dma_sched_create_serial_channel(struct sphcs_dma_sched *dmaSched)
 {
 	u32 ret;
 
-	SPH_SPIN_LOCK(&dmaSched->lock);
+	NNP_SPIN_LOCK(&dmaSched->lock);
 	ret = ++dmaSched->serial_channel;
 	if (ret == 0)
 		ret = 1;
-	SPH_SPIN_UNLOCK(&dmaSched->lock);
+	NNP_SPIN_UNLOCK(&dmaSched->lock);
 
 	return ret;
 }
@@ -689,7 +689,7 @@ int sphcs_dma_sched_reserve_channel_for_dtf(struct sphcs_dma_sched *dmaSched,
 	unsigned long flags;
 	u32 idxPriority = 0x0;
 
-	SPH_SPIN_LOCK_IRQSAVE(&DMA_DIRECTION_INFO(dmaSched, SPHCS_DMA_DIRECTION_CARD_TO_HOST).lock_irq, flags);
+	NNP_SPIN_LOCK_IRQSAVE(&DMA_DIRECTION_INFO(dmaSched, SPHCS_DMA_DIRECTION_CARD_TO_HOST).lock_irq, flags);
 
 	for (idxPriority = 0; idxPriority < SPHCS_DMA_NUM_PRIORITIES; idxPriority++) {
 		struct sphcs_dma_sched_priority_queue *q;
@@ -701,17 +701,17 @@ int sphcs_dma_sched_reserve_channel_for_dtf(struct sphcs_dma_sched *dmaSched,
 
 		q = DMA_QUEUE_INFO_PTR(dmaSched, SPHCS_DMA_DIRECTION_CARD_TO_HOST, idxPriority);
 
-		SPH_SPIN_LOCK_IRQSAVE(&q->lock_irq, queue_flags);
+		NNP_SPIN_LOCK_IRQSAVE(&q->lock_irq, queue_flags);
 
 		if (lock_dtf_channel)
 			q->allowed_hw_channels &= ~(SPHCH_DMA_CHANNEL_3);
 		else
 			q->allowed_hw_channels |= SPHCH_DMA_CHANNEL_3;
 
-		SPH_SPIN_UNLOCK_IRQRESTORE(&q->lock_irq, queue_flags);
+		NNP_SPIN_UNLOCK_IRQRESTORE(&q->lock_irq, queue_flags);
 	}
 
-	SPH_SPIN_UNLOCK_IRQRESTORE(&DMA_DIRECTION_INFO(dmaSched, SPHCS_DMA_DIRECTION_CARD_TO_HOST).lock_irq, flags);
+	NNP_SPIN_UNLOCK_IRQRESTORE(&DMA_DIRECTION_INFO(dmaSched, SPHCS_DMA_DIRECTION_CARD_TO_HOST).lock_irq, flags);
 
 	return 0;
 }
@@ -754,9 +754,9 @@ int sphcs_dma_sched_update_priority(struct sphcs_dma_sched      *dmaSched,
 	struct sphcs_dma_sched_priority_queue *src_q;
 	int ret = 1;
 
-	SPH_SPIN_LOCK_IRQSAVE(&DMA_DIRECTION_INFO(dmaSched, direction).lock_irq, flags);
+	NNP_SPIN_LOCK_IRQSAVE(&DMA_DIRECTION_INFO(dmaSched, direction).lock_irq, flags);
 
-	SPH_SPIN_LOCK_IRQSAVE(&DMA_QUEUE_INFO(dmaSched, direction, src_priority).lock_irq, flags);
+	NNP_SPIN_LOCK_IRQSAVE(&DMA_QUEUE_INFO(dmaSched, direction, src_priority).lock_irq, flags);
 	src_q = DMA_QUEUE_INFO_PTR(dmaSched, direction, src_priority);
 	list_for_each_entry_safe(req, tmpReq, &src_q->reqList, node) {
 		if (req->src == req_src) {
@@ -764,18 +764,18 @@ int sphcs_dma_sched_update_priority(struct sphcs_dma_sched      *dmaSched,
 			list_del(&req->node);
 			src_q->reqList_size--;
 			//Add to dest queue
-			SPH_SPIN_LOCK_IRQSAVE(&DMA_QUEUE_INFO(dmaSched, direction, dst_priority).lock_irq, flags);
+			NNP_SPIN_LOCK_IRQSAVE(&DMA_QUEUE_INFO(dmaSched, direction, dst_priority).lock_irq, flags);
 			list_add_tail(&req->node, &DMA_QUEUE_INFO(dmaSched, direction,
 						  dst_priority).reqList);
 			inc_reqSize(&DMA_QUEUE_INFO(dmaSched, direction, dst_priority));
-			SPH_SPIN_UNLOCK_IRQRESTORE(&DMA_QUEUE_INFO(dmaSched, direction, dst_priority).lock_irq, flags);
+			NNP_SPIN_UNLOCK_IRQRESTORE(&DMA_QUEUE_INFO(dmaSched, direction, dst_priority).lock_irq, flags);
 			ret = 0;
 			break;
 		}
 	}
-	SPH_SPIN_UNLOCK_IRQRESTORE(&DMA_QUEUE_INFO(dmaSched, direction, src_priority).lock_irq, flags);
+	NNP_SPIN_UNLOCK_IRQRESTORE(&DMA_QUEUE_INFO(dmaSched, direction, src_priority).lock_irq, flags);
 
-	SPH_SPIN_UNLOCK_IRQRESTORE(&DMA_DIRECTION_INFO(dmaSched, direction).lock_irq, flags);
+	NNP_SPIN_UNLOCK_IRQRESTORE(&DMA_DIRECTION_INFO(dmaSched, direction).lock_irq, flags);
 
 	if (ret == 0)
 		do_schedule(dmaSched, direction);
@@ -797,9 +797,9 @@ int sphcs_dma_sched_start_xfer_single(struct sphcs_dma_sched *dmaSched,
 	unsigned long lock_flags;
 	bool cache_alloc = user_data_size <= MAX_USER_DATA_SIZE;
 
-	SPH_ASSERT(desc != NULL);
-	SPH_ASSERT(desc->dma_direction < SPHCS_DMA_NUM_DIRECTIONS);
-	SPH_ASSERT(desc->dma_priority < SPHCS_DMA_NUM_PRIORITIES);
+	NNP_ASSERT(desc != NULL);
+	NNP_ASSERT(desc->dma_direction < SPHCS_DMA_NUM_DIRECTIONS);
+	NNP_ASSERT(desc->dma_priority < SPHCS_DMA_NUM_PRIORITIES);
 
 	if (cache_alloc) {
 		req = kmem_cache_alloc(dmaSched->slab_cache_ptr, GFP_NOWAIT);
@@ -834,7 +834,7 @@ int sphcs_dma_sched_start_xfer_single(struct sphcs_dma_sched *dmaSched,
 
 	/* lock queue and add new request to the end for the list */
 
-	SPH_SPIN_LOCK_IRQSAVE(&DMA_QUEUE_INFO(dmaSched, desc->dma_direction,
+	NNP_SPIN_LOCK_IRQSAVE(&DMA_QUEUE_INFO(dmaSched, desc->dma_direction,
 					      desc->dma_priority).lock_irq, lock_flags);
 	list_add_tail(&req->node, &DMA_QUEUE_INFO(dmaSched, desc->dma_direction,
 						  desc->dma_priority).reqList);
@@ -842,7 +842,7 @@ int sphcs_dma_sched_start_xfer_single(struct sphcs_dma_sched *dmaSched,
 
 	DO_TRACE(trace_dma(SPH_TRACE_OP_STATUS_QUEUED, req->direction == SPHCS_DMA_DIRECTION_CARD_TO_HOST,
 			req->transfer_size, req->serial_channel, req->priority, (uint64_t)(uintptr_t)req));
-	SPH_SPIN_UNLOCK_IRQRESTORE(&DMA_QUEUE_INFO(dmaSched,
+	NNP_SPIN_UNLOCK_IRQRESTORE(&DMA_QUEUE_INFO(dmaSched,
 						   desc->dma_direction,
 						   desc->dma_priority).lock_irq, lock_flags);
 
@@ -894,7 +894,7 @@ static int sphcs_dma_sched_start_xfer(struct sphcs_dma_sched      *dmaSched,
 	if (user_data_size > 0)
 		memcpy(&req->user_data[0], user_data, user_data_size);
 
-	SPH_SPIN_LOCK_IRQSAVE(&DMA_QUEUE_INFO(dmaSched,
+	NNP_SPIN_LOCK_IRQSAVE(&DMA_QUEUE_INFO(dmaSched,
 					      desc->dma_direction,
 					      desc->dma_priority).lock_irq,
 			      lock_flags);
@@ -904,7 +904,7 @@ static int sphcs_dma_sched_start_xfer(struct sphcs_dma_sched      *dmaSched,
 	DO_TRACE(trace_dma(SPH_TRACE_OP_STATUS_QUEUED, req->direction == SPHCS_DMA_DIRECTION_CARD_TO_HOST,
 			req->transfer_size, req->serial_channel, req->priority, (uint64_t)(uintptr_t)req));
 
-	SPH_SPIN_UNLOCK_IRQRESTORE(&DMA_QUEUE_INFO(dmaSched, desc->dma_direction,
+	NNP_SPIN_UNLOCK_IRQRESTORE(&DMA_QUEUE_INFO(dmaSched, desc->dma_direction,
 						   desc->dma_priority).lock_irq,
 				   lock_flags);
 
@@ -1047,17 +1047,17 @@ static int sphcs_dma_sched_xfer_complete_int(struct sphcs_dma_sched *dmaSched,
 
 		free_dma_hw_channel(dmaSched, req->direction, channel);
 
-		if (SPH_SW_GROUP_IS_ENABLE(g_sph_sw_counters, SPHCS_SW_COUNTERS_GROUP_DMA)) {
+		if (NNP_SW_GROUP_IS_ENABLE(g_nnp_sw_counters, SPHCS_SW_COUNTERS_GROUP_DMA)) {
 			switch (dma_direction) {
 			case SPHCS_DMA_DIRECTION_HOST_TO_CARD:
-				SPH_SW_COUNTER_INC(g_sph_sw_counters, SPHCS_SW_DMA_GLOBAL_COUNTER_H2C_COUNT(channel));
-				SPH_SW_COUNTER_ADD(g_sph_sw_counters, SPHCS_SW_DMA_GLOBAL_COUNTER_H2C_BYTES(channel), req->transfer_size);
-				SPH_SW_COUNTER_ADD(g_sph_sw_counters, SPHCS_SW_DMA_GLOBAL_COUNTER_H2C_BUSY(channel), xferTimeUS);
+				NNP_SW_COUNTER_INC(g_nnp_sw_counters, SPHCS_SW_DMA_GLOBAL_COUNTER_H2C_COUNT(channel));
+				NNP_SW_COUNTER_ADD(g_nnp_sw_counters, SPHCS_SW_DMA_GLOBAL_COUNTER_H2C_BYTES(channel), req->transfer_size);
+				NNP_SW_COUNTER_ADD(g_nnp_sw_counters, SPHCS_SW_DMA_GLOBAL_COUNTER_H2C_BUSY(channel), xferTimeUS);
 				break;
 			case SPHCS_DMA_DIRECTION_CARD_TO_HOST:
-				SPH_SW_COUNTER_INC(g_sph_sw_counters, SPHCS_SW_DMA_GLOBAL_COUNTER_C2H_COUNT(channel));
-				SPH_SW_COUNTER_ADD(g_sph_sw_counters, SPHCS_SW_DMA_GLOBAL_COUNTER_C2H_BYTES(channel), req->transfer_size);
-				SPH_SW_COUNTER_ADD(g_sph_sw_counters, SPHCS_SW_DMA_GLOBAL_COUNTER_C2H_BUSY(channel), xferTimeUS);
+				NNP_SW_COUNTER_INC(g_nnp_sw_counters, SPHCS_SW_DMA_GLOBAL_COUNTER_C2H_COUNT(channel));
+				NNP_SW_COUNTER_ADD(g_nnp_sw_counters, SPHCS_SW_DMA_GLOBAL_COUNTER_C2H_BYTES(channel), req->transfer_size);
+				NNP_SW_COUNTER_ADD(g_nnp_sw_counters, SPHCS_SW_DMA_GLOBAL_COUNTER_C2H_BUSY(channel), xferTimeUS);
 				break;
 			default:
 				break;
@@ -1070,7 +1070,7 @@ static int sphcs_dma_sched_xfer_complete_int(struct sphcs_dma_sched *dmaSched,
 				(req->retry_counter == SPHCS_NUM_OF_DMA_RETRIES &&
 				recovery_action == SPHCS_RA_RETRY_DMA)) {
 
-			SPH_SPIN_LOCK_IRQSAVE(&(DMA_DIRECTION_INFO(dmaSched, dma_direction).lock_irq), flags);
+			NNP_SPIN_LOCK_IRQSAVE(&(DMA_DIRECTION_INFO(dmaSched, dma_direction).lock_irq), flags);
 
 			/* If DMA engine isn't already disabled*/
 			if (dir_info->dma_engine_state != SPHCS_DMA_ENGINE_STATE_DISABLING) {
@@ -1084,7 +1084,7 @@ static int sphcs_dma_sched_xfer_complete_int(struct sphcs_dma_sched *dmaSched,
 				schedule_work(&dir_info->reset_work.work);
 			}
 
-			SPH_SPIN_UNLOCK_IRQRESTORE(&(DMA_DIRECTION_INFO(dmaSched, dma_direction).lock_irq), flags);
+			NNP_SPIN_UNLOCK_IRQRESTORE(&(DMA_DIRECTION_INFO(dmaSched, dma_direction).lock_irq), flags);
 		} else {
 			if (req->priority == SPHCS_DMA_PRIORITY_HIGH)
 				atomic_dec(&DMA_DIRECTION_INFO(dmaSched, dma_direction).active_high_priority_transactions);
@@ -1092,11 +1092,11 @@ static int sphcs_dma_sched_xfer_complete_int(struct sphcs_dma_sched *dmaSched,
 		}
 
 		/* Once all channels of the DMA engine are idle and DMA engine recovery flow has been started  */
-		SPH_SPIN_LOCK_IRQSAVE(&(DMA_DIRECTION_INFO(dmaSched, dma_direction).lock_irq), flags);
+		NNP_SPIN_LOCK_IRQSAVE(&(DMA_DIRECTION_INFO(dmaSched, dma_direction).lock_irq), flags);
 		if ((dir_info->dma_engine_state == SPHCS_DMA_ENGINE_STATE_DISABLING) &&
 				(is_dma_engine_idle(dmaSched, dma_direction)))
 			complete(&dir_info->dma_engine_idle);
-		SPH_SPIN_UNLOCK_IRQRESTORE(&(DMA_DIRECTION_INFO(dmaSched, dma_direction).lock_irq), flags);
+		NNP_SPIN_UNLOCK_IRQRESTORE(&(DMA_DIRECTION_INFO(dmaSched, dma_direction).lock_irq), flags);
 
 		if (req->callback) {
 			if (req->flags & SPHCS_DMA_START_XFER_COMPLETION_NO_WAIT) {
@@ -1172,15 +1172,15 @@ static int debug_directions_info_show(struct seq_file *m, void *v)
 
 	seq_puts(m, "Direction Info\n");
 	seq_puts(m, "Direction Info host to card\n");
-	SPH_SPIN_LOCK_IRQSAVE(&(DMA_DIRECTION_INFO(dmaSched, SPHCS_DMA_DIRECTION_HOST_TO_CARD).lock_irq), flags);
+	NNP_SPIN_LOCK_IRQSAVE(&(DMA_DIRECTION_INFO(dmaSched, SPHCS_DMA_DIRECTION_HOST_TO_CARD).lock_irq), flags);
 	seq_printf(m, "active_high_priority_transactions %d\n",
 			atomic_read(&DMA_DIRECTION_INFO(dmaSched, SPHCS_DMA_DIRECTION_HOST_TO_CARD).active_high_priority_transactions));
-	SPH_SPIN_UNLOCK_IRQRESTORE(&(DMA_DIRECTION_INFO(dmaSched, SPHCS_DMA_DIRECTION_HOST_TO_CARD).lock_irq), flags);
+	NNP_SPIN_UNLOCK_IRQRESTORE(&(DMA_DIRECTION_INFO(dmaSched, SPHCS_DMA_DIRECTION_HOST_TO_CARD).lock_irq), flags);
 	seq_puts(m, "Direction Info card to host\n");
-	SPH_SPIN_LOCK_IRQSAVE(&(DMA_DIRECTION_INFO(dmaSched, SPHCS_DMA_DIRECTION_CARD_TO_HOST).lock_irq), flags);
+	NNP_SPIN_LOCK_IRQSAVE(&(DMA_DIRECTION_INFO(dmaSched, SPHCS_DMA_DIRECTION_CARD_TO_HOST).lock_irq), flags);
 	seq_printf(m, "active_high_priority_transactions %d\n",
 			atomic_read(&DMA_DIRECTION_INFO(dmaSched, SPHCS_DMA_DIRECTION_CARD_TO_HOST).active_high_priority_transactions));
-	SPH_SPIN_UNLOCK_IRQRESTORE(&(DMA_DIRECTION_INFO(dmaSched, SPHCS_DMA_DIRECTION_CARD_TO_HOST).lock_irq), flags);
+	NNP_SPIN_UNLOCK_IRQRESTORE(&(DMA_DIRECTION_INFO(dmaSched, SPHCS_DMA_DIRECTION_CARD_TO_HOST).lock_irq), flags);
 
 	return 0;
 }
@@ -1194,7 +1194,7 @@ static int debug_direction_show(struct seq_file *m, void *v)
 	if (unlikely(dir_info == NULL))
 		return -EINVAL;
 
-	SPH_SPIN_LOCK_IRQSAVE(&dir_info->lock_irq, flags);
+	NNP_SPIN_LOCK_IRQSAVE(&dir_info->lock_irq, flags);
 
 	if (dir_info->dma_engine_state == SPHCS_DMA_ENGINE_STATE_ENABLED)
 		seq_puts(m, "State: Enabled\n");
@@ -1225,16 +1225,16 @@ static int debug_direction_show(struct seq_file *m, void *v)
 		struct sphcs_dma_sched_priority_queue *q = &dir_info->reqQueue[i];
 		unsigned long queue_flags;
 
-		SPH_SPIN_LOCK_IRQSAVE(&q->lock_irq, queue_flags);
+		NNP_SPIN_LOCK_IRQSAVE(&q->lock_irq, queue_flags);
 		seq_printf(m, "\tprio%d: qsize=%u max_qsize=%u allowed_channels_mask=0x%x\n",
 			   i,
 			   q->reqList_size,
 			   q->reqList_max_size,
 			   q->allowed_hw_channels);
-		SPH_SPIN_UNLOCK_IRQRESTORE(&q->lock_irq, queue_flags);
+		NNP_SPIN_UNLOCK_IRQRESTORE(&q->lock_irq, queue_flags);
 	}
 
-	SPH_SPIN_UNLOCK_IRQRESTORE(&dir_info->lock_irq, flags);
+	NNP_SPIN_UNLOCK_IRQRESTORE(&dir_info->lock_irq, flags);
 
 	return 0;
 }

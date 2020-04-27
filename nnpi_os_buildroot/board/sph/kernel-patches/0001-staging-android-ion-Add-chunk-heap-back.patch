@@ -1,0 +1,192 @@
+From 0aebb228e09e2bb698f900a07c353ce0cd673c5a Mon Sep 17 00:00:00 2001
+From: Alexey Skidanov <alexey.skidanov@intel.com>
+Date: Wed, 22 Jan 2020 03:20:14 -0500
+Subject: [PATCH 1/6] staging: android: ion: Add chunk heap back
+
+Chunk heap was removed from the Linux Kernel source tree in 5.4.
+This commit adds it back.
+---
+ drivers/staging/android/ion/Kconfig          |   5 +
+ drivers/staging/android/ion/Makefile         |   2 +
+ drivers/staging/android/ion/ion_chunk_heap.c | 146 +++++++++++++++++++++++++++
+ 3 files changed, 153 insertions(+)
+ create mode 100644 drivers/staging/android/ion/ion_chunk_heap.c
+
+diff --git a/drivers/staging/android/ion/Kconfig b/drivers/staging/android/ion/Kconfig
+index 989fe84..91bab3c 100644
+--- a/drivers/staging/android/ion/Kconfig
++++ b/drivers/staging/android/ion/Kconfig
+@@ -25,3 +25,8 @@ config ION_CMA_HEAP
+ 	  Choose this option to enable CMA heaps with Ion. This heap is backed
+ 	  by the Contiguous Memory Allocator (CMA). If your system has these
+ 	  regions, you should say Y here.
++config ION_CHUNK_HEAP
++	bool "Ion chunk heap support"
++	depends on ION
++	help
++          Choose this option to enable chunk heaps with Ion.
+diff --git a/drivers/staging/android/ion/Makefile b/drivers/staging/android/ion/Makefile
+index 5f4487b..86b858e 100644
+--- a/drivers/staging/android/ion/Makefile
++++ b/drivers/staging/android/ion/Makefile
+@@ -2,3 +2,5 @@
+ obj-$(CONFIG_ION) += ion.o ion_heap.o
+ obj-$(CONFIG_ION_SYSTEM_HEAP) += ion_system_heap.o ion_page_pool.o
+ obj-$(CONFIG_ION_CMA_HEAP) += ion_cma_heap.o
++obj-$(CONFIG_ION_CHUNK_HEAP) += ion_chunk_heap.o
++
+diff --git a/drivers/staging/android/ion/ion_chunk_heap.c b/drivers/staging/android/ion/ion_chunk_heap.c
+new file mode 100644
+index 00000000..3cdde9c
+--- /dev/null
++++ b/drivers/staging/android/ion/ion_chunk_heap.c
+@@ -0,0 +1,146 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * ION memory allocator chunk heap helper
++ *
++ * Copyright (C) 2012 Google, Inc.
++ */
++
++#include <linux/dma-mapping.h>
++#include <linux/err.h>
++#include <linux/genalloc.h>
++#include <linux/mm.h>
++#include <linux/scatterlist.h>
++#include <linux/slab.h>
++
++#include "ion.h"
++
++struct ion_chunk_heap {
++	struct ion_heap heap;
++	struct gen_pool *pool;
++	unsigned long chunk_size;
++	unsigned long size;
++	unsigned long allocated;
++};
++
++static int ion_chunk_heap_allocate(struct ion_heap *heap,
++				   struct ion_buffer *buffer,
++				   unsigned long size,
++				   unsigned long flags)
++{
++	struct ion_chunk_heap *chunk_heap =
++		container_of(heap, struct ion_chunk_heap, heap);
++	struct sg_table *table;
++	struct scatterlist *sg;
++	int ret, i;
++	unsigned long num_chunks;
++	unsigned long allocated_size;
++
++	allocated_size = ALIGN(size, chunk_heap->chunk_size);
++	num_chunks = allocated_size / chunk_heap->chunk_size;
++
++	if (allocated_size > chunk_heap->size - chunk_heap->allocated)
++		return -ENOMEM;
++
++	table = kmalloc(sizeof(*table), GFP_KERNEL);
++	if (!table)
++		return -ENOMEM;
++	ret = sg_alloc_table(table, num_chunks, GFP_KERNEL);
++	if (ret) {
++		kfree(table);
++		return ret;
++	}
++
++	sg = table->sgl;
++	for (i = 0; i < num_chunks; i++) {
++		unsigned long paddr = gen_pool_alloc(chunk_heap->pool,
++						     chunk_heap->chunk_size);
++		if (!paddr)
++			goto err;
++		sg_set_page(sg, pfn_to_page(PFN_DOWN(paddr)),
++			    chunk_heap->chunk_size, 0);
++		sg = sg_next(sg);
++	}
++
++	buffer->sg_table = table;
++	chunk_heap->allocated += allocated_size;
++	return 0;
++err:
++	sg = table->sgl;
++	for (i -= 1; i >= 0; i--) {
++		gen_pool_free(chunk_heap->pool, page_to_phys(sg_page(sg)),
++			      sg->length);
++		sg = sg_next(sg);
++	}
++	sg_free_table(table);
++	kfree(table);
++	return -ENOMEM;
++}
++
++static void ion_chunk_heap_free(struct ion_buffer *buffer)
++{
++	struct ion_heap *heap = buffer->heap;
++	struct ion_chunk_heap *chunk_heap =
++		container_of(heap, struct ion_chunk_heap, heap);
++	struct sg_table *table = buffer->sg_table;
++	struct scatterlist *sg;
++	int i;
++	unsigned long allocated_size;
++
++	allocated_size = ALIGN(buffer->size, chunk_heap->chunk_size);
++
++	ion_heap_buffer_zero(buffer);
++
++	for_each_sg(table->sgl, sg, table->nents, i) {
++		gen_pool_free(chunk_heap->pool, page_to_phys(sg_page(sg)),
++			      sg->length);
++	}
++	chunk_heap->allocated -= allocated_size;
++	sg_free_table(table);
++	kfree(table);
++}
++
++static struct ion_heap_ops chunk_heap_ops = {
++	.allocate = ion_chunk_heap_allocate,
++	.free = ion_chunk_heap_free,
++	.map_user = ion_heap_map_user,
++	.map_kernel = ion_heap_map_kernel,
++	.unmap_kernel = ion_heap_unmap_kernel,
++};
++
++struct ion_heap *ion_chunk_heap_create(phys_addr_t base, size_t size, size_t chunk_size)
++{
++	struct ion_chunk_heap *chunk_heap;
++	int ret;
++	struct page *page;
++
++	page = pfn_to_page(PFN_DOWN(base));
++	ret = ion_heap_pages_zero(page, size, pgprot_writecombine(PAGE_KERNEL));
++	if (ret)
++		return ERR_PTR(ret);
++
++	chunk_heap = kzalloc(sizeof(*chunk_heap), GFP_KERNEL);
++	if (!chunk_heap)
++		return ERR_PTR(-ENOMEM);
++
++	chunk_heap->chunk_size = chunk_size;
++	chunk_heap->pool = gen_pool_create(get_order(chunk_heap->chunk_size) +
++					   PAGE_SHIFT, -1);
++	if (!chunk_heap->pool) {
++		ret = -ENOMEM;
++		goto error_gen_pool_create;
++	}
++	chunk_heap->size = size;
++	chunk_heap->allocated = 0;
++
++	gen_pool_add(chunk_heap->pool, base, size, -1);
++	chunk_heap->heap.ops = &chunk_heap_ops;
++	chunk_heap->heap.type = ION_HEAP_TYPE_CHUNK;
++	chunk_heap->heap.flags = ION_HEAP_FLAG_DEFER_FREE;
++	pr_debug("%s: base %pa size %zu\n", __func__, &base, size);
++
++	return &chunk_heap->heap;
++
++error_gen_pool_create:
++	kfree(chunk_heap);
++	return ERR_PTR(ret);
++}
+-- 
+2.7.4
+

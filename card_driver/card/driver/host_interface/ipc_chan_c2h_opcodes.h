@@ -10,7 +10,7 @@
  * Each C2H_OPCODE line below defines one c2h opcode in the IPC protocol
  * it has three agruments:
  *     name - this is the name of the response the opcode represent. In the
- *            opcode enumeration type it is expanded to be SPH_IPC_C2H_OP_<name>.
+ *            opcode enumeration type it is expanded to be NNP_IPC_C2H_OP_<name>.
  *            in the code this expanded form can be used, the macro
  *            C2H_OPCODE_NAME(name) defined in ipc_protocol.h provide that
  *            epansion and can be used as well.
@@ -22,7 +22,7 @@
  *             receives a pointer to that type.
  *
  * Handler function:
- * The function which handles received responses from card, sphdrv_device_process_messages,
+ * The function which handles received responses from card, nnpdrv_device_process_messages,
  * dispatch a handler function for the received response according to the opcode
  * feild in the response. There should be only a single handler function for each
  * opcode which should be defined with the following prototype:
@@ -39,8 +39,12 @@ C2H_OPCODE(CHAN_SYNC_DONE, 35, union c2h_ChanSyncDone)
 C2H_OPCODE(CHAN_INFREQ_FAILED, 36, union c2h_ChanInfReqFailed)
 C2H_OPCODE(CHAN_HWTRACE_STATE, 37, union c2h_ChanHwTraceState)
 C2H_OPCODE(CHAN_EXEC_ERROR_LIST, 38, union c2h_ExecErrorList)
+C2H_OPCODE(CHAN_ETH_CONFIG, 39, union c2h_ChanEthernetConfig)
+C2H_OPCODE(CHAN_ETH_MSG_DSCR, 40, union c2h_ChanEthernetMsgDscr)
+/** NOTE: opcode value range is 32 to 63 **/
 
 #ifdef ULT
-C2H_OPCODE(ULT2_OP,              63, union ult_message)
+C2H_OPCODE(ULT2_OP,              63, union ult2_message)
+// When changing this value, don't forget to update IPC_OP_MAX
 #endif
 

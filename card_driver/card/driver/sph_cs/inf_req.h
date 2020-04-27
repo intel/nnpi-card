@@ -24,6 +24,7 @@ struct inf_req {
 	void              *magic;
 	struct kref        ref;
 	uint16_t           protocolID;
+	uint64_t           user_handle;
 	struct inf_devnet *devnet;
 	struct hlist_node  hash_node;
 	spinlock_t         lock_irq;
@@ -45,7 +46,7 @@ struct inf_req {
 	// 0 - not destroyed, 1 - destroyed by user, -1 - failed to create
 	int                destroyed;
 
-	struct sph_sw_counters *sw_counters;
+	struct nnp_sw_counters *sw_counters;
 	u64                min_block_time;
 	u64                max_block_time;
 	u64                min_exec_time;

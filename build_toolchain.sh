@@ -18,17 +18,17 @@ TOOLCHAIN_DIR=toolchain
 TOOLCHAIN_BUILD_DIR=build
 
 error_check () {
-	ret=$?
-	if [ $ret != 0 ]; then
-		echo $1 failed, return value $ret
-		exit $ret
-	fi
+        ret=$?
+        if [ $ret != 0 ]; then
+                echo $1 failed, return value $ret
+                exit $ret
+        fi
 }
 
 if [ -z "$1" ]; then
-	OUTPUT_DIR=nnpi_os_buildroot/$TOOLCHAIN_BUILD_DIR
+        OUTPUT_DIR=nnpi_os_buildroot/$TOOLCHAIN_BUILD_DIR
 else
-	OUTPUT_DIR=$1
+        OUTPUT_DIR=$1
 fi
 
 mkdir -p $OUTPUT_DIR
@@ -45,13 +45,18 @@ echo "BR2_COMPILER_PARANOID_UNSAFE_PATH=n" >> configs/SPH_x86_64_efi_nnpi_defcon
 make SPH_x86_64_efi_nnpi_defconfig  O=$TOOLCHAIN_BUILD_DIR
 error_check "make SPH_x86_64_efi_Simics_nnpi_defconfig"
 
-set -x; 
+set -x;
 cd $TOOLCHAIN_BUILD_DIR
 make sdk
 error_check "make sdk"
 
 cd ../../
-mv nnpi_os_buildroot/$TOOLCHAIN_BUILD_DIR/host $OUTPUT_DIR/$TOOLCHAIN_DIR
-error_check "mv toolchain"
+tar -xvzf nnpi_os_buildroot/$TOOLCHAIN_BUILD_DIR/images/x86_64-buildroot-linux-gnu_sdk-buildroot.tar.gz -C $OUTPUT_DIR/
+error_check "untar toolchain to $OUTPUT_DIR"
+
+pushd $OUTPUT_DIR
+mv x86_64-buildroot-linux-gnu_sdk-buildroot $TOOLCHAIN_DIR
+error_check "rename directory from x86_64-buildroot-linux-gnu_sdk-buildroot to $TOOLCHAIN_DIR"
+popd
 
 echo "Toolchain is ready at $OUTPUT_DIR/$TOOLCHAIN_DIR"

@@ -37,7 +37,7 @@ module_param(test, int, 0400);
 #include <linux/ion_exp.h>
 
 /* SW counters */
-static const struct sph_sw_counters_group_info sw_counters_groups_info[] = {
+static const struct nnp_sw_counters_group_info sw_counters_groups_info[] = {
 	{"device_memory", "group of device memory counters"}
 };
 
@@ -47,14 +47,14 @@ static const struct sph_sw_counters_group_info sw_counters_groups_info[] = {
 #define SW_COUNTER_PROT_BYTES_TOTAL_INDEX 2
 #define SW_COUNTER_PROT_BYTES_BAD_INDEX 3
 
-static const struct sph_sw_counter_info sw_counters_info[] = {
+static const struct nnp_sw_counter_info sw_counters_info[] = {
 		{0, "non_protected.bytes.total", "Total number of bytes of device memory in the unprotected region"},
 		{0, "non_protected.bytes.bad", "Number of bad bytes in the unprotected region (memory test failed)"},
 		{0, "protected.bytes.total", "Total number of bytes of device memory in the protected region"},
 		{0, "protected.bytes.bad", "Number of bad bytes in the protected region (memory test failed)"},
 };
 
-static const struct sph_sw_counters_set sw_counters_set = {
+static const struct nnp_sw_counters_set sw_counters_set = {
 	"sw_counters",
 	false,
 	sw_counters_info,
@@ -63,7 +63,7 @@ static const struct sph_sw_counters_set sw_counters_set = {
 	ARRAY_SIZE(sw_counters_groups_info)};
 
 static void *sw_counters_handle;
-static struct sph_sw_counters *sw_counters;
+static struct nnp_sw_counters *sw_counters;
 
 /* heap handles */
 void *ecc_unprotected_heap_handle;
@@ -313,9 +313,9 @@ static int test_list(struct list_head *head, bool is_protected)
 					if (!memcmp64_mt(reg_virt_addr + i*PAGE_SIZE, 0x0, PAGE_SIZE / sizeof(u64))) {
 						sph_log_err(GENERAL_LOG, "Bad page detected - bad page index %llu\n", num_of_tested_pages + i);
 						if (is_protected)
-							SPH_SW_COUNTER_ADD(sw_counters, SW_COUNTER_PROT_BYTES_BAD_INDEX, PAGE_SIZE);
+							NNP_SW_COUNTER_ADD(sw_counters, SW_COUNTER_PROT_BYTES_BAD_INDEX, PAGE_SIZE);
 						else
-							SPH_SW_COUNTER_ADD(sw_counters, SW_COUNTER_BYTES_BAD_INDEX, PAGE_SIZE);
+							NNP_SW_COUNTER_ADD(sw_counters, SW_COUNTER_BYTES_BAD_INDEX, PAGE_SIZE);
 						rc = update_regions(reg, &tmp, num_of_tested_pages + i);
 						if (rc != 0)
 							goto err;
@@ -335,9 +335,9 @@ static int test_list(struct list_head *head, bool is_protected)
 					if (!memcmp64(reg_virt_addr + i*PAGE_SIZE, -1ULL, PAGE_SIZE / sizeof(u64))) {
 						sph_log_err(GENERAL_LOG, "Bad page detected - bad page index %llu\n", num_of_tested_pages + i);
 						if (is_protected)
-							SPH_SW_COUNTER_ADD(sw_counters, SW_COUNTER_PROT_BYTES_BAD_INDEX, PAGE_SIZE);
+							NNP_SW_COUNTER_ADD(sw_counters, SW_COUNTER_PROT_BYTES_BAD_INDEX, PAGE_SIZE);
 						else
-							SPH_SW_COUNTER_ADD(sw_counters, SW_COUNTER_BYTES_BAD_INDEX, PAGE_SIZE);
+							NNP_SW_COUNTER_ADD(sw_counters, SW_COUNTER_BYTES_BAD_INDEX, PAGE_SIZE);
 						rc = update_regions(reg, &tmp, num_of_tested_pages + i);
 						if (rc != 0)
 							goto err;
@@ -650,14 +650,14 @@ int sph_memory_allocator_init_module(void)
 	int rc;
 	struct mem_region *reg;
 
-	sph_log_debug(START_UP_LOG, "module (version %s) started\n", SPH_VERSION);
+	sph_log_debug(START_UP_LOG, "module (version %s) started\n", NNP_VERSION);
 
 	if (sph_mem == NULL) {
 		sph_log_err(START_UP_LOG, "sph_mem module parameter is empty\n");
 		return -EINVAL;
 	}
 
-	rc = sph_create_sw_counters_info_node(NULL,
+	rc = nnp_create_sw_counters_info_node(NULL,
 					       &sw_counters_set,
 					       NULL,
 					       &sw_counters_handle);
@@ -666,7 +666,7 @@ int sph_memory_allocator_init_module(void)
 		goto failed_to_create_sw_counters_info;
 	}
 
-	rc = sph_create_sw_counters_values_node(sw_counters_handle,
+	rc = nnp_create_sw_counters_values_node(sw_counters_handle,
 						 0x0,
 						 NULL,
 						 &sw_counters);
@@ -731,7 +731,7 @@ int sph_memory_allocator_init_module(void)
 
 		/* update s/w counter of total bytes in the unprotected regions */
 		list_for_each_entry(reg, &unprotected_regions, list)
-			SPH_SW_COUNTER_ADD(sw_counters, SW_COUNTER_BYTES_TOTAL_INDEX, reg->size);
+			NNP_SW_COUNTER_ADD(sw_counters, SW_COUNTER_BYTES_TOTAL_INDEX, reg->size);
 	}
 
 	/* If there are ecc protected regions, create ion heap managing them */
@@ -748,7 +748,7 @@ int sph_memory_allocator_init_module(void)
 
 		/* update s/w counter of total bytes in the protected regions */
 		list_for_each_entry(reg, &protected_managed_regions, list)
-			SPH_SW_COUNTER_ADD(sw_counters, SW_COUNTER_PROT_BYTES_TOTAL_INDEX, reg->size);
+			NNP_SW_COUNTER_ADD(sw_counters, SW_COUNTER_PROT_BYTES_TOTAL_INDEX, reg->size);
 	}
 
 	release_list(&managed_regions);
@@ -770,9 +770,9 @@ failed_to_create_protected_managed:
 failed_to_create_protected:
 	release_list(&managed_regions);
 failed_to_parse:
-	sph_remove_sw_counters_values_node(sw_counters);
+	nnp_remove_sw_counters_values_node(sw_counters);
 failed_to_create_sw_counters_values:
-	sph_remove_sw_counters_info_node(sw_counters_handle);
+	nnp_remove_sw_counters_info_node(sw_counters_handle);
 failed_to_create_sw_counters_info:
 	return rc;
 }
@@ -780,8 +780,8 @@ failed_to_create_sw_counters_info:
 void sph_memory_allocator_cleanup(void)
 {
 	sph_log_debug(GO_DOWN_LOG, "Cleaning Up the Module\n");
-	sph_remove_sw_counters_values_node(sw_counters);
-	sph_remove_sw_counters_info_node(sw_counters_handle);
+	nnp_remove_sw_counters_values_node(sw_counters);
+	nnp_remove_sw_counters_info_node(sw_counters_handle);
 	if (ecc_unprotected_heap_handle)
 		ion_chunk_heap_remove(ecc_unprotected_heap_handle);
 	if (ecc_protected_heap_handle)
@@ -803,7 +803,7 @@ module_exit(sph_memory_allocator_cleanup);
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("SpringHill Card memory allocator");
 MODULE_AUTHOR("Intel Corporation");
-MODULE_VERSION(SPH_VERSION);
+MODULE_VERSION(NNP_VERSION);
 #ifdef DEBUG
 MODULE_INFO(git_hash, SPH_GIT_HASH);
 #endif

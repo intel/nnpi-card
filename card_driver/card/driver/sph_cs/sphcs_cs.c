@@ -8,6 +8,7 @@
 #include <linux/pci.h>
 #include <linux/jiffies.h>
 #include <linux/workqueue.h>
+#include <linux/sched/clock.h>
 #include "ipc_protocol.h"
 #include "ipc_chan_protocol.h"
 #ifdef ULT
@@ -17,14 +18,13 @@
 #include "sph_log.h"
 #include "sphcs_genmsg.h"
 #include "sphcs_cs.h"
-#include "sphcs_net.h"
+#include "sphcs_chan_net.h"
 #include "sphcs_inf.h"
-#include "sphcs_response_page_pool.h"
 #include "sphcs_crash_dump.h"
-#include "sph_time.h"
-#include "sph_boot_defs.h"
+#include "nnp_time.h"
+#include "nnp_boot_defs.h"
 #include "sphcs_trace.h"
-#include "sph_inbound_mem.h"
+#include "nnp_inbound_mem.h"
 #include "sphcs_intel_th.h"
 #include "sphcs_maintenance.h"
 #include <linux/trace_clock.h>
@@ -43,6 +43,7 @@
 #include "sphcs_p2p.h"
 #include "sphcs_cmd_chan.h"
 #include "sphcs_ibecc.h"
+#include "log_c2h_events.h"
 
 /* Disable MCE support on COH and CentOS local builds */
 #if defined(RHEL_RELEASE_CODE) || defined(HW_LAYER_LOCAL)
@@ -60,7 +61,7 @@ void *g_hSwCountersInfo_context;
 void *g_hSwCountersInfo_network;
 void *g_hSwCountersInfo_infreq;
 void *g_hSwCountersInfo_copy;
-struct sph_sw_counters *g_sph_sw_counters;
+struct nnp_sw_counters *g_nnp_sw_counters;
 
 #ifdef CARD_PLATFORM_BR
 LIST_HEAD(p2p_regions);
@@ -94,7 +95,7 @@ void sphcs_send_event_report_ext(struct sphcs *sphcs,
 	union c2h_EventReport event;
 
 	event.value = 0;
-	event.opcode = SPH_IPC_C2H_OP_EVENT_REPORT;
+	event.opcode = NNP_IPC_C2H_OP_EVENT_REPORT;
 	event.eventCode = eventCode;
 	event.eventVal = eventVal;
 	if (contextID >= 0) {
@@ -122,15 +123,25 @@ static void IPC_OPCODE_HANDLER(QUERY_VERSION)(
 				struct sphcs *sphcs,
 				union h2c_QueryVersionMsg *msg)
 {
-	union c2h_QueryVersionReplyMsg replyMsg;
+	union c2h_QueryVersionReply2Msg replyMsg;
+	u64 msg_size;
 
-	replyMsg.value = 0;
+	replyMsg.value[0] = 0;
+	replyMsg.value[1] = 0;
 	// respond with the driver and protocol versions
-	replyMsg.opcode = SPH_IPC_C2H_OP_QUERY_VERSION_REPLY;
-	replyMsg.driverVersion = SPH_IPC_PROTOCOL_VERSION;
-	replyMsg.protocolVersion = SPH_IPC_PROTOCOL_VERSION;
+	replyMsg.opcode = NNP_IPC_C2H_OP_QUERY_VERSION_REPLY2;
+	replyMsg.driverVersion = NNP_IPC_PROTOCOL_VERSION;
+	replyMsg.protocolVersion = NNP_IPC_CHAN_PROTOCOL_VERSION;
 
-	sphcs_msg_scheduler_queue_add_msg(sphcs->public_respq, &replyMsg.value, 1);
+	/* Build the channel protocol opcode sizes vec */
+	#define C2H_OPCODE(name, val, type)   /*SPH_IGNORE_STYLE_CHECK*/      \
+		msg_size = sizeof(type)/sizeof(u64);                          \
+		replyMsg.chanRespOpSize |= (msg_size << 2*(val-32));
+
+	#include "ipc_chan_c2h_opcodes.h"
+	#undef C2H_OPCODE
+
+	sphcs_msg_scheduler_queue_add_msg(sphcs->public_respq, replyMsg.value, 2);
 }
 
 static void IPC_OPCODE_HANDLER(SETUP_CRASH_DUMP)(
@@ -140,7 +151,7 @@ static void IPC_OPCODE_HANDLER(SETUP_CRASH_DUMP)(
 
 	sph_log_info(CREATE_COMMAND_LOG, "Setup Crash dump received\n");
 
-	sphcs_crash_dump_setup_host_addr(SPH_IPC_DMA_PFN_TO_ADDR(setup_msg->dma_addr));
+	sphcs_crash_dump_setup_host_addr(NNP_IPC_DMA_PFN_TO_ADDR(setup_msg->dma_addr));
 
 }
 
@@ -151,7 +162,7 @@ static void IPC_OPCODE_HANDLER(SETUP_SYS_INFO_PAGE)(
 
 	sph_log_info(CREATE_COMMAND_LOG, "Setup sys info page received\n");
 
-	sphcs->host_sys_info_dma_addr = SPH_IPC_DMA_PFN_TO_ADDR(msg->dma_addr);
+	sphcs->host_sys_info_dma_addr = NNP_IPC_DMA_PFN_TO_ADDR(msg->dma_addr);
 	sphcs->host_sys_info_dma_addr_valid = true;
 
 	/* send host sys_info packet, if available */
@@ -167,29 +178,43 @@ static void IPC_OPCODE_HANDLER(CLOCK_SYNC)(
 
 	// send echo to the host
 	memset(msg.value, 0, sizeof(msg.value));
-	msg.opcode  = SPH_IPC_C2H_OP_CLOCK_SYNC;
-	msg.o_card_ts = sched_clock();
+	msg.opcode  = NNP_IPC_C2H_OP_CLOCK_SYNC;
+	msg.o_card_ts = local_clock();
 	msg.iteration = cmd->iteration;
 	sphcs_msg_scheduler_queue_add_msg(g_the_sphcs->public_respq,
 				    (u64 *)msg.value,
 				    sizeof(msg) / sizeof(u64));
 }
 
+#define CLOCK_STAMP_TYPE_STR_SIZE 7
+static void IPC_OPCODE_HANDLER(CLOCK_STAMP)(struct sphcs *sphcs,
+					    union ClockStampMsg *cmd)
+{
+	char type_str[CLOCK_STAMP_TYPE_STR_SIZE+1];
+	int i;
+
+	for (i = 0; i < CLOCK_STAMP_TYPE_STR_SIZE; i++)
+		type_str[i] = cmd->i_type[i];
+	type_str[CLOCK_STAMP_TYPE_STR_SIZE] = '\0';
+
+	DO_TRACE(trace_clock_stamp(type_str, cmd->i_clock));
+}
+
 struct sphcs_cmd_chan *sphcs_find_channel(struct sphcs *sphcs, uint16_t protocolID)
 {
 	struct sphcs_cmd_chan *chan;
 
-	SPH_SPIN_LOCK_BH(&sphcs->lock_bh);
+	NNP_SPIN_LOCK_BH(&sphcs->lock_bh);
 	hash_for_each_possible(sphcs->cmd_chan_hash,
 			       chan,
 			       hash_node,
 			       protocolID)
 		if (chan->protocolID == protocolID) {
 			sphcs_cmd_chan_get(chan);
-			SPH_SPIN_UNLOCK_BH(&sphcs->lock_bh);
+			NNP_SPIN_UNLOCK_BH(&sphcs->lock_bh);
 			return chan;
 		}
-	SPH_SPIN_UNLOCK_BH(&sphcs->lock_bh);
+	NNP_SPIN_UNLOCK_BH(&sphcs->lock_bh);
 
 	return NULL;
 }
@@ -199,7 +224,7 @@ int find_and_destroy_channel(struct sphcs *sphcs, uint16_t protocolID)
 	struct sphcs_cmd_chan *iter, *chan = NULL;
 	int i;
 
-	SPH_SPIN_LOCK_BH(&sphcs->lock_bh);
+	NNP_SPIN_LOCK_BH(&sphcs->lock_bh);
 	hash_for_each_possible(sphcs->cmd_chan_hash,
 			       iter,
 			       hash_node,
@@ -210,19 +235,19 @@ int find_and_destroy_channel(struct sphcs *sphcs, uint16_t protocolID)
 		}
 
 	if (unlikely(chan == NULL)) {
-		SPH_SPIN_UNLOCK_BH(&sphcs->lock_bh);
+		NNP_SPIN_UNLOCK_BH(&sphcs->lock_bh);
 		return -ENXIO;
 	}
 
 	chan->destroyed = true;
 	hash_del(&chan->hash_node);
-	SPH_SPIN_UNLOCK_BH(&sphcs->lock_bh);
+	NNP_SPIN_UNLOCK_BH(&sphcs->lock_bh);
 
 	if (chan->destroy_cb)
 		(*chan->destroy_cb)(chan, chan->destroy_cb_ctx);
 
 	/* mark all c2h channels as "disconnected" to release any writers */
-	for (i = 0; i < SPH_IPC_MAX_CHANNEL_RINGBUFS; i++)
+	for (i = 0; i < NNP_IPC_MAX_CHANNEL_RINGBUFS; i++)
 		if (chan->c2h_rb[i].host_sgt.sgl != NULL) {
 			chan->c2h_rb[i].disconnected = true;
 			wake_up_all(&chan->c2h_rb[i].waitq);
@@ -231,6 +256,30 @@ int find_and_destroy_channel(struct sphcs *sphcs, uint16_t protocolID)
 	sphcs_cmd_chan_put(chan);
 
 	return 0;
+}
+
+static void destroy_all_channels(struct sphcs *sphcs)
+{
+	struct sphcs_cmd_chan *chan = NULL;
+	int i;
+	bool found = true;
+
+	do {
+		found = false;
+		NNP_SPIN_LOCK_BH(&sphcs->lock_bh);
+		hash_for_each(sphcs->cmd_chan_hash,
+			      i,
+			      chan,
+			      hash_node) {
+			if (!chan->destroyed) {
+				NNP_SPIN_UNLOCK_BH(&sphcs->lock_bh);
+				find_and_destroy_channel(sphcs, chan->protocolID);
+				found = true;
+				break;
+			}
+		}
+	} while (found);
+	NNP_SPIN_UNLOCK_BH(&sphcs->lock_bh);
 }
 
 struct channel_op_work {
@@ -246,22 +295,22 @@ static void channel_op_work_handler(struct work_struct *work)
 	struct sphcs *sphcs = g_the_sphcs;
 	struct sphcs_cmd_chan *chan;
 	uint8_t event;
-	enum event_val val = 0;
+	enum event_val val = NNP_IPC_NO_ERROR;
 	int ret;
 
 	if (op->cmd.destroy) {
 		ret = find_and_destroy_channel(sphcs, op->cmd.protocolID);
 		if (unlikely(ret < 0)) {
-			event = SPH_IPC_DESTROY_CHANNEL_FAILED;
-			val = SPH_IPC_NO_SUCH_CHANNEL;
+			event = NNP_IPC_DESTROY_CHANNEL_FAILED;
+			val = NNP_IPC_NO_SUCH_CHANNEL;
 			goto send_error;
 		}
 	} else {
 		chan = sphcs_find_channel(sphcs, op->cmd.protocolID);
 		if (unlikely(chan != NULL)) {
 			sphcs_cmd_chan_put(chan);
-			event = SPH_IPC_CREATE_CHANNEL_FAILED;
-			val = SPH_IPC_ALREADY_EXIST;
+			event = NNP_IPC_CREATE_CHANNEL_FAILED;
+			val = NNP_IPC_ALREADY_EXIST;
 			goto send_error;
 		}
 
@@ -269,13 +318,13 @@ static void channel_op_work_handler(struct work_struct *work)
 					    op->cmd.uid,
 					    op->cmd.privileged ? true : false,
 					    &chan);
-		if (unlikely(val != 0)) {
-			event = SPH_IPC_CREATE_CHANNEL_FAILED;
+		if (unlikely(val != NNP_IPC_NO_ERROR)) {
+			event = NNP_IPC_CREATE_CHANNEL_FAILED;
 			goto send_error;
 		}
 
 		sphcs_send_event_report(sphcs,
-					SPH_IPC_CREATE_CHANNEL_SUCCESS,
+					NNP_IPC_CREATE_CHANNEL_SUCCESS,
 					0,
 					NULL,
 					-1,
@@ -300,12 +349,12 @@ static void IPC_OPCODE_HANDLER(CHANNEL_OP)(
 	work = kzalloc(sizeof(*work), GFP_NOWAIT);
 	if (unlikely(work == NULL)) {
 		if (cmd->destroy)
-			event = SPH_IPC_DESTROY_CHANNEL_FAILED;
+			event = NNP_IPC_DESTROY_CHANNEL_FAILED;
 		else
-			event = SPH_IPC_CREATE_CHANNEL_FAILED;
+			event = NNP_IPC_CREATE_CHANNEL_FAILED;
 		sphcs_send_event_report(sphcs,
 					event,
-					SPH_IPC_NO_MEMORY,
+					NNP_IPC_NO_MEMORY,
 					NULL,
 					-1,
 					cmd->protocolID);
@@ -332,11 +381,11 @@ static int sphcs_process_messages(struct sphcs *sphcs, u64 *hw_msg, u32 hw_size)
 	u64 *msg;
 	u32 size;
 	u64 start_time;
-	bool update_sw_counters = SPH_SW_GROUP_IS_ENABLE(g_sph_sw_counters,
+	bool update_sw_counters = NNP_SW_GROUP_IS_ENABLE(g_nnp_sw_counters,
 							 SPHCS_SW_COUNTERS_GROUP_IPC);
 
 	if (update_sw_counters)
-		start_time = sph_time_us();
+		start_time = nnp_time_us();
 	else
 		start_time = 0;
 
@@ -347,7 +396,7 @@ static int sphcs_process_messages(struct sphcs *sphcs, u64 *hw_msg, u32 hw_size)
 	 * otherwise process the messages reveived from hw directly
 	 */
 	if (s_num_msgs > 0) {
-		SPH_ASSERT( hw_size + s_num_msgs < 32 );
+		NNP_ASSERT(hw_size + s_num_msgs < 32);
 		if (unlikely(hw_size + s_num_msgs >= 32))
 			return 0; // prevent buffer overrun
 
@@ -368,25 +417,52 @@ static int sphcs_process_messages(struct sphcs *sphcs, u64 *hw_msg, u32 hw_size)
 		u32 msg_size = 0;
 		int partial_msg = 0;
 
+		#define HANDLE_COMMAND(name, type)                                    \
+			do {                                                          \
+			msg_size = sizeof(type) / sizeof(u64);                        \
+			if (msg_size > (size-j))                                      \
+				partial_msg = 1;                                      \
+			else {                                                        \
+				DO_TRACE(trace__ipc(0, &msg[j], msg_size));           \
+				CALL_IPC_OPCODE_HANDLER(name, type, sphcs, &msg[j]);  \
+			}                                                             \
+			} while (0)
+
 		/* dispatch the message request */
 		#define H2C_OPCODE(name,val,type)                                    \
 			case (val):                                                  \
-			msg_size = sizeof(type)/sizeof(u64);                         \
-			if (msg_size > (size-j))                                     \
-				partial_msg = 1;                                     \
-			else {                                                        \
-				DO_TRACE(trace__ipc(0, &msg[j], msg_size));           \
-				CALL_IPC_OPCODE_HANDLER(name, type, sphcs, &msg[j]); \
-			} \
+			HANDLE_COMMAND(name, type);                                  \
 			break;
 
-
 		switch(opCode) {
-		#include "ipc_h2c_opcodes.h"
 		#include "ipc_chan_h2c_opcodes.h"
+		case H2C_OPCODE_NAME(QUERY_VERSION):
+			HANDLE_COMMAND(QUERY_VERSION, union h2c_QueryVersionMsg);
+			break;
+		case H2C_OPCODE_NAME(CLOCK_STAMP):
+			HANDLE_COMMAND(CLOCK_STAMP, union ClockStampMsg);
+			break;
+		case H2C_OPCODE_NAME(SETUP_CRASH_DUMP):
+			HANDLE_COMMAND(SETUP_CRASH_DUMP, union h2c_setup_crash_dump_msg);
+			break;
+		case H2C_OPCODE_NAME(SETUP_SYS_INFO_PAGE):
+			HANDLE_COMMAND(SETUP_SYS_INFO_PAGE, union h2c_setup_sys_info_page);
+			break;
+		case H2C_OPCODE_NAME(CLOCK_SYNC):
+			HANDLE_COMMAND(CLOCK_SYNC, union ClockSyncMsg);
+			break;
+		case H2C_OPCODE_NAME(CHANNEL_OP):
+			HANDLE_COMMAND(CHANNEL_OP, union h2c_ChannelOp);
+			break;
+		case H2C_OPCODE_NAME(CHANNEL_RB_OP):
+			HANDLE_COMMAND(CHANNEL_RB_OP, union h2c_ChannelDataRingbufOp);
+			break;
+		case H2C_OPCODE_NAME(CHANNEL_HOSTRES_OP):
+			HANDLE_COMMAND(CHANNEL_HOSTRES_OP, union h2c_ChannelHostresOp);
+			break;
 		default:
 			/* Should not happen! */
-			SPH_ASSERT(0);
+			NNP_ASSERT(0);
 			j++;
 			continue;
 		}
@@ -411,8 +487,8 @@ static int sphcs_process_messages(struct sphcs *sphcs, u64 *hw_msg, u32 hw_size)
 		s_num_msgs = 0;
 
 	if (update_sw_counters) {
-		SPH_SW_COUNTER_ADD(g_sph_sw_counters, SPHCS_SW_COUNTERS_IPC_COMMANDS_CONSUME_TIME, sph_time_us() - start_time);
-		SPH_SW_COUNTER_ADD(g_sph_sw_counters, SPHCS_SW_COUNTERS_IPC_COMMANDS_COUNT, j);
+		NNP_SW_COUNTER_ADD(g_nnp_sw_counters, SPHCS_SW_COUNTERS_IPC_COMMANDS_CONSUME_TIME, nnp_time_us() - start_time);
+		NNP_SW_COUNTER_ADD(g_nnp_sw_counters, SPHCS_SW_COUNTERS_IPC_COMMANDS_COUNT, j);
 	}
 
 	return hw_size;
@@ -423,12 +499,16 @@ static int respq_sched_handler(u64 *msg, int size, void *hw_data)
 	struct sphcs *sphcs = (struct sphcs *)hw_data;
 	int ret;
 
+	/* silentry ignore response if host has disconnected */
+	if (sphcs->host_doorbell_val == 0)
+		return 0;
+
 	DO_TRACE(trace__ipc(1, msg, size));
 
 	ret = sphcs->hw_ops->write_mesg(sphcs->hw_handle, msg, size);
 
-	if (SPH_SW_GROUP_IS_ENABLE(g_sph_sw_counters, SPHCS_SW_COUNTERS_GROUP_IPC))
-		SPH_SW_COUNTER_ADD(g_sph_sw_counters, SPHCS_SW_COUNTERS_IPC_RESPONSES_COUNT, size);
+	if (NNP_SW_GROUP_IS_ENABLE(g_nnp_sw_counters, SPHCS_SW_COUNTERS_GROUP_IPC))
+		NNP_SW_COUNTER_ADD(g_nnp_sw_counters, SPHCS_SW_COUNTERS_IPC_RESPONSES_COUNT, size);
 
 	return ret;
 }
@@ -476,7 +556,7 @@ static int handle_mce_event(struct notifier_block *nb, unsigned long val, void *
 
 	/* Uncorrected Error */
 	if (mce->status & MCI_STATUS_UC) {
-		eventCode = SPH_IPC_ERROR_MCE_UNCORRECTABLE;
+		eventCode = NNP_IPC_ERROR_MCE_UNCORRECTABLE;
 
 		/* check if error in kernel space then report fatal ECC event and reset the device
 		 * if error in userspace and processor context is not corrupted,
@@ -491,16 +571,17 @@ static int handle_mce_event(struct notifier_block *nb, unsigned long val, void *
 				     mce->status,
 				     mce->addr,
 				     mce->misc);
-			eventCode = SPH_IPC_ERROR_MCE_UNCORRECTABLE_FATAL;
+			eventCode = NNP_IPC_ERROR_MCE_UNCORRECTABLE_FATAL;
 
 			/* report event to host */
 			event.value = 0;
-			event.opcode = SPH_IPC_C2H_OP_EVENT_REPORT;
+			event.opcode = NNP_IPC_C2H_OP_EVENT_REPORT;
 			event.eventCode = eventCode;
 			event.eventVal = eventVal;
-			g_the_sphcs->hw_ops->write_mesg(g_the_sphcs->hw_handle,
-							&event.value,
-							1);
+			if (g_the_sphcs->host_doorbell_val != 0)
+				g_the_sphcs->hw_ops->write_mesg(g_the_sphcs->hw_handle,
+								&event.value,
+								1);
 
 			/* wait a little then reset the card */
 			INIT_DELAYED_WORK(&g_the_sphcs->init_delayed_reset, sphcs_delayed_reset);
@@ -515,20 +596,21 @@ static int handle_mce_event(struct notifier_block *nb, unsigned long val, void *
 			     mce->misc);
 
 		if (is_ecc_err)
-			SPH_SW_COUNTER_ATOMIC_INC(g_sph_sw_counters,
+			SPH_SW_COUNTER_ATOMIC_INC(g_nnp_sw_counters,
 						  SPHCS_SW_COUNTERS_ECC_UNCORRECTABLE_ERROR);
 		else
-			SPH_SW_COUNTER_ATOMIC_INC(g_sph_sw_counters,
+			SPH_SW_COUNTER_ATOMIC_INC(g_nnp_sw_counters,
 						  SPHCS_SW_COUNTERS_MCE_UNCORRECTABLE_ERROR);
 
 		/* report event to host */
 		event.value = 0;
-		event.opcode = SPH_IPC_C2H_OP_EVENT_REPORT;
+		event.opcode = NNP_IPC_C2H_OP_EVENT_REPORT;
 		event.eventCode = eventCode;
 		event.eventVal = eventVal;
-		g_the_sphcs->hw_ops->write_mesg(g_the_sphcs->hw_handle,
-						&event.value,
-						1);
+		if (g_the_sphcs->host_doorbell_val != 0)
+			g_the_sphcs->hw_ops->write_mesg(g_the_sphcs->hw_handle,
+							&event.value,
+							1);
 	} else {
 		/* Corrected Error (signaled via both MCE/CMC)*/
 		sph_log_info(MCE_LOG, "Correctable MCE Error is_ecc_error=%d mci_status=0x%llx addr=0x%llx misc=0x%llx\n",
@@ -537,9 +619,9 @@ static int handle_mce_event(struct notifier_block *nb, unsigned long val, void *
 			     mce->addr,
 			     mce->misc);
 
-		SPH_SW_COUNTER_ATOMIC_INC(g_sph_sw_counters,
+		SPH_SW_COUNTER_ATOMIC_INC(g_nnp_sw_counters,
 					  SPHCS_SW_COUNTERS_ECC_CORRECTABLE_ERROR);
-		eventCode = SPH_IPC_ERROR_MCE_CORRECTABLE;
+		eventCode = NNP_IPC_ERROR_MCE_CORRECTABLE;
 
 		/* report event to host */
 		sphcs_send_event_report(g_the_sphcs, eventCode, eventVal, NULL, -1, -1);
@@ -566,15 +648,15 @@ static int sphcs_create_p2p_heap(struct sphcs *sphcs)
 
 	reg = vmalloc(sizeof(struct mem_region));
 
-	/* the first SPH_CRASH_DUMP_SIZE bytes of the memory, accessed through BAR2,
+	/* the first NNP_CRASH_DUMP_SIZE bytes of the memory, accessed through BAR2,
 	 * are reserved for the crash dump, the rest are managed by peer-to-peer heap
 	 */
 	if (!reg) {
 		sph_log_err(START_UP_LOG, "Allocation failure during p2p heap creation\n");
 		return -ENOMEM;
 	}
-	reg->start = sphcs->inbound_mem_dma_addr + SPH_CRASH_DUMP_SIZE;
-	reg->size = sphcs->inbound_mem_size - SPH_CRASH_DUMP_SIZE;
+	reg->start = sphcs->inbound_mem_dma_addr + NNP_CRASH_DUMP_SIZE;
+	reg->size = sphcs->inbound_mem_size - NNP_CRASH_DUMP_SIZE;
 	list_add(&reg->list, &p2p_regions);
 	p2p_heap_handle = ion_chunk_heap_setup(&p2p_regions, P2P_HEAP_NAME);
 	list_del(&reg->list);
@@ -614,7 +696,7 @@ static int host_page_list_dma_completed(struct sphcs *sphcs, void *ctx, const vo
 	dma_addr_t dma_src_addr;
 	uint64_t total_entries_bytes = 0;
 	int i, res = 0;
-	enum event_val eventVal = 0;
+	enum event_val eventVal = NNP_IPC_NO_ERROR;
 	uint32_t start_offset = 0;
 
 	if (unlikely(status == SPHCS_DMA_STATUS_FAILED)) {
@@ -622,12 +704,12 @@ static int host_page_list_dma_completed(struct sphcs *sphcs, void *ctx, const vo
 		sph_log_err(CREATE_COMMAND_LOG, "FATAL: line:%u DMA of host page list number %u failed with status=%d\n",
 				__LINE__, dma_req_data->pages_count, status);
 		res = -EFAULT;
-		eventVal = SPH_IPC_DMA_ERROR;
+		eventVal = NNP_IPC_DMA_ERROR;
 		goto done;
 	}
 
 	/* if status is not an error - it must be done */
-	SPH_ASSERT(status == SPHCS_DMA_STATUS_DONE);
+	NNP_ASSERT(status == SPHCS_DMA_STATUS_DONE);
 
 	chain_header = (struct dma_chain_header *)dma_req_data->vptr;
 	chain_entry = (struct dma_chain_entry *)(dma_req_data->vptr + sizeof(struct dma_chain_header));
@@ -636,14 +718,14 @@ static int host_page_list_dma_completed(struct sphcs *sphcs, void *ctx, const vo
 		res = sg_alloc_table(host_sgt, chain_header->total_nents, GFP_KERNEL);
 		if (unlikely(res < 0)) {
 			sph_log_err(CREATE_COMMAND_LOG, "FATAL: line:%u err=%d failed to allocate sg_table\n",  __LINE__, res);
-			eventVal = SPH_IPC_NO_MEMORY;
+			eventVal = NNP_IPC_NO_MEMORY;
 			goto done;
 		}
 		dma_req_data->sgl_curr = &(host_sgt->sgl[0]);
 		start_offset = chain_header->start_offset;
 	}
 
-	SPH_ASSERT(host_sgt->orig_nents == chain_header->total_nents);
+	NNP_ASSERT(host_sgt->orig_nents == chain_header->total_nents);
 
 	dma_req_data->pages_count++;
 
@@ -655,12 +737,12 @@ static int host_page_list_dma_completed(struct sphcs *sphcs, void *ctx, const vo
 	// make sure we are not reading more than one page
 	current_sgl = dma_req_data->sgl_curr;
 	for (i = 0; !sg_is_last(current_sgl) && i < NENTS_PER_PAGE; i++) {
-		current_sgl->length = chain_entry[i].n_pages * SPH_PAGE_SIZE;
-		current_sgl->dma_address = SPH_IPC_DMA_PFN_TO_ADDR(chain_entry[i].dma_chunk_pfn);
+		current_sgl->length = chain_entry[i].n_pages * NNP_PAGE_SIZE;
+		current_sgl->dma_address = NNP_IPC_DMA_PFN_TO_ADDR(chain_entry[i].dma_chunk_pfn);
 
 		total_entries_bytes = total_entries_bytes + current_sgl->length;
 
-		SPH_ASSERT(chain_header->size >= total_entries_bytes);
+		NNP_ASSERT(chain_header->size >= total_entries_bytes);
 
 		if (start_offset > 0) {
 			current_sgl->offset = start_offset;
@@ -677,16 +759,16 @@ static int host_page_list_dma_completed(struct sphcs *sphcs, void *ctx, const vo
 	// But last in sg table for sure means this is last enrty
 	// in the last page.
 	if (i >= NENTS_PER_PAGE) { // Finished with this page
-		SPH_ASSERT(chain_header->size == total_entries_bytes);
+		NNP_ASSERT(chain_header->size == total_entries_bytes);
 		dma_req_data->sgl_curr = current_sgl;
 	} else { // Still in the page and got to the last entry in sg table
-		SPH_ASSERT(sg_is_last(current_sgl));
-		SPH_ASSERT(chain_header->size > total_entries_bytes);
-		SPH_ASSERT(dma_src_addr == 0x0);
-		current_sgl->dma_address = SPH_IPC_DMA_PFN_TO_ADDR(chain_entry[i].dma_chunk_pfn);
+		NNP_ASSERT(sg_is_last(current_sgl));
+		NNP_ASSERT(chain_header->size > total_entries_bytes);
+		NNP_ASSERT(dma_src_addr == 0x0);
+		current_sgl->dma_address = NNP_IPC_DMA_PFN_TO_ADDR(chain_entry[i].dma_chunk_pfn);
 
 		// update the length of last entry
-		SPH_ASSERT(chain_entry[i].n_pages * SPH_PAGE_SIZE >= chain_header->size - total_entries_bytes);
+		NNP_ASSERT(chain_entry[i].n_pages * NNP_PAGE_SIZE >= chain_header->size - total_entries_bytes);
 		current_sgl->length = chain_header->size - total_entries_bytes;
 
 		if (start_offset > 0) {
@@ -706,14 +788,14 @@ static int host_page_list_dma_completed(struct sphcs *sphcs, void *ctx, const vo
 							&g_dma_desc_h2c_normal,
 							dma_src_addr,
 							dma_req_data->card_dma_addr,
-							SPH_PAGE_SIZE,
+							NNP_PAGE_SIZE,
 							host_page_list_dma_completed,
 							ctx,
 							&dma_req_data,
 							sizeof(dma_req_data));
 		if (unlikely(res < 0)) {
 			sph_log_err(CREATE_COMMAND_LOG, "FATAL: line: %u err=%d failed to sched dma\n", __LINE__, res);
-			eventVal = SPH_IPC_NO_MEMORY;
+			eventVal = NNP_IPC_NO_MEMORY;
 			goto done;
 		}
 	} else {
@@ -775,7 +857,7 @@ int sphcs_retrieve_hostres_pagetable(uint64_t             hostDmaAddr,
 						&g_dma_desc_h2c_normal,
 						dma_src_addr,
 						dma_req_data->card_dma_addr,
-						SPH_PAGE_SIZE,
+						NNP_PAGE_SIZE,
 						host_page_list_dma_completed,
 						NULL,
 						&dma_req_data,
@@ -796,6 +878,7 @@ free_dma_req_data:
 	return res;
 }
 
+static void sphcs_host_disconnect_work_handler(struct work_struct *work);
 
 static int sphcs_create_sphcs(void                           *hw_handle,
 			      struct device                  *hw_device,
@@ -873,24 +956,13 @@ static int sphcs_create_sphcs(void                           *hw_handle,
 		goto free_respq_sched;
 	}
 
-	sphcs->net_respq = sphcs_create_response_queue(sphcs, 1);
-	if (!sphcs->net_respq) {
-		sph_log_err(START_UP_LOG, "Failed to create net response q\n");
-		goto free_public_respq;
-	}
-
-	if (sphcs_create_response_page_pool(sphcs->net_respq, 0) < 0) {
-		sph_log_err(START_UP_LOG, "Failed to create net response pool\n");
-		goto free_net_respq;
-	}
-
 	ret = sphcs_dma_sched_create(sphcs,
 			&sphcs->hw_ops->dma,
 			sphcs->hw_handle,
 			&sphcs->dmaSched);
 	if (ret) {
 		sph_log_err(START_UP_LOG, "Failed to create dma scheduler\n");
-		goto free_net_respq;
+		goto free_public_respq;
 	}
 
 	sphcs_dma_sched_init_debugfs(sphcs->dmaSched,
@@ -903,6 +975,8 @@ static int sphcs_create_sphcs(void                           *hw_handle,
 		goto free_sched;
 	}
 
+	INIT_WORK(&sphcs->host_disconnect_work, sphcs_host_disconnect_work_handler);
+
 	ret = inference_init(sphcs);
 	if (ret) {
 		sph_log_err(START_UP_LOG, "Failed to initialize inference module\n");
@@ -911,7 +985,7 @@ static int sphcs_create_sphcs(void                           *hw_handle,
 
 	sphcs_inf_init_debugfs(sphcs->debugfs_dir);
 
-	ret = sph_create_sw_counters_info_node(NULL,
+	ret = nnp_create_sw_counters_info_node(NULL,
 					       &g_sw_counters_set_global,
 					       NULL,
 					       &g_hSwCountersInfo_global);
@@ -919,7 +993,7 @@ static int sphcs_create_sphcs(void                           *hw_handle,
 		sph_log_err(START_UP_LOG, "Failed to initialize sw counters module\n");
 		goto free_inference;
 	}
-	ret = sph_create_sw_counters_info_node(NULL,
+	ret = nnp_create_sw_counters_info_node(NULL,
 					       &g_sw_counters_set_context,
 					       g_hSwCountersInfo_global,
 					       &g_hSwCountersInfo_context);
@@ -927,16 +1001,16 @@ static int sphcs_create_sphcs(void                           *hw_handle,
 		sph_log_err(START_UP_LOG, "Failed to initialize sw counters module\n");
 		goto free_counters_info_global;
 	}
-	ret = sph_create_sw_counters_values_node(g_hSwCountersInfo_global,
+	ret = nnp_create_sw_counters_values_node(g_hSwCountersInfo_global,
 						 0x0,
 						 NULL,
-						 &g_sph_sw_counters);
+						 &g_nnp_sw_counters);
 	if (ret) {
 		sph_log_err(START_UP_LOG, "Failed to initialize sw counters module\n");
 		goto free_counters_info_context;
 	}
 
-	ret = sph_create_sw_counters_info_node(NULL,
+	ret = nnp_create_sw_counters_info_node(NULL,
 					       &g_sw_counters_set_network,
 					       g_hSwCountersInfo_context,
 					       &g_hSwCountersInfo_network);
@@ -945,7 +1019,7 @@ static int sphcs_create_sphcs(void                           *hw_handle,
 		goto free_counters_values;
 	}
 
-	ret = sph_create_sw_counters_info_node(NULL,
+	ret = nnp_create_sw_counters_info_node(NULL,
 					       &g_sw_counters_set_copy,
 					       g_hSwCountersInfo_context,
 					       &g_hSwCountersInfo_copy);
@@ -954,7 +1028,7 @@ static int sphcs_create_sphcs(void                           *hw_handle,
 		goto free_counters_network;
 	}
 
-	ret = sph_create_sw_counters_info_node(NULL,
+	ret = nnp_create_sw_counters_info_node(NULL,
 					       &g_sw_counters_set_infreq,
 					       g_hSwCountersInfo_network,
 					       &g_hSwCountersInfo_infreq);
@@ -998,8 +1072,8 @@ static int sphcs_create_sphcs(void                           *hw_handle,
 
 	// Set card boot state as "Driver ready"
 	sphcs->hw_ops->set_card_doorbell_value(hw_handle,
-				    (SPH_CARD_BOOT_STATE_DRV_READY <<
-				     SPH_CARD_BOOT_STATE_SHIFT));
+				    (NNP_CARD_BOOT_STATE_DRV_READY <<
+				     NNP_CARD_BOOT_STATE_SHIFT));
 
 #ifndef NO_MCE
 	/* register device to reveice mce events (through kernel apei report interface) */
@@ -1016,24 +1090,21 @@ cleanup_crash_dump:
 free_intel_th_driver:
 	sphcs_deinit_th_driver();
 free_counters_infreq:
-	sph_remove_sw_counters_info_node(g_hSwCountersInfo_infreq);
+	nnp_remove_sw_counters_info_node(g_hSwCountersInfo_infreq);
 free_counters_copy:
-	sph_remove_sw_counters_info_node(g_hSwCountersInfo_copy);
+	nnp_remove_sw_counters_info_node(g_hSwCountersInfo_copy);
 free_counters_network:
-	sph_remove_sw_counters_info_node(g_hSwCountersInfo_network);
+	nnp_remove_sw_counters_info_node(g_hSwCountersInfo_network);
 free_counters_values:
-	sph_remove_sw_counters_values_node(g_sph_sw_counters);
+	nnp_remove_sw_counters_values_node(g_nnp_sw_counters);
 free_counters_info_context:
-	sph_remove_sw_counters_info_node(g_hSwCountersInfo_context);
+	nnp_remove_sw_counters_info_node(g_hSwCountersInfo_context);
 free_counters_info_global:
-	sph_remove_sw_counters_info_node(g_hSwCountersInfo_global);
+	nnp_remove_sw_counters_info_node(g_hSwCountersInfo_global);
 free_inference:
 	inference_fini(sphcs);
 free_sched:
 	sphcs_dma_sched_destroy(sphcs->dmaSched);
-free_net_respq:
-	sphcs_response_pool_destroy_page_pool(0);
-	sphcs_destroy_response_queue(sphcs, sphcs->net_respq);
 free_public_respq:
 	sphcs_destroy_response_queue(sphcs, sphcs->public_respq);
 free_respq_sched:
@@ -1050,15 +1121,19 @@ free_mem:
 	return ret;
 }
 
-static void sphcs_clean_host_resp_pages_list(struct sphcs *sphcs)
+static void sphcs_host_disconnect_work_handler(struct work_struct *work)
 {
-	sphcs_response_pool_clean_page_pool(0);
+	struct sphcs *sphcs = container_of(work,
+					   struct sphcs,
+					   host_disconnect_work);
+
+	destroy_all_channels(sphcs);
 }
 
 void sphcs_host_doorbell_value_changed(struct sphcs *sphcs,
 				       u32           doorbell_value)
 {
-	uint32_t host_drv_state = (doorbell_value & SPH_HOST_DRV_STATE_MASK) >> SPH_HOST_DRV_STATE_SHIFT;
+	uint32_t host_drv_state = (doorbell_value & NNP_HOST_DRV_STATE_MASK) >> NNP_HOST_DRV_STATE_SHIFT;
 
 	sph_log_debug(GENERAL_LOG, "Got host doorbell value 0x%x\n", doorbell_value);
 
@@ -1067,17 +1142,17 @@ void sphcs_host_doorbell_value_changed(struct sphcs *sphcs,
 	sphcs->host_doorbell_val = doorbell_value;
 
 	if (sphcs->host_connected &&
-	    host_drv_state == SPH_HOST_DRV_STATE_NOT_READY) {
+	    host_drv_state == NNP_HOST_DRV_STATE_NOT_READY) {
 
 		/* host driver disconnected */
 		sphcs->host_connected = 0;
 
-		sphcs_clean_host_resp_pages_list(sphcs);
-
 		sphcs_crash_dump_setup_host_addr(0);
 		sphcs->host_sys_info_dma_addr_valid = false;
+
+		queue_work(sphcs->wq, &sphcs->host_disconnect_work);
 	} else if (!sphcs->host_connected &&
-		   host_drv_state == SPH_HOST_DRV_STATE_READY) {
+		   host_drv_state == NNP_HOST_DRV_STATE_READY) {
 
 		/* host driver connected */
 		sphcs->host_connected = 1;
@@ -1091,6 +1166,7 @@ void sphcs_host_doorbell_value_changed(struct sphcs *sphcs,
 
 static int sphcs_destroy_sphcs(struct sphcs *sphcs)
 {
+	destroy_all_channels(sphcs);
 
 #ifndef NO_MCE
 	/* unregister MCE events */
@@ -1098,8 +1174,8 @@ static int sphcs_destroy_sphcs(struct sphcs *sphcs)
 #endif
 	// Set card boot state as "Not ready"
 	sphcs->hw_ops->set_card_doorbell_value(sphcs->hw_handle,
-			    (SPH_CARD_BOOT_STATE_NOT_READY <<
-			     SPH_CARD_BOOT_STATE_SHIFT));
+			    (NNP_CARD_BOOT_STATE_NOT_READY <<
+			     NNP_CARD_BOOT_STATE_SHIFT));
 	sphcs_ibecc_fini();
 	sphcs_crash_dump_cleanup();
 	destroy_workqueue(sphcs->wq);
@@ -1107,18 +1183,16 @@ static int sphcs_destroy_sphcs(struct sphcs *sphcs)
 	sphcs_dma_sched_destroy(sphcs->dmaSched);
 	msg_scheduler_queue_flush(sphcs->public_respq);
 	sphcs_destroy_response_queue(sphcs, sphcs->public_respq);
-	sphcs_destroy_response_queue(sphcs, sphcs->net_respq);
 	msg_scheduler_destroy(sphcs->respq_sched);
 	dma_page_pool_destroy(sphcs->dma_page_pool);
 	dma_page_pool_destroy(sphcs->net_dma_page_pool);
 	periodic_timer_delete(&sphcs->periodic_timer);
-	sph_remove_sw_counters_values_node(g_sph_sw_counters);
-	sph_remove_sw_counters_info_node(g_hSwCountersInfo_infreq);
-	sph_remove_sw_counters_info_node(g_hSwCountersInfo_copy);
-	sph_remove_sw_counters_info_node(g_hSwCountersInfo_network);
-	sph_remove_sw_counters_info_node(g_hSwCountersInfo_context);
-	sph_remove_sw_counters_info_node(g_hSwCountersInfo_global);
-	sphcs_response_pool_destroy_page_pool(0);
+	nnp_remove_sw_counters_values_node(g_nnp_sw_counters);
+	nnp_remove_sw_counters_info_node(g_hSwCountersInfo_infreq);
+	nnp_remove_sw_counters_info_node(g_hSwCountersInfo_copy);
+	nnp_remove_sw_counters_info_node(g_hSwCountersInfo_network);
+	nnp_remove_sw_counters_info_node(g_hSwCountersInfo_context);
+	nnp_remove_sw_counters_info_node(g_hSwCountersInfo_global);
 	sphcs_deinit_th_driver();
 	g_the_sphcs = NULL;
 	debugfs_remove_recursive(sphcs->debugfs_dir);

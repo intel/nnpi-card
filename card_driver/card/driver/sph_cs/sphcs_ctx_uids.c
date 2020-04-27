@@ -8,11 +8,11 @@
 #include "sw_counters.h"
 #include "sph_log.h"
 
-static const struct sph_sw_counters_group_info s_groups_info[] = {
+static const struct nnp_sw_counters_group_info s_groups_info[] = {
 	{"uids", "Context->uid map"}
 };
 
-static const struct sph_sw_counter_info s_counters_info[] = {
+static const struct nnp_sw_counter_info s_counters_info[] = {
 	{0, "uid0", "uid of context 0"},
 	{0, "uid1", "uid of context 1"},
 	{0, "uid2", "uid of context 2"},
@@ -271,7 +271,7 @@ static const struct sph_sw_counter_info s_counters_info[] = {
 	{0, "uid255", "uid of context 255"}
 };
 
-static const struct sph_sw_counters_set s_counters_set = {
+static const struct nnp_sw_counters_set s_counters_set = {
 	"ctx_uids",
 	false,
 	s_counters_info,
@@ -281,13 +281,13 @@ static const struct sph_sw_counters_set s_counters_set = {
 };
 
 static void *s_counters_handle;
-struct sph_sw_counters *g_ctx_uids_counters;
+struct nnp_sw_counters *g_ctx_uids_counters;
 
 int sphcs_ctx_uids_init(void)
 {
 	int rc;
 
-	rc = sph_create_sw_counters_info_node(NULL,
+	rc = nnp_create_sw_counters_info_node(NULL,
 					      &s_counters_set,
 					      NULL,
 					      &s_counters_handle);
@@ -296,13 +296,13 @@ int sphcs_ctx_uids_init(void)
 		return rc;
 	}
 
-	rc = sph_create_sw_counters_values_node(s_counters_handle,
+	rc = nnp_create_sw_counters_values_node(s_counters_handle,
 						0,
 						NULL,
 						&g_ctx_uids_counters);
 	if (rc) {
 		sph_log_err(START_UP_LOG, "Failed to create ctx_uids sw counters values\n");
-		sph_remove_sw_counters_info_node(s_counters_handle);
+		nnp_remove_sw_counters_info_node(s_counters_handle);
 		return rc;
 	}
 
@@ -311,6 +311,6 @@ int sphcs_ctx_uids_init(void)
 
 void sphcs_ctx_uids_fini(void)
 {
-	sph_remove_sw_counters_values_node(g_ctx_uids_counters);
-	sph_remove_sw_counters_info_node(s_counters_handle);
+	nnp_remove_sw_counters_values_node(g_ctx_uids_counters);
+	nnp_remove_sw_counters_info_node(s_counters_handle);
 }

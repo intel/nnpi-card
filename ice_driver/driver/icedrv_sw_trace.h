@@ -1,17 +1,10 @@
-/*
- * NNP-I Linux Driver
- * Copyright (c) 2019, Intel Corporation.
+/********************************************
+ * Copyright (C) 2019-2020 Intel Corporation
  *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms and conditions of the GNU General Public License,
- * version 2, as published by the Free Software Foundation.
- *
- * This program is distributed in the hope it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
- *
- */
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ ********************************************/
+
+
 
 
 #undef TRACE_SYSTEM
@@ -507,6 +500,47 @@ TRACE_EVENT(SPH_TRACE_ICEDRV_SCHEDULE_JOB,
 		__entry->reason)
 );
 
+TRACE_EVENT(SPH_TRACE_ICEDRV_POWER_ON,
+	TP_PROTO(u8 state, u32 iceID, u64 ctxId,
+			u64 netID, u64 subNetId, u64 internalNetId,
+			u64 inferID, u64 timeStamp,
+			u8 status, char *marker),
+	TP_ARGS(state, iceID, ctxId, netID, subNetId, internalNetId, inferID,
+		timeStamp, status, marker),
+	SPH_TP_STRUCT__entry(
+			__field(u8, state)
+			__field(u32, iceID)
+			__field(u64, ctxId)
+			__field(u64, netID)
+			__field(u64, subNetId)
+			__field(u64, internalNetId)
+			__field(u64, inferID)
+			__field(u64, timeStamp)
+			__field(u8, status)
+			__array(char, marker, 12)
+
+	),
+	SPH_TP_fast_assign(
+			__entry->state = state;
+			__entry->iceID = iceID;
+			__entry->ctxId = ctxId;
+			__entry->netID = netID;
+			__entry->subNetId = subNetId;
+			__entry->internalNetId = internalNetId;
+			__entry->inferID = inferID;
+			__entry->timeStamp = timeStamp;
+			__entry->status = status;
+			memcpy(__entry->marker, marker, 12);
+	),
+	SPH_TP_printk(
+		"state=%s iceId=%u ctx=0x%llx netID=0x%llx subNetId=0x%llx(0x%llx) inferID=0x%llx timeStamp=0x%llx status=%s syncMarker=%s",
+		sph_trace_op_state_to_str[__entry->state],
+		__entry->iceID, __entry->ctxId,
+		__entry->netID, __entry->subNetId, __entry->internalNetId,
+		__entry->inferID, __entry->timeStamp,
+		sph_trace_op_status_to_str[__entry->status],
+		__entry->marker)
+);
 #endif /* if !defined(_TRACE_SYNC_H) || defined(TRACE_HEADER_MULTI_READ) */
 
 /* This part must be outside protection */

@@ -17,9 +17,16 @@
 #include "inf_cmd_list.h"
 #include "inf_types.h"
 
+enum EXEC_REQ_READINESS {
+	EXEC_REQ_READINESS_NOT_READY = 0,
+	EXEC_REQ_READINESS_READY_NO_DIRTY_INPUTS = 1,
+	EXEC_REQ_READINESS_READY_HAS_DIRTY_INPUTS = 2
+};
+
 struct func_table {
 	int (*schedule)(struct inf_exec_req *req);
-	bool (*is_ready)(struct inf_exec_req *req);
+	/* Returns: 0 - not ready, 1 - ready, no dirty inputs, 2 - ready, has dirty inputs */
+	enum EXEC_REQ_READINESS (*is_ready)(struct inf_exec_req *req);
 	int (*execute)(struct inf_exec_req *req);
 	void (*send_report)(struct inf_exec_req *req,
 			    enum event_val       eventVal);
@@ -29,6 +36,10 @@ struct func_table {
 			 int32_t              error_msg_size);
 	int (*obj_put)(struct inf_exec_req *req);
 	int (*migrate_priority)(struct inf_exec_req *req, uint8_t priority);
+	void (*treat_req_failure)(struct inf_exec_req *req,
+				  enum event_val       eventVal,
+				  const void          *error_msg,
+				  int32_t              error_msg_size);
 
 	/* This function should not be called directly, use inf_exec_req_put instead */
 	void (*release)(struct kref *kref);
@@ -61,6 +72,7 @@ struct inf_exec_req {
 		};
 		struct {
 			struct inf_copy *copy;
+			struct inf_devres *depend_devres;
 
 			/* following fields are used for "dynamic copy" only */
 			struct sphcs_hostres_map *hostres_map;

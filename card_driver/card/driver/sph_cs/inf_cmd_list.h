@@ -19,6 +19,7 @@ struct inf_cmd_list {
 	void                *magic;
 	struct kref          ref;
 	uint16_t             protocolID;
+	uint64_t             user_handle;
 	struct inf_context  *context;
 	struct hlist_node    hash_node;
 	spinlock_t           lock_irq;
@@ -26,15 +27,15 @@ struct inf_cmd_list {
 	enum create_status   status;
 	int                  destroyed;
 	uint16_t             num_reqs;
-	uint16_t             num_left;
+	atomic_t             num_left;
 
 	struct inf_exec_error_list  error_list;
 
 	//for edit params
 	struct req_params   *edits;
 	uint16_t             edits_idx;
-	void                *vptr;
-	dma_addr_t           dma_addr;
+	atomic_t             sched_queued;
+	enum event_val       sched_failed;
 
 	// list of devres ids acccessed by this command list.
 	// Used for devres_group optimization
@@ -52,5 +53,5 @@ void inf_cmd_get(struct inf_cmd_list *cmd);
 int inf_cmd_put(struct inf_cmd_list *cmd);
 
 void inf_cmd_optimize_group_devres(struct inf_cmd_list *cmd);
-
+void send_cmd_list_completed_event(struct inf_cmd_list *cmd);
 #endif

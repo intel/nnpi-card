@@ -11,8 +11,15 @@
 #include <linux/hashtable.h>
 #include <linux/spinlock.h>
 #include <linux/dma-buf.h>
+#include <linux/atomic.h>
 #include "inf_types.h"
 #include "sphcs_p2p.h"
+
+enum DEV_RES_READINESS {
+	DEV_RES_READINESS_NOT_READY = 0,
+	DEV_RES_READINESS_READY = 1,
+	DEV_RES_READINESS_READY_BUT_DIRTY = 2
+};
 
 struct exec_queue_entry {
 	struct inf_exec_req *req;
@@ -26,6 +33,7 @@ struct inf_devres {
 	void             *magic;
 	struct kref       ref;
 	uint16_t          protocolID;
+	uint64_t          user_handle;
 	struct inf_context *context;
 	struct hlist_node hash_node;
 	spinlock_t        lock_irq;
@@ -46,9 +54,17 @@ struct inf_devres {
 	enum create_status status;
 	int                destroyed;
 
+	struct inf_devres *pivot;
+	atomic_t           pivot_usecount;
+	uint32_t           group_dirty_count; // for pivot devres, count number of dirty devres in its group (not incuding pivot itself)
+
 	bool is_p2p_src;
 	bool is_p2p_dst;
 	struct sphcs_p2p_buf p2p_buf;
+
+	/* The device resource contains inconsistent data */
+	bool is_dirty;
+
 };
 
 static inline bool inf_devres_is_p2p(struct inf_devres *devres)
@@ -80,6 +96,16 @@ int inf_devres_add_req_to_queue(struct inf_devres *devres, struct inf_exec_req *
 void inf_devres_del_req_from_queue(struct inf_devres   *devres,
 				   struct inf_exec_req *req);
 void inf_devres_try_execute(struct inf_devres *devres);
-bool inf_devres_req_ready(struct inf_devres *devres, struct inf_exec_req *req, bool for_read);
+enum DEV_RES_READINESS inf_devres_req_ready(struct inf_devres *devres, struct inf_exec_req *req, bool for_read);
 
+void inf_devres_add_to_p2p(struct inf_devres *devres);
+void inf_devres_remove_from_p2p(struct inf_devres *devres);
+
+int inf_devres_set_depend_pivot(struct inf_devres *devres,
+				struct inf_devres *pivot);
+void inf_devres_pivot_usecount_inc(struct inf_devres *devres);
+void inf_devres_pivot_usecount_dec(struct inf_devres *devres);
+struct inf_devres *inf_devres_get_depend_pivot(struct inf_devres *devres);
+void inf_devres_set_dirty(struct inf_devres *devres, bool dirty);
+int inf_devres_send_release_credit(struct inf_devres *devres, struct inf_exec_req *req);
 #endif

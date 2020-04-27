@@ -3,12 +3,10 @@
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  ********************************************/
+
+
 #ifndef __SPH_SW_COUNTERS_H
 #define __SPH_SW_COUNTERS_H
-
-//
-// INTEL CORPORATION CONFIDENTIAL Copyright(c) 2018-2020 Intel Corporation. All Rights Reserved.
-//
 
 
 #include <linux/types.h>

@@ -7,7 +7,7 @@
 #ifndef _SPHCS_GENMSG_H
 #define _SPHCS_GENMSG_H
 
-#include "sph_types.h"
+#include "nnp_types.h"
 #include "ipc_protocol.h"
 #include "ipc_chan_protocol.h"
 

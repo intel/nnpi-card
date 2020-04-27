@@ -1,0 +1,122 @@
+From 2c7e7eebba4de08b8453fd79ab4919bd7230039e Mon Sep 17 00:00:00 2001
+From: Alexey Skidanov <alexey.skidanov@intel.com>
+Date: Wed, 22 Jan 2020 20:54:18 -0500
+Subject: [PATCH 3/6] Revert "staging: android: ion: Remove unused rbtree for
+ ion_buffer"
+
+This reverts commit 3e6998b17f36ab4f8f5608b3599df7b3c17d97a5.
+---
+ drivers/staging/android/ion/ion.c | 36 ++++++++++++++++++++++++++++++++++++
+ drivers/staging/android/ion/ion.h | 10 +++++++++-
+ 2 files changed, 45 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/staging/android/ion/ion.c b/drivers/staging/android/ion/ion.c
+index 3c1b3cb..6a35d69 100644
+--- a/drivers/staging/android/ion/ion.c
++++ b/drivers/staging/android/ion/ion.c
+@@ -30,6 +30,32 @@ static struct ion_device *internal_dev;
+ static int heap_id;
+ 
+ /* this function should only be called while dev->lock is held */
++static void ion_buffer_add(struct ion_device *dev,
++			   struct ion_buffer *buffer)
++{
++	struct rb_node **p = &dev->buffers.rb_node;
++	struct rb_node *parent = NULL;
++	struct ion_buffer *entry;
++
++	while (*p) {
++		parent = *p;
++		entry = rb_entry(parent, struct ion_buffer, node);
++
++		if (buffer < entry) {
++			p = &(*p)->rb_left;
++		} else if (buffer > entry) {
++			p = &(*p)->rb_right;
++		} else {
++			pr_err("%s: buffer already found.", __func__);
++			BUG();
++		}
++	}
++
++	rb_link_node(&buffer->node, parent, p);
++	rb_insert_color(&buffer->node, &dev->buffers);
++}
++
++/* this function should only be called while dev->lock is held */
+ static struct ion_buffer *ion_buffer_create(struct ion_heap *heap,
+ 					    struct ion_device *dev,
+ 					    unsigned long len,
+@@ -78,6 +104,9 @@ static struct ion_buffer *ion_buffer_create(struct ion_heap *heap,
+ 
+ 	INIT_LIST_HEAD(&buffer->attachments);
+ 	mutex_init(&buffer->lock);
++	mutex_lock(&dev->buffer_lock);
++	ion_buffer_add(dev, buffer);
++	mutex_unlock(&dev->buffer_lock);
+ 	return buffer;
+ 
+ err1:
+@@ -106,6 +135,11 @@ void ion_buffer_destroy(struct ion_buffer *buffer)
+ static void _ion_buffer_destroy(struct ion_buffer *buffer)
+ {
+ 	struct ion_heap *heap = buffer->heap;
++	struct ion_device *dev = buffer->dev;
++
++	mutex_lock(&dev->buffer_lock);
++	rb_erase(&buffer->node, &dev->buffers);
++	mutex_unlock(&dev->buffer_lock);
+ 
+ 	if (heap->flags & ION_HEAP_FLAG_DEFER_FREE)
+ 		ion_heap_freelist_add(heap, buffer);
+@@ -724,6 +758,8 @@ static int ion_device_create(void)
+ 	}
+ 
+ 	idev->debug_root = debugfs_create_dir("ion", NULL);
++	idev->buffers = RB_ROOT;
++	mutex_init(&idev->buffer_lock);
+ 	init_rwsem(&idev->lock);
+ 	plist_head_init(&idev->heaps);
+ 	internal_dev = idev;
+diff --git a/drivers/staging/android/ion/ion.h b/drivers/staging/android/ion/ion.h
+index 52d44a9..28f41f0 100644
+--- a/drivers/staging/android/ion/ion.h
++++ b/drivers/staging/android/ion/ion.h
+@@ -24,6 +24,7 @@
+ 
+ /**
+  * struct ion_buffer - metadata for a particular buffer
++ * @node:		node in the ion_device buffers tree
+  * @list:		element in list of deferred freeable buffers
+  * @dev:		back pointer to the ion_device
+  * @heap:		back pointer to the heap the buffer came from
+@@ -39,7 +40,10 @@
+  * @attachments:	list of devices attached to this buffer
+  */
+ struct ion_buffer {
+-	struct list_head list;
++	union {
++		struct rb_node node;
++		struct list_head list;
++	};
+ 	struct ion_device *dev;
+ 	struct ion_heap *heap;
+ 	unsigned long flags;
+@@ -59,10 +63,14 @@ void ion_buffer_destroy(struct ion_buffer *buffer);
+ /**
+  * struct ion_device - the metadata of the ion device node
+  * @dev:		the actual misc device
++ * @buffers:		an rb tree of all the existing buffers
++ * @buffer_lock:	lock protecting the tree of buffers
+  * @lock:		rwsem protecting the tree of heaps and clients
+  */
+ struct ion_device {
+ 	struct miscdevice dev;
++	struct rb_root buffers;
++	struct mutex buffer_lock;
+ 	struct rw_semaphore lock;
+ 	struct plist_head heaps;
+ 	struct dentry *debug_root;
+-- 
+2.7.4
+

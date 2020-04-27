@@ -1,17 +1,10 @@
-/*
- * NNP-I Linux Driver
- * Copyright (c) 2017-2019, Intel Corporation.
+/********************************************
+ * Copyright (C) 2019-2020 Intel Corporation
  *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms and conditions of the GNU General Public License,
- * version 2, as published by the Free Software Foundation.
- *
- * This program is distributed in the hope it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
- *
- */
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ ********************************************/
+
+
 
 #ifndef IDC_DEVICE_H_
 #define IDC_DEVICE_H_
@@ -35,7 +28,7 @@ struct dev_isr_status {
 	uint32_t ice_isr_status[NUM_ICE_UNIT];
 	int8_t valid;
 	/* To discard outdated interrupts */
-	struct timespec cur_ts;
+	unsigned long int_jiffy;
 };
 
 struct idc_device {

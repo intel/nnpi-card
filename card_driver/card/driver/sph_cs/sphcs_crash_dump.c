@@ -20,7 +20,7 @@
 #include "sph_log.h"
 #include "sphcs_cs.h"
 #include "sphcs_dma_sched.h"
-#include "sph_inbound_mem.h"
+#include "nnp_inbound_mem.h"
 
 struct crash_dump_desc {
 	dma_addr_t card_dma_addr;
@@ -61,11 +61,11 @@ int sphcs_crash_dump_dma_complete_callback(struct sphcs *sphcs,
 	if (status == SPHCS_DMA_STATUS_FAILED) {
 		/* dma failed */
 		/* TODO: send error event to host */
-	} else {
+	} else if (sphcs->host_doorbell_val != 0) {
 		/* Notify Host */
 		event.value = 0;
-		event.opcode = SPH_IPC_C2H_OP_EVENT_REPORT;
-		event.eventCode = SPH_IPC_ERROR_OS_CRASHED;
+		event.opcode = NNP_IPC_C2H_OP_EVENT_REPORT;
+		event.eventCode = NNP_IPC_ERROR_OS_CRASHED;
 		event.eventVal = 0;
 		event.objID = (crash_dump_desc.actually_copied & 0xffff);
 		event.objID_2 = (crash_dump_desc.actually_copied >> 16) & 0xffff;
@@ -91,7 +91,7 @@ static void dump(struct kmsg_dumper *dumper, enum kmsg_dump_reason reason)
 	rc = kmsg_dump_get_buffer(dumper,
 			false,
 			crash_dump_desc.card_vaddr,
-			SPH_CRASH_DUMP_SIZE,
+			NNP_CRASH_DUMP_SIZE,
 			&crash_dump_desc.actually_copied);
 
 	sph_log_debug(GENERAL_LOG, "actually_copied %zu, rc %d\n", crash_dump_desc.actually_copied, rc);
@@ -108,17 +108,18 @@ static void dump(struct kmsg_dumper *dumper, enum kmsg_dump_reason reason)
 		 * size.
 		 */
 		event.value = 0;
-		event.opcode = SPH_IPC_C2H_OP_EVENT_REPORT;
-		event.eventCode = SPH_IPC_ERROR_OS_CRASHED;
+		event.opcode = NNP_IPC_C2H_OP_EVENT_REPORT;
+		event.eventCode = NNP_IPC_ERROR_OS_CRASHED;
 		event.eventVal = 0;
-		g_the_sphcs->hw_ops->write_mesg(g_the_sphcs->hw_handle,
-						&event.value,
-						1);
+		if (g_the_sphcs->host_doorbell_val != 0)
+			g_the_sphcs->hw_ops->write_mesg(g_the_sphcs->hw_handle,
+							&event.value,
+							1);
 	}
 
-	SPH_SPIN_LOCK_IRQSAVE(&crash_dump_desc.lock_irq, flags);
+	NNP_SPIN_LOCK_IRQSAVE(&crash_dump_desc.lock_irq, flags);
 	host_dma_addr = crash_dump_desc.host_dma_addr;
-	SPH_SPIN_UNLOCK_IRQRESTORE(&crash_dump_desc.lock_irq, flags);
+	NNP_SPIN_UNLOCK_IRQRESTORE(&crash_dump_desc.lock_irq, flags);
 
 	if (host_dma_addr) {
 		rc = sphcs_dma_sched_start_xfer_single(g_the_sphcs->dmaSched,
@@ -142,16 +143,16 @@ static struct kmsg_dumper dumper = {
 int sphcs_crash_dump_init(void)
 {
 	int retval;
-	struct page *crash_dump_pages[SPH_CRASH_DUMP_SIZE_PAGES];
+	struct page *crash_dump_pages[NNP_CRASH_DUMP_SIZE_PAGES];
 	int i;
 
 	/* setup crash dump memory */
 	if (g_the_sphcs->inbound_mem_dma_addr) {
 
-		for (i = 0; i < SPH_CRASH_DUMP_SIZE_PAGES; i++)
+		for (i = 0; i < NNP_CRASH_DUMP_SIZE_PAGES; i++)
 			crash_dump_pages[i] = pfn_to_page(__phys_to_pfn(dma_to_phys(g_the_sphcs->hw_device, g_the_sphcs->inbound_mem_dma_addr + i*PAGE_SIZE)));
 
-		g_the_sphcs->inbound_mem = vm_map_ram(crash_dump_pages, SPH_CRASH_DUMP_SIZE_PAGES, -1, PAGE_KERNEL);
+		g_the_sphcs->inbound_mem = vm_map_ram(crash_dump_pages, NNP_CRASH_DUMP_SIZE_PAGES, -1, PAGE_KERNEL);
 
 		if (!g_the_sphcs->inbound_mem) {
 			sph_log_err(START_UP_LOG,
@@ -159,18 +160,18 @@ int sphcs_crash_dump_init(void)
 			return -ENOMEM;
 		}
 
-		g_the_sphcs->inbound_mem->magic = SPH_INBOUND_MEM_MAGIC;
+		g_the_sphcs->inbound_mem->magic = NNP_INBOUND_MEM_MAGIC;
 		g_the_sphcs->inbound_mem->crash_dump_size = 0;
 
 		crash_dump_desc.card_vaddr = &g_the_sphcs->inbound_mem->crash_dump[0];
 		crash_dump_desc.card_dma_addr =
 			g_the_sphcs->inbound_mem_dma_addr +
-			offsetof(union sph_inbound_mem, crash_dump);
+			offsetof(union nnp_inbound_mem, crash_dump);
 
 	} else {
 		crash_dump_desc.card_vaddr =
 			dma_alloc_coherent(g_the_sphcs->hw_device,
-					   SPH_CRASH_DUMP_SIZE,
+					   NNP_CRASH_DUMP_SIZE,
 					   &crash_dump_desc.card_dma_addr,
 					   GFP_KERNEL);
 
@@ -200,10 +201,10 @@ int sphcs_crash_dump_init(void)
 
 failed_to_register_dump:
 	if (g_the_sphcs->inbound_mem_dma_addr)
-		vm_unmap_ram(g_the_sphcs->inbound_mem, SPH_CRASH_DUMP_SIZE_PAGES);
+		vm_unmap_ram(g_the_sphcs->inbound_mem, NNP_CRASH_DUMP_SIZE_PAGES);
 	else
 		dma_free_coherent(g_the_sphcs->hw_device,
-				  SPH_CRASH_DUMP_SIZE,
+				  NNP_CRASH_DUMP_SIZE,
 				  crash_dump_desc.card_vaddr,
 				  crash_dump_desc.card_dma_addr);
 
@@ -214,10 +215,10 @@ void sphcs_crash_dump_cleanup(void)
 {
 	kmsg_dump_unregister(&dumper);
 	if (g_the_sphcs->inbound_mem_dma_addr)
-		vm_unmap_ram(g_the_sphcs->inbound_mem, SPH_CRASH_DUMP_SIZE_PAGES);
+		vm_unmap_ram(g_the_sphcs->inbound_mem, NNP_CRASH_DUMP_SIZE_PAGES);
 	else
 		dma_free_coherent(g_the_sphcs->hw_device,
-				  SPH_CRASH_DUMP_SIZE,
+				  NNP_CRASH_DUMP_SIZE,
 				  crash_dump_desc.card_vaddr,
 				  crash_dump_desc.card_dma_addr);
 
@@ -227,9 +228,9 @@ void sphcs_crash_dump_setup_host_addr(u64 host_dma_addr)
 {
 	unsigned long flags;
 
-	SPH_SPIN_LOCK_IRQSAVE(&crash_dump_desc.lock_irq, flags);
+	NNP_SPIN_LOCK_IRQSAVE(&crash_dump_desc.lock_irq, flags);
 	crash_dump_desc.host_dma_addr = host_dma_addr;
-	SPH_SPIN_UNLOCK_IRQRESTORE(&crash_dump_desc.lock_irq, flags);
+	NNP_SPIN_UNLOCK_IRQRESTORE(&crash_dump_desc.lock_irq, flags);
 
 	sph_log_info(CREATE_COMMAND_LOG, "Host Crash Dump: dma_addr - %pad\n",
 			&crash_dump_desc.host_dma_addr);

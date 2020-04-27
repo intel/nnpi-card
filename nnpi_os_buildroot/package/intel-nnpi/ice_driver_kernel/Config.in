@@ -1,0 +1,9 @@
+config BR2_PACKAGE_ICE_DRIVER_KERNEL
+        bool "ice_driver_kernel_package"
+        depends on BR2_PACKAGE_PSW
+	depends on BR2_LINUX_KERNEL
+        help
+	  ICE driver kernel.
+
+          http://www.intel.com
+

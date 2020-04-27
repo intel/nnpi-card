@@ -1,17 +1,10 @@
-/*
- * NNP-I Linux Driver
- * Copyright (c) 2019, Intel Corporation.
+/********************************************
+ * Copyright (C) 2019-2020 Intel Corporation
  *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms and conditions of the GNU General Public License,
- * version 2, as published by the Free Software Foundation.
- *
- * This program is distributed in the hope it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
- *
- */
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ ********************************************/
+
+
 
 #include <linux/init.h>
 #include <linux/kernel.h>
@@ -20,6 +13,7 @@
 #include "os_interface.h"
 #include "cve_device_group.h"
 #include "cve_linux_internal.h"
+#include "intel_sphpb.h"
 #include "sph_dvfs.h"
 
 
@@ -100,18 +94,91 @@ int icedrv_get_icebo_to_ring_ratio(uint16_t *value)
 
 	return ret;
 }
-int icedrv_set_ice_to_ice_ratio(uint32_t icebo, uint32_t value)
-{
-	cve_os_log(CVE_LOGLEVEL_ERROR, "feature not supported\n");
 
-	return -EINVAL;
+int sphpb_set_ice_to_ice_ratio(struct ice_sphmbox *sphmb, uint64_t value)
+{
+	union PCODE_MAILBOX_INTERFACE iface;
+	uint32_t data_low_ratio, data_high_ratio;
+	int ret;
+
+	iface.InterfaceData = 0;
+	iface.BitField.Command = ICEDRV_PCU_MAILBOX_ICEBO2ICEBO_RATIO;
+	iface.BitField.Param1 = 0x0;	/* Performing Write operation  */
+	data_low_ratio = (value & 0xFFFFFFFF);
+	data_high_ratio = ((value >> 32) & 0xFFFFFFFF);
+
+	ret = write_icedriver_mailbox(sphmb, iface, data_low_ratio,
+			data_high_ratio, NULL, NULL);
+
+	return ret;
 }
 
-int icedrv_get_ice_to_ice_ratio(uint32_t icebo, uint32_t *value)
+int icedrv_set_ice_to_ice_ratio(union FREQUENCY_RATIO value)
 {
-	cve_os_log(CVE_LOGLEVEL_ERROR, "feature not supported\n");
+	int ret;
+	struct cve_device_group *dg;
+	struct ice_sphmbox *sphmb = NULL;
 
-	return -EINVAL;
+	dg = cve_dg_get();
+	if (!dg) {
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+				"null dg pointer (%d) !!\n", -EINVAL);
+		return -EINVAL;
+	}
+	sphmb = &dg->sphmb;
+	ret = sphpb_set_ice_to_ice_ratio(sphmb, value.val);
+	if (ret) {
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+				"failure in sphpb_set_ice_to_ice_ratio() - %d\n",
+				ret);
+	}
+
+	return ret;
+}
+
+int sphpb_get_ice_to_ice_ratio(struct ice_sphmbox *sphmb, uint64_t *value)
+{
+	union PCODE_MAILBOX_INTERFACE iface;
+	uint32_t data_low_ratio, data_high_ratio;
+	uint64_t combined_ratio;
+	int ret;
+
+	iface.InterfaceData = 0;
+	iface.BitField.Command = ICEDRV_PCU_MAILBOX_ICEBO2ICEBO_RATIO;
+	iface.BitField.Param1 = 0x1;	/* Performing Read operation  */
+	ret = write_icedriver_mailbox(sphmb, iface, 0x0, 0x0,
+			&data_low_ratio, &data_high_ratio);
+	combined_ratio = ((uint64_t) data_high_ratio << 32) | data_low_ratio;
+	*value = combined_ratio;
+	return ret;
+}
+
+int icedrv_get_ice_to_ice_ratio(union FREQUENCY_RATIO *value)
+{
+	int ret;
+	struct cve_device_group *dg;
+	struct ice_sphmbox *sphmb = NULL;
+
+	if (!value) {
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+				"null ratio value pointer (%d) !!\n", -EINVAL);
+		return -EINVAL;
+	}
+	dg = cve_dg_get();
+	if (!dg) {
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+				"null dg pointer (%d) !!\n", -EINVAL);
+		return -EINVAL;
+	}
+	sphmb = &dg->sphmb;
+	ret = sphpb_get_ice_to_ice_ratio(sphmb, &(value->val));
+	if (ret) {
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+				"failure in sphpb_get_ice_to_ice_ratio() - %d\n",
+				ret);
+	}
+
+	return ret;
 }
 
 static int sphpb_get_icebo_frequency(struct ice_sphmbox *sphmb,

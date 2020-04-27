@@ -1,17 +1,10 @@
-/*
- * NNP-I Linux Driver
- * Copyright (c) 2017-2019, Intel Corporation.
+/********************************************
+ * Copyright (C) 2019-2020 Intel Corporation
  *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms and conditions of the GNU General Public License,
- * version 2, as published by the Free Software Foundation.
- *
- * This program is distributed in the hope it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
- *
- */
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ ********************************************/
+
+
 
 #ifndef _DEVICE_INTERFACE_INTERNAL_COMMON_H_
 #define _DEVICE_INTERFACE_INTERNAL_COMMON_H_
@@ -157,6 +150,24 @@ static inline int is_page_fault_error(u32 status)
 	cfg_default.mmio_intr_status_mmu_page_no_exe_perm_mask |
 	cfg_default.mmio_intr_status_mmu_page_none_perm_mask))
 	!= 0);
+}
+
+static inline void print_page_fault_errors(u32 status)
+{
+	cve_os_log_default(CVE_LOGLEVEL_ERROR,
+	" MMU Page fault occured due to Error:%s%s%s%s\n",
+	((status &
+	cfg_default.mmio_intr_status_mmu_page_no_write_perm_mask) != 0) ?
+	" MMU_PAGE_NO_WRITE_PERMISSION":"",
+	((status &
+	cfg_default.mmio_intr_status_mmu_page_no_read_perm_mask) != 0) ?
+	" MMU_PAGE_NO_READ_PERMISSION":"",
+	((status &
+	cfg_default.mmio_intr_status_mmu_page_no_exe_perm_mask) != 0) ?
+	" MMU_PAGE_NO_EXECUTE_PERMISSION":"",
+	((status &
+	cfg_default.mmio_intr_status_mmu_page_none_perm_mask) != 0) ?
+	" MMU_PAGE_NONE_PERMISSION":"");
 }
 
 static inline int is_bus_error(u32 status)

@@ -17,7 +17,7 @@
 #include "msg_scheduler.h"
 #include "sphcs_dma_sched.h"
 #include "sphcs_cs.h"
-#include "sph_debug.h"
+#include "nnp_debug.h"
 
 struct sphcs_host_rb {
 	struct sg_table host_sgt;
@@ -58,8 +58,8 @@ struct sphcs_cmd_chan {
 	void (*destroy_cb)(struct sphcs_cmd_chan *chan, void *cb_ctx);
 	void *destroy_cb_ctx;
 
-	struct sphcs_host_rb     h2c_rb[SPH_IPC_MAX_CHANNEL_RINGBUFS];
-	struct sphcs_host_rb     c2h_rb[SPH_IPC_MAX_CHANNEL_RINGBUFS];
+	struct sphcs_host_rb     h2c_rb[NNP_IPC_MAX_CHANNEL_RINGBUFS];
+	struct sphcs_host_rb     c2h_rb[NNP_IPC_MAX_CHANNEL_RINGBUFS];
 };
 
 int sphcs_cmd_chan_create(uint16_t            protocolID,
@@ -102,14 +102,14 @@ static inline u32 host_rb_free_bytes(struct sphcs_host_rb *rb)
 {
 	u32 ret;
 
-	SPH_SPIN_LOCK_BH(&rb->lock_bh);
+	NNP_SPIN_LOCK_BH(&rb->lock_bh);
 	if (rb->is_full)
 		ret = 0;
 	else if (rb->tail >= rb->head)
 		ret = (rb->head + rb->size - rb->tail);
 	else
 		ret = (rb->head - rb->tail);
-	SPH_SPIN_UNLOCK_BH(&rb->lock_bh);
+	NNP_SPIN_UNLOCK_BH(&rb->lock_bh);
 
 	return ret;
 }
@@ -118,14 +118,14 @@ static inline u32 host_rb_avail_bytes(struct sphcs_host_rb *rb)
 {
 	u32 ret;
 
-	SPH_SPIN_LOCK_BH(&rb->lock_bh);
+	NNP_SPIN_LOCK_BH(&rb->lock_bh);
 	if (rb->is_full)
 		ret = rb->size;
 	else if (rb->head > rb->tail)
 		ret = (rb->tail + rb->size - rb->head);
 	else
 		ret = (rb->tail - rb->head);
-	SPH_SPIN_UNLOCK_BH(&rb->lock_bh);
+	NNP_SPIN_UNLOCK_BH(&rb->lock_bh);
 
 	return ret;
 }

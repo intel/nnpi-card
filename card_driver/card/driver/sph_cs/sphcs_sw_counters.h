@@ -16,7 +16,7 @@ enum SPHCS_SW_COUNTERS_GROUPS {
 	SPHCS_SW_COUNTERS_GROUP_MCE,
 };
 
-static const struct sph_sw_counters_group_info g_sphcs_sw_counters_groups_info[] = {
+static const struct nnp_sw_counters_group_info g_sphcs_sw_counters_groups_info[] = {
 	/* SPHCS_SW_COUNTERS_GROUP_IPC */
 	{"ipc", "group for entire ipc sw counters"},
 	/* SPHCS_SW_COUNTERS_GROUP_DMA */
@@ -73,7 +73,7 @@ enum SPHCS_SW_COUNTERS_GLOBAL {
 
 
 
-static const struct sph_sw_counter_info g_sphcs_sw_counters_info[] = {
+static const struct nnp_sw_counter_info g_sphcs_sw_counters_info[] = {
 	/* SPHCS_SW_COUNTERS_IPC_COMMANDS_COUNT */
 	{SPHCS_SW_COUNTERS_GROUP_IPC, "commands.count",
 	 "Number of commands received from host"},
@@ -179,7 +179,7 @@ static const struct sph_sw_counter_info g_sphcs_sw_counters_info[] = {
 	 "[r]number of uncorrectable general MCE event (not ecc related)"},
 };
 
-static const struct sph_sw_counters_set g_sw_counters_set_global = {
+static const struct nnp_sw_counters_set g_sw_counters_set_global = {
 	"sw_counters",
 	false,
 	g_sphcs_sw_counters_info,
@@ -191,7 +191,7 @@ enum CTX_SPHCS_SW_COUNTERS_GROUPS {
 	CTX_SPHCS_SW_COUNTERS_GROUP_INFERENCE
 };
 
-static const struct sph_sw_counters_group_info g_ctx_sphcs_sw_counters_groups_info[] = {
+static const struct nnp_sw_counters_group_info g_ctx_sphcs_sw_counters_groups_info[] = {
 	/*CTX_SPHCS_SW_COUNTERS_GROUP_INFERENCE*/
 	{"-inference", "group for command streamer inference sw counters per context"}
 };
@@ -204,7 +204,7 @@ enum  CTX_SPHCS_SW_COUNTERS {
 	CTX_SPHCS_SW_COUNTERS_INFERENCE_DEVICE_RESOURCE_SIZE
 };
 
-static const struct sph_sw_counter_info g_ctx_sphcs_sw_counters_info[] = {
+static const struct nnp_sw_counter_info g_ctx_sphcs_sw_counters_info[] = {
 	/* CTX_SPHCS_SW_COUNTERS_INFERENCE_NUM_NETWORKS */
 	{CTX_SPHCS_SW_COUNTERS_GROUP_INFERENCE, "num_networks",
 	 "Number of inference networks per context"},
@@ -222,7 +222,7 @@ static const struct sph_sw_counter_info g_ctx_sphcs_sw_counters_info[] = {
 	 "Size (in bytes) occupied by blob, input and output device resources"}
 };
 
-static const struct sph_sw_counters_set g_sw_counters_set_context = {
+static const struct nnp_sw_counters_set g_sw_counters_set_context = {
 	"inference.context",
 	true,
 	g_ctx_sphcs_sw_counters_info,
@@ -234,7 +234,7 @@ enum NET_SPHCS_SW_COUNTERS_GROUPS {
 	NET_SPHCS_SW_COUNTERS_GROUP
 };
 
-static const struct sph_sw_counters_group_info g_net_sphcs_sw_counters_groups_info[] = {
+static const struct nnp_sw_counters_group_info g_net_sphcs_sw_counters_groups_info[] = {
 	/*NET_SPHCS_SW_COUNTERS_GROUP*/
 	{"-net_global", "group for per-network counters"}
 };
@@ -243,12 +243,12 @@ enum  NET_SPHCS_SW_COUNTERS {
 	NET_SPHCS_SW_COUNTERS_NUM_INFER_CMDS
 };
 
-static const struct sph_sw_counter_info g_net_sphcs_sw_counters_info[] = {
+static const struct nnp_sw_counter_info g_net_sphcs_sw_counters_info[] = {
 	/* NET_SPHCS_SW_COUNTERS_NUM_INFER_CMDS */
 	{NET_SPHCS_SW_COUNTERS_GROUP, "num_infcmds", "Number of infer command objects"},
 };
 
-static const struct sph_sw_counters_set g_sw_counters_set_network = {
+static const struct nnp_sw_counters_set g_sw_counters_set_network = {
 	"network",
 	true,
 	g_net_sphcs_sw_counters_info,
@@ -261,7 +261,7 @@ enum INFREQ_SPHCS_SW_COUNTERS_GROUPS {
 	INFREQ_SPHCS_SW_COUNTERS_GROUP
 };
 
-static const struct sph_sw_counters_group_info g_infreq_sphcs_sw_counters_groups_info[] = {
+static const struct nnp_sw_counters_group_info g_infreq_sphcs_sw_counters_groups_info[] = {
 	/*INFREQ_SPHCS_SW_COUNTERS_GROUP*/
 	{"-infcmd_global", "group for per-infreq counters"}
 };
@@ -277,7 +277,7 @@ enum  INFREQ_SPHCS_SW_COUNTERS {
 	INFREQ_SPHCS_SW_COUNTERS_EXEC_MAX_TIME,
 };
 
-static const struct sph_sw_counter_info g_infreq_sphcs_sw_counters_info[] = {
+static const struct nnp_sw_counter_info g_infreq_sphcs_sw_counters_info[] = {
 	/* INFREQ_SPHCS_SW_COUNTERS_BLOCK_COUNT */
 	{INFREQ_SPHCS_SW_COUNTERS_GROUP, "block_count", "Number of times this infer command queued for execution"},
 	/* INFREQ_SPHCS_SW_COUNTERS_EXEC_COUNT */
@@ -296,7 +296,7 @@ static const struct sph_sw_counter_info g_infreq_sphcs_sw_counters_info[] = {
 	{INFREQ_SPHCS_SW_COUNTERS_GROUP, "exec_max_time", "Maximum time the infer command was in runtime execution"},
 };
 
-static const struct sph_sw_counters_set g_sw_counters_set_infreq = {
+static const struct nnp_sw_counters_set g_sw_counters_set_infreq = {
 	"infcmd",
 	true,
 	g_infreq_sphcs_sw_counters_info,
@@ -309,7 +309,7 @@ enum COPY_SPHCS_SW_COUNTERS_GROUPS {
 	COPY_SPHCS_SW_COUNTERS_GROUP
 };
 
-static const struct sph_sw_counters_group_info g_copy_sphcs_sw_counters_groups_info[] = {
+static const struct nnp_sw_counters_group_info g_copy_sphcs_sw_counters_groups_info[] = {
 	/*COPY_SPHCS_SW_COUNTERS_GROUP*/
 	{"-copy_global", "group for per-copy command counters"}
 };
@@ -328,7 +328,7 @@ enum  COPY_SPHCS_SW_COUNTERS {
 	COPY_SPHCS_SW_COUNTERS_HWEXEC_MAX_TIME
 };
 
-static const struct sph_sw_counter_info g_copy_sphcs_sw_counters_info[] = {
+static const struct nnp_sw_counter_info g_copy_sphcs_sw_counters_info[] = {
 	/* COPY_SPHCS_SW_COUNTERS_BLOCK_COUNT */
 	{COPY_SPHCS_SW_COUNTERS_GROUP, "block_count", "Number of times this copy command queued for execution"},
 	/* COPY_SPHCS_SW_COUNTERS_EXEC_COUNT */
@@ -353,7 +353,7 @@ static const struct sph_sw_counter_info g_copy_sphcs_sw_counters_info[] = {
 	{COPY_SPHCS_SW_COUNTERS_GROUP, "hw_exec_max_time", "Maximum time the copy command was executed in dma h/w"},
 };
 
-static const struct sph_sw_counters_set g_sw_counters_set_copy = {
+static const struct nnp_sw_counters_set g_sw_counters_set_copy = {
 	"copycmd",
 	true,
 	g_copy_sphcs_sw_counters_info,
@@ -367,7 +367,7 @@ extern void *g_hSwCountersInfo_context;
 extern void *g_hSwCountersInfo_network;
 extern void *g_hSwCountersInfo_infreq;
 extern void *g_hSwCountersInfo_copy;
-extern struct sph_sw_counters *g_sph_sw_counters;
+extern struct nnp_sw_counters *g_nnp_sw_counters;
 
 
 

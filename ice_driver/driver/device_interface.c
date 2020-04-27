@@ -1,17 +1,10 @@
-/*
- * NNP-I Linux Driver
- * Copyright (c) 2017-2019, Intel Corporation.
+/********************************************
+ * Copyright (C) 2019-2020 Intel Corporation
  *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms and conditions of the GNU General Public License,
- * version 2, as published by the Free Software Foundation.
- *
- * This program is distributed in the hope it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
- *
- */
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ ********************************************/
+
+
 
 #ifdef RING3_VALIDATION
 #include <stdint.h>
@@ -149,7 +142,7 @@ struct di_job {
 	/* Ring to ICE clock frequency ratio*/
 	__u16 ring_to_ice_ratio;
 	/* ICE to ICE clock frequency ratio*/
-	__u32 ice_to_ice_ratio;
+	__u8 ice_to_ice_ratio;
 	/* cdyn budget value required for the job */
 	__u16 cdyn_val;
 };
@@ -621,7 +614,7 @@ static void dispatch_next_subjobs(struct di_job *job,
 	 cfg_default.mmio_cbd_base_addr_offset,
 	 iceva);
 
-	getnstimeofday(&dev->db_time);
+	dev->db_jiffy = ice_os_get_current_jiffy();
 
 	/* ring the doorbell once with the last descriptor */
 	cve_os_write_mmio_32(dev,
@@ -1118,13 +1111,15 @@ static inline void enable_dsp_clock_gating(struct cve_device *cve_dev)
 				cfg_default.mmio_dpcg_control, reg.val);
 	}
 }
+
 static int get_ice_dump(struct cve_device *dev)
 {
 	uint32_t status_32 = 0;
 	int ret = 0;
 	uint32_t count = 100;
 
-	if (dev->cve_dump_buf.is_allowed_tlc_dump) {
+	if (dev->cve_dump_buf &&
+		dev->cve_dump_buf->is_allowed_tlc_dump) {
 
 		cve_di_mask_interrupts(dev);
 		cve_di_reset_cve_dump(dev, cfg_default.ice_dump_now,
@@ -1136,7 +1131,7 @@ static int get_ice_dump(struct cve_device *dev)
 				cfg_default.mmio_intr_status_offset);
 
 			if (is_ice_dump_completed(status_32)) {
-				dev->cve_dump_buf.is_allowed_tlc_dump = 0;
+				dev->cve_dump_buf->is_allowed_tlc_dump = 0;
 				ret = 1;
 				break;
 			}
@@ -1146,6 +1141,7 @@ static int get_ice_dump(struct cve_device *dev)
 	}
 	return ret;
 }
+
 void cve_di_start_running(struct cve_device *cve_dev)
 {
 	/* Enable the IDLE clock gating logic */
@@ -1434,6 +1430,7 @@ static struct ice_network *__get_ntw_of_overflowed_cntr(int cntr_id,
 	if (dg->base_addr_hw_cntr[cntr_id].cntr_ntw_id != INVALID_NETWORK_ID) {
 		evct_prot_reg.val = cve_os_read_idc_mmio(dev->cve_dev, reg);
 		if (evct_prot_reg.field.OVF) {
+			/* Shouldn't we clead OVF by writing 1? */
 			cve_os_log_default(CVE_LOGLEVEL_ERROR,
 			"Error: NtwID:0x%llx Counter:%x overflow\n",
 			dg->base_addr_hw_cntr[cntr_id].cntr_ntw_id, cntr_id);
@@ -1453,6 +1450,7 @@ int cve_di_interrupt_handler(struct idc_device *idc_dev)
 	u64 status64, userIDCIntStatus;
 	u32 status_lo = 0, status_hi = 0, status_hl = 0;
 	struct cve_device *cve_dev = NULL;
+	struct timespec cur_ts;
 
 	u32 head = atomic_read(&idc_dev->status_q_head);
 	u32 tail = atomic_read(&idc_dev->status_q_tail);
@@ -1520,7 +1518,8 @@ int cve_di_interrupt_handler(struct idc_device *idc_dev)
 		goto exit;
 	}
 
-	getnstimeofday(&isr_status_node->cur_ts);
+	isr_status_node->int_jiffy = ice_os_get_current_jiffy();
+	getnstimeofday(&cur_ts);
 
 	/* Currently only serving ICE Int Request, not Ice Error request */
 	status_lo = (status64 & 0x0000FFF0);
@@ -1532,10 +1531,8 @@ int cve_di_interrupt_handler(struct idc_device *idc_dev)
 			goto exit;
 		cve_dev = &idc_dev->cve_dev[index];
 
-		cve_dev->idle_start_time.tv_sec =
-			isr_status_node->cur_ts.tv_sec;
-		cve_dev->idle_start_time.tv_nsec =
-			isr_status_node->cur_ts.tv_nsec;
+		cve_dev->idle_start_time.tv_sec = cur_ts.tv_sec;
+		cve_dev->idle_start_time.tv_nsec = cur_ts.tv_nsec;
 
 		ice_swc_counter_set(cve_dev->hswc,
 			ICEDRV_SWC_DEVICE_COUNTER_IDLE_START_TIME,
@@ -1607,9 +1604,7 @@ static inline void __read_isr_q(struct idc_device *dev,
 				if (status_hl & 0x1) {
 					ice = &dev->cve_dev[index];
 
-					if (ice_get_usec_timediff(
-						&qnode->cur_ts,
-						&ice->db_time)) {
+					if (qnode->int_jiffy >= ice->db_jiffy) {
 
 						ice->interrupts_status |=
 						qnode->ice_isr_status[index];
@@ -1619,14 +1614,12 @@ static inline void __read_isr_q(struct idc_device *dev,
 						tail, index,
 						ice->interrupts_status);
 					} else {
-					 cve_os_log_default(CVE_LOGLEVEL_INFO,
-						"Discarding outdated interrupt of ICE%d status:0x%x DB_time=%lu.%lu Int_time=%lu.%lu\n",
+					 cve_os_log_default(CVE_LOGLEVEL_ERROR,
+						"Discarding outdated interrupt of ICE%d status:0x%x DB_jiffy=%lu Int_jiffy=%lu\n",
 						index,
 						qnode->ice_isr_status[index],
-						ice->db_time.tv_sec,
-						ice->db_time.tv_nsec,
-						qnode->cur_ts.tv_sec,
-						qnode->cur_ts.tv_nsec);
+						ice->db_jiffy,
+						qnode->int_jiffy);
 					}
 				}
 				status_hl = (status_hl >> 1);
@@ -1730,11 +1723,10 @@ void cve_di_interrupt_handler_deferred_proc(struct idc_device *dev)
 			/* Affects all Networks that are using counter */
 			for (i = 0; i < MAX_HW_COUNTER_NR; i++) {
 				ntw = __get_ntw_of_overflowed_cntr(i, dev);
-				if (ntw) {
-					ntw->icedc_err_status =
-							idc_err_status.val;
-					ntw->reset_ntw = true;
-				}
+
+				if (ntw)
+					ice_ds_block_network(ntw, NULL,
+						idc_err_status.val, false);
 			}
 		} else if (idc_err_status.field.attn_err) {
 
@@ -1748,9 +1740,10 @@ void cve_di_interrupt_handler_deferred_proc(struct idc_device *dev)
 				"Received error interrupt from IceDC\n");
 
 			do {
-				ntw->icedc_err_status = idc_err_status.val;
 				/* TODO: Segregate IDC error */
-				ntw->reset_ntw = true;
+
+				ice_ds_block_network(ntw, NULL,
+					idc_err_status.val, false);
 
 				ntw = cve_dle_next(ntw, resource_list);
 			} while (ntw != ntw_head);
@@ -1913,7 +1906,7 @@ void cve_di_interrupt_handler_deferred_proc(struct idc_device *dev)
 				dg->icedc_state =
 					ICEDC_STATE_CARD_RESET_REQUIRED;
 
-			ice_ds_block_network(job->ds_hjob, cve_dev, status);
+			ice_ds_block_network(NULL, job->ds_hjob, status, true);
 
 			job_status = CVE_JOBSTATUS_ABORTED;
 
@@ -1934,6 +1927,9 @@ void cve_di_interrupt_handler_deferred_proc(struct idc_device *dev)
 					is_tlc_panic(status),
 					is_ice_dump_completed(status));
 
+			if (is_page_fault_error(status))
+				print_page_fault_errors(status);
+
 			ice_dump_hw_err_info(cve_dev);
 			ice_dump_hw_cntr_info(ntw);
 			ice_ds_handle_ice_error(&dev->cve_dev[index], status);
@@ -1942,7 +1938,7 @@ void cve_di_interrupt_handler_deferred_proc(struct idc_device *dev)
 				/* Don't allow TLC to further
 				 * write to cve dump buffer
 				 */
-				cve_dev->cve_dump_buf.is_allowed_tlc_dump = 0;
+				cve_dev->cve_dump_buf->is_allowed_tlc_dump = 0;
 			}
 
 			DO_TRACE(trace_icedrvScheduleJob(

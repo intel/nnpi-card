@@ -48,27 +48,6 @@ function check_success() {
 
 
 
-if [ -f ${BOARD_SPH_PATH}/packing_list ]; then
-	. ${BOARD_SPH_PATH}/packing_list
-	if [ -z $BUILD_CONFIGURATION ]; then
-		echo "post_build.sh ERROR: invalid/empty packing_list file - exiting..."
-		exit 1
-	fi
-	#KVER=5.1 (KVER and KVER_REAL are now calculated in common_defs.sh)
-	pushd ${PLATFORM_KERNEL_AUTO}
-		. common_defs.sh -f ${BUILD_FLAVOUR_LC} -c ${BUILD_CONFIGURATION}
-	popd
-
-	if [ -z $KVER_REAL ]; then
-		echo "post_build.sh ERROR: Undefined KVER_REAL - exiting..."
-		exit 1
-	fi
-	for ko_mod in "${KO_MODS_ARR[@]}"
-	do
-       		add_line_to_file "${ko_mod}" "${ROOTFS_PATH}/lib/modules/${KVER_REAL}/modules.dep"
-	done
-	fi
-
 #GETTY
 add_line_to_file "### SPH ### put a getty on tty1 (VGA)" "${ROOTFS_PATH}/etc/inittab"
 add_line_to_file "tty1::respawn:/sbin/getty -L  tty1 0 vt100 # VGA" "${ROOTFS_PATH}/etc/inittab" 
@@ -82,9 +61,16 @@ if [ "${BUILD_FLAVOUR}" == "Debug" ]; then
 	add_line_to_file "debugfs /sys/kernel/debug debugfs defaults" "${ROOTFS_PATH}/etc/fstab"
 fi
 
+if [ -f ${BOARD_SPH_PATH}/packing_list ]; then
+	. ${BOARD_SPH_PATH}/packing_list
+	if [ -z $BUILD_CONFIGURATION ]; then
+		echo "Warning: post_build.sh ERROR: invalid/empty packing_list file, Assuming BUILD_CONFIGURATION=sph_ep!!!!"
+	fi
+fi
 
 if [ "${BUILD_CONFIGURATION}" == "sph_sa" ]; then
 	sed -i 's/sph_start_placeholder/start_sph_sa/' ${ROOTFS_PATH}/usr/local/bin/sph_platform_start 
 else
 	sed -i 's/sph_start_placeholder/start_sph_ep/' ${ROOTFS_PATH}/usr/local/bin/sph_platform_start 
 fi
+

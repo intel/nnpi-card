@@ -1,17 +1,10 @@
-/*
- * NNP-I Linux Driver
- * Copyright (c) 2019, Intel Corporation.
+/********************************************
+ * Copyright (C) 2019-2020 Intel Corporation
  *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms and conditions of the GNU General Public License,
- * version 2, as published by the Free Software Foundation.
- *
- * This program is distributed in the hope it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
- *
- */
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ ********************************************/
+
+
 
 #ifndef _SPH_TRACE_FORMAT_H
 #define _SPH_TRACE_FORMAT_H
@@ -29,6 +22,7 @@
 #define SPH_TRACE_ICEDRV_SCHEDULE_JOB             icedrvScheduleJob
 #define SPH_TRACE_ICEDRV_TOP_HALF                 _icedrvTopHalf
 #define SPH_TRACE_ICEDRV_BOTTOM_HALF              _icedrvBottomHalf
+#define SPH_TRACE_ICEDRV_POWER_ON              icedrvPowerOn
 
 
 #define SPH_TRACE_FIELD_STATE           "state"
@@ -52,7 +46,10 @@
 #define SPH_TRACE_STR_Q_HEAD    "qhead"  /* state - qhead: isr q head */
 #define SPH_TRACE_STR_Q_TAIL    "qtail"  /* state - qtail: isr q tail */
 #define SPH_TRACE_STR_EXEC_TYPE "cold" /* state - type of exection cold/warm */
-#define SPH_TRACE_STR_CDYN_VAL "cdyn" /* state - cdyn request value */
+#define SPH_TRACE_STR_CDYN_VAL  "cdyn" /* state - cdyn request value */
+#define SPH_TRACE_STR_PO        "po" /* state - ice is being powered on */
+#define SPH_TRACE_STR_POWERED_ON "poweredOn" /* status- ice is powered on */
+
 /*driver commands*/
 
 #define SPH_TRACE_STR_CREATE_CTXT               "create_context"

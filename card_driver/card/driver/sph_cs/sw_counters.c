@@ -1,3 +1,8 @@
+/********************************************
+ * Copyright (C) 2019-2020 Intel Corporation
+ *
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ ********************************************/
 #include "sw_counters.h"
 #include <linux/init.h>
 #include <linux/kernel.h>
@@ -17,11 +22,11 @@
 #include "sph_log.h"
 
 
-#define SPH_SW_COUNTERS_GLOBAL_DIR_NAME		"sw_counters"
+#define NNP_SW_COUNTERS_GLOBAL_DIR_NAME		"sw_counters"
 
-#define SPH_COUNTER_SIZE			(sizeof(u64))
+#define NNP_COUNTER_SIZE			(sizeof(u64))
 
-#define SW_COUNTERS_TO_INTERNAL(a) ((struct sph_internal_sw_counters *)(((char *)(a)) - offsetof(struct sph_internal_sw_counters, sw_counters)))
+#define SW_COUNTERS_TO_INTERNAL(a) ((struct nnp_internal_sw_counters *)(((char *)(a)) - offsetof(struct nnp_internal_sw_counters, sw_counters)))
 
 #define MAX_STALE_ATTR_NAME_LEN    32
 
@@ -35,7 +40,7 @@
 	} while (0)
 
 /* file attributre for group file */
-struct sph_sw_counters_group_file_attr {
+struct nnp_sw_counters_group_file_attr {
 	struct attribute attr;
 	ssize_t (*show)(struct kobject *kobj, struct attribute *attr, char *buf);
 	ssize_t (*store)(struct kobject *a, struct attribute *b, const char *c, size_t count);
@@ -43,7 +48,7 @@ struct sph_sw_counters_group_file_attr {
 };
 
 /* file attribute for binary file */
-struct sph_sw_counters_bin_file_attr {
+struct nnp_sw_counters_bin_file_attr {
 	struct bin_attribute		attr;
 	struct page			*bin_page;
 	u32				page_count;
@@ -54,7 +59,7 @@ struct sph_sw_counters_bin_file_attr {
 
 struct bin_stale_node {
 	struct kobject			    *kobj;
-	struct sph_sw_counters_bin_file_attr bin_file;
+	struct nnp_sw_counters_bin_file_attr bin_file;
 	struct list_head		     node;
 	struct list_head                     kobject_list;
 };
@@ -82,28 +87,28 @@ struct sync_client {
 };
 
 
-struct sph_internal_sw_counters {
+struct nnp_internal_sw_counters {
 	struct list_head				node;
 	struct kobject					*kobj;
 	bool						kobj_owner;
 	struct kobject					*groups_kobj;
-	struct sph_sw_counters_bin_file_attr		bin_file;
-	struct sph_sw_counters_group_file_attr		*groups_files;
-	const struct sph_sw_counters_set		*counters_set;
+	struct nnp_sw_counters_bin_file_attr		bin_file;
+	struct nnp_sw_counters_group_file_attr		*groups_files;
+	const struct nnp_sw_counters_set		*counters_set;
 	struct list_head				children_List;
 	struct list_head				kobject_list;
 	struct mutex					list_lock;
 	u64						*dirty;
-	struct sph_internal_sw_counters			*info_node;
-	struct sph_sw_counters				sw_counters;
-	struct sph_internal_sw_counters			*parent;
+	struct nnp_internal_sw_counters			*info_node;
+	struct nnp_sw_counters				sw_counters;
+	struct nnp_internal_sw_counters			*parent;
 	struct gen_sync_attr			        *gen_sync_attr;
 };
 
 static DEFINE_MUTEX(values_tree_sync_mutex);
 
 /* create counters description buffer object */
-int create_sw_counters_description_data(const  struct sph_sw_counters_set *counters_set,
+int create_sw_counters_description_data(const  struct nnp_sw_counters_set *counters_set,
 					bool isRoot,
 					char **buffer,
 					ssize_t *buffer_size)
@@ -120,7 +125,7 @@ int create_sw_counters_description_data(const  struct sph_sw_counters_set *count
 
 	if (isRoot) {
 		alloc_size += snprintf(NULL, 0, ",dirty_info,%d,in case a new info file created or destroyed value is incremented\n",
-				       (u32)(SPH_COUNTER_SIZE));
+				       (u32)(NNP_COUNTER_SIZE));
 		offset++;
 	}
 
@@ -131,12 +136,12 @@ int create_sw_counters_description_data(const  struct sph_sw_counters_set *count
 			alloc_size += snprintf(NULL, 0, "%s,%s,%d,%s\n",
 					       counters_set->groups_info[counters_set->counters_info[i].group_id].name,
 					       counters_set->counters_info[i].name,
-					       (u32)((i+offset) * SPH_COUNTER_SIZE),
+					       (u32)((i+offset) * NNP_COUNTER_SIZE),
 					       counters_set->counters_info[i].description);
 		else
 			alloc_size += snprintf(NULL, 0, ",%s,%d,%s\n",
 					       counters_set->counters_info[i].name,
-					       (u32)((i+offset) * SPH_COUNTER_SIZE),
+					       (u32)((i+offset) * NNP_COUNTER_SIZE),
 					       counters_set->counters_info[i].description);
 
 	}
@@ -157,7 +162,7 @@ int create_sw_counters_description_data(const  struct sph_sw_counters_set *count
 
 	if (isRoot) {
 		alloc_size = sprintf(pos, ",dirty_info,%d,in case a new info file created or destroyed value is incremented\n",
-				       (u32)(SPH_COUNTER_SIZE));
+				       (u32)(NNP_COUNTER_SIZE));
 		pos += alloc_size;
 	}
 
@@ -169,12 +174,12 @@ int create_sw_counters_description_data(const  struct sph_sw_counters_set *count
 			alloc_size = sprintf(pos, "%s,%s,%d,%s\n",
 					     counters_set->groups_info[counters_set->counters_info[i].group_id].name,
 					     counters_set->counters_info[i].name,
-					     (u32)((i+offset) * SPH_COUNTER_SIZE),
+					     (u32)((i+offset) * NNP_COUNTER_SIZE),
 					     counters_set->counters_info[i].description);
 		else
 			alloc_size = sprintf(pos, ",%s,%d,%s\n",
 					     counters_set->counters_info[i].name,
-					     (u32)((i+offset) * SPH_COUNTER_SIZE),
+					     (u32)((i+offset) * NNP_COUNTER_SIZE),
 					     counters_set->counters_info[i].description);
 		pos += alloc_size;
 	}
@@ -183,14 +188,14 @@ int create_sw_counters_description_data(const  struct sph_sw_counters_set *count
 }
 
 /* mmap to binary file contaning all counters information */
-static int mmap_sph_counter_bin_values(struct file *f,
+static int mmap_nnp_counter_bin_values(struct file *f,
 				struct kobject *kobj,
 				struct bin_attribute *attr,
 				struct vm_area_struct *vma)
 {
 	int ret;
 
-	struct sph_sw_counters_bin_file_attr *counters_att = (struct sph_sw_counters_bin_file_attr *)attr;
+	struct nnp_sw_counters_bin_file_attr *counters_att = (struct nnp_sw_counters_bin_file_attr *)attr;
 	unsigned long size = vma->vm_end - vma->vm_start;
 
 	/* we limit mmap for a single page only */
@@ -212,7 +217,7 @@ static int mmap_sph_counter_bin_values(struct file *f,
 	return ret;
 }
 
-static ssize_t read_sph_counter_bin_values(struct file *f,
+static ssize_t read_nnp_counter_bin_values(struct file *f,
 					   struct kobject *kobj,
 					   struct bin_attribute *attr,
 					   char *buf,
@@ -221,7 +226,7 @@ static ssize_t read_sph_counter_bin_values(struct file *f,
 {
 	ssize_t ret;
 
-	struct sph_sw_counters_bin_file_attr *counters_att = (struct sph_sw_counters_bin_file_attr *)attr;
+	struct nnp_sw_counters_bin_file_attr *counters_att = (struct nnp_sw_counters_bin_file_attr *)attr;
 
 	if (!counters_att->bin_page || !counters_att->page_count)
 		ret = -1;
@@ -242,7 +247,7 @@ ssize_t read_counters_descriptor(struct file *file,
 				 loff_t pos,
 				 size_t count)
 {
-	struct sph_sw_counters_bin_file_attr *counters_att = (struct sph_sw_counters_bin_file_attr *)attr;
+	struct nnp_sw_counters_bin_file_attr *counters_att = (struct nnp_sw_counters_bin_file_attr *)attr;
 
 	/* check for minimum value - buffer length or requested count */
 	count = min((u32)(counters_att->info_size - (u32)pos), (u32)count);
@@ -253,19 +258,19 @@ ssize_t read_counters_descriptor(struct file *file,
 	return count;
 }
 
-/* set counter groups to enable for sph_internal_sw_counters */
-static ssize_t store_sph_sw_counters_group_enable(struct kobject *kobj,
+/* set counter groups to enable for nnp_internal_sw_counters */
+static ssize_t store_nnp_sw_counters_group_enable(struct kobject *kobj,
 						  struct attribute *attr,
 						  const char *buf,
 						  size_t count)
 {
-	struct sph_sw_counters_group_file_attr *counters_att = (struct sph_sw_counters_group_file_attr *)attr;
+	struct nnp_sw_counters_group_file_attr *counters_att = (struct nnp_sw_counters_group_file_attr *)attr;
 	u32 val;
 	ssize_t ret;
 
 	ret = kstrtoint(buf, 10, &val);
 	if (ret != 0)
-		goto sph_counters_bad_input;
+		goto nnp_counters_bad_input;
 
 	if (val)
 		(*counters_att->enable)++;
@@ -274,21 +279,21 @@ static ssize_t store_sph_sw_counters_group_enable(struct kobject *kobj,
 
 	return count;
 
-sph_counters_bad_input:
+nnp_counters_bad_input:
 	return ret;
 }
 
-/* set counter groups to enable for sph_internal_sw_counters */
-static ssize_t  show_sph_sw_counters_group_enable(struct kobject *kobj,
+/* set counter groups to enable for nnp_internal_sw_counters */
+static ssize_t  show_nnp_sw_counters_group_enable(struct kobject *kobj,
 						  struct attribute *attr,
 						  char *buf)
 {
-	struct sph_sw_counters_group_file_attr *counters_att = (struct sph_sw_counters_group_file_attr *)attr;
+	struct nnp_sw_counters_group_file_attr *counters_att = (struct nnp_sw_counters_group_file_attr *)attr;
 
 	return scnprintf(buf, PAGE_SIZE, "%d\n", *(counters_att->enable));
 }
 
-int create_sph_bin_file(struct kobject *kobj, struct sph_sw_counters_bin_file_attr *attr, const u32 allocation_size)
+int create_nnp_bin_file(struct kobject *kobj, struct nnp_sw_counters_bin_file_attr *attr, const u32 allocation_size)
 {
 	int ret;
 	u32 page_count;
@@ -338,7 +343,7 @@ cleanup_page:
 	return ret;
 }
 
-int create_sph_file(struct kobject *kobj, struct attribute *attr)
+int create_nnp_file(struct kobject *kobj, struct attribute *attr)
 {
 	int ret;
 
@@ -351,7 +356,7 @@ int create_sph_file(struct kobject *kobj, struct attribute *attr)
 
 
 /* free binary file */
-void release_bin_file(struct kobject *kobj, struct sph_sw_counters_bin_file_attr *attr)
+void release_bin_file(struct kobject *kobj, struct nnp_sw_counters_bin_file_attr *attr)
 {
 	sysfs_remove_bin_file(kobj, &attr->attr);
 
@@ -365,7 +370,7 @@ void release_bin_file(struct kobject *kobj, struct sph_sw_counters_bin_file_attr
 
 static void move_to_stale_list(struct gen_sync_attr                 *gen_sync,
 			       struct kobject                       *kobj,
-			       struct sph_sw_counters_bin_file_attr *attr,
+			       struct nnp_sw_counters_bin_file_attr *attr,
 			       struct list_head                     *kobject_list,
 			       u64                                   dirty_val)
 {
@@ -393,7 +398,7 @@ static void move_to_stale_list(struct gen_sync_attr                 *gen_sync,
 	}
 
 	stale_node->kobj = kobject_get(kobj);
-	memcpy(&stale_node->bin_file, attr, sizeof(struct sph_sw_counters_bin_file_attr));
+	memcpy(&stale_node->bin_file, attr, sizeof(struct nnp_sw_counters_bin_file_attr));
 
 	spin_lock(&gen_sync->lock);
 	if (++gen_sync->stale_seq == 0)
@@ -466,14 +471,14 @@ static void remove_stale_bin_files(struct gen_sync_attr *gen_sync,
 }
 
 /* free text file */
-void release_file(struct kobject *kobj, struct sph_sw_counters_group_file_attr *attr)
+void release_file(struct kobject *kobj, struct nnp_sw_counters_group_file_attr *attr)
 {
 	sysfs_remove_file(kobj, (struct attribute *)attr);
 }
 
 
 static int create_group_files(struct kobject *kobj,
-			      struct sph_internal_sw_counters *sw_counters,
+			      struct nnp_internal_sw_counters *sw_counters,
 			      u32 *buffer)
 {
 	int ret;
@@ -481,7 +486,7 @@ static int create_group_files(struct kobject *kobj,
 	const u32 groups_count = sw_counters->counters_set->groups_count;
 
 	sw_counters->groups_kobj = kobject_create_and_add("groups", kobj);
-	sw_counters->groups_files = kmalloc_array(groups_count, sizeof(struct sph_sw_counters_group_file_attr), GFP_KERNEL);
+	sw_counters->groups_files = kmalloc_array(groups_count, sizeof(struct nnp_sw_counters_group_file_attr), GFP_KERNEL);
 	if (!sw_counters->groups_files) {
 		sph_log_err(GENERAL_LOG, "unable to allocate sw_counter groups files array for groups\n");
 		ret = -ENOMEM;
@@ -491,11 +496,11 @@ static int create_group_files(struct kobject *kobj,
 	for (i = 0; i < groups_count; i++) {
 		sw_counters->groups_files[i].attr.name	= sw_counters->counters_set->groups_info[i].name;
 		sw_counters->groups_files[i].attr.mode	= 0666;
-		sw_counters->groups_files[i].show = show_sph_sw_counters_group_enable;
-		sw_counters->groups_files[i].store = store_sph_sw_counters_group_enable;
+		sw_counters->groups_files[i].show = show_nnp_sw_counters_group_enable;
+		sw_counters->groups_files[i].store = store_nnp_sw_counters_group_enable;
 		sw_counters->groups_files[i].enable = &(buffer[i]);
 
-		ret = create_sph_file(sw_counters->groups_kobj, (struct attribute *)&sw_counters->groups_files[i]);
+		ret = create_nnp_file(sw_counters->groups_kobj, (struct attribute *)&sw_counters->groups_files[i]);
 		if (unlikely(ret < 0)) {
 			sph_log_err(GENERAL_LOG, "unable to create group %s file for groups\n", sw_counters->counters_set->groups_info[i].name);
 			goto failed_to_create_file;
@@ -517,7 +522,7 @@ failed_to_allocate_array:
 	return ret;
 }
 
-static void remove_group_files(struct sph_internal_sw_counters *sw_counters)
+static void remove_group_files(struct nnp_internal_sw_counters *sw_counters)
 {
 	u32 i;
 
@@ -617,7 +622,7 @@ static ssize_t  show_gen_sync(struct kobject *kobj,
 
 	client->gen_sync = gen_sync;
 
-	fd = anon_inode_getfd("sph_counters_gen_sync",
+	fd = anon_inode_getfd("nnp_counters_gen_sync",
 			      &gen_sync_fops,
 			      client,
 			      O_RDWR);
@@ -650,7 +655,7 @@ static struct gen_sync_attr *create_gen_sync_attr(struct kobject *kobj)
 	INIT_LIST_HEAD(&gen_sync->sync_clients);
 	spin_lock_init(&gen_sync->lock);
 
-	ret = create_sph_file(kobj, &gen_sync->attr);
+	ret = create_nnp_file(kobj, &gen_sync->attr);
 	if (ret) {
 		sph_log_err(GENERAL_LOG, "Failed to create stale_enable attribute\n");
 		kfree(gen_sync);
@@ -668,18 +673,18 @@ static inline bool gen_sync_has_clients(struct gen_sync_attr *gen_sync)
 		return false;
 }
 
-int sph_create_sw_counters_info_node(struct kobject *kobj,
-				     const struct sph_sw_counters_set	*counters_set,
+int nnp_create_sw_counters_info_node(struct kobject *kobj,
+				     const struct nnp_sw_counters_set	*counters_set,
 				     void *hParentInfo,
 				     void **hNewInfo)
 {
 	int ret;
-	struct sph_internal_sw_counters *sw_counters_info;
-	struct sph_internal_sw_counters *parent_sw_counters_info = (struct sph_internal_sw_counters *)hParentInfo;
+	struct nnp_internal_sw_counters *sw_counters_info;
+	struct nnp_internal_sw_counters *parent_sw_counters_info = (struct nnp_internal_sw_counters *)hParentInfo;
 
 	sw_counters_info = kzalloc(sizeof(*sw_counters_info), GFP_KERNEL);
 	if (!sw_counters_info) {
-		sph_log_err(GENERAL_LOG, "unable to generate sph_sw_counters_object\n");
+		sph_log_err(GENERAL_LOG, "unable to generate nnp_sw_counters_object\n");
 		return -ENOMEM;
 	}
 
@@ -754,7 +759,7 @@ int sph_create_sw_counters_info_node(struct kobject *kobj,
 		goto cleanup_sw_counters_kobj;
 	}
 	/* create binary file - will present counters description */
-	ret = create_sph_bin_file(kobj, &sw_counters_info->bin_file, 0x0);
+	ret = create_nnp_bin_file(kobj, &sw_counters_info->bin_file, 0x0);
 	if (ret) {
 		sph_log_err(GENERAL_LOG, "unable to create sw_counters info file for %s\n", counters_set->name);
 		goto cleanup_sw_counters_description_data;
@@ -821,10 +826,10 @@ cleanup_sw_counters_info:
 	return ret;
 }
 
-int sph_remove_sw_counters_info_node(void *hInfoNode)
+int nnp_remove_sw_counters_info_node(void *hInfoNode)
 {
-	struct sph_internal_sw_counters *sw_counters_info = (struct sph_internal_sw_counters *)hInfoNode;
-	struct sph_internal_sw_counters *tmp_sw_counters_info = sw_counters_info;
+	struct nnp_internal_sw_counters *sw_counters_info = (struct nnp_internal_sw_counters *)hInfoNode;
+	struct nnp_internal_sw_counters *tmp_sw_counters_info = sw_counters_info;
 
 	if (sw_counters_info->parent) {
 		mutex_lock(&sw_counters_info->parent->list_lock);
@@ -864,18 +869,18 @@ int sph_remove_sw_counters_info_node(void *hInfoNode)
 	return 0;
 }
 
-int sph_create_sw_counters_values_node(void *hInfoNode,
+int nnp_create_sw_counters_values_node(void *hInfoNode,
 				    u32 node_id,
-				    struct sph_sw_counters *parentSwCounters,
-				    struct sph_sw_counters **counters)
+				    struct nnp_sw_counters *parentSwCounters,
+				    struct nnp_sw_counters **counters)
 {
 	int ret;
 
-	struct sph_internal_sw_counters   *sw_counters_info =
-		(struct sph_internal_sw_counters *)hInfoNode;
+	struct nnp_internal_sw_counters   *sw_counters_info =
+		(struct nnp_internal_sw_counters *)hInfoNode;
 
-	struct sph_internal_sw_counters *sw_counters_parent = NULL;
-	struct sph_internal_sw_counters *sw_counters_values;
+	struct nnp_internal_sw_counters *sw_counters_parent = NULL;
+	struct nnp_internal_sw_counters *sw_counters_values;
 
 	char *dir_name = NULL;
 	struct kobject *kobj;
@@ -888,11 +893,11 @@ int sph_create_sw_counters_values_node(void *hInfoNode,
 
 	mutex_lock(&values_tree_sync_mutex);
 
-	counters_size = sw_counters_info->counters_set->counters_count * SPH_COUNTER_SIZE;
+	counters_size = sw_counters_info->counters_set->counters_count * NNP_COUNTER_SIZE;
 
 	sw_counters_values = kzalloc(sizeof(*sw_counters_values), GFP_KERNEL);
 	if (!sw_counters_values) {
-		sph_log_err(GENERAL_LOG, "unable to generate sph_sw_counters_object\n");
+		sph_log_err(GENERAL_LOG, "unable to generate nnp_sw_counters_object\n");
 		mutex_unlock(&values_tree_sync_mutex);
 		return -ENOMEM;
 	}
@@ -997,21 +1002,21 @@ int sph_create_sw_counters_values_node(void *hInfoNode,
 	/* increment counters size ( first u64 is used for management ) */
 	/* n case of root ( we will use 2 u64 for management ) */
 	if (sw_counters_values->parent)
-		counters_size += SPH_COUNTER_SIZE;
+		counters_size += NNP_COUNTER_SIZE;
 	else
-		counters_size += 2 * SPH_COUNTER_SIZE;
+		counters_size += 2 * NNP_COUNTER_SIZE;
 
 
 	/* define counters values - this is a readonly binary file */
 	sw_counters_values->bin_file.attr.attr.name	= "values";
 	sw_counters_values->bin_file.attr.attr.mode	= 0444;
-	sw_counters_values->bin_file.attr.mmap	= mmap_sph_counter_bin_values;
-	sw_counters_values->bin_file.attr.read	= read_sph_counter_bin_values;
+	sw_counters_values->bin_file.attr.mmap	= mmap_nnp_counter_bin_values;
+	sw_counters_values->bin_file.attr.read	= read_nnp_counter_bin_values;
 	sw_counters_values->bin_file.info_buf	= NULL;
 	sw_counters_values->bin_file.info_size	= 0x0;
 
 	/* create binary file for values - function will allocated pages*/
-	ret = create_sph_bin_file(kobj, &sw_counters_values->bin_file, counters_size);
+	ret = create_nnp_bin_file(kobj, &sw_counters_values->bin_file, counters_size);
 	if (ret) {
 		sph_log_err(GENERAL_LOG, "unable to create sw_counters values file\n");
 		goto cleanup_sw_counters_kobj;
@@ -1044,7 +1049,7 @@ int sph_create_sw_counters_values_node(void *hInfoNode,
 
 	/* in case this is a new counter set perID driver will allocate all required directories set in info file */
 	if (sw_counters_info->counters_set->perID) {
-		struct sph_internal_sw_counters *infoNode;
+		struct nnp_internal_sw_counters *infoNode;
 
 		mutex_lock(&sw_counters_info->list_lock);
 		if (dir_exist) {
@@ -1106,7 +1111,7 @@ int sph_create_sw_counters_values_node(void *hInfoNode,
 
 
 	/* initialize spinlocks for atomic counters update */
-	n = counters_size / SPH_COUNTER_SIZE;
+	n = counters_size / NNP_COUNTER_SIZE;
 	if (n > 0) {
 		sw_counters_values->sw_counters.spinlocks = kmalloc_array(n,
 									  sizeof(spinlock_t),
@@ -1170,10 +1175,10 @@ cleanup_sw_counters_values:
 }
 
 
-int sph_sw_counters_release_values_node(struct sph_internal_sw_counters *sw_counters_values)
+int nnp_sw_counters_release_values_node(struct nnp_internal_sw_counters *sw_counters_values)
 {
 	bool bGroupsOwner = (sw_counters_values->groups_kobj != NULL);
-	struct sph_internal_sw_counters *tmp_sw_counters_values = sw_counters_values;
+	struct nnp_internal_sw_counters *tmp_sw_counters_values = sw_counters_values;
 	struct kobj_node *kobjNode;
 	u64 root_dirty = 0;
 
@@ -1247,13 +1252,13 @@ int sph_sw_counters_release_values_node(struct sph_internal_sw_counters *sw_coun
 
 }
 
-int sph_remove_sw_counters_values_node(struct sph_sw_counters *counters)
+int nnp_remove_sw_counters_values_node(struct nnp_sw_counters *counters)
 {
-	struct sph_internal_sw_counters *sw_counters_values;
+	struct nnp_internal_sw_counters *sw_counters_values;
 
 	sw_counters_values = SW_COUNTERS_TO_INTERNAL(counters);
 
-	sph_sw_counters_release_values_node(sw_counters_values);
+	nnp_sw_counters_release_values_node(sw_counters_values);
 
 
 	return 0;

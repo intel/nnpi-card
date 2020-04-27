@@ -1,17 +1,10 @@
-/*
- * NNP-I Linux Driver
- * Copyright (c) 2017-2019, Intel Corporation.
+/********************************************
+ * Copyright (C) 2019-2020 Intel Corporation
  *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms and conditions of the GNU General Public License,
- * version 2, as published by the Free Software Foundation.
- *
- * This program is distributed in the hope it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
- *
- */
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ ********************************************/
+
+
 
 #ifndef _DISPATCHER_H_
 #define _DISPATCHER_H_
@@ -245,6 +238,8 @@ int ice_ds_raise_event(struct ice_network *ntw,
 
 int ice_iccp_license_request(struct cve_device *dev, bool throttling,
 				uint16_t license_value);
-void ice_ds_block_network(cve_ds_job_handle_t ds_job_handle,
-	struct cve_device *dev, u32 status);
+void ice_ds_block_network(struct ice_network *ntw,
+	cve_ds_job_handle_t ds_jobh, u32 status,
+	bool is_ice_err);
+
 #endif /* _DISPATCHER_H_ */

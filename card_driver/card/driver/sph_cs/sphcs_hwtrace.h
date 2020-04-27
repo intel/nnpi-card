@@ -5,7 +5,7 @@
  ********************************************/
 
 /**
- * @file sph_types.h
+ * @file nnp_types.h
  *
  * @brief Header file defining sph hwtrace types
  *
@@ -18,7 +18,7 @@
 #define _SPHCS_HWTRACE_H
 
 
-#include "sph_types.h"
+#include "nnp_types.h"
 #include <linux/kernel.h>
 #include "ipc_protocol.h"
 #include "ipc_chan_protocol.h"

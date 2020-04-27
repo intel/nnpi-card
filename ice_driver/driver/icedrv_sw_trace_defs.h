@@ -1,17 +1,10 @@
-/*
- * NNP-I Linux Driver
- * Copyright (c) 2019, Intel Corporation.
+/********************************************
+ * Copyright (C) 2019-2020 Intel Corporation
  *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms and conditions of the GNU General Public License,
- * version 2, as published by the Free Software Foundation.
- *
- * This program is distributed in the hope it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
- *
- */
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ ********************************************/
+
+
 
 #ifndef _ICEDRV_TRACE_DEFS_H
 #define _ICEDRV_TRACE_DEFS_H
@@ -26,7 +19,8 @@ enum sph_trace_op_state_enum  {
 	SPH_TRACE_OP_STATE_REQ          = 5, /*SPH_TRACE_STR_REQ*/
 	SPH_TRACE_OP_STATE_ADD          = 6, /*SPH_TRACE_STR_ADD add data to Q*/
 	SPH_TRACE_OP_STATE_BH           = 7, /*SPH_TRACE_STR_BH*/
-	SPH_TRACE_OP_STATE_NUM          = 8  /*SPH_TRACE_STR_UNDEF*/
+	SPH_TRACE_OP_STATE_PO           = 8, /*SPH_TRACE_STR_PO*/
+	SPH_TRACE_OP_STATE_NUM          = 9  /*SPH_TRACE_STR_UNDEF*/
 };
 
 enum sph_trace_op_status_enum {
@@ -43,7 +37,8 @@ enum sph_trace_op_status_enum {
 	SPH_TRACE_OP_STATUS_Q_TAIL      = 10, /* SPH_TRACE_STR_Q_TAIL */
 	SPH_TRACE_OP_STATUS_EXEC_TYPE   = 11, /* SPH_TRACE_STR_EXEC_TYPE */
 	SPH_TRACE_OP_STATUS_CDYN_VAL    = 12, /* SPH_TRACE_STR_CDYN_VAL */
-	SPH_TRACE_OP_STATUS_NUM         = 13  /*SPH_TRACE_STR_UNDEF*/
+	SPH_TRACE_OP_STATUS_POWERED_ON  = 13, /* SPH_TRACE_STR_POWERED_ON */
+	SPH_TRACE_OP_STATUS_NUM         = 14  /*SPH_TRACE_STR_UNDEF*/
 };
 
 

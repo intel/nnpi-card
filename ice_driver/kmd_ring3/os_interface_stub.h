@@ -154,6 +154,8 @@ int ice_os_mutex_init(void);
 void ice_os_mutex_cleanup(void);
 
 void getnstimeofday(struct timespec *ts);
+uint64_t trace_clock_local(void);
+unsigned int jiffies_to_msecs(unsigned long jiffy);
 
 #define likely(x)       __builtin_expect(!!(x), 1)
 #define unlikely(x)     __builtin_expect(!!(x), 0)
@@ -196,6 +198,5 @@ static inline void pr_warn(const char *fmt, ...)
 	vfprintf(stdout, fmt, args);
 	va_end(args);
 }
-
 
 #endif /* OS_INTERFACE_STUB_H_ */

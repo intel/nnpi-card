@@ -1,0 +1,6 @@
+config BR2_PACKAGE_BLOB
+        bool "intel_nnpi_blob"
+        help
+
+          http://www.intel.com
+

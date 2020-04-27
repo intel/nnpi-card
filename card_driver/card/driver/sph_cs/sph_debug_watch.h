@@ -4,30 +4,30 @@
  * SPDX-License-Identifier: GPL-2.0-or-later
  ********************************************/
 
-#ifndef _SPH_KERNEL_DEBUG_WATCH_H
-#define _SPH_KERNEL_DEBUG_WATCH_H
+#ifndef _NNP_KERNEL_DEBUG_WATCH_H
+#define _NNP_KERNEL_DEBUG_WATCH_H
 
 #ifdef _DEBUG
 
 #include <linux/hw_breakpoint.h>
 #include <linux/slab.h>
 
-struct sph_watchpoint {
+struct nnp_watchpoint {
 	struct perf_event_attr bp_attr;
 	struct perf_event * __percpu *bp_event;
 };
 
-static void sph_watchpoint_handler(struct perf_event       *bp_event,
+static void nnp_watchpoint_handler(struct perf_event       *bp_event,
 				   struct perf_sample_data *data,
 				   struct pt_regs          *regs)
 {
-	pr_err("sph_watchpoint hit\n");
+	pr_err("nnp_watchpoint hit\n");
 	dump_stack();
 }
 
-static struct sph_watchpoint *sph_debug_add_watchpoint(void *addr)
+static struct nnp_watchpoint *nnp_debug_add_watchpoint(void *addr)
 {
-	struct sph_watchpoint *wp;
+	struct nnp_watchpoint *wp;
 
 	wp = kzalloc(sizeof(*wp), GFP_KERNEL);
 	if (!wp)
@@ -39,12 +39,12 @@ static struct sph_watchpoint *sph_debug_add_watchpoint(void *addr)
 	wp->bp_attr.bp_type = HW_BREAKPOINT_W;
 	wp->bp_event =
 		register_wide_hw_breakpoint(&wp->bp_attr,
-					    sph_watchpoint_handler,
+					    nnp_watchpoint_handler,
 					    NULL);
 	return wp;
 }
 
-static void sph_debug_remove_watchpoint(struct sph_watchpoint *wp)
+static void nnp_debug_remove_watchpoint(struct nnp_watchpoint *wp)
 {
 	if (wp) {
 		unregister_wide_hw_breakpoint(wp->bp_event);
@@ -54,8 +54,8 @@ static void sph_debug_remove_watchpoint(struct sph_watchpoint *wp)
 
 #else
 
-#define sph_debug_add_watchpoint(addr)  NULL
-#define sph_debug_remove_watchpoint(wp)
+#define nnp_debug_add_watchpoint(addr)  NULL
+#define nnp_debug_remove_watchpoint(wp)
 
 #endif //_DEBUG
 

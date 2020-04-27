@@ -17,10 +17,10 @@
 #define _INTEL_SPHPB_PUNIT_H_
 
 
-#include "sph_debug.h"
+#include "nnp_debug.h"
 
 
-#define CHECK_MSR_SIZE(t, nQW) SPH_STATIC_ASSERT(sizeof(t) == 8*(nQW), "Size of " #t " Does not match!!")
+#define CHECK_MSR_SIZE(t, nQW) NNP_STATIC_ASSERT(sizeof(t) == 8*(nQW), "Size of " #t " Does not match!!")
 
 #define SPHPB_ICCP_ENTRIES_COUNT 15
 #define ICCP_ICEBO_MAX_PICOFARAD 5600

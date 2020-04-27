@@ -1,17 +1,10 @@
-/*
- * NNP-I Linux Driver
- * Copyright (c) 2019, Intel Corporation.
+/********************************************
+ * Copyright (C) 2019-2020 Intel Corporation
  *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms and conditions of the GNU General Public License,
- * version 2, as published by the Free Software Foundation.
- *
- * This program is distributed in the hope it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
- *
- */
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ ********************************************/
+
+
 
 #ifndef _DEVICE_INTERFACE_INTERNAL_H_
 #define _DEVICE_INTERFACE_INTERNAL_H_
@@ -106,12 +99,6 @@ void project_hook_dispatch_new_job(struct cve_device *cve_dev,
 					struct ice_network *ntw);
 void ice_di_update_page_sz(struct cve_device *cve_dev, u32 *page_sz_array);
 int cve_pt_llc_update(pt_entry_t *pt_entry, u32 llc_policy);
-
-void cve_di_set_cve_dump_control_register(struct cve_device *cve_dev,
-		uint8_t dumpTrigger, struct di_cve_dump_buffer ice_dump_buf);
-void cve_di_set_cve_dump_configuration_register(
-		struct cve_device *cve_dev,
-		struct di_cve_dump_buffer ice_dump_buf);
 int cve_sync_sgt_to_llc(struct sg_table *sgt);
 
 void ice_di_configure_clk_squashing(struct cve_device *dev, bool disable);

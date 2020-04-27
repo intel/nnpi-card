@@ -21,6 +21,7 @@ struct inf_copy {
 	void                 *magic;
 	struct kref           ref;
 	uint16_t              protocolID;
+	uint64_t              user_handle;
 	struct inf_devres    *devres;
 	struct inf_context   *context;
 	bool                  card2Host;
@@ -32,7 +33,7 @@ struct inf_copy {
 	struct lli_desc lli;
 	struct sphcs_dma_multi_xfer_handle multi_xfer_handle;
 
-	struct sph_sw_counters *sw_counters;
+	struct nnp_sw_counters *sw_counters;
 
 	struct hlist_node hash_node;
 	struct work_struct  work;

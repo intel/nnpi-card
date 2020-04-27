@@ -17,7 +17,7 @@
 #include <linux/sched.h>
 #include <linux/wait.h>
 #include <linux/spinlock.h>
-#include "sph_debug.h"
+#include "nnp_debug.h"
 #include "sph_log.h"
 #include <linux/list.h>
 #include <linux/mutex.h>
@@ -53,15 +53,15 @@ int msg_scheduler_thread_func(void *data)
 
 	while (!kthread_should_stop()) {
 		mutex_lock(&dev_sched->destroy_lock);
-		SPH_SPIN_LOCK_IRQSAVE(&dev_sched->queue_lock_irq, flags);
+		NNP_SPIN_LOCK_IRQSAVE(&dev_sched->queue_lock_irq, flags);
 		set_current_state(TASK_INTERRUPTIBLE);
 		if (dev_sched->total_msgs_num == local_total_msgs_num && left == 0) {
 			mutex_unlock(&dev_sched->destroy_lock);
-			SPH_SPIN_UNLOCK_IRQRESTORE(&dev_sched->queue_lock_irq, flags);
+			NNP_SPIN_UNLOCK_IRQRESTORE(&dev_sched->queue_lock_irq, flags);
 			/* wait until messages arrive to some queue */
 			schedule();
 			mutex_lock(&dev_sched->destroy_lock);
-			SPH_SPIN_LOCK_IRQSAVE(&dev_sched->queue_lock_irq, flags);
+			NNP_SPIN_LOCK_IRQSAVE(&dev_sched->queue_lock_irq, flags);
 		}
 		set_current_state(TASK_RUNNING);
 
@@ -74,7 +74,7 @@ int msg_scheduler_thread_func(void *data)
 						      struct msg_scheduler_queue,
 						      queues_list_node);
 
-		SPH_SPIN_UNLOCK_IRQRESTORE(&dev_sched->queue_lock_irq, flags);
+		NNP_SPIN_UNLOCK_IRQRESTORE(&dev_sched->queue_lock_irq, flags);
 
 		if (unlikely(is_empty)) {
 			mutex_unlock(&dev_sched->destroy_lock);
@@ -86,7 +86,7 @@ int msg_scheduler_thread_func(void *data)
 				goto skip_queue;
 
 			for (i = 0; i < queue_node->handleCont; i++) {
-				SPH_SPIN_LOCK_IRQSAVE(&queue_node->list_lock_irq, flags);
+				NNP_SPIN_LOCK_IRQSAVE(&queue_node->list_lock_irq, flags);
 #ifdef ULT
 				queue_node->sched_count++;
 #endif
@@ -97,7 +97,7 @@ int msg_scheduler_thread_func(void *data)
 					queue_node->pre_send_count++;
 #endif
 				}
-				SPH_SPIN_UNLOCK_IRQRESTORE(&queue_node->list_lock_irq, flags);
+				NNP_SPIN_UNLOCK_IRQRESTORE(&queue_node->list_lock_irq, flags);
 
 				if (is_empty)
 					break;
@@ -110,13 +110,13 @@ int msg_scheduler_thread_func(void *data)
 					break;
 				}
 
-				SPH_SPIN_LOCK_IRQSAVE(&queue_node->list_lock_irq, flags);
+				NNP_SPIN_LOCK_IRQSAVE(&queue_node->list_lock_irq, flags);
 #ifdef ULT
 				queue_node->post_send_count++;
 #endif
 				list_del(&msgList_node->node);
 				queue_node->msgs_num--;
-				SPH_SPIN_UNLOCK_IRQRESTORE(&queue_node->list_lock_irq, flags);
+				NNP_SPIN_UNLOCK_IRQRESTORE(&queue_node->list_lock_irq, flags);
 				kmem_cache_free(dev_sched->slab_cache_ptr, msgList_node);
 
 				if (!queue_node->msgs_num)
@@ -125,9 +125,9 @@ int msg_scheduler_thread_func(void *data)
 
 			left += queue_node->msgs_num;
 skip_queue:
-			SPH_SPIN_LOCK_IRQSAVE(&dev_sched->queue_lock_irq, flags);
+			NNP_SPIN_LOCK_IRQSAVE(&dev_sched->queue_lock_irq, flags);
 			queue_node = list_next_entry(queue_node, queues_list_node);
-			SPH_SPIN_UNLOCK_IRQRESTORE(&dev_sched->queue_lock_irq, flags);
+			NNP_SPIN_UNLOCK_IRQRESTORE(&dev_sched->queue_lock_irq, flags);
 		}
 
 		mutex_unlock(&dev_sched->destroy_lock);
@@ -175,9 +175,9 @@ struct msg_scheduler_queue *msg_scheduler_queue_create(struct msg_scheduler *sch
 	queue->scheduler = scheduler;
 	init_waitqueue_head(&queue->flush_waitq);
 
-	SPH_SPIN_LOCK_IRQSAVE(&scheduler->queue_lock_irq, flags);
+	NNP_SPIN_LOCK_IRQSAVE(&scheduler->queue_lock_irq, flags);
 	list_add_tail(&queue->queues_list_node, &scheduler->queues_list_head);
-	SPH_SPIN_UNLOCK_IRQRESTORE(&scheduler->queue_lock_irq, flags);
+	NNP_SPIN_UNLOCK_IRQRESTORE(&scheduler->queue_lock_irq, flags);
 
 	return queue;
 }
@@ -202,18 +202,18 @@ int msg_scheduler_queue_destroy(struct msg_scheduler *scheduler, struct msg_sche
 	mutex_lock(&scheduler->destroy_lock);
 
 	/* destroy all the messages of the queue */
-	SPH_SPIN_LOCK_IRQSAVE(&queue->list_lock_irq, flags);
+	NNP_SPIN_LOCK_IRQSAVE(&queue->list_lock_irq, flags);
 	while (!list_empty(&queue->msgs_list_head)) {
 		msgList_node = list_first_entry(&queue->msgs_list_head, struct msg_entry, node);
 		list_del(&msgList_node->node);
 		kmem_cache_free(scheduler->slab_cache_ptr, msgList_node);
 	}
-	SPH_SPIN_UNLOCK_IRQRESTORE(&queue->list_lock_irq, flags);
+	NNP_SPIN_UNLOCK_IRQRESTORE(&queue->list_lock_irq, flags);
 
 	/* destroy the queue */
-	SPH_SPIN_LOCK_IRQSAVE(&queue->scheduler->queue_lock_irq, flags);
+	NNP_SPIN_LOCK_IRQSAVE(&queue->scheduler->queue_lock_irq, flags);
 	list_del(&queue->queues_list_node);
-	SPH_SPIN_UNLOCK_IRQRESTORE(&queue->scheduler->queue_lock_irq, flags);
+	NNP_SPIN_UNLOCK_IRQRESTORE(&queue->scheduler->queue_lock_irq, flags);
 	kfree(queue);
 	mutex_unlock(&scheduler->destroy_lock);
 
@@ -277,13 +277,13 @@ int msg_scheduler_queue_add_msg(struct msg_scheduler_queue *queue, u64 *msg, uns
 
 	msg_list_node->size = size;
 
-	SPH_SPIN_LOCK_IRQSAVE(&queue->list_lock_irq, flags);
+	NNP_SPIN_LOCK_IRQSAVE(&queue->list_lock_irq, flags);
 	invalid_queue = queue->invalid;
 	if (!invalid_queue) {
 		list_add_tail(&msg_list_node->node, &queue->msgs_list_head);
 		queue->msgs_num++;
 	}
-	SPH_SPIN_UNLOCK_IRQRESTORE(&queue->list_lock_irq, flags);
+	NNP_SPIN_UNLOCK_IRQRESTORE(&queue->list_lock_irq, flags);
 
 	/* if queue flaged as invalid - silently ignore the message */
 	if (unlikely(invalid_queue)) {
@@ -291,9 +291,9 @@ int msg_scheduler_queue_add_msg(struct msg_scheduler_queue *queue, u64 *msg, uns
 		return 0;
 	}
 
-	SPH_SPIN_LOCK_IRQSAVE(&queue->scheduler->queue_lock_irq, flags);
+	NNP_SPIN_LOCK_IRQSAVE(&queue->scheduler->queue_lock_irq, flags);
 	queue->scheduler->total_msgs_num++;
-	SPH_SPIN_UNLOCK_IRQRESTORE(&queue->scheduler->queue_lock_irq, flags);
+	NNP_SPIN_UNLOCK_IRQRESTORE(&queue->scheduler->queue_lock_irq, flags);
 	wake_up_process(queue->scheduler->scheduler_thread);
 
 
@@ -304,9 +304,9 @@ void msg_scheduler_queue_make_valid(struct msg_scheduler_queue *queue)
 {
 	unsigned long flags;
 
-	SPH_SPIN_LOCK_IRQSAVE(&queue->list_lock_irq, flags);
+	NNP_SPIN_LOCK_IRQSAVE(&queue->list_lock_irq, flags);
 	queue->invalid = 0;
-	SPH_SPIN_UNLOCK_IRQRESTORE(&queue->list_lock_irq, flags);
+	NNP_SPIN_UNLOCK_IRQRESTORE(&queue->list_lock_irq, flags);
 }
 
 /*
@@ -409,11 +409,11 @@ int msg_scheduler_invalidate_all(struct msg_scheduler *scheduler)
 	 * 1) invalidate the queue, so that no more messages will be inserted
 	 * 2) delete all existing messages
 	 */
-	SPH_SPIN_LOCK_IRQSAVE(&scheduler->queue_lock_irq, flags);
+	NNP_SPIN_LOCK_IRQSAVE(&scheduler->queue_lock_irq, flags);
 	list_for_each_entry(queue_node,
 			    &scheduler->queues_list_head,
 			    queues_list_node) {
-		SPH_SPIN_LOCK_IRQSAVE(&queue_node->list_lock_irq, flags2);
+		NNP_SPIN_LOCK_IRQSAVE(&queue_node->list_lock_irq, flags2);
 		queue_node->invalid = 1;
 		while (!list_empty(&queue_node->msgs_list_head)) {
 			msgList_node = list_first_entry(&queue_node->msgs_list_head, struct msg_entry, node);
@@ -422,10 +422,10 @@ int msg_scheduler_invalidate_all(struct msg_scheduler *scheduler)
 			nmsg++;
 		}
 		queue_node->msgs_num = 0;
-		SPH_SPIN_UNLOCK_IRQRESTORE(&queue_node->list_lock_irq, flags2);
+		NNP_SPIN_UNLOCK_IRQRESTORE(&queue_node->list_lock_irq, flags2);
 		nq++;
 	}
-	SPH_SPIN_UNLOCK_IRQRESTORE(&scheduler->queue_lock_irq, flags);
+	NNP_SPIN_UNLOCK_IRQRESTORE(&scheduler->queue_lock_irq, flags);
 
 	mutex_unlock(&scheduler->destroy_lock);
 
@@ -443,18 +443,18 @@ static int debug_status_show(struct seq_file *m, void *v)
 	//unsigned long flags2;
 	u32 nq = 0, tmsgs = 0;
 
-	//SPH_SPIN_LOCK_IRQSAVE(&scheduler->queue_lock_irq, flags);
+	//NNP_SPIN_LOCK_IRQSAVE(&scheduler->queue_lock_irq, flags);
 	list_for_each_entry(queue_node,
 			    &scheduler->queues_list_head,
 			    queues_list_node) {
 		u32 nmsg = 0;
-		//SPH_SPIN_LOCK_IRQSAVE(&queue_node->list_lock_irq, flags2);
+		//NNP_SPIN_LOCK_IRQSAVE(&queue_node->list_lock_irq, flags2);
 		list_for_each_entry(msgList_node,
 				    &queue_node->msgs_list_head,
 				    node) {
 			nmsg++;
 		}
-		//SPH_SPIN_UNLOCK_IRQRESTORE(&queue_node->list_lock_irq, flags2);
+		//NNP_SPIN_UNLOCK_IRQRESTORE(&queue_node->list_lock_irq, flags2);
 #ifdef ULT
 		seq_printf(m, "queue 0x%lx: handleCont=%u msgs_num=%u actual_msgs_num=%u scheds=%u pre=%u post=%u failed=%u\n",
 			   (uintptr_t)queue_node,
@@ -477,7 +477,7 @@ static int debug_status_show(struct seq_file *m, void *v)
 	}
 	seq_printf(m, "%u queues total_msgs=%u actual_total_msgs=%u\n",
 		   nq, scheduler->total_msgs_num, tmsgs);
-	//SPH_SPIN_UNLOCK_IRQRESTORE(&scheduler->queue_lock_irq, flags);
+	//NNP_SPIN_UNLOCK_IRQRESTORE(&scheduler->queue_lock_irq, flags);
 
 	return 0;
 }

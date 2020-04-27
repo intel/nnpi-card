@@ -31,7 +31,6 @@ struct dma_pool_stat {		 /**< pool statistics */
 
 	/**< number of unused pages, since last deallocation */
 	unsigned int unused_page_count;
-	unsigned int cb_failures; /**< number of times callback function failed */
 };
 
 /**
@@ -55,37 +54,6 @@ int dma_page_pool_create(struct device *dev, unsigned int max_size, pool_handle 
 void dma_page_pool_init_debugfs(pool_handle    pool,
 				struct dentry *parent,
 				const char    *dirname);
-
-/**
- * @brief Setup response dma pages pool
- *
- * If you don't call this function, the pool will not act as response pool.
- * This function configure the pool to be response pool as well.
- * If this function fails, you must not use the pool as response pool.
- * If this function is called another time, callback function will be updated
- * If cb parameter is NULL, the pool will stop act as response pool.
- * The callback to send free pages will be called initially during the execution of this
- * function call, it will be called again at a later time when the amount of free host response
- * pages goes below some threshold, in this case the callback will be called from the context
- * of the specified workqueue.
- *
- * @param[in]  pool  handle to the pool
- * @param[in]  cb    callback function to use to send free response pages list
- * @param[in]  ctx   context dependent pointer
- * @param[in]  send_wq qorkqueue used for scheduling the send callback.
- * @return error number on failure.
- */
-int dma_page_pool_response_setup(pool_handle pool,
-				 send_free_pages_cb cb,
-				 void *ctx,
-				 struct workqueue_struct *send_wq);
-
-/*
- * @brief Returns all response pages back to the free pool
- *
- * This function should be called after a card reset.
- */
-void dma_page_pool_reset_response_pages(pool_handle pool);
 
 /**
  * @brief Destroys the pool previously created
@@ -137,17 +105,6 @@ int dma_page_pool_get_free_page(pool_handle pool, page_handle *page, void **ptr,
 void dma_page_pool_free_page_poll_wait(pool_handle pool,
 				       struct file *f,
 				       struct poll_table_struct *pt);
-
-/**
- * @brief Mark the response page as full and returns handle to the page
- *
- * Call this function, when filled response page arrived from device.
- *
- * @param[in]  pool  handle to the pool
- * @param[in]  page  handle to the page, arrived from device
- * @return error on failure.
- */
-int dma_page_pool_set_response_page_full(pool_handle pool, page_handle page);
 
 /**
  * @brief Sends pointer to the data, which arrived from the device
@@ -210,20 +167,5 @@ int dma_page_pool_get_stats(pool_handle pool, struct dma_pool_stat *stat);
  * @return nothing.
  */
 void dma_page_pool_deallocate_unused_pages(pool_handle pool);
-
-#ifdef ULT
-/**
- * @brief Get response list kernel pointer for ULT only
- *
- * This function is for ULT only! It returns the kernel pointer to the page
- * with free pages for response, sent to device. Call it from ULT callback
- * function to access the content of the page.
- *
- * @param[in]   pool  handle to the pool
- * @param[out]  list  kernel pointer to response list
- * @return error on failure.
- */
-int dma_page_pool_get_resp_list_pointer(pool_handle pool, const struct response_list_entry **list);
-#endif
 
 #endif
