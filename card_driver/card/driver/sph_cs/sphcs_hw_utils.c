@@ -6,8 +6,8 @@
 #include <linux/scatterlist.h>
 #include "sphcs_pcie.h"
 #include "sph_log.h"
-#include "sph_local.h"
-#include "sph_debug.h"
+#include "nnp_local.h"
+#include "nnp_debug.h"
 #include "sphcs_hw_utils.h"
 
 u32 dma_calc_and_gen_lli(struct sg_table *srcSgt,

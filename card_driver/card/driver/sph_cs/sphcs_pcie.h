@@ -7,7 +7,7 @@
 #ifndef _SPHCS_PCIE_H
 #define _SPHCS_PCIE_H
 
-#include <sph_types.h>
+#include <nnp_types.h>
 #include <linux/scatterlist.h>
 
 struct device;
@@ -38,11 +38,12 @@ struct sphcs_dma_hw_ops {
 	void (*reset_wr_dma_engine)(void *hw_handle);
 	/* called once on start up*/
 	int (*init_dma_engine)(void *hw_handle);
-	int (*init_lli)(void *hw_handle, struct lli_desc *outLli, struct sg_table *src, struct sg_table *dst, uint64_t dst_offset);
+	int (*init_lli)(void *hw_handle, struct lli_desc *outLli, struct sg_table *src, struct sg_table *dst, uint64_t dst_offset, bool single_list);
 	u64 (*gen_lli)(void *hw_handle, struct sg_table *src, struct sg_table *dst, struct lli_desc *outLli, uint64_t dst_offset);
 	int (*edit_lli)(void *hw_handle, struct lli_desc *outLli, uint32_t size);
 	int (*init_lli_vec)(void *hw_handle, struct lli_desc *outLli, uint64_t dst_offset, genlli_get_next_cb cb, void *cb_ctx);
 	u64 (*gen_lli_vec)(void *hw_handle, struct lli_desc *outLli, uint64_t dst_offset, genlli_get_next_cb cb, void *cb_ctx);
+	int (*edit_lli_elem)(struct lli_desc *lli, u32 elem_idx, dma_addr_t src, dma_addr_t dst);
 	int (*start_xfer_h2c)(void *hw_handle, int channel, u32 priority, dma_addr_t lli_addr);
 	int (*start_xfer_c2h)(void *hw_handle, int channel, u32 priority, dma_addr_t lli_addr);
 	int (*start_xfer_h2c_single)(void *hw_handle, int channel, u32 priority, dma_addr_t src, dma_addr_t dst, u32 size);

@@ -1,17 +1,10 @@
-/*
- * NNP-I Linux Driver
- * Copyright (c) 2017-2019, Intel Corporation.
+/********************************************
+ * Copyright (C) 2019-2020 Intel Corporation
  *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms and conditions of the GNU General Public License,
- * version 2, as published by the Free Software Foundation.
- *
- * This program is distributed in the hope it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
- *
- */
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ ********************************************/
+
+
 
 #ifndef _CVE_DRIVER_H_
 #define _CVE_DRIVER_H_
@@ -303,8 +296,8 @@ struct cve_job {
 	__u32 ddr_bw_in_mbps;
 	/* Ring to ICE clock frequency ratio*/
 	__u16 ring_to_ice_ratio;
-	/* ICE to ICE clock frequency ratio*/
-	__u32 ice_to_ice_ratio;
+	/* ICEBO to ICEBO clock frequency ratio*/
+	__u8 ice_to_ice_ratio;
 	/* cdyn budget value required for the job */
 	__u16 cdyn_val;
 	/* List of MMU registers to configure [idx0, val0, idx1, val1, ...] */

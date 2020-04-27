@@ -1,3 +1,9 @@
+/********************************************
+ * Copyright (C) 2019-2020 Intel Corporation
+ *
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ ********************************************/
+
 #include "sw_counters.h"
 #include <linux/init.h>
 #include <linux/kernel.h>

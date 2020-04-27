@@ -1,17 +1,10 @@
-/*
- * NNP-I Linux Driver
- * Copyright (c) 2017-2019, Intel Corporation.
+/********************************************
+ * Copyright (C) 2019-2020 Intel Corporation
  *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms and conditions of the GNU General Public License,
- * version 2, as published by the Free Software Foundation.
- *
- * This program is distributed in the hope it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
- *
- */
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ ********************************************/
+
+
 
 #ifdef RING3_VALIDATION
 #include "linux_kernel_mock.h"
@@ -255,7 +248,7 @@ static u32 calc_alloc_os_pages_nr(const struct lin_mm_allocation *alloc)
  */
 static u32 calc_alloc_cve_pages_nr(const struct lin_mm_allocation *alloc)
 {
-	unsigned long end;
+	u64 end;
 	u32 page_sz = ICE_PAGE_SZ(alloc->page_shift);
 	u32 ice_pages_nr;
 
@@ -419,7 +412,7 @@ static int add_sglist_to_device_page_table(struct lin_mm_allocation *alloc,
 		 * to calculate minimum num of CVE pages required
 		 * sg->offset is OS page aligned
 		 */
-		u32 size_bytes = round_up_cve_pagesize(
+		u64 size_bytes = round_up_cve_pagesize(
 				(sg->offset & (mmu_config->page_sz - 1)) +
 				sg_dma_len(sg), mmu_config->page_sz);
 		u32 size_cve_pages = bytes_to_cve_pages(size_bytes,

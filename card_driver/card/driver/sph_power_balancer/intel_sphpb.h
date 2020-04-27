@@ -16,6 +16,23 @@
 #ifndef _INTEL_SPH_POWER_BALANCER_H_
 #define _INTEL_SPH_POWER_BALANCER_H_
 
+union FREQUENCY_RATIO {
+	/*
+	 * for each icebo and IA
+	 */
+	struct {
+		uint64_t ia0	: 8;
+		uint64_t ia1	: 8;
+		uint64_t icebo0	: 8;
+		uint64_t icebo1	: 8;
+		uint64_t icebo2	: 8;
+		uint64_t icebo3	: 8;
+		uint64_t icebo4	: 8;
+		uint64_t icebo5	: 8;
+	} freqRatio;
+
+	uint64_t val;
+};
 
 struct sphpb_icedrv_callbacks {
 	/* ices per icebo */
@@ -26,9 +43,9 @@ struct sphpb_icedrv_callbacks {
 	/* callback to get ice 2 ring ratio */
 	int (*get_icebo_to_ring_ratio)(uint16_t *value);
 	/* callback to set icebo ratio value */
-	int (*set_icebo_to_icebo_ratio)(uint32_t icebo, uint32_t value);
+	int (*set_icebo_to_icebo_ratio)(union FREQUENCY_RATIO value);
 	/* callback to get icebo ratio value */
-	int (*get_icebo_to_icebo_ratio)(uint32_t icebo, uint32_t *value);
+	int (*get_icebo_to_icebo_ratio)(union FREQUENCY_RATIO *value);
 	/* callback to get icebo frequency */
 	int (*get_icebo_frequency)(uint32_t icebo, uint32_t *freq);
 	/* callback to set clock squash value */
@@ -49,7 +66,7 @@ struct sphpb_callbacks {
 	int (*get_efficient_ice_list)(uint64_t ice_mask,
 				      uint32_t ddr_bw,
 				      uint16_t ring_divisor_fx,
-				      uint16_t ratio_fx,
+				      uint8_t ratio_fx,
 				      uint8_t *o_ice_array,
 				      ssize_t array_size);
 
@@ -57,7 +74,7 @@ struct sphpb_callbacks {
 	int (*request_ice_dvfs_values)(uint32_t ice_index,
 				       uint32_t ddr_bw,
 				       uint16_t ring_divisor_fx,
-				       uint16_t ratio_fx);
+				       uint8_t ratio_fx);
 
 	/* set ice active state */
 	int (*set_power_state)(uint32_t ice_index, bool bOn);

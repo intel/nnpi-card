@@ -7,7 +7,7 @@
 #ifndef _SPHCS_H
 #define _SPHCS_H
 
-#include "sph_types.h"
+#include "nnp_types.h"
 #include "sphcs_pcie.h"
 #include <linux/device.h>
 #include <linux/list.h>
@@ -36,7 +36,7 @@ struct sphcs {
 	pool_handle             net_dma_page_pool;
 	struct sphcs_dma_sched *dmaSched;
 
-	struct delayed_work host_disconnected_work;
+	struct work_struct      host_disconnect_work;
 
 	struct inf_data   *inf_data;
 
@@ -46,13 +46,12 @@ struct sphcs {
 
 	struct msg_scheduler       *respq_sched;
 	struct msg_scheduler_queue *public_respq;
-	struct msg_scheduler_queue *net_respq;
 
 	struct periodic_timer       periodic_timer;
 	struct notifier_block mce_notifier;
 	struct delayed_work init_delayed_reset;
 
-	union sph_inbound_mem     *inbound_mem;
+	union nnp_inbound_mem     *inbound_mem;
 	size_t inbound_mem_size;
 	dma_addr_t inbound_mem_dma_addr;
 
@@ -96,8 +95,8 @@ int sphcs_destroy_response_queue(struct sphcs               *sphcs,
 
 static inline int sphcs_msg_scheduler_queue_add_msg(struct msg_scheduler_queue *queue, u64 *msg, int size)
 {
-	if (SPH_SW_GROUP_IS_ENABLE(g_sph_sw_counters, SPHCS_SW_COUNTERS_GROUP_IPC))
-		SPH_SW_COUNTER_INC(g_sph_sw_counters, SPHCS_SW_COUNTERS_IPC_COMMANDS_SCHEDULED_COUNT);
+	if (NNP_SW_GROUP_IS_ENABLE(g_nnp_sw_counters, SPHCS_SW_COUNTERS_GROUP_IPC))
+		NNP_SW_COUNTER_INC(g_nnp_sw_counters, SPHCS_SW_COUNTERS_IPC_COMMANDS_SCHEDULED_COUNT);
 
 	return msg_scheduler_queue_add_msg(queue, msg, size);
 }

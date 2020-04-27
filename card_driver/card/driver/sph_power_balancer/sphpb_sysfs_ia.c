@@ -45,6 +45,85 @@ static struct attribute_group ia_attr_group = {
 		.attrs = ia_cycls_attrs,
 };
 
+struct ia_ratio_attr {
+	struct kobj_attribute ia_attr;
+	struct sphpb_pb *sphpb;
+};
+
+ssize_t ia_ratio_store(struct kobject *kobj,
+			      struct kobj_attribute *kattr,
+			      const char *buf,
+			      size_t count)
+{
+	struct ia_ratio_attr *ia_attr = container_of(kattr,
+					struct ia_ratio_attr,
+					ia_attr);
+
+	struct sphpb_pb *sphpb = ia_attr->sphpb;
+	unsigned long val;
+
+	if (kstrtoul(buf, 0, &val) < 0)
+		return -EINVAL;
+
+	if (val > 255) {
+		sph_log_err(POWER_BALANCER_LOG, "invalid value for IA ratio 0x%lx (values range [0-255])", val);
+		return -EINVAL;
+	}
+
+	mutex_lock(&sphpb->mutex_lock);
+	if (val == 0) {
+		/* set to default */
+		sphpb->ia_changed_by_user = 0;
+		sphpb->current_cores_ratios.freqRatio.ia0 = sphpb->max_icebo_ratio / 2;
+		sphpb->current_cores_ratios.freqRatio.ia1 = sphpb->max_icebo_ratio / 2;
+	} else {
+		if (!sphpb->ia_changed_by_user || (sphpb->ia_changed_by_user && val > sphpb->current_cores_ratios.freqRatio.ia0)) {
+			sphpb->ia_changed_by_user = 1;
+			sphpb->current_cores_ratios.freqRatio.ia0 = val;
+			sphpb->current_cores_ratios.freqRatio.ia1 = val;
+		}
+	}
+	mutex_unlock(&sphpb->mutex_lock);
+
+	if (sphpb->debug_log)
+		sph_log_err(POWER_BALANCER_LOG, "IA cores ratio updated: ia0= %u, ia1=%u",
+						sphpb->current_cores_ratios.freqRatio.ia0, sphpb->current_cores_ratios.freqRatio.ia1);
+
+	return count;
+}
+
+ssize_t ia_ratio_show(struct kobject *kobj,
+		      struct kobj_attribute *kattr,
+		      char *buf)
+{
+	struct ia_ratio_attr *ia_attr = container_of(kattr,
+					struct ia_ratio_attr,
+					ia_attr);
+
+	struct sphpb_pb *sphpb = ia_attr->sphpb;
+	ssize_t ret = 0;
+
+	if (!strcmp(kattr->attr.name, "ia0_ratio"))
+		ret = snprintf(buf, 64, "%llu\n", (uint64_t)sphpb->current_cores_ratios.freqRatio.ia0);
+	else
+		ret = snprintf(buf, 64, "%llu\n", (uint64_t)sphpb->current_cores_ratios.freqRatio.ia1);
+
+	return ret;
+}
+
+static struct ia_ratio_attr ia0_attr_data = {.ia_attr = __ATTR(ia0_ratio, 0664, ia_ratio_show, ia_ratio_store), .sphpb = NULL};
+static struct ia_ratio_attr ia1_attr_data = {.ia_attr = __ATTR(ia1_ratio, 0664, ia_ratio_show, ia_ratio_store), .sphpb = NULL};
+
+static struct attribute *ia_ratio_attrs[] = {
+	&ia0_attr_data.ia_attr.attr,
+	&ia1_attr_data.ia_attr.attr,
+	NULL,	/* need to NULL terminate the list of attributes */
+};
+
+static struct attribute_group ia_raio_attr_group = {
+		.attrs = ia_ratio_attrs,
+};
+
 struct cpu_perfstat curr_cpu_stat;
 
 void aperfmperf_snapshot_khz(void *ptr)
@@ -116,6 +195,15 @@ int sphpb_ia_cycles_sysfs_init(struct sphpb_pb *sphpb)
 		}
 	}
 
+	ia0_attr_data.sphpb = sphpb;
+	ia1_attr_data.sphpb = sphpb;
+
+	ret = sysfs_create_group(sphpb->ia_kobj_root, &ia_raio_attr_group);
+	if (ret) {
+		sph_log_err(POWER_BALANCER_LOG, "ia ratio sysfs group creation failed err(%d)\n", ret);
+		goto release_kobj;
+	}
+
 	return 0;
 release_kobj:
 	for (j = 0; j < i; j++) {
@@ -137,5 +225,6 @@ void sphpb_ia_cycles_sysfs_deinit(struct sphpb_pb *sphpb)
 	}
 	kfree(sphpb->ia_kobj);
 
+	sysfs_remove_group(sphpb->ia_kobj_root, &ia_raio_attr_group);
 	kobject_put(sphpb->ia_kobj_root);
 }

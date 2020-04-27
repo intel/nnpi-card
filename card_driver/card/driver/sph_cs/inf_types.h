@@ -8,8 +8,8 @@
 
 #include <linux/list.h>
 #include <linux/spinlock.h>
-#include "sph_types.h"
-#include "ipc_protocol.h"
+#include "nnp_types.h"
+#include "ipc_chan_protocol.h"
 
 struct inf_req_sequence {
 	u32              seq_id;
@@ -28,7 +28,7 @@ struct inf_exec_error_details {
 	uint16_t                obj_id;
 	uint16_t                devnet_id;
 	uint16_t                eventVal;
-	int32_t                 error_msg_size;
+	uint32_t                error_msg_size;
 	void                   *error_msg;
 };
 

@@ -135,22 +135,22 @@ static int ibecc_error_cb(struct notifier_block *nb, unsigned long action, void 
 	if (ret == 0) {
 		/* This is an ion buffer */
 		if (corrected)
-			eventCode = SPH_IPC_ERROR_DRAM_ECC_CORRECTABLE;
+			eventCode = NNP_IPC_ERROR_DRAM_ECC_CORRECTABLE;
 		else {
 			context_id = buff_attr.context_id;
 			/* If either context or severity is not set */
 			if ((buff_attr.context_id_valid != 1) || (buff_attr.uc_ecc_severity == 0))
-				eventCode = SPH_IPC_ERROR_DRAM_ECC_UNCORRECTABLE_FATAL;
+				eventCode = NNP_IPC_ERROR_DRAM_ECC_UNCORRECTABLE_FATAL;
 			else if (buff_attr.uc_ecc_severity == 2)
-				eventCode = SPH_IPC_ERROR_DRAM_ECC_UNCORRECTABLE_FATAL;
+				eventCode = NNP_IPC_ERROR_DRAM_ECC_UNCORRECTABLE_FATAL;
 			else
-				eventCode = SPH_IPC_CTX_DRAM_ECC_UNCORRECTABLE;
+				eventCode = NNP_IPC_CTX_DRAM_ECC_UNCORRECTABLE;
 		}
 	} else {
 		/* This is an OS managed buffer*/
 		eventCode = corrected ?
-				SPH_IPC_ERROR_DRAM_ECC_CORRECTABLE :
-				SPH_IPC_ERROR_DRAM_ECC_UNCORRECTABLE_FATAL;
+				NNP_IPC_ERROR_DRAM_ECC_CORRECTABLE :
+				NNP_IPC_ERROR_DRAM_ECC_UNCORRECTABLE_FATAL;
 	}
 
 	/* context_id is passed as objID in purpose! */

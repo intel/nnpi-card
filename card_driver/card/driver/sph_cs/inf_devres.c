@@ -14,6 +14,59 @@
 #include "inf_exec_req.h"
 #include "ioctl_inf.h"
 
+static void treat_credit_release_failure(struct inf_exec_req *req, enum event_val eventVal)
+{
+	struct inf_exec_error_details *err_details;
+	int rc;
+
+	rc = inf_exec_error_details_alloc(req->cmd_type,
+					  0,
+					  0,
+					  NNP_IPC_FAILED_TO_RELEASE_CREDIT,
+					  0,
+					  &err_details);
+	if (likely(rc == 0))
+		inf_exec_error_list_add(req->cmd != NULL ? &req->cmd->error_list :
+							   &req->context->error_list,
+					err_details);
+
+	if (req->cmd == NULL)
+		inf_context_set_state(req->context,
+				      CONTEXT_BROKEN_RECOVERABLE);
+	else
+		/* Send event only when exec request is part of some command list. Otherwise,
+		 * the NNP_IPC_CONTEXT_EXEC_ERROR is sent by inf_exec_error_list_add
+		 */
+		sphcs_send_event_report(g_the_sphcs,
+					NNP_IPC_EC_FAILED_TO_RELEASE_CREDIT,
+					eventVal,
+					req->context->chan->respq,
+					req->context->protocolID,
+					req->cmd->protocolID);
+}
+
+static int credit_released_cb(struct sphcs *sphcs, void *ctx, const void *user_data, int status, u32 xferTimeUS)
+{
+	struct inf_exec_req *req = (struct inf_exec_req *)ctx;
+	struct inf_cmd_list *cmd = req->cmd;
+
+	NNP_ASSERT(req != NULL);
+	NNP_ASSERT(status == SPHCS_DMA_STATUS_DONE || status == SPHCS_DMA_STATUS_FAILED);
+
+	/* If the DMA failed */
+	if (unlikely(status == SPHCS_DMA_STATUS_FAILED)) {
+		sph_log_err(EXECUTE_COMMAND_LOG, "Failed to release credit.\n");
+		treat_credit_release_failure(req, NNP_IPC_DMA_ERROR);
+	}
+
+	/* If the command list is completed and all credits are sent */
+	send_cmd_list_completed_event(cmd);
+
+	inf_exec_req_put(req);
+
+	return 0;
+}
+
 int inf_devres_create(uint16_t            protocolID,
 		      struct inf_context *context,
 		      uint64_t            size,
@@ -37,12 +90,15 @@ int inf_devres_create(uint16_t            protocolID,
 	devres->protocolID = protocolID;
 	INIT_LIST_HEAD(&devres->exec_queue);
 	devres->queue_version = 0;
+	atomic_set(&devres->pivot_usecount, 0);
+	devres->pivot = NULL;
 
 	/* make sure context will not be destroyed during devres life */
 	inf_context_get(context);
 	devres->context = context;
 
 	spin_lock_init(&devres->lock_irq);
+	devres->is_dirty = true;
 	devres->size = size;
 	devres->align = align;
 	devres->depth = depth;
@@ -67,7 +123,7 @@ int inf_devres_create(uint16_t            protocolID,
 			goto failed_to_init_p2p_buf;
 	}
 
-	SPH_SW_COUNTER_ADD(context->sw_counters, CTX_SPHCS_SW_COUNTERS_INFERENCE_DEVICE_RESOURCE_SIZE, size);
+	NNP_SW_COUNTER_ADD(context->sw_counters, CTX_SPHCS_SW_COUNTERS_INFERENCE_DEVICE_RESOURCE_SIZE, size);
 
 	*out_devres = devres;
 	return 0;
@@ -83,7 +139,7 @@ int inf_devres_attach_buf(struct inf_devres *devres,
 			  int                fd)
 {
 	int ret;
-	SPH_ASSERT(devres != NULL);
+	NNP_ASSERT(devres != NULL);
 
 	if (unlikely(devres->destroyed != 0))
 		return -EPERM;
@@ -124,8 +180,8 @@ failed_to_att:
 
 static void inf_devres_detach_buf(struct inf_devres *devres)
 {
-	SPH_ASSERT(devres != NULL);
-	SPH_ASSERT(devres->status == CREATED);
+	NNP_ASSERT(devres != NULL);
+	NNP_ASSERT(devres->status == CREATED);
 
 	dma_buf_unmap_attachment(devres->dma_att,
 				devres->dma_map,
@@ -166,7 +222,7 @@ void destroy_devres_on_create_failed(struct inf_devres *devres)
 	bool dma_completed, should_destroy;
 	unsigned long flags;
 
-	SPH_SPIN_LOCK_IRQSAVE(&devres->lock_irq, flags);
+	NNP_SPIN_LOCK_IRQSAVE(&devres->lock_irq, flags);
 
 	dma_completed = (devres->status == DMA_COMPLETED);
 	// roll back status, to put kref once
@@ -177,7 +233,7 @@ void destroy_devres_on_create_failed(struct inf_devres *devres)
 	if (likely(should_destroy))
 		devres->destroyed = -1;
 
-	SPH_SPIN_UNLOCK_IRQRESTORE(&devres->lock_irq, flags);
+	NNP_SPIN_UNLOCK_IRQRESTORE(&devres->lock_irq, flags);
 
 
 	if (likely(should_destroy))
@@ -195,12 +251,12 @@ static void release_devres(struct kref *kref)
 						 ref);
 	int ret;
 
-	SPH_ASSERT(is_inf_devres_ptr(devres));
-	SPH_ASSERT(list_empty(&devres->exec_queue));
+	NNP_ASSERT(is_inf_devres_ptr(devres));
+	NNP_ASSERT(list_empty(&devres->exec_queue));
 
-	SPH_SPIN_LOCK(&devres->context->lock);
+	NNP_SPIN_LOCK(&devres->context->lock);
 	hash_del(&devres->hash_node);
-	SPH_SPIN_UNLOCK(&devres->context->lock);
+	NNP_SPIN_UNLOCK(&devres->context->lock);
 
 	if (inf_devres_is_p2p(devres))
 		sphcs_p2p_remove_buffer(&devres->p2p_buf);
@@ -215,7 +271,7 @@ static void release_devres(struct kref *kref)
 
 	if (likely(devres->destroyed == 1))
 		sphcs_send_event_report(g_the_sphcs,
-					SPH_IPC_DEVRES_DESTROYED,
+					NNP_IPC_DEVRES_DESTROYED,
 					0,
 					devres->context->chan->respq,
 					devres->context->protocolID,
@@ -244,7 +300,7 @@ void inf_devres_migrate_priority_to_req_queue(struct inf_devres *devres, struct 
 	int ret;
 
 	//TODO Fix the migration logic
-	SPH_SPIN_LOCK_IRQSAVE(&devres->lock_irq, flags);
+	NNP_SPIN_LOCK_IRQSAVE(&devres->lock_irq, flags);
 	list_for_each_entry(pos, &devres->exec_queue, node) {
 		struct inf_exec_req *req = pos->req;
 		//reached infreq
@@ -256,7 +312,7 @@ void inf_devres_migrate_priority_to_req_queue(struct inf_devres *devres, struct 
 		if (ret < 0)
 			sph_log_debug(SCHEDULE_COMMAND_LOG, "Failed to migrate priority.\n");
 	}
-	SPH_SPIN_UNLOCK_IRQRESTORE(&devres->lock_irq, flags);
+	NNP_SPIN_UNLOCK_IRQRESTORE(&devres->lock_irq, flags);
 }
 
 int inf_devres_add_req_to_queue(struct inf_devres *devres, struct inf_exec_req *req, bool read)
@@ -264,8 +320,8 @@ int inf_devres_add_req_to_queue(struct inf_devres *devres, struct inf_exec_req *
 	struct exec_queue_entry *queue_ent;
 	unsigned long flags;
 
-	SPH_ASSERT(devres != NULL);
-	SPH_ASSERT(req != NULL);
+	NNP_ASSERT(devres != NULL);
+	NNP_ASSERT(req != NULL);
 
 	queue_ent = kmalloc(sizeof(struct exec_queue_entry), GFP_NOWAIT);
 	if (unlikely(queue_ent == NULL))
@@ -274,11 +330,28 @@ int inf_devres_add_req_to_queue(struct inf_devres *devres, struct inf_exec_req *
 	queue_ent->req = req;
 	queue_ent->read = read;
 
-	SPH_SPIN_LOCK_IRQSAVE(&devres->lock_irq, flags);
+	NNP_SPIN_LOCK_IRQSAVE(&devres->lock_irq, flags);
 	list_add_tail(&queue_ent->node, &devres->exec_queue);
-	SPH_SPIN_UNLOCK_IRQRESTORE(&devres->lock_irq, flags);
+	NNP_SPIN_UNLOCK_IRQRESTORE(&devres->lock_irq, flags);
 
 	return 0;
+}
+
+int inf_devres_send_release_credit(struct inf_devres *devres, struct inf_exec_req *req)
+{
+	int rc = 0;
+
+	NNP_ASSERT(devres->is_p2p_dst && !devres->is_dirty);
+
+	inf_exec_req_get(req);
+	rc = sphcs_p2p_send_rel_cr_and_ring_db(&devres->p2p_buf, credit_released_cb, req);
+	if (unlikely(rc)) {
+		sph_log_err(EXECUTE_COMMAND_LOG, "Failed to initiate credit release.\n");
+		treat_credit_release_failure(req, NNP_IPC_NO_MEMORY);
+		inf_exec_req_put(req);
+	}
+
+	return rc;
 }
 
 void inf_devres_del_req_from_queue(struct inf_devres   *devres,
@@ -287,27 +360,17 @@ void inf_devres_del_req_from_queue(struct inf_devres   *devres,
 	struct exec_queue_entry *pos;
 	unsigned long flags;
 
-	SPH_SPIN_LOCK_IRQSAVE(&devres->lock_irq, flags);
+	NNP_SPIN_LOCK_IRQSAVE(&devres->lock_irq, flags);
 	list_for_each_entry(pos, &devres->exec_queue, node) {
 		if (pos->req == req)
 			break;
 	}
 	// Should be found
-	SPH_ASSERT(&pos->node != &devres->exec_queue);
+	NNP_ASSERT(&pos->node != &devres->exec_queue);
 	list_del(&pos->node);
 	++devres->queue_version;
 
-	/* If the completed request has read from the dev res
-	 * and this dev res is p2p destination resource, mark the
-	 * resource as empty
-	 */
-	if (devres->is_p2p_dst && pos->read) {
-		sphcs_p2p_send_rel_cr(&devres->p2p_buf);
-		sphcs_p2p_ring_doorbell(&devres->p2p_buf);
-		devres->p2p_buf.ready = false;
-	}
-
-	SPH_SPIN_UNLOCK_IRQRESTORE(&devres->lock_irq, flags);
+	NNP_SPIN_UNLOCK_IRQRESTORE(&devres->lock_irq, flags);
 
 	kfree(pos);
 }
@@ -318,10 +381,10 @@ void inf_devres_try_execute(struct inf_devres *devres)
 	unsigned int old_ver;
 	unsigned long flags;
 
-	SPH_ASSERT(devres != NULL);
+	NNP_ASSERT(devres != NULL);
 
 	// try all reads
-	SPH_SPIN_LOCK_IRQSAVE(&devres->lock_irq, flags);
+	NNP_SPIN_LOCK_IRQSAVE(&devres->lock_irq, flags);
 	list_for_each_entry(pos, &devres->exec_queue, node) {
 		bool is_write = !pos->read;
 
@@ -333,49 +396,109 @@ void inf_devres_try_execute(struct inf_devres *devres)
 		if (inf_exec_req_get(pos->req) == 0)
 			break;
 		old_ver = devres->queue_version;
-		SPH_SPIN_UNLOCK_IRQRESTORE(&devres->lock_irq, flags);
+		NNP_SPIN_UNLOCK_IRQRESTORE(&devres->lock_irq, flags);
 		inf_req_try_execute(pos->req);
 		inf_exec_req_put(pos->req);
-		SPH_SPIN_LOCK_IRQSAVE(&devres->lock_irq, flags);
+		NNP_SPIN_LOCK_IRQSAVE(&devres->lock_irq, flags);
 
 		// if from exec_queue was removed entries or
 		// we tried to execute write don't continue
 		if (old_ver != devres->queue_version || is_write)
 			break;
 	}
-	SPH_SPIN_UNLOCK_IRQRESTORE(&devres->lock_irq, flags);
+	NNP_SPIN_UNLOCK_IRQRESTORE(&devres->lock_irq, flags);
 }
 
-bool inf_devres_req_ready(struct inf_devres *devres, struct inf_exec_req *req, bool for_read)
+enum DEV_RES_READINESS inf_devres_req_ready(struct inf_devres *devres, struct inf_exec_req *req, bool for_read)
 {
 	struct exec_queue_entry *pos;
-	bool ready = false;
 	unsigned long flags;
+	enum DEV_RES_READINESS res = DEV_RES_READINESS_NOT_READY;
 
-	SPH_ASSERT(devres != NULL);
+	NNP_ASSERT(devres != NULL);
 
 	/* If the request is the first one in the queue or
 	 * it is read request and all previous requests are read requests
 	 */
-	SPH_SPIN_LOCK_IRQSAVE(&devres->lock_irq, flags);
+	NNP_SPIN_LOCK_IRQSAVE(&devres->lock_irq, flags);
 	list_for_each_entry(pos, &devres->exec_queue, node) {
 		if (pos->req == req) {
-			SPH_ASSERT(pos->read == for_read);
-			ready = true;
+			NNP_ASSERT(pos->read == for_read);
+			res = DEV_RES_READINESS_READY;
 			break;
 		}
 		if (!pos->read || !for_read)
 			break;
 	}
 
-	if (ready && inf_devres_is_p2p(devres) && for_read) {
+	if ((res == DEV_RES_READINESS_READY) && inf_devres_is_p2p(devres) && for_read) {
 		if (devres->p2p_buf.ready)
 			sph_log_debug(GENERAL_LOG, "p2p buffer ready\n");
 		else
-			ready = false;
+			res = DEV_RES_READINESS_NOT_READY;
 	}
-	SPH_SPIN_UNLOCK_IRQRESTORE(&devres->lock_irq, flags);
 
-	return ready;
+	if (for_read && (res == DEV_RES_READINESS_READY) &&
+	    (devres->is_dirty || devres->group_dirty_count > 0))
+		res = DEV_RES_READINESS_READY_BUT_DIRTY;
 
+	NNP_SPIN_UNLOCK_IRQRESTORE(&devres->lock_irq, flags);
+
+	return res;
+
+}
+
+int inf_devres_set_depend_pivot(struct inf_devres *devres,
+				struct inf_devres *pivot)
+{
+	int ret = 0;
+
+	if (atomic_inc_return(&devres->pivot_usecount) == 1) {
+		devres->pivot = pivot;
+		if (devres->is_dirty)
+			devres->pivot->group_dirty_count++;
+	} else
+		ret = -EBUSY;
+
+	atomic_dec(&devres->pivot_usecount);
+
+	return ret;
+}
+
+void inf_devres_pivot_usecount_inc(struct inf_devres *devres)
+{
+	if (devres->pivot != NULL)
+		atomic_inc(&devres->pivot_usecount);
+}
+
+void inf_devres_pivot_usecount_dec(struct inf_devres *devres)
+{
+	if (devres->pivot != NULL) {
+		if (atomic_dec_return(&devres->pivot_usecount) == 0) {
+			if (devres->is_dirty && devres->pivot->group_dirty_count > 0)
+				devres->pivot->group_dirty_count--;
+		}
+	}
+}
+
+struct inf_devres *inf_devres_get_depend_pivot(struct inf_devres *devres)
+{
+	if (atomic_read(&devres->pivot_usecount) > 0)
+		return devres->pivot;
+	else
+		return devres;
+}
+
+void inf_devres_set_dirty(struct inf_devres *devres, bool dirty)
+{
+	if (devres->is_dirty == dirty)
+		return;
+
+	devres->is_dirty = dirty;
+	if (atomic_read(&devres->pivot_usecount) > 0) {
+		if (dirty)
+			devres->pivot->group_dirty_count++;
+		else if (devres->pivot->group_dirty_count > 0)
+			devres->pivot->group_dirty_count--;
+	}
 }

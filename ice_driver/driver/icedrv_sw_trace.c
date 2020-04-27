@@ -1,17 +1,10 @@
-/*
- * NNP-I Linux Driver
- * Copyright (c) 2019, Intel Corporation.
+/********************************************
+ * Copyright (C) 2019-2020 Intel Corporation
  *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms and conditions of the GNU General Public License,
- * version 2, as published by the Free Software Foundation.
- *
- * This program is distributed in the hope it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
- *
- */
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ ********************************************/
+
+
 
 #define CREATE_TRACE_POINTS
 #include "icedrv_sw_trace.h"
@@ -30,6 +23,7 @@ sph_trace_op_state_to_str[SPH_TRACE_OP_STATE_DB]   = SPH_TRACE_STR_DB;
 sph_trace_op_state_to_str[SPH_TRACE_OP_STATE_ADD]   = SPH_TRACE_STR_ADD;
 sph_trace_op_state_to_str[SPH_TRACE_OP_STATE_REQ]   = SPH_TRACE_STR_REQ;
 sph_trace_op_state_to_str[SPH_TRACE_OP_STATE_BH]   = SPH_TRACE_STR_BH;
+sph_trace_op_state_to_str[SPH_TRACE_OP_STATE_PO]   = SPH_TRACE_STR_PO;
 sph_trace_op_state_to_str[SPH_TRACE_OP_STATE_NUM]     = SPH_TRACE_STR_UNDEF;
 
 /*fill sph_trace_op_status_to_str array*/
@@ -50,6 +44,8 @@ sph_trace_op_status_to_str[SPH_TRACE_OP_STATUS_EXEC_TYPE] =
 	SPH_TRACE_STR_EXEC_TYPE;
 sph_trace_op_status_to_str[SPH_TRACE_OP_STATUS_CDYN_VAL] =
 	SPH_TRACE_STR_CDYN_VAL;
+sph_trace_op_status_to_str[SPH_TRACE_OP_STATUS_POWERED_ON] =
+	SPH_TRACE_STR_POWERED_ON;
 sph_trace_op_status_to_str[SPH_TRACE_OP_STATUS_NUM]    = SPH_TRACE_STR_UNDEF;
 
 }

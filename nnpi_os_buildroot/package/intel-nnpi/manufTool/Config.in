@@ -1,0 +1,7 @@
+config BR2_PACKAGE_MANUFTOOL
+        bool "intel_nnpi_manufTool"
+	depends on BR2_PACKAGE_PSW
+        help
+
+          http://www.intel.com
+

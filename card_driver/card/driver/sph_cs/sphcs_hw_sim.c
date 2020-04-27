@@ -9,8 +9,8 @@
 #include <linux/scatterlist.h>
 #include "sphcs_pcie.h"
 #include "sph_log.h"
-#include "sph_local.h"
-#include "sph_debug.h"
+#include "nnp_local.h"
+#include "nnp_debug.h"
 #include "sphcs_hw_utils.h"
 
 struct hw_sim_descriptor {
@@ -92,7 +92,7 @@ static void *dma_set_lli_data_element(void *sgl, dma_addr_t src, dma_addr_t dst,
 	return (sgl + sizeof(union sgl_data_element));
 }
 
-static int hw_sim_dma_init_lli(void *hw_handle, struct lli_desc *outLli, struct sg_table *src, struct sg_table *dst, uint64_t dst_offset)
+static int hw_sim_dma_init_lli(void *hw_handle, struct lli_desc *outLli, struct sg_table *src, struct sg_table *dst, uint64_t dst_offset, bool single_list)
 {
 	outLli->num_elements = dma_calc_and_gen_lli(src, dst, NULL, dst_offset, 0, NULL, NULL);
 	outLli->num_filled = 0;

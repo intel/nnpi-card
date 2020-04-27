@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: GPL-2.0-or-later
  ********************************************/
 
-#include "sph_debug.h"
+#include "nnp_debug.h"
 #include "ioctl_maintenance.h"
 
 int sph_power_init(void);
@@ -24,7 +24,7 @@ void power_hw_get_ratl(uint32_t *max_avg_temp,
 
 #define TJ_MAX_TCC_OFFSET_MAX 63  //6 bits
 
-#define CHECK_MSR_SIZE(t, nQW) SPH_STATIC_ASSERT(sizeof(t) == 8*(nQW), "Size of " #t " Does not match!!")
+#define CHECK_MSR_SIZE(t, nQW) NNP_STATIC_ASSERT(sizeof(t) == 8*(nQW), "Size of " #t " Does not match!!")
 
 #pragma pack(push, 1)
 

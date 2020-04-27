@@ -30,7 +30,7 @@
 
 struct sphpb_pb *g_the_sphpb;
 void *g_hSwCountersInfo_global;
-struct sph_sw_counters *g_sph_sw_pb_counters;
+struct nnp_sw_counters *g_sph_sw_pb_counters;
 
 static ssize_t show_bios_mailbox_locked(struct kobject *kobj,
 					struct kobj_attribute *attr,
@@ -55,13 +55,13 @@ __ATTR(bios_mailbox_locked, 0664, show_bios_mailbox_locked, store_bios_mailbox_l
 static struct kobj_attribute debug_log_attr =
 __ATTR(debug_log, 0664, show_debug_log_value, store_debug_log_value);
 
-
+#define MIN_RATIO_EPS 12 //~5%
 
 /* request to get a list of recommended ices to use when job starts */
 static int sphpb_get_efficient_ice_list(uint64_t ice_mask,
 					uint32_t ddr_bw,
 					uint16_t ring_divisor_fx,
-					uint16_t ratio_fx,
+					uint8_t ratio_fx,
 					uint8_t *o_ice_array,
 					ssize_t array_size)
 {
@@ -87,7 +87,7 @@ static int sphpb_get_efficient_ice_list(uint64_t ice_mask,
 int sphpb_request_ice_dvfs_values(uint32_t ice_index,
 				  uint32_t ddr_bw,
 				  uint16_t ring_divisor_fx,
-				  uint16_t ratio_fx)
+				  uint8_t ratio_fx)
 {
 	int ret;
 
@@ -169,7 +169,7 @@ static void sphpb_throttle_prepare(void)
 	if (unlikely(ret < 0))
 		sph_log_err(POWER_BALANCER_LOG, "Throttling failure: Unable to set Dynamic DRAM frequency. Err(%d)\n", ret);
 
-	g_the_sphpb->throttle_data.time_us = sph_time_us();
+	g_the_sphpb->throttle_data.time_us = nnp_time_us();
 	rdmsrl(MSR_UNC_PERF_UNCORE_CLOCK_TICKS, g_the_sphpb->throttle_data.ring_clock_ticks);
 	if (unlikely(g_the_sphpb->throttle_data.cpu_stat == NULL))
 		return;
@@ -205,6 +205,8 @@ static void sphpb_unregister_driver(void)
 
 const struct sphpb_callbacks *sph_power_balancer_register_driver(const struct sphpb_icedrv_callbacks *drv_data)
 {
+	uint64_t tmp_ratios;
+
 	if (!g_the_sphpb || !drv_data) {
 		sph_log_err(POWER_BALANCER_LOG, "sph_power_balancer was failed to register");
 		return NULL;
@@ -234,6 +236,31 @@ const struct sphpb_callbacks *sph_power_balancer_register_driver(const struct sp
 
 	if (g_the_sphpb->debug_log)
 		sph_log_info(POWER_BALANCER_LOG, "register driver completed\n");
+
+	g_the_sphpb->ratio_epsilon = MIN_RATIO_EPS;
+
+	if (g_the_sphpb->icedrv_cb->get_icebo_to_icebo_ratio)
+		g_the_sphpb->icedrv_cb->get_icebo_to_icebo_ratio(&g_the_sphpb->default_cores_ratios);
+
+	g_the_sphpb->current_cores_ratios.val = g_the_sphpb->default_cores_ratios.val;
+	if (g_the_sphpb->debug_log)
+		sph_log_info(POWER_BALANCER_LOG, "Ia0 ratio is: %u, icebo0: %u",
+					g_the_sphpb->current_cores_ratios.freqRatio.ia0, g_the_sphpb->current_cores_ratios.freqRatio.icebo0);
+
+	tmp_ratios = g_the_sphpb->default_cores_ratios.val;
+	g_the_sphpb->max_icebo_ratio = 0;
+
+	//Take IA out
+	tmp_ratios >>= 16;
+	while (tmp_ratios) {
+		if ((tmp_ratios & 0xFF) > g_the_sphpb->max_icebo_ratio)
+			g_the_sphpb->max_icebo_ratio = tmp_ratios & 0xFF;
+		tmp_ratios >>= 8;
+	}
+
+	/* set default IA cores ratio value */
+	g_the_sphpb->current_cores_ratios.freqRatio.ia0 = g_the_sphpb->max_icebo_ratio / 2;
+	g_the_sphpb->current_cores_ratios.freqRatio.ia1 = g_the_sphpb->max_icebo_ratio / 2;
 
 	return &g_the_sphpb->callbacks;
 err:
@@ -304,7 +331,7 @@ static int sphpb_sw_counters_init(void)
 {
 	int ret;
 
-	ret = sph_create_sw_counters_info_node(NULL,
+	ret = nnp_create_sw_counters_info_node(NULL,
 					       &g_sw_counters_set_global,
 					       NULL,
 					       &g_hSwCountersInfo_global);
@@ -313,7 +340,7 @@ static int sphpb_sw_counters_init(void)
 		return ret;
 	}
 
-	ret = sph_create_sw_counters_values_node(g_hSwCountersInfo_global,
+	ret = nnp_create_sw_counters_values_node(g_hSwCountersInfo_global,
 						 0x0,
 						 NULL,
 						 &g_sph_sw_pb_counters);
@@ -325,15 +352,15 @@ static int sphpb_sw_counters_init(void)
 	return ret;
 
 free_counters_info_global:
-	sph_remove_sw_counters_info_node(g_hSwCountersInfo_global);
+	nnp_remove_sw_counters_info_node(g_hSwCountersInfo_global);
 
 	return ret;
 }
 
 static void sphpb_sw_counters_fini(void)
 {
-	sph_remove_sw_counters_values_node(g_sph_sw_pb_counters);
-	sph_remove_sw_counters_info_node(g_hSwCountersInfo_global);
+	nnp_remove_sw_counters_values_node(g_sph_sw_pb_counters);
+	nnp_remove_sw_counters_info_node(g_hSwCountersInfo_global);
 }
 
 int create_sphpb(void)
@@ -492,4 +519,4 @@ module_exit(sph_power_balancer_cleanup);
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("SpringHill power balancer");
 MODULE_AUTHOR("Intel Corporation");
-MODULE_VERSION(SPH_VERSION);
+MODULE_VERSION(NNP_VERSION);

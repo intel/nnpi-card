@@ -1,17 +1,10 @@
-/*
- * NNP-I Linux Driver
- * Copyright (c) 2017-2019, Intel Corporation.
+/********************************************
+ * Copyright (C) 2019-2020 Intel Corporation
  *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms and conditions of the GNU General Public License,
- * version 2, as published by the Free Software Foundation.
- *
- * This program is distributed in the hope it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
- *
- */
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ ********************************************/
+
+
 
 #ifdef RING3_VALIDATION
 #include <string.h>
@@ -526,10 +519,14 @@ void cve_dev_get_custom_fw_version_per_context(
 }
 
 void cve_di_reset_cve_dump(struct cve_device *dev, uint8_t dumpTrigger,
-		struct di_cve_dump_buffer ice_dump_buf)
+		struct di_cve_dump_buffer *ice_dump_buf)
 {
-	cve_di_set_cve_dump_configuration_register(dev,
-			ice_dump_buf);
+	/* Configure dump buffer address only before doorbell
+	 * No communication with TLC on HPORT post doorbell
+	 */
+	if (dumpTrigger != cfg_default.ice_dump_now)
+		cve_di_set_cve_dump_configuration_register(dev, ice_dump_buf);
+
 	cve_di_set_cve_dump_control_register(dev, dumpTrigger, ice_dump_buf);
 }
 

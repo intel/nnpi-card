@@ -75,4 +75,9 @@ void IPC_OPCODE_HANDLER(CHAN_EXEC_ERROR_LIST)(struct sphcs              *sphcs,
 void IPC_OPCODE_HANDLER(CHAN_TRACE_USER_DATA)(struct sphcs                *sphcs,
 					      union h2c_ChanTraceUserData *cmd);
 
+void IPC_OPCODE_HANDLER(CHAN_IDS_MAP)(struct sphcs         *sphcs,
+				      union h2c_ChanIdsMap *cmd);
+
+void IPC_OPCODE_HANDLER(CHAN_MARK_INF_RESOURCE)(struct sphcs *sphcs, union h2c_ChanMarkInferenceResource *cmd);
+
 #endif

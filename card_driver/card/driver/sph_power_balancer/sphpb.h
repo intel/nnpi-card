@@ -41,6 +41,10 @@ struct sphpb_ice_node {
 struct sphpb_ice_info {
 	/* ice requrested ring ratio */
 	uint16_t		ring_divisor;
+
+	/* ice ratio requested */
+	uint8_t	requested_ratio;
+
 	/* ddr bw request - MB/s*/
 	uint32_t		ddr_bw_req;
 	/* ice busy bit */
@@ -52,7 +56,7 @@ struct sphpb_icebo_info {
 	/* mask indicate busy ices in icebo */
 	uint32_t	enabled_ices_mask;
 	/* icebo ratio selected */
-	uint16_t	ratio;
+	uint8_t	ratio;
 	/* icebo ring divisor selected */
 	uint16_t	ring_divisor;
 	/* index of ice in icebo with highest ring divisor value, -1 if not set */
@@ -104,6 +108,19 @@ struct sphpb_pb {
 	struct mutex bios_mutex_lock;
 	struct mutex mutex_lock;
 	bool debug_log;
+
+	/* global icebo cores ratio */
+	uint8_t max_icebo_ratio;
+
+	/* IA cores ratio change indicator */
+	uint8_t ia_changed_by_user;
+
+	/* new value min offset from current ratio value */
+	uint16_t ratio_epsilon;
+
+	/* [Data high, Data low]: ratios for [ice7,ice6,ice5,ice4] , [ice3,ice2,ia1,ia0] */
+	union FREQUENCY_RATIO default_cores_ratios;
+	union FREQUENCY_RATIO current_cores_ratios;
 };
 
 struct cpu_perfstat {
@@ -132,7 +149,7 @@ int sphpb_mng_request_ice_dvfs_values(struct sphpb_pb *sphpb,
 				      uint32_t ice_index,
 				      uint32_t ddr_bw_req,
 				      uint16_t ring_divisor,
-				      uint32_t ice_ratio);
+				      uint8_t ice_ratio);
 
 /* sysfs interfaces */
 int sphpb_iccp_table_sysfs_init(struct sphpb_pb *sphpb);

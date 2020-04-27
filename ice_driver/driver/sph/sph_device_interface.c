@@ -1,17 +1,10 @@
-/*
- * NNP-I Linux Driver
- * Copyright (c) 2017-2019, Intel Corporation.
+/********************************************
+ * Copyright (C) 2019-2020 Intel Corporation
  *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms and conditions of the GNU General Public License,
- * version 2, as published by the Free Software Foundation.
- *
- * This program is distributed in the hope it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
- *
- */
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ ********************************************/
+
+
 
 #ifdef RING3_VALIDATION
 	#include <stdint.h>
@@ -1134,49 +1127,65 @@ out:
 }
 
 void cve_di_set_cve_dump_control_register(struct cve_device *cve_dev,
-		uint8_t dumpTrigger, struct di_cve_dump_buffer ice_dump_buf)
+		uint8_t dumpTrigger, struct di_cve_dump_buffer *ice_dump_buf)
 {
 	union tlc_hi_mem_tlc_dump_control_reg_t reg;
 	u32 offset_bytes;
+
+	if (!ice_dump_buf)
+		goto exit;
 
 	if (dumpTrigger == cfg_default.ice_dump_now)
 		offset_bytes = cfg_default.ice_tlc_low_base +
 			cfg_default.ice_tlc_hi_dump_control_offset;
 	else
 		offset_bytes = cfg_default.ice_tlc_hi_base +
-			cfg_default.ice_tlc_hi_dump_buf_offset;
+			cfg_default.ice_tlc_hi_dump_control_offset;
 
-	if (ice_dump_buf.is_allowed_tlc_dump) {
+	if (ice_dump_buf->is_allowed_tlc_dump) {
 		/* validate that we are 32bit aligned */
 		ASSERT(((offset_bytes >> 2) << 2) == offset_bytes);
 
 		reg.val = 0;
-		if (ice_dump_buf.is_allowed_tlc_dump)
+		if (ice_dump_buf->is_allowed_tlc_dump)
 			reg.field.dumpTrigger = dumpTrigger;
 		else
 			reg.field.dumpTrigger = cfg_default.ice_dump_never;
 
 		cve_os_write_mmio_32(cve_dev, offset_bytes, reg.val);
 	}
+exit:
+	return;
 }
 
 void cve_di_set_cve_dump_configuration_register(
 		struct cve_device *cve_dev,
-		struct di_cve_dump_buffer ice_dump_buf)
+		struct di_cve_dump_buffer *ice_dump_buf)
 {
 	union tlc_hi_mem_tlc_dump_buffer_config_reg_t reg;
 	u32 offset_bytes = cfg_default.ice_tlc_hi_base +
 			cfg_default.ice_tlc_hi_dump_buf_offset;
 
-	if (ice_dump_buf.is_allowed_tlc_dump) {
+	if (!ice_dump_buf)
+		goto exit;
+
+	if (ice_dump_buf->is_allowed_tlc_dump) {
 		/* validate that we are 32bit aligned */
 		ASSERT(((offset_bytes >> 2) << 2) == offset_bytes);
 
-		reg.val = ice_dump_buf.ice_vaddr;
+		reg.val = ice_dump_buf->ice_vaddr;
 		/* 0 means one dump is allowed */
 		reg.field.maxDumpCount = 0;
 		cve_os_write_mmio_32(cve_dev, offset_bytes, reg.val);
 	}
+
+	cve_os_log(CVE_LOGLEVEL_DEBUG,
+			"ICE:%d offset:0x%x is_allowed_tlc_dump:%d iceDumpBufVaddr:0x%x #ICEDUMP\n",
+			cve_dev->dev_index, offset_bytes,
+			ice_dump_buf->is_allowed_tlc_dump,
+			ice_dump_buf->ice_vaddr);
+exit:
+	return;
 }
 
 int project_hook_init_cve_dump_buffer(struct cve_device *dev)

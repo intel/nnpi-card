@@ -4,8 +4,8 @@
  * SPDX-License-Identifier: GPL-2.0-or-later
  ********************************************/
 
-#ifndef _SPH_LOG_H
-#define _SPH_LOG_H
+#ifndef _NNP_LOG_H
+#define _NNP_LOG_H
 
 #include <linux/printk.h>
 #include "log_category_defs.h"

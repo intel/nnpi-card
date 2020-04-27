@@ -1,0 +1,8 @@
+config BR2_PACKAGE_ICE_DRIVER_USER
+        bool "ice_driver_user_package"
+        depends on BR2_PACKAGE_ICE_DRIVER_KERNEL
+        help
+	  ICE driver user.
+
+          http://www.intel.com
+

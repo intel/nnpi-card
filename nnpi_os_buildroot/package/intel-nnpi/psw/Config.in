@@ -1,0 +1,11 @@
+config BR2_PACKAGE_PSW
+        bool "intel_nnpi_psw"
+        depends on BR2_LINUX_KERNEL
+	depends on BR2_PACKAGE_BLOB
+
+        help
+	  Intel NNPI Platform Software package.
+	  PSW needs a Linux kernel to be built
+
+          http://www.intel.com
+

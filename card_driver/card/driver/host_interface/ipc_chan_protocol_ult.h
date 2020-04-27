@@ -20,16 +20,16 @@
 /* Protocol for ULT tests                                                            */
 /*************************************************************************************/
 enum ult2Opcodes {
-	SPH_IPC_ULT2_OP_CARD_HWQ_MSG = 0,
-	SPH_IPC_ULT2_OP_DMA_PING = 1,
-	SPH_IPC_ULT2_NUM_OPCODES
+	NNP_IPC_ULT2_OP_CARD_HWQ_MSG = 0,
+	NNP_IPC_ULT2_OP_DMA_PING = 1,
+	NNP_IPC_ULT2_NUM_OPCODES
 };
-SPH_STATIC_ASSERT(SPH_IPC_ULT2_NUM_OPCODES <= 16, "Opcode ID overflow for ULT2 opcodes");
+NNP_STATIC_ASSERT(NNP_IPC_ULT2_NUM_OPCODES <= 16, "Opcode ID overflow for ULT2 opcodes");
 
 union ULT2HwQMsg {
 	struct {
 		u64 opcode       :  6;
-		u64 channelID    : SPH_IPC_CHANNEL_BITS;
+		u64 channelID    : NNP_IPC_CHANNEL_BITS;
 		u64 ultOpcode    :  4;
 		u64 ultMsgId     :  5;
 		u64 ultMsgsNum   : 16;
@@ -44,7 +44,7 @@ CHECK_MESSAGE_SIZE(union ULT2HwQMsg, 1);
 union ULT2DmaPingMsg {
 	struct {
 		u64 opcode       :  6;
-		u64 channelID    : SPH_IPC_CHANNEL_BITS;
+		u64 channelID    : NNP_IPC_CHANNEL_BITS;
 		u64 ultOpcode    :  4;
 		u64 rbID         :  1;
 		u64 seq          : 16;

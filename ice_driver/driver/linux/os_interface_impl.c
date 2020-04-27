@@ -1,17 +1,10 @@
-/*
- * NNP-I Linux Driver
- * Copyright (c) 2017-2019, Intel Corporation.
+/********************************************
+ * Copyright (C) 2019-2020 Intel Corporation
  *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms and conditions of the GNU General Public License,
- * version 2, as published by the Free Software Foundation.
- *
- * This program is distributed in the hope it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
- *
- */
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ ********************************************/
+
+
 
 #include <linux/device.h>
 #include <linux/sched.h>
@@ -423,6 +416,12 @@ uint64_t get_ice_freq(void)
 {
 	return native_read_msr(ICE_FREQ_MSR);
 }
+
+unsigned long ice_os_get_current_jiffy(void)
+{
+	return jiffies;
+}
+
 int set_llc_freq(void *llc_freq_config)
 {
 	u32 lo, hi, msr, freq_min, freq_max, val_low, val_high;

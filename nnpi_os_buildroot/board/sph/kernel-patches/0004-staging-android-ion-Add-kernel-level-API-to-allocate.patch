@@ -1,0 +1,98 @@
+From cd9a51af66d7bc532624ad20c4236384d510f3fc Mon Sep 17 00:00:00 2001
+From: Alexey Skidanov <alexey.skidanov@intel.com>
+Date: Sat, 14 Sep 2019 17:08:43 -0400
+Subject: [PATCH 4/6] staging: android: ion: Add kernel level API to
+ allocate/free buffers
+
+Kernel level API is used privately by Kernel drivers
+
+Signed-off-by: Alexey Skidanov <alexey.skidanov@intel.com>
+---
+ drivers/staging/android/ion/ion.c | 54 +++++++++++++++++++++++++++++++++++++++
+ include/linux/ion_exp.h           |  7 +++++
+ 2 files changed, 61 insertions(+)
+
+diff --git a/drivers/staging/android/ion/ion.c b/drivers/staging/android/ion/ion.c
+index 6a35d69..ebbe1c5 100644
+--- a/drivers/staging/android/ion/ion.c
++++ b/drivers/staging/android/ion/ion.c
+@@ -737,6 +737,60 @@ int ion_get_buf_user_data(phys_addr_t addr, u64 *user_data)
+ }
+ EXPORT_SYMBOL(ion_get_buf_user_data);
+ 
++void *ion_kbuf_alloc(u64 size,
++		     u32 alignment,
++		     const char *heap_name,
++		     u32 flags,
++		     struct sg_table **sg_table,
++		     void **vaddr)
++{
++	struct ion_buffer *buf = NULL;
++	struct ion_heap *heap = NULL;
++
++	down_read(&internal_dev->lock);
++
++	/* Find the requsted heap and allocate buffer */
++	plist_for_each_entry(heap, &internal_dev->heaps, node) {
++		if (heap->name && (strcmp(heap_name, heap->name) == 0))
++			buf = ion_buffer_create(heap,
++						internal_dev,
++						size,
++						0,
++						flags,
++						alignment);
++	}
++	up_read(&internal_dev->lock);
++
++	/* If allocation failed */
++	if (IS_ERR_OR_NULL(buf))
++		goto failed_to_allocate;
++
++	/* Map the buffer to kernel space */
++	*vaddr = ion_buffer_kmap_get(buf);
++
++	/* If mapping has been failed */
++	if (IS_ERR_OR_NULL(*vaddr))
++		goto failed_to_map;
++
++	*sg_table = buf->sg_table;
++
++	return buf;
++
++failed_to_map:
++	_ion_buffer_destroy(buf);
++	buf = NULL;
++failed_to_allocate:
++	return buf;
++}
++EXPORT_SYMBOL(ion_kbuf_alloc);
++
++void ion_kbuf_free(void *buf)
++{
++	ion_buffer_kmap_put(buf);
++	_ion_buffer_destroy(buf);
++}
++EXPORT_SYMBOL(ion_kbuf_free);
++
+ static int ion_device_create(void)
+ {
+ 	struct ion_device *idev;
+diff --git a/include/linux/ion_exp.h b/include/linux/ion_exp.h
+index c5ba750..307fc0a 100644
+--- a/include/linux/ion_exp.h
++++ b/include/linux/ion_exp.h
+@@ -12,4 +12,11 @@ extern void ion_chunk_heap_remove(void *ion_heap);
+ 
+ extern int ion_get_buf_user_data(phys_addr_t addr, u64 *user_data);
+ 
++extern void *ion_kbuf_alloc(u64 size,
++			    u32 alignment,
++			    const char *heap_name,
++			    u32 flags,
++			    struct sg_table **sg_table,
++			    void **vaddr);
++extern void ion_kbuf_free(void *buf_handle);
+ #endif /* _ION_EXP_H */
+-- 
+2.7.4
+

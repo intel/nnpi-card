@@ -1,0 +1,38 @@
+From 46691fbfecdc5cbe66771deba959ec37e59bcbd4 Mon Sep 17 00:00:00 2001
+From: farah kassabri <farah.kassabri@intel.com>
+Date: Wed, 27 Nov 2019 21:56:18 -0500
+Subject: [PATCH 6/6] staging: android: ion: Limit contiguos buffer size by 4GB
+
+The contiguos buffer is described by one scatterlist entry.
+But scatterlist length field is unsigned int and thus can't
+represent the buffer of size bigger than 4GB - 1.
+---
+ drivers/staging/android/ion/ion_chunk_heap.c | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/drivers/staging/android/ion/ion_chunk_heap.c b/drivers/staging/android/ion/ion_chunk_heap.c
+index bf6ca7f..d522a0de 100644
+--- a/drivers/staging/android/ion/ion_chunk_heap.c
++++ b/drivers/staging/android/ion/ion_chunk_heap.c
+@@ -16,6 +16,8 @@
+ 
+ #include "ion.h"
+ 
++#define MAX_CONT_BUFF_SIZE 0x100000000
++
+ struct ion_chunk_heap {
+ 	struct ion_heap heap;
+ 	struct gen_pool *pool;
+@@ -33,6 +35,9 @@ static int ion_chunk_heap_allocate_contig(struct ion_chunk_heap *chunk_heap,
+ 	unsigned long paddr;
+ 	int rc;
+ 
++	if (allocated_size >= MAX_CONT_BUFF_SIZE)
++		return -EINVAL;
++
+ 	paddr = gen_pool_alloc_algo(chunk_heap->pool,
+ 				    allocated_size,
+ 				    gen_pool_first_fit_align,
+-- 
+2.7.4
+

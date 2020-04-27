@@ -17,8 +17,8 @@
  * otherwise. Any license under such intellectual property rights must be express
  * and approved by Intel in writing.
  ********************************************************************************/
-#ifndef _SPH_VERSION_H
-#define _SPH_VERSION_H
+#ifndef _NNP_VERSION_H
+#define _NNP_VERSION_H
 
 #define _STR(x) #x
 #define STR(x) _STR(x)
@@ -26,13 +26,13 @@
 #define SPH_MAJOR 0
 #define SPH_MINOR 5
 #define SPH_PATCH 2
-#define SPH_PATCH_MINOR 0
+#define SPH_PATCH_MINOR 3
 
-#define SPH_VERSION  STR(VERSION: v.SPH_MAJOR.SPH_MINOR.SPH_PATCH.SPH_PATCH_MINOR)
+#define NNP_VERSION  STR(VERSION: v.SPH_MAJOR.SPH_MINOR.SPH_PATCH.SPH_PATCH_MINOR)
 #define AUTHOR_STR   STR(AUTHOR: Intel Corporation 2018-2020)
 #define SPH_GIT_HASH STR(gh.GIT_HASH)
 
-#ident SPH_VERSION
+#ident NNP_VERSION
 #ident AUTHOR_STR
 #ifdef DEBUG
 #ident SPH_GIT_HASH

@@ -15,11 +15,11 @@
 #include "ipc_protocol.h"
 #include "inf_context.h"
 #include "inf_exec_req.h"
-#include "sph_error.h"
+#include "nnp_error.h"
 #include "sphcs_trace.h"
 
 static int inf_copy_req_sched(struct inf_exec_req *req);
-static bool inf_copy_req_ready(struct inf_exec_req *req);
+static enum EXEC_REQ_READINESS inf_copy_req_ready(struct inf_exec_req *req);
 static int inf_copy_req_execute(struct inf_exec_req *req);
 static void inf_copy_req_complete(struct inf_exec_req *req,
 				  int                  err,
@@ -29,9 +29,14 @@ static void send_copy_report(struct inf_exec_req *req,
 			     enum event_val       eventVal);
 static int inf_req_copy_put(struct inf_exec_req *req);
 static int inf_copy_migrate_priority(struct inf_exec_req *req, uint8_t priority);
+static void treat_copy_failure(struct inf_exec_req *req,
+				enum event_val       eventVal,
+				const void          *error_msg,
+				int32_t              error_msg_size);
+
 static void inf_copy_req_release(struct kref *kref);
 
-#define SUBRES_MAX_LLI_SIZE SPH_PAGE_SIZE
+#define SUBRES_MAX_LLI_SIZE NNP_PAGE_SIZE
 
 struct func_table const s_copy_funcs = {
 	.schedule = inf_copy_req_sched,
@@ -41,32 +46,18 @@ struct func_table const s_copy_funcs = {
 	.send_report = send_copy_report,
 	.obj_put = inf_req_copy_put,
 	.migrate_priority = inf_copy_migrate_priority,
+	.treat_req_failure = treat_copy_failure,
 
 	/* This function should not be called directly, use inf_exec_req_put instead */
 	.release = inf_copy_req_release
 };
 
-static int copy_complete_cb(struct sphcs *sphcs, void *ctx, const void *user_data, int status, u32 xferTimeUS)
+static void inf_copy_update_counters(struct inf_copy *copy, u32 xferTimeUS)
 {
-	int err;
-	struct inf_exec_req *req = (struct inf_exec_req *)ctx;
-	struct inf_copy *copy;
-
-	SPH_ASSERT(req != NULL);
-
-	if (unlikely(status == SPHCS_DMA_STATUS_FAILED)) {
-		err = -SPHER_DMA_ERROR;
-	} else {
-		/* if status is not an error - it must be done */
-		SPH_ASSERT(status == SPHCS_DMA_STATUS_DONE);
-		err = 0;
-	}
-
-	copy = req->copy;
 	if (xferTimeUS > 0 &&
-	    SPH_SW_GROUP_IS_ENABLE(copy->sw_counters,
+	    NNP_SW_GROUP_IS_ENABLE(copy->sw_counters,
 				   COPY_SPHCS_SW_COUNTERS_GROUP)) {
-		SPH_SW_COUNTER_ADD(copy->sw_counters,
+		NNP_SW_COUNTER_ADD(copy->sw_counters,
 					COPY_SPHCS_SW_COUNTERS_HWEXEC_TOTAL_TIME,
 					xferTimeUS);
 
@@ -84,10 +75,55 @@ static int copy_complete_cb(struct sphcs *sphcs, void *ctx, const void *user_dat
 			copy->max_hw_exec_time = xferTimeUS;
 		}
 	}
+}
+
+static int copy_complete_cb(struct sphcs *sphcs, void *ctx, const void *user_data, int status, u32 xferTimeUS)
+{
+	int err = 0;
+	struct inf_exec_req *req = (struct inf_exec_req *)ctx;
+
+	NNP_ASSERT(req != NULL);
+	NNP_ASSERT(status == SPHCS_DMA_STATUS_DONE || status == SPHCS_DMA_STATUS_FAILED);
+
+	/* Update copy execution counter only on success (otherwise the min/max might not reflect the real values)*/
+	if (likely(status == SPHCS_DMA_STATUS_DONE))
+		inf_copy_update_counters(req->copy, xferTimeUS);
+	else
+		err = -NNPER_DMA_ERROR;
 
 	req->f->complete(req, err, NULL, 0);
 
-	return err;
+	return 0;
+}
+
+static int d2d_copy_complete_cb(struct sphcs *sphcs, void *ctx, const void *user_data, int status, u32 xferTimeUS)
+{
+	int err = 0;
+	struct inf_exec_req *req = (struct inf_exec_req *)ctx;
+	struct inf_copy *copy;
+
+	NNP_ASSERT(req != NULL);
+	NNP_ASSERT(status == SPHCS_DMA_STATUS_DONE || status == SPHCS_DMA_STATUS_FAILED);
+
+	if (unlikely(status == SPHCS_DMA_STATUS_FAILED))
+		err = -NNPER_DMA_ERROR;
+
+	copy = req->copy;
+
+	/* Should be source p2p buffer */
+	NNP_ASSERT(copy->d2d && copy->devres->is_p2p_src);
+
+	/* Forward credit to the consumer only if copy has been successfully completed */
+	if (likely(err == 0)) {
+		copy->devres->p2p_buf.ready = false;
+		err = sphcs_p2p_send_fw_cr_and_ring_db(&copy->devres->p2p_buf, copy_complete_cb, req);
+	}
+
+	/* If DMA failed or failed to start credit forwarding */
+	if (unlikely(err))
+		req->f->complete(req, err, NULL, 0);
+
+	return 0;
 }
 
 int inf_d2d_copy_create(uint16_t protocolCopyID,
@@ -138,7 +174,7 @@ int inf_d2d_copy_create(uint16_t protocolCopyID,
 	copy->d2d = true;
 	sphcs_dma_multi_xfer_handle_init(&copy->multi_xfer_handle);
 
-	ret = sph_create_sw_counters_values_node(g_hSwCountersInfo_copy,
+	ret = nnp_create_sw_counters_values_node(g_hSwCountersInfo_copy,
 						 (u32)protocolCopyID,
 						 context->sw_counters,
 						 &copy->sw_counters);
@@ -150,21 +186,21 @@ int inf_d2d_copy_create(uint16_t protocolCopyID,
 	inf_context_get(context);
 
 	/* Add copy to the context hash */
-	SPH_SPIN_LOCK(&copy->context->lock);
+	NNP_SPIN_LOCK(&copy->context->lock);
 	hash_add(copy->context->copy_hash,
 		 &copy->hash_node,
 		 copy->protocolID);
-	SPH_SPIN_UNLOCK(&copy->context->lock);
+	NNP_SPIN_UNLOCK(&copy->context->lock);
 
 	/* Calculate DMA LLI size */
-	ret = g_the_sphcs->hw_ops->dma.init_lli(g_the_sphcs->hw_handle, &copy->lli, from_devres->dma_map, to_sgt, 0);
+	ret = g_the_sphcs->hw_ops->dma.init_lli(g_the_sphcs->hw_handle, &copy->lli, from_devres->dma_map, to_sgt, 0, false);
 	if (ret != 0) {
 		sph_log_err(CREATE_COMMAND_LOG, "FATAL: line:%u failed to init lli buffer\n", __LINE__);
 		ret = -ENOMEM;
 		goto failed_to_allocate_lli;
 	}
 
-	SPH_ASSERT(copy->lli.size > 0);
+	NNP_ASSERT(copy->lli.size > 0);
 
 	/* Allocate memory for DMA LLI */
 	copy->lli.vptr = dma_alloc_coherent(g_the_sphcs->hw_device, copy->lli.size, &copy->lli.dma_addr, GFP_KERNEL);
@@ -176,11 +212,11 @@ int inf_d2d_copy_create(uint16_t protocolCopyID,
 
 	/* Generate LLI */
 	transfer_size = g_the_sphcs->hw_ops->dma.gen_lli(g_the_sphcs->hw_handle, from_devres->dma_map, to_sgt, &copy->lli, 0);
-	SPH_ASSERT(transfer_size == from_devres->size);
+	NNP_ASSERT(transfer_size == from_devres->size);
 
 	/* Send report to host */
 	sphcs_send_event_report(g_the_sphcs,
-				SPH_IPC_CREATE_COPY_SUCCESS,
+				NNP_IPC_CREATE_COPY_SUCCESS,
 				0,
 				copy->context->chan->respq,
 				copy->context->protocolID,
@@ -191,7 +227,7 @@ int inf_d2d_copy_create(uint16_t protocolCopyID,
 	return 0;
 
 failed_to_allocate_lli:
-	sph_remove_sw_counters_values_node(copy->sw_counters);
+	nnp_remove_sw_counters_values_node(copy->sw_counters);
 failed_to_create_counters:
 	sg_free_table(to_sgt);
 failed_to_allocate_sgt:
@@ -272,14 +308,14 @@ int inf_copy_create(uint16_t protocolCopyID,
 			dst_sgt = (copy->devres)->dma_map; // sg_table from device resource
 		}
 
-		res = g_the_sphcs->hw_ops->dma.init_lli(g_the_sphcs->hw_handle, &copy->lli, src_sgt, dst_sgt, 0);
+		res = g_the_sphcs->hw_ops->dma.init_lli(g_the_sphcs->hw_handle, &copy->lli, src_sgt, dst_sgt, 0, false);
 		if (unlikely(res != 0)) {
 			sph_log_err(CREATE_COMMAND_LOG, "FATAL: line:%u failed to init lli buffer\n", __LINE__);
 			res = -ENOMEM;
 			goto failed;
 		}
 
-		SPH_ASSERT(copy->lli.size > 0);
+		NNP_ASSERT(copy->lli.size > 0);
 
 		memcpy(&copy->host_sgt, &hostres_map->host_sgt, sizeof(struct sg_table));
 	}
@@ -294,18 +330,18 @@ int inf_copy_create(uint16_t protocolCopyID,
 		// generate lli buffer for dma
 		u64 total_entries_bytes = g_the_sphcs->hw_ops->dma.gen_lli(g_the_sphcs->hw_handle, src_sgt, dst_sgt, &copy->lli, 0);
 
-		SPH_ASSERT(total_entries_bytes > 0);
+		NNP_ASSERT(total_entries_bytes > 0);
 		if (unlikely(total_entries_bytes == 0)) {
 			sph_log_err(CREATE_COMMAND_LOG, "FATAL: line:%u failed to gen lli buffer\n", __LINE__);
 			res = -ENOMEM;
 			goto failed;
 		}
 
-		DO_TRACE(trace_infer_create((copy->card2Host ? SPH_TRACE_INF_CREATE_C2H_COPY_HANDLE : SPH_TRACE_INF_CREATE_H2C_COPY_HANDLE),
+		DO_TRACE(trace_infer_create((copy->card2Host ? SPH_TRACE_INF_C2H_COPY_HANDLE : SPH_TRACE_INF_H2C_COPY_HANDLE),
 				copy->context->protocolID, copy->protocolID, SPH_TRACE_OP_STATUS_COMPLETE, -1, -1));
 	}
 
-	res = sph_create_sw_counters_values_node(g_hSwCountersInfo_copy,
+	res = nnp_create_sw_counters_values_node(g_hSwCountersInfo_copy,
 						 (u32)protocolCopyID,
 						 context->sw_counters,
 						 &copy->sw_counters);
@@ -314,14 +350,14 @@ int inf_copy_create(uint16_t protocolCopyID,
 
 	/* make sure the context will exist for the copy handle life */
 	inf_context_get(context);
-	SPH_SPIN_LOCK(&copy->context->lock);
+	NNP_SPIN_LOCK(&copy->context->lock);
 	hash_add(copy->context->copy_hash,
 		 &copy->hash_node,
 		 copy->protocolID);
-	SPH_SPIN_UNLOCK(&copy->context->lock);
+	NNP_SPIN_UNLOCK(&copy->context->lock);
 
 	sphcs_send_event_report(g_the_sphcs,
-				SPH_IPC_CREATE_COPY_SUCCESS,
+				NNP_IPC_CREATE_COPY_SUCCESS,
 				0,
 				copy->context->chan->respq,
 				copy->context->protocolID,
@@ -342,9 +378,9 @@ static void release_copy(struct work_struct *work)
 {
 	struct inf_copy *copy = container_of(work, struct inf_copy, work);
 
-	SPH_SPIN_LOCK(&copy->context->lock);
+	NNP_SPIN_LOCK(&copy->context->lock);
 	hash_del(&copy->hash_node);
-	SPH_SPIN_UNLOCK(&copy->context->lock);
+	NNP_SPIN_UNLOCK(&copy->context->lock);
 
 	if (likely(copy->lli.vptr != NULL))
 		dma_free_coherent(g_the_sphcs->hw_device,
@@ -352,13 +388,13 @@ static void release_copy(struct work_struct *work)
 				copy->lli.vptr,
 				copy->lli.dma_addr);
 	if (copy->sw_counters)
-		sph_remove_sw_counters_values_node(copy->sw_counters);
+		nnp_remove_sw_counters_values_node(copy->sw_counters);
 
 	inf_devres_put(copy->devres);
 
 	if (likely(copy->destroyed == 1))
 		sphcs_send_event_report(g_the_sphcs,
-				SPH_IPC_COPY_DESTROYED,
+				NNP_IPC_COPY_DESTROYED,
 				0,
 				copy->context->chan->respq,
 				copy->context->protocolID,
@@ -396,16 +432,17 @@ static void inf_copy_req_release(struct kref *kref)
 						in_use);
 	struct inf_copy *copy;
 
-	SPH_ASSERT(req->cmd_type == CMDLIST_CMD_COPY);
+	NNP_ASSERT(req->cmd_type == CMDLIST_CMD_COPY);
 
 	copy = req->copy;
-	inf_devres_del_req_from_queue(copy->devres, req);
+	inf_devres_del_req_from_queue(req->depend_devres, req);
 	inf_context_seq_id_fini(copy->context, &req->seq);
 
 	/* advance sched tick and try execute next requests */
 	atomic_add(2, &req->context->sched_tick);
-	inf_devres_try_execute(copy->devres);
+	inf_devres_try_execute(req->depend_devres);
 
+	inf_devres_put(req->depend_devres);
 	kmem_cache_free(copy->context->exec_req_slab_cache, req);
 	inf_copy_put(copy);
 }
@@ -427,6 +464,7 @@ void inf_copy_req_init(struct inf_exec_req *req,
 	req->size = size ? size : copy->devres->size;
 	req->time = 0;
 	req->priority = priority;
+	req->depend_devres = NULL;
 }
 
 int inf_copy_req_init_subres_copy(struct inf_exec_req *req,
@@ -457,10 +495,12 @@ static int inf_copy_req_sched(struct inf_exec_req *req)
 	struct inf_copy *copy;
 	int err;
 
-	SPH_ASSERT(req->cmd_type == CMDLIST_CMD_COPY);
+	NNP_ASSERT(req->cmd_type == CMDLIST_CMD_COPY);
 
 	copy = req->copy;
 	inf_copy_get(copy);
+	req->depend_devres = inf_devres_get_depend_pivot(copy->devres);
+	inf_devres_get(req->depend_devres);
 	spin_lock_init(&req->lock_irq);
 	inf_context_seq_id_init(copy->context, &req->seq);
 
@@ -469,25 +509,26 @@ static int inf_copy_req_sched(struct inf_exec_req *req)
 					 copy->protocolID,
 					 req->cmd ? req->cmd->protocolID : -1,
 					 copy->card2Host,
+					 copy->d2d ? sphcs_p2p_get_peer_dev_id(&(copy->devres->p2p_buf)) : -1,
 					 req->size,
 					 1,
 					 copy->lli.num_lists,
 					 copy->lli.num_elements));
 
-	if (SPH_SW_GROUP_IS_ENABLE(copy->sw_counters,
+	if (NNP_SW_GROUP_IS_ENABLE(copy->sw_counters,
 				   COPY_SPHCS_SW_COUNTERS_GROUP)) {
-		req->time = sph_time_us();
+		req->time = nnp_time_us();
 	}
 
 	inf_exec_req_get(req);
 
-	err = inf_devres_add_req_to_queue(copy->devres, req, copy->card2Host);
+	/* Add request to the queue */
+	err = inf_devres_add_req_to_queue(req->depend_devres, req, copy->card2Host);
 	if (unlikely(err < 0)) {
 		inf_context_seq_id_fini(copy->context, &req->seq);
 		inf_copy_put(copy);
 		return err;
 	}
-	// Request scheduled
 
 	// First try to execute
 	req->last_sched_tick = 0;
@@ -498,16 +539,40 @@ static int inf_copy_req_sched(struct inf_exec_req *req)
 	return 0;
 }
 
-static bool inf_copy_req_ready(struct inf_exec_req *req)
+static enum EXEC_REQ_READINESS inf_copy_req_ready(struct inf_exec_req *req)
 {
 	struct inf_copy *copy;
+	enum DEV_RES_READINESS dev_res_status;
+	enum EXEC_REQ_READINESS res;
 
-	SPH_ASSERT(req->cmd_type == CMDLIST_CMD_COPY);
+	NNP_ASSERT(req->cmd_type == CMDLIST_CMD_COPY);
 
 	copy = req->copy;
-	return !copy->active && inf_devres_req_ready(copy->devres,
-						     req,
-						     copy->card2Host);
+
+	if (copy->active)
+		return EXEC_REQ_READINESS_NOT_READY;
+
+	dev_res_status = inf_devres_req_ready(req->depend_devres, req, copy->card2Host);
+	switch (dev_res_status) {
+	case DEV_RES_READINESS_NOT_READY:
+		res = EXEC_REQ_READINESS_NOT_READY;
+		break;
+	case DEV_RES_READINESS_READY:
+		res = EXEC_REQ_READINESS_READY_NO_DIRTY_INPUTS;
+		break;
+	case DEV_RES_READINESS_READY_BUT_DIRTY:
+		/* For C2H consider dirty of resource only, discarding group dirty of its potential pivot */
+		NNP_ASSERT(copy->card2Host);
+		if (!copy->devres->is_dirty)
+			res = EXEC_REQ_READINESS_READY_NO_DIRTY_INPUTS;
+		else
+			res = EXEC_REQ_READINESS_READY_HAS_DIRTY_INPUTS;
+		break;
+	default:
+		res = EXEC_REQ_READINESS_NOT_READY;
+	}
+
+	return res;
 }
 
 static int inf_copy_req_execute(struct inf_exec_req *req)
@@ -515,8 +580,8 @@ static int inf_copy_req_execute(struct inf_exec_req *req)
 	struct sphcs_dma_desc const *desc;
 	struct inf_copy *copy;
 
-	SPH_ASSERT(req->cmd_type == CMDLIST_CMD_COPY);
-	SPH_ASSERT(req->in_progress);
+	NNP_ASSERT(req->cmd_type == CMDLIST_CMD_COPY);
+	NNP_ASSERT(req->in_progress);
 
 	copy = req->copy;
 	DO_TRACE_IF(!copy->subres_copy, trace_copy(SPH_TRACE_OP_STATUS_START,
@@ -524,6 +589,7 @@ static int inf_copy_req_execute(struct inf_exec_req *req)
 		 copy->protocolID,
 		 req->cmd ? req->cmd->protocolID : -1,
 		 copy->card2Host,
+		 copy->d2d ? sphcs_p2p_get_peer_dev_id(&(copy->devres->p2p_buf)) : -1,
 		 req->size,
 		 1,
 		 copy->lli.num_lists,
@@ -539,7 +605,7 @@ static int inf_copy_req_execute(struct inf_exec_req *req)
 							&copy->lli,
 							&req->hostres_map->host_sgt,
 							copy->devres->dma_map,
-							req->devres_offset);
+							req->devres_offset, false);
 		if (ret != 0 || copy->lli.size > lli_size_keep) {
 			sph_log_err(EXECUTE_COMMAND_LOG, "Failed init lli for subres ret=%d size=%u size_keep=%u vptr=0x%lx\n",
 				    ret, copy->lli.size, lli_size_keep, (uintptr_t)copy->lli.vptr);
@@ -557,20 +623,20 @@ static int inf_copy_req_execute(struct inf_exec_req *req)
 			return -EINVAL;
 	}
 
-	if (SPH_SW_GROUP_IS_ENABLE(copy->sw_counters,
+	if (NNP_SW_GROUP_IS_ENABLE(copy->sw_counters,
 				   COPY_SPHCS_SW_COUNTERS_GROUP)) {
 		u64 now;
 
-		now = sph_time_us();
+		now = nnp_time_us();
 		if (req->time) {
 			u64 dt;
 
 			dt = now - req->time;
-			SPH_SW_COUNTER_ADD(copy->sw_counters,
+			NNP_SW_COUNTER_ADD(copy->sw_counters,
 					   COPY_SPHCS_SW_COUNTERS_BLOCK_TOTAL_TIME,
 					   dt);
 
-			SPH_SW_COUNTER_INC(copy->sw_counters,
+			NNP_SW_COUNTER_INC(copy->sw_counters,
 					   COPY_SPHCS_SW_COUNTERS_BLOCK_COUNT);
 
 			if (dt < copy->min_block_time) {
@@ -616,7 +682,7 @@ static int inf_copy_req_execute(struct inf_exec_req *req)
 	copy->active = true;
 
 	if (inf_context_get_state(copy->context) != CONTEXT_OK)
-		return -SPHER_CONTEXT_BROKEN;
+		return -NNPER_CONTEXT_BROKEN;
 
 	g_the_sphcs->hw_ops->dma.edit_lli(g_the_sphcs->hw_handle, &copy->lli, req->size);
 
@@ -625,8 +691,43 @@ static int inf_copy_req_execute(struct inf_exec_req *req)
 						desc,
 						&copy->lli,
 						req->size,
-						copy_complete_cb,
+						copy->d2d ? d2d_copy_complete_cb : copy_complete_cb,
 						req);
+}
+
+static void treat_copy_failure(struct inf_exec_req *req,
+				enum event_val       eventVal,
+				const void          *error_msg,
+				int32_t              error_msg_size)
+{
+	struct inf_copy *copy;
+	struct inf_exec_error_details *err_details;
+	int rc;
+
+	NNP_ASSERT(req->cmd_type == CMDLIST_CMD_COPY);
+
+	copy = req->copy;
+
+	rc = inf_exec_error_details_alloc(CMDLIST_CMD_COPY,
+					  copy->protocolID,
+					  0,
+					  eventVal,
+					  error_msg_size > 0 ? error_msg_size : 0,
+					  &err_details);
+	if (likely(rc == 0)) {
+		if (error_msg_size > 0)
+			memcpy(err_details->error_msg, error_msg, error_msg_size);
+
+		inf_exec_error_list_add(req->cmd != NULL ? &req->cmd->error_list :
+							   &copy->context->error_list,
+					err_details);
+	}
+
+	if (req->cmd == NULL)
+		inf_context_set_state(copy->context,
+				      CONTEXT_BROKEN_RECOVERABLE);
+	if (!copy->card2Host)
+		inf_devres_set_dirty(copy->devres, true);
 }
 
 static void inf_copy_req_complete(struct inf_exec_req *req,
@@ -639,13 +740,10 @@ static void inf_copy_req_complete(struct inf_exec_req *req,
 	struct inf_devres *devres;
 	struct inf_cmd_list *cmd;
 	bool is_d2d_copy;
-	unsigned long flags;
 	bool send_cmdlist_event_report = false;
-	struct inf_exec_error_details *err_details = NULL;
-	int rc;
 
-	SPH_ASSERT(req->cmd_type == CMDLIST_CMD_COPY);
-	SPH_ASSERT(req->in_progress);
+	NNP_ASSERT(req->cmd_type == CMDLIST_CMD_COPY);
+	NNP_ASSERT(req->in_progress);
 
 	copy = req->copy;
 	devres = copy->devres;
@@ -657,25 +755,26 @@ static void inf_copy_req_complete(struct inf_exec_req *req,
 					 copy->protocolID,
 					 cmd ? cmd->protocolID : -1,
 					 copy->card2Host,
+					 copy->d2d ? sphcs_p2p_get_peer_dev_id(&(copy->devres->p2p_buf)) : -1,
 					 req->size,
 					 1,
 					 copy->lli.num_lists,
 					 copy->lli.num_elements));
 
-	if (SPH_SW_GROUP_IS_ENABLE(copy->sw_counters,
+	if (NNP_SW_GROUP_IS_ENABLE(copy->sw_counters,
 				   COPY_SPHCS_SW_COUNTERS_GROUP)) {
 		u64 now;
 
-		now = sph_time_us();
+		now = nnp_time_us();
 		if (req->time) {
 			u64 dt;
 
 			dt = now - req->time;
-			SPH_SW_COUNTER_ADD(copy->sw_counters,
+			NNP_SW_COUNTER_ADD(copy->sw_counters,
 					   COPY_SPHCS_SW_COUNTERS_EXEC_TOTAL_TIME,
 					   dt);
 
-			SPH_SW_COUNTER_INC(copy->sw_counters,
+			NNP_SW_COUNTER_INC(copy->sw_counters,
 					   COPY_SPHCS_SW_COUNTERS_EXEC_COUNT);
 
 			if (dt < copy->min_exec_time) {
@@ -699,61 +798,63 @@ static void inf_copy_req_complete(struct inf_exec_req *req,
 		sph_log_err(EXECUTE_COMMAND_LOG, "Execute copy failed with err=%d\n", err);
 		switch (err) {
 		case -ENOMEM:
-			eventVal = SPH_IPC_NO_MEMORY;
+			eventVal = NNP_IPC_NO_MEMORY;
 			break;
-		case -SPHER_CONTEXT_BROKEN:
-			eventVal = SPH_IPC_CONTEXT_BROKEN;
+		case -NNPER_CONTEXT_BROKEN:
+			eventVal = NNP_IPC_CONTEXT_BROKEN;
+			break;
+		case -NNPER_INPUT_IS_DIRTY:
+			eventVal = NNP_IPC_INPUT_IS_DIRTY;
 			break;
 		default:
-			eventVal = SPH_IPC_DMA_ERROR;
+			eventVal = NNP_IPC_DMA_ERROR;
 		}
 
-		rc = inf_exec_error_details_alloc(CMDLIST_CMD_COPY,
-						  copy->protocolID,
-						  0,
-						  eventVal,
-						  error_msg_size > 0 ? error_msg_size : 0,
-						  &err_details);
-		if (rc == 0) {
-			if (error_msg_size != 0)
-				memcpy(err_details->error_msg, error_msg, error_msg_size);
-
-			inf_exec_error_list_add(cmd != NULL ? &cmd->error_list :
-							      &copy->context->error_list,
-						err_details);
-		}
-
-		//TODO GLEB: Decide if copy failed brakes context or cmd or ...
-		if (cmd == NULL)
-			inf_context_set_state(copy->context,
-					      CONTEXT_BROKEN_RECOVERABLE);
+		treat_copy_failure(req, eventVal, error_msg, error_msg_size);
 	} else {
+		if (!copy->card2Host)
+			inf_devres_set_dirty(devres, false);
+
 		eventVal = 0;
 	}
 
-	if (cmd != NULL) {
-		SPH_SPIN_LOCK_IRQSAVE(&cmd->lock_irq, flags);
-		if (--cmd->num_left == 0)
-			send_cmdlist_event_report = true;
-		SPH_SPIN_UNLOCK_IRQRESTORE(&cmd->lock_irq, flags);
+	/* If copy from destination p2p resource completed*/
+	if (copy->card2Host && copy->devres->is_p2p_dst) {
+		/* Resource will be ready again, once d2d copy will succeed */
+		devres->p2p_buf.ready = false;
+
+		if (!copy->devres->is_dirty) {
+			/* If copy is part of command list, the command list completion will be reported
+			 * only when all credits are released
+			 */
+			if (cmd != NULL)
+				atomic_inc(&cmd->num_left);
+
+			/* If failed to send credits and copy is part of command list */
+			if (inf_devres_send_release_credit(copy->devres, req) && (cmd != NULL))
+				atomic_dec(&cmd->num_left);
+		}
 	}
+
+	if (cmd != NULL)
+		send_cmdlist_event_report = atomic_dec_and_test(&cmd->num_left);
 
 	if (eventVal == 0 && send_cmdlist_event_report && !is_d2d_copy) {
 		// if success and should send both cmd and copy reports,
 		// send one merged report
 		sphcs_send_event_report_ext(g_the_sphcs,
-					    SPH_IPC_EXECUTE_COPY_SUCCESS,
+					    NNP_IPC_EXECUTE_COPY_SUCCESS,
 					    eventVal,
 					    copy->context->chan->respq,
 					    copy->context->protocolID,
 					    copy->protocolID,
 					    cmd->protocolID);
 	} else {
-		req->f->send_report(req, eventVal);
+		send_copy_report(req, eventVal);
 
 		if (send_cmdlist_event_report)
 			sphcs_send_event_report(g_the_sphcs,
-						SPH_IPC_EXECUTE_CMD_COMPLETE,
+						NNP_IPC_EXECUTE_CMD_COMPLETE,
 						0,
 						cmd->context->chan->respq,
 						cmd->context->protocolID,
@@ -768,18 +869,6 @@ static void inf_copy_req_complete(struct inf_exec_req *req,
 	}
 	copy->active = false;
 
-	if (is_d2d_copy) {
-		/* Should be source p2p buffer */
-		SPH_ASSERT(devres->is_p2p_src);
-
-		/* d2d copy completed - need to wait while the data is consumed */
-		devres->p2p_buf.ready = false;
-
-		/* Notify the dst */
-		sphcs_p2p_send_fw_cr(&devres->p2p_buf);
-		sphcs_p2p_ring_doorbell(&devres->p2p_buf);
-	}
-
 	inf_exec_req_put(req);
 }
 
@@ -787,16 +876,22 @@ static void send_copy_report(struct inf_exec_req *req,
 			     enum event_val       eventVal)
 {
 	struct inf_copy *copy;
-	uint16_t eventCode = eventVal == 0 ? SPH_IPC_EXECUTE_COPY_SUCCESS : SPH_IPC_EXECUTE_COPY_FAILED;
+	uint16_t eventCode;
 	int cmdID;
 
-	SPH_ASSERT(req->cmd_type == CMDLIST_CMD_COPY);
+	NNP_ASSERT(req->cmd_type == CMDLIST_CMD_COPY);
 
 	copy = req->copy;
 	if (eventVal != 0 && req->cmd != NULL)
 		cmdID = req->cmd->protocolID;
 	else
 		cmdID = -1;
+
+	if (copy->subres_copy)
+		eventCode = (eventVal == 0) ? NNP_IPC_EXECUTE_COPY_SUBRES_SUCCESS : NNP_IPC_EXECUTE_COPY_SUBRES_FAILED;
+	else
+		eventCode = (eventVal == 0) ? NNP_IPC_EXECUTE_COPY_SUCCESS : NNP_IPC_EXECUTE_COPY_FAILED;
+
 	// report success only when not d2d
 	if (eventVal != 0 || !copy->d2d)
 		sphcs_send_event_report_ext(g_the_sphcs,

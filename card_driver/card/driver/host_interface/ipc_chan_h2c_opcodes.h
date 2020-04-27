@@ -10,7 +10,7 @@
  * Each H2C_OPCODE line below defines one h2c opcode in the IPC protocol
  * it has three agruments:
  *     name - this is the name of the command the opcode represent. In the
- *            opcode enumeration type it is expanded to be SPH_IPC_H2C_OP_<name>.
+ *            opcode enumeration type it is expanded to be NNP_IPC_H2C_OP_<name>.
  *            in the code this expanded form can be used, the macro
  *            H2C_OPCODE_NAME(name) defined in ipc_protocol.h provide that
  *            epansion and can be used as well.
@@ -54,8 +54,14 @@ H2C_OPCODE(CHAN_P2P_GET_CR_FIFO, 51, union h2c_ChanGetCrFIFO)
 H2C_OPCODE(CHAN_P2P_CONNECT_PEERS, 52, union h2c_ChanConnectPeers)
 H2C_OPCODE(CHAN_P2P_UPDATE_PEER_DEV, 53, union h2c_ChanUpdatePeerDev)
 H2C_OPCODE(CHAN_TRACE_USER_DATA, 54, union h2c_ChanTraceUserData)
+H2C_OPCODE(CHAN_IDS_MAP, 55, union h2c_ChanIdsMap)
+H2C_OPCODE(CHAN_MARK_INF_RESOURCE, 56, union h2c_ChanMarkInferenceResource)
+H2C_OPCODE(CHAN_ETH_CONFIG, 57, union h2c_ChanEthernetConfig)
+H2C_OPCODE(CHAN_ETH_MSG_DSCR, 58, union h2c_ChanEthernetMsgDscr)
+/** NOTE: opcode value range is 32 to 63 **/
 
 
 #ifdef ULT
 H2C_OPCODE(ULT2_OP,              63, union ult2_message)
+// When changing this value, don't forget to update IPC_OP_MAX
 #endif

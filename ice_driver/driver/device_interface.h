@@ -1,17 +1,10 @@
-/*
- * NNP-I Linux Driver
- * Copyright (c) 2017-2019, Intel Corporation.
+/********************************************
+ * Copyright (C) 2019-2020 Intel Corporation
  *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms and conditions of the GNU General Public License,
- * version 2, as published by the Free Software Foundation.
- *
- * This program is distributed in the hope it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
- *
- */
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ ********************************************/
+
+
 
 #ifndef _DEVICE_INTERFACE_H_
 #define _DEVICE_INTERFACE_H_
@@ -256,7 +249,7 @@ void *cve_di_get_sub_job_kaddr(cve_di_subjob_handle_t *subjob_handle);
  * @param ice_dump_buf
  */
 void cve_di_set_cve_dump_control_register(struct cve_device *cve_dev,
-		uint8_t dumpTrigger, struct di_cve_dump_buffer ice_dump_buf);
+		uint8_t dumpTrigger, struct di_cve_dump_buffer *ice_dump_buf);
 
 /**
  * Configure the configuration register of cve_dump according to device info
@@ -265,7 +258,7 @@ void cve_di_set_cve_dump_control_register(struct cve_device *cve_dev,
  * @param ice_dump_buf
  */
 void cve_di_set_cve_dump_configuration_register(struct cve_device *cve_dev,
-		struct di_cve_dump_buffer ice_dump_buf);
+		struct di_cve_dump_buffer *ice_dump_buf);
 
 /**
  * returns number of devices that have an active job with specifed network ID

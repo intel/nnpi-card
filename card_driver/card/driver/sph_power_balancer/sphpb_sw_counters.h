@@ -13,7 +13,7 @@ enum SPHCS_SW_COUNTERS_GROUPS {
 	SPHCS_SW_COUNTERS_GROUP_POWER_BALANCE
 };
 
-static const struct sph_sw_counters_group_info g_sphcs_sw_counters_groups_info[] = {
+static const struct nnp_sw_counters_group_info g_sphcs_sw_counters_groups_info[] = {
 	/* SPHCS_SW_COUNTERS_GROUP_POWER_BALANCE */
 	{"power_balancer", "group for entire power management sw counters"}
 };
@@ -31,7 +31,7 @@ enum SPHCS_SW_COUNTERS_GLOBAL {
 };
 
 
-static const struct sph_sw_counter_info g_sphcs_sw_counters_info[] = {
+static const struct nnp_sw_counter_info g_sphcs_sw_counters_info[] = {
 	/* SPHCS_SW_COUNTERS_IPC_THROTTLING_TIME */
 	{SPHCS_SW_COUNTERS_GROUP_POWER_BALANCE, "throttling_time",
 	 "Total time[us] the card was in throttling for any reason."},
@@ -62,7 +62,7 @@ static const struct sph_sw_counter_info g_sphcs_sw_counters_info[] = {
 	 "Total time[us](in resolution of refresh time window) the frequency was reduced below request due to package-level power limiting PL2."},
 };
 
-static const struct sph_sw_counters_set g_sw_counters_set_global = {
+static const struct nnp_sw_counters_set g_sw_counters_set_global = {
 	"sw_pb_counters",
 	false,
 	g_sphcs_sw_counters_info,
@@ -72,7 +72,7 @@ static const struct sph_sw_counters_set g_sw_counters_set_global = {
 };
 
 extern void *g_hSwCountersInfo_global;
-extern struct sph_sw_counters *g_sph_sw_pb_counters;
+extern struct nnp_sw_counters *g_sph_sw_pb_counters;
 
 
 

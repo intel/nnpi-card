@@ -11,7 +11,7 @@
 #include <linux/workqueue.h>
 #include <linux/spinlock.h>
 
-#include "sph_hwtrace_protocol.h"
+#include "nnp_hwtrace_protocol.h"
 #include "sphcs_hwtrace.h"
 #include "sphcs_cs.h"
 
@@ -24,7 +24,7 @@ int sphcs_init_th_driver(void)
 {
 	struct sphcs_hwtrace_data *hw_tracing = &g_the_sphcs->hw_tracing;
 
-	hw_tracing->hwtrace_status = SPHCS_HWTRACE_NOT_SUPPORTED;
+	hw_tracing->hwtrace_status = NNPCS_HWTRACE_NOT_SUPPORTED;
 
 	init_waitqueue_head(&hw_tracing->waitq);
 	spin_lock_init(&hw_tracing->lock_irq);

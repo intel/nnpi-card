@@ -210,6 +210,21 @@ int set_llc_freq(void *llc_freq_config)
 {
 	return 0;
 }
+
+unsigned long ice_os_get_current_jiffy(void)
+{
+	struct timespec ts;
+
+	getnstimeofday(&ts);
+
+	return ((ts.tv_sec * 1000) + (ts.tv_nsec / 1000000));
+}
+
+unsigned int jiffies_to_msecs(unsigned long jiffy)
+{
+	return (unsigned int)jiffy;
+}
+
 int request_firmware(const struct firmware **fw,
 		const char *filename,
 		struct device *device){
@@ -565,6 +580,11 @@ void cve_os_interface_cleanup(void)
 void getnstimeofday(struct timespec *ts) {
 
 	timespec_get(ts, TIME_UTC);
+}
+
+uint64_t trace_clock_local(void)
+{
+	return 0;
 }
 
 #else

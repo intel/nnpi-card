@@ -27,7 +27,7 @@ int sphcs_cmd_chan_create(uint16_t                protocolID,
 	cmd_chan = kzalloc(sizeof(struct sphcs_cmd_chan), GFP_KERNEL);
 	if (unlikely(cmd_chan == NULL)) {
 		sph_log_err(CREATE_COMMAND_LOG, "FATAL: %s():%u failed to allocate command channel object\n", __func__, __LINE__);
-		return SPH_IPC_NO_MEMORY;
+		return NNP_IPC_NO_MEMORY;
 	}
 
 	kref_init(&cmd_chan->ref);
@@ -56,7 +56,7 @@ int sphcs_cmd_chan_create(uint16_t                protocolID,
 	if (!cmd_chan->wq) {
 		sph_log_err(CREATE_COMMAND_LOG, "Failed to initialize workqueue\n");
 		kfree(cmd_chan);
-		return SPH_IPC_NO_MEMORY;
+		return NNP_IPC_NO_MEMORY;
 	}
 
 	cmd_chan->respq = sphcs_create_response_queue(g_the_sphcs, 1);
@@ -64,13 +64,13 @@ int sphcs_cmd_chan_create(uint16_t                protocolID,
 		sph_log_err(START_UP_LOG, "Failed to create channel response q\n");
 		destroy_workqueue(cmd_chan->wq);
 		kfree(cmd_chan);
-		return SPH_IPC_NO_MEMORY;
+		return NNP_IPC_NO_MEMORY;
 	}
 
 	//
 	// Add channel to the channel hash - if protocol ID not already exist
 	//
-	SPH_SPIN_LOCK_BH(&g_the_sphcs->lock_bh);
+	NNP_SPIN_LOCK_BH(&g_the_sphcs->lock_bh);
 	hash_for_each_possible(g_the_sphcs->cmd_chan_hash,
 			       iter,
 			       hash_node,
@@ -84,13 +84,13 @@ int sphcs_cmd_chan_create(uint16_t                protocolID,
 		hash_add(g_the_sphcs->cmd_chan_hash,
 			 &cmd_chan->hash_node,
 			 cmd_chan->protocolID);
-	SPH_SPIN_UNLOCK_BH(&g_the_sphcs->lock_bh);
+	NNP_SPIN_UNLOCK_BH(&g_the_sphcs->lock_bh);
 
 	if (found) {
 		destroy_workqueue(cmd_chan->wq);
 		sphcs_destroy_response_queue(g_the_sphcs, cmd_chan->respq);
 		kfree(cmd_chan);
-		return SPH_IPC_ALREADY_EXIST;
+		return NNP_IPC_ALREADY_EXIST;
 	}
 
 	*out_cmd_chan = cmd_chan;
@@ -109,13 +109,13 @@ static void cmd_chan_release(struct work_struct *work)
 	destroy_workqueue(cmd_chan->wq);
 	sphcs_destroy_response_queue(g_the_sphcs, cmd_chan->respq);
 
-	for (i = 0; i < SPH_IPC_MAX_CHANNEL_RINGBUFS; i++) {
+	for (i = 0; i < NNP_IPC_MAX_CHANNEL_RINGBUFS; i++) {
 		sphcs_host_rb_init(&cmd_chan->h2c_rb[i], NULL, 0);
 		sphcs_host_rb_init(&cmd_chan->c2h_rb[i], NULL, 0);
 	}
 
 	sphcs_send_event_report(g_the_sphcs,
-				SPH_IPC_CHANNEL_DESTROYED,
+				NNP_IPC_CHANNEL_DESTROYED,
 				0,
 				NULL,
 				-1,
@@ -145,7 +145,7 @@ void sphcs_cmd_chan_get(struct sphcs_cmd_chan *cmd_chan)
 	int ret;
 
 	ret = kref_get_unless_zero(&cmd_chan->ref);
-	SPH_ASSERT(ret != 0);
+	NNP_ASSERT(ret != 0);
 }
 
 int sphcs_cmd_chan_put(struct sphcs_cmd_chan *cmd_chan)
@@ -157,9 +157,9 @@ void sphcs_cmd_chan_update_cmd_head(struct sphcs_cmd_chan *chan, uint16_t rbID, 
 {
 	union c2h_ChanRingBufUpdate cmd;
 
-	if (rbID < SPH_IPC_MAX_CHANNEL_RINGBUFS &&
+	if (rbID < NNP_IPC_MAX_CHANNEL_RINGBUFS &&
 	    chan->h2c_rb[rbID].host_sgt.sgl) {
-		cmd.opcode = SPH_IPC_C2H_OP_CHANNEL_RB_UPDATE;
+		cmd.opcode = NNP_IPC_C2H_OP_CHANNEL_RB_UPDATE;
 		cmd.chanID = chan->protocolID;
 		cmd.rbID = rbID;
 		cmd.size = size;
@@ -291,11 +291,11 @@ int host_rb_wait_free_space(struct sphcs_host_rb *rb,
 void host_rb_update_free_space(struct sphcs_host_rb *rb,
 			       uint32_t              size)
 {
-	SPH_SPIN_LOCK_BH(&rb->lock_bh);
+	NNP_SPIN_LOCK_BH(&rb->lock_bh);
 	rb->tail = (rb->tail + size) % rb->size;
 	if (rb->tail == rb->head)
 		rb->is_full = true;
-	SPH_SPIN_UNLOCK_BH(&rb->lock_bh);
+	NNP_SPIN_UNLOCK_BH(&rb->lock_bh);
 }
 
 int host_rb_get_avail_space(struct sphcs_host_rb *rb,
@@ -328,10 +328,10 @@ int host_rb_get_avail_space(struct sphcs_host_rb *rb,
 void host_rb_update_avail_space(struct sphcs_host_rb *rb,
 				uint32_t              size)
 {
-	SPH_SPIN_LOCK_BH(&rb->lock_bh);
+	NNP_SPIN_LOCK_BH(&rb->lock_bh);
 	rb->head = (rb->head + size) % rb->size;
 	rb->is_full = false;
-	SPH_SPIN_UNLOCK_BH(&rb->lock_bh);
+	NNP_SPIN_UNLOCK_BH(&rb->lock_bh);
 	wake_up_all(&rb->waitq);
 }
 
@@ -359,7 +359,7 @@ static void rb_hostres_pagetable_complete_cb(void                  *cb_ctx,
 					   total_size);
 
 		sphcs_send_event_report_ext(g_the_sphcs,
-					    SPH_IPC_CHANNEL_SET_RB_SUCCESS,
+					    NNP_IPC_CHANNEL_SET_RB_SUCCESS,
 					    0,
 					    NULL,
 					    -1,
@@ -367,7 +367,7 @@ static void rb_hostres_pagetable_complete_cb(void                  *cb_ctx,
 					    op->cmd.rbID);
 	} else {
 		sphcs_send_event_report_ext(g_the_sphcs,
-					    SPH_IPC_CHANNEL_SET_RB_FAILED,
+					    NNP_IPC_CHANNEL_SET_RB_FAILED,
 					    status,
 					    NULL,
 					    -1,
@@ -396,20 +396,20 @@ static void channel_rb_op_work_handler(struct work_struct *work)
 			sphcs_host_rb_init(&chan->c2h_rb[op->cmd.rbID], NULL, 0);
 
 		sphcs_send_event_report_ext(sphcs,
-					    SPH_IPC_CHANNEL_SET_RB_SUCCESS,
+					    NNP_IPC_CHANNEL_SET_RB_SUCCESS,
 					    0,
 					    NULL,
 					    -1,
 					    op->cmd.chanID,
 					    op->cmd.rbID);
 	} else {
-		ret = sphcs_retrieve_hostres_pagetable(SPH_IPC_DMA_PFN_TO_ADDR(op->cmd.hostPtr),
+		ret = sphcs_retrieve_hostres_pagetable(NNP_IPC_DMA_PFN_TO_ADDR(op->cmd.hostPtr),
 						       rb_hostres_pagetable_complete_cb,
 						       op);
 		if (ret != 0) {
 			sphcs_send_event_report_ext(sphcs,
-						    SPH_IPC_CHANNEL_SET_RB_FAILED,
-						    SPH_IPC_NO_MEMORY,
+						    NNP_IPC_CHANNEL_SET_RB_FAILED,
+						    NNP_IPC_NO_MEMORY,
 						    NULL,
 						    -1,
 						    op->cmd.chanID,
@@ -430,10 +430,10 @@ void IPC_OPCODE_HANDLER(CHANNEL_RB_OP)(
 {
 	struct channel_rb_op_work *work;
 
-	if (cmd->rbID > SPH_IPC_MAX_CHANNEL_RINGBUFS) {
+	if (cmd->rbID > NNP_IPC_MAX_CHANNEL_RINGBUFS) {
 		sphcs_send_event_report_ext(sphcs,
-					    SPH_IPC_CHANNEL_SET_RB_FAILED,
-					    SPH_IPC_NO_SUCH_CHANNEL,
+					    NNP_IPC_CHANNEL_SET_RB_FAILED,
+					    NNP_IPC_NO_SUCH_CHANNEL,
 					    NULL,
 					    -1,
 					    cmd->chanID,
@@ -444,8 +444,8 @@ void IPC_OPCODE_HANDLER(CHANNEL_RB_OP)(
 	work = kzalloc(sizeof(*work), GFP_NOWAIT);
 	if (unlikely(work == NULL)) {
 		sphcs_send_event_report_ext(sphcs,
-					    SPH_IPC_CHANNEL_SET_RB_FAILED,
-					    SPH_IPC_NO_MEMORY,
+					    NNP_IPC_CHANNEL_SET_RB_FAILED,
+					    NNP_IPC_NO_MEMORY,
 					    NULL,
 					    -1,
 					    cmd->chanID,
@@ -456,8 +456,8 @@ void IPC_OPCODE_HANDLER(CHANNEL_RB_OP)(
 	work->chan = sphcs_find_channel(sphcs, cmd->chanID);
 	if (unlikely(work->chan == NULL)) {
 		sphcs_send_event_report_ext(sphcs,
-					    SPH_IPC_CHANNEL_SET_RB_FAILED,
-					    SPH_IPC_NO_SUCH_CHANNEL,
+					    NNP_IPC_CHANNEL_SET_RB_FAILED,
+					    NNP_IPC_NO_SUCH_CHANNEL,
 					    NULL,
 					    -1,
 					    cmd->chanID,
@@ -491,16 +491,16 @@ struct sphcs_hostres_map *sphcs_cmd_chan_find_hostres(struct sphcs_cmd_chan *cha
 {
 	struct sphcs_hostres_map *hostres;
 
-	SPH_SPIN_LOCK_BH(&chan->lock_bh);
+	NNP_SPIN_LOCK_BH(&chan->lock_bh);
 	hash_for_each_possible(chan->hostres_hash,
 			       hostres,
 			       hash_node,
 			       protocolID)
 		if (hostres->protocolID == protocolID) {
-			SPH_SPIN_UNLOCK_BH(&chan->lock_bh);
+			NNP_SPIN_UNLOCK_BH(&chan->lock_bh);
 			return hostres;
 		}
-	SPH_SPIN_UNLOCK_BH(&chan->lock_bh);
+	NNP_SPIN_UNLOCK_BH(&chan->lock_bh);
 
 	return NULL;
 }
@@ -510,7 +510,7 @@ static int remove_hostres(struct sphcs_cmd_chan *chan, uint16_t protocolID)
 	struct sphcs_hostres_map *hostres;
 	bool found = false;
 
-	SPH_SPIN_LOCK_BH(&chan->lock_bh);
+	NNP_SPIN_LOCK_BH(&chan->lock_bh);
 	hash_for_each_possible(chan->hostres_hash,
 			       hostres,
 			       hash_node,
@@ -520,7 +520,7 @@ static int remove_hostres(struct sphcs_cmd_chan *chan, uint16_t protocolID)
 			hash_del(&hostres->hash_node);
 			break;
 		}
-	SPH_SPIN_UNLOCK_BH(&chan->lock_bh);
+	NNP_SPIN_UNLOCK_BH(&chan->lock_bh);
 
 	if (!found) {
 		sph_log_err(GENERAL_LOG, "Failed to unmap hostres %d\n", protocolID);
@@ -551,8 +551,8 @@ static void hostres_pagetable_complete_cb(void                  *cb_ctx,
 		hostres = kzalloc(sizeof(*hostres), GFP_KERNEL);
 		if (!hostres) {
 			sphcs_send_event_report_ext(g_the_sphcs,
-						    SPH_IPC_CHANNEL_MAP_HOSTRES_FAILED,
-						    SPH_IPC_NO_MEMORY,
+						    NNP_IPC_CHANNEL_MAP_HOSTRES_FAILED,
+						    NNP_IPC_NO_MEMORY,
 						    NULL,
 						    -1,
 						    op->cmd.chanID,
@@ -565,14 +565,14 @@ static void hostres_pagetable_complete_cb(void                  *cb_ctx,
 		hostres->protocolID = op->cmd.hostresID;
 		hostres->size = total_size;
 
-		SPH_SPIN_LOCK_BH(&op->chan->lock_bh);
+		NNP_SPIN_LOCK_BH(&op->chan->lock_bh);
 		hash_add(op->chan->hostres_hash,
 			 &hostres->hash_node,
 			 hostres->protocolID);
-		SPH_SPIN_UNLOCK_BH(&op->chan->lock_bh);
+		NNP_SPIN_UNLOCK_BH(&op->chan->lock_bh);
 
 		sphcs_send_event_report_ext(g_the_sphcs,
-					    SPH_IPC_CHANNEL_MAP_HOSTRES_SUCCESS,
+					    NNP_IPC_CHANNEL_MAP_HOSTRES_SUCCESS,
 					    0,
 					    NULL,
 					    -1,
@@ -580,7 +580,7 @@ static void hostres_pagetable_complete_cb(void                  *cb_ctx,
 					    op->cmd.hostresID);
 	} else {
 		sphcs_send_event_report_ext(g_the_sphcs,
-					    SPH_IPC_CHANNEL_MAP_HOSTRES_FAILED,
+					    NNP_IPC_CHANNEL_MAP_HOSTRES_FAILED,
 					    status,
 					    NULL,
 					    -1,
@@ -606,7 +606,7 @@ static void channel_hostres_op_work_handler(struct work_struct *work)
 	if (op->cmd.unmap) {
 		if (remove_hostres(chan, op->cmd.hostresID) == 0)
 			sphcs_send_event_report_ext(sphcs,
-						    SPH_IPC_CHANNEL_UNMAP_HOSTRES_SUCCESS,
+						    NNP_IPC_CHANNEL_UNMAP_HOSTRES_SUCCESS,
 						    0,
 						    NULL,
 						    -1,
@@ -614,20 +614,20 @@ static void channel_hostres_op_work_handler(struct work_struct *work)
 						    op->cmd.hostresID);
 		else
 			sphcs_send_event_report_ext(sphcs,
-						    SPH_IPC_CHANNEL_UNMAP_HOSTRES_FAILED,
-						    SPH_IPC_NO_SUCH_HOSTRES,
+						    NNP_IPC_CHANNEL_UNMAP_HOSTRES_FAILED,
+						    NNP_IPC_NO_SUCH_HOSTRES,
 						    NULL,
 						    -1,
 						    op->cmd.chanID,
 						    op->cmd.hostresID);
 	} else {
-		ret = sphcs_retrieve_hostres_pagetable(SPH_IPC_DMA_PFN_TO_ADDR(op->cmd.hostPtr),
+		ret = sphcs_retrieve_hostres_pagetable(NNP_IPC_DMA_PFN_TO_ADDR(op->cmd.hostPtr),
 						       hostres_pagetable_complete_cb,
 						       op);
 		if (ret != 0) {
 			sphcs_send_event_report_ext(sphcs,
-						    SPH_IPC_CHANNEL_MAP_HOSTRES_FAILED,
-						    SPH_IPC_NO_MEMORY,
+						    NNP_IPC_CHANNEL_MAP_HOSTRES_FAILED,
+						    NNP_IPC_NO_MEMORY,
 						    NULL,
 						    -1,
 						    op->cmd.chanID,
@@ -651,9 +651,9 @@ void IPC_OPCODE_HANDLER(CHANNEL_HOSTRES_OP)(
 	work = kzalloc(sizeof(*work), GFP_NOWAIT);
 	if (unlikely(work == NULL)) {
 		sphcs_send_event_report_ext(sphcs,
-					    cmd->unmap ? SPH_IPC_CHANNEL_UNMAP_HOSTRES_FAILED :
-							 SPH_IPC_CHANNEL_MAP_HOSTRES_FAILED,
-					    SPH_IPC_NO_MEMORY,
+					    cmd->unmap ? NNP_IPC_CHANNEL_UNMAP_HOSTRES_FAILED :
+							 NNP_IPC_CHANNEL_MAP_HOSTRES_FAILED,
+					    NNP_IPC_NO_MEMORY,
 					    NULL,
 					    -1,
 					    cmd->chanID,
@@ -664,9 +664,9 @@ void IPC_OPCODE_HANDLER(CHANNEL_HOSTRES_OP)(
 	work->chan = sphcs_find_channel(sphcs, cmd->chanID);
 	if (unlikely(work->chan == NULL)) {
 		sphcs_send_event_report_ext(sphcs,
-					    cmd->unmap ? SPH_IPC_CHANNEL_UNMAP_HOSTRES_FAILED :
-							 SPH_IPC_CHANNEL_MAP_HOSTRES_FAILED,
-					    SPH_IPC_NO_SUCH_CHANNEL,
+					    cmd->unmap ? NNP_IPC_CHANNEL_UNMAP_HOSTRES_FAILED :
+							 NNP_IPC_CHANNEL_MAP_HOSTRES_FAILED,
+					    NNP_IPC_NO_SUCH_CHANNEL,
 					    NULL,
 					    -1,
 					    cmd->chanID,

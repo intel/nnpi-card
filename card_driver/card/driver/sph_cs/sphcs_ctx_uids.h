@@ -9,7 +9,7 @@
 
 #include "sw_counters.h"
 
-extern struct sph_sw_counters *g_ctx_uids_counters;
+extern struct nnp_sw_counters *g_ctx_uids_counters;
 
 int sphcs_ctx_uids_init(void);
 void sphcs_ctx_uids_fini(void);

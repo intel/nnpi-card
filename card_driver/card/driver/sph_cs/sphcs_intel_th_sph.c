@@ -5,7 +5,7 @@
  ********************************************/
 
 /**
- * @file sph_types.h
+ * @file nnp_types.h
  *
  * @brief Header file defining sph hwtrace types
  *
@@ -28,12 +28,12 @@
 #include <linux/pci.h>
 
 
-#include "sph_hwtrace_protocol.h"
+#include "nnp_hwtrace_protocol.h"
 #include "sphcs_hwtrace.h"
 #include "sphcs_intel_th.h"
 #include "sphcs_cs.h"
 #include "sph_log.h"
-#include "sph_debug.h"
+#include "nnp_debug.h"
 
 #define HWTRACING_POOL_PAGE_COUNT ((uint32_t)(512))
 #define HWTRACING_MIN_PAGE_COUNT ((uint32_t)(128))
@@ -151,7 +151,7 @@ int sphcs_init_th_driver(void)
 	size_t alloc_size = HWTRACING_POOL_PAGE_COUNT;
 
 	hw_tracing->resource_max_size = 0;
-	hw_tracing->hwtrace_status = SPHCS_HWTRACE_NOT_SUPPORTED;
+	hw_tracing->hwtrace_status = NNPCS_HWTRACE_NOT_SUPPORTED;
 
 	//try to allocate page pool
 	do {
@@ -193,7 +193,7 @@ int sphcs_init_th_driver(void)
 
 	fix_interrupt_support_intel_th_device();
 
-	hw_tracing->hwtrace_status = SPHCS_HWTRACE_REGISTERED;
+	hw_tracing->hwtrace_status = NNPCS_HWTRACE_REGISTERED;
 
 	init_waitqueue_head(&hw_tracing->waitq);
 	spin_lock_init(&hw_tracing->lock_irq);

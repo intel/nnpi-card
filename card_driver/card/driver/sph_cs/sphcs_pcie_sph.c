@@ -17,23 +17,23 @@
 #include <linux/seq_file.h>
 #include <linux/atomic.h>
 #define ELBI_BASE         0x200000  /* MMIO offset of ELBI registers */
-#include "sph_elbi.h"
-#include "sph_debug.h"
+#include "nnp_elbi.h"
+#include "nnp_debug.h"
 #include "sph_log.h"
-#include "sph_time.h"
+#include "nnp_time.h"
 #include "sphcs_hw_utils.h"
 #include "sphcs_sw_counters.h"
 #include "sphcs_trace.h"
 #include "int_stats.h"
-#include "sph_boot_defs.h"
+#include "nnp_boot_defs.h"
 
 /*
  * SpringHill PCI card identity settings
  */
-#define SPH_PCI_DEVICE_ID		0x45c2
-#define SPH_PCI_VENDOR_ID		PCI_VENDOR_ID_INTEL
-#define SPH_PCI_DEVFN                   0
-#define SPH_PCI_MMIO_BAR                0
+#define NNP_PCI_DEVICE_ID		0x45c2
+#define NNP_PCI_VENDOR_ID		PCI_VENDOR_ID_INTEL
+#define NNP_PCI_DEVFN                   0
+#define NNP_PCI_MMIO_BAR                0
 
 /*
  * DMA registers
@@ -154,7 +154,7 @@
 /* Amount of mapped memory - 64 MB */
 #define MAPPED_MEMORY_SIZE (64ULL << 20)
 
-static const char sph_driver_name[] = "sph_pcie";
+static const char nnp_driver_name[] = "nnp_pcie";
 static struct sphcs_pcie_callbacks *s_callbacks;
 
 #ifdef ULT
@@ -188,20 +188,21 @@ static u32 s_host_status_threaded_mask =
 static enum {
 	SPH_FLR_MODE_WARM = 0,
 	SPH_FLR_MODE_COLD,
-	SPH_FLR_MODE_IGNORE
+	SPH_FLR_MODE_IGNORE,
+	SPH_FLR_MODE_CAPSULE
 } s_flr_mode;
 
 struct sph_dma_channel {
 	u64   usTime;
 };
 
-struct sph_pci_device {
+struct nnp_pci_device {
 	struct pci_dev *pdev;
 	struct device  *dev;
 	struct sphcs           *sphcs;
 	struct sphcs_dma_sched *dmaSched;
 
-	struct sph_memdesc mmio;
+	struct nnp_memdesc mmio;
 
 	spinlock_t      irq_lock;
 	u64             command_buf[ELBI_COMMAND_FIFO_DEPTH];
@@ -234,7 +235,7 @@ struct sph_dma_data_element {
 	uint32_t dest_address_low;
 	uint32_t dest_address_high;
 };
-SPH_STATIC_ASSERT(sizeof(struct sph_dma_data_element) == 6 * sizeof(uint32_t), "struct sph_dma_data_element size mismatch");
+NNP_STATIC_ASSERT(sizeof(struct sph_dma_data_element) == 6 * sizeof(uint32_t), "struct sph_dma_data_element size mismatch");
 
 struct sph_lli_header {
 	struct sph_dma_data_element *cut_element;
@@ -249,20 +250,20 @@ struct sph_lli_header {
 
 static int sphcs_sph_init_dma_engine(void *hw_handle);
 
-static inline void sph_mmio_write(struct sph_pci_device *sph_pci,
+static inline void nnp_mmio_write(struct nnp_pci_device *nnp_pci,
 				  uint32_t               off,
 				  uint32_t               val)
 {
 	//DO_TRACE(trace_pep_mmio('w', off - ELBI_BASE, val));
-	iowrite32(val, sph_pci->mmio.va + off);
+	iowrite32(val, nnp_pci->mmio.va + off);
 }
 
-static inline uint32_t sph_mmio_read(struct sph_pci_device *sph_pci,
+static inline uint32_t nnp_mmio_read(struct nnp_pci_device *nnp_pci,
 				     uint32_t               off)
 {
 	uint32_t ret;
 
-	ret = ioread32(sph_pci->mmio.va + off);
+	ret = ioread32(nnp_pci->mmio.va + off);
 	//DO_TRACE(trace_pep_mmio('r', off - ELBI_BASE, ret));
 
 	return ret;
@@ -273,12 +274,14 @@ static ssize_t sph_show_flr_mode(struct device *dev,
 {
 	switch (s_flr_mode) {
 	case SPH_FLR_MODE_COLD:
-		return sprintf(buf, "cold\n");
+		return snprintf(buf, PAGE_SIZE, "cold\n");
 	case SPH_FLR_MODE_IGNORE:
-		return sprintf(buf, "ignore\n");
+		return snprintf(buf, PAGE_SIZE, "ignore\n");
+	case SPH_FLR_MODE_CAPSULE:
+		return snprintf(buf, PAGE_SIZE, "capsule\n");
 	case SPH_FLR_MODE_WARM:
 	default:
-		return sprintf(buf, "warm\n");
+		return snprintf(buf, PAGE_SIZE, "warm\n");
 	}
 }
 
@@ -287,10 +290,10 @@ static ssize_t sph_store_flr_mode(struct device *dev,
 				  const char *buf, size_t count)
 {
 	struct pci_dev *pdev = to_pci_dev(dev);
-	struct sph_pci_device *sph_pci;
+	struct nnp_pci_device *nnp_pci;
 
-	sph_pci = pci_get_drvdata(pdev);
-	if (!sph_pci)
+	nnp_pci = pci_get_drvdata(pdev);
+	if (!nnp_pci)
 		return count;
 
 	if (count >= 4 && !strncmp(buf, "warm", 4))
@@ -299,14 +302,18 @@ static ssize_t sph_store_flr_mode(struct device *dev,
 		s_flr_mode = SPH_FLR_MODE_COLD;
 	else if (count >= 6 && !strncmp(buf, "ignore", 6))
 		s_flr_mode = SPH_FLR_MODE_IGNORE;
+	else if (count >= 7 && !strncmp(buf, "capsule", 7))
+		s_flr_mode = SPH_FLR_MODE_CAPSULE;
+	else
+		return -EINVAL;
 
-	sph_mmio_write(sph_pci,
+	nnp_mmio_write(nnp_pci,
 		       ELBI_CPU_STATUS_2,
 		       s_flr_mode);
 
 	sph_log_debug(GENERAL_LOG, "wrote 0x%x to cpu_status_2 (0x%x)\n",
 		      s_flr_mode,
-		      sph_mmio_read(sph_pci, ELBI_CPU_STATUS_2));
+		      nnp_mmio_read(nnp_pci, ELBI_CPU_STATUS_2));
 
 	return count;
 }
@@ -317,7 +324,7 @@ static ssize_t sph_show_link_width(struct device *dev,
 				   struct device_attribute *attr, char *buf)
 {
 	struct pci_dev *pdev = to_pci_dev(dev);
-	struct sph_pci_device *sph_pci;
+	struct nnp_pci_device *nnp_pci;
 	uint16_t link_status;
 	ssize_t ret = 0;
 	u8 pos;
@@ -326,20 +333,20 @@ static ssize_t sph_show_link_width(struct device *dev,
 	bool found = false;
 	int loops = 0;
 
-	sph_pci = pci_get_drvdata(pdev);
-	if (!sph_pci)
+	nnp_pci = pci_get_drvdata(pdev);
+	if (!nnp_pci)
 		return -EINVAL;
 
 	/*
 	 * card config space as seen from host is mapped to offset 0 of BAR0
 	 * walk the config to find pci express capability
 	 */
-	pos = ioread8(sph_pci->mmio.va + PCI_CAPABILITY_LIST);
+	pos = ioread8(nnp_pci->mmio.va + PCI_CAPABILITY_LIST);
 	do {
 		pos &= ~3;
 		if (pos < 0x40)
 			break;
-		ent = ioread16(sph_pci->mmio.va + pos);
+		ent = ioread16(nnp_pci->mmio.va + pos);
 		ext = ent & 0xff;
 		if (ext == PCI_CAP_ID_EXP) {
 			found = true;
@@ -353,7 +360,7 @@ static ssize_t sph_show_link_width(struct device *dev,
 	if (!found) {
 		ret += snprintf(&buf[ret], PAGE_SIZE - ret, "Could not find EXP cap\n");
 	} else {
-		link_status = ioread16(sph_pci->mmio.va + pos + PCI_EXP_LNKSTA);
+		link_status = ioread16(nnp_pci->mmio.va + pos + PCI_EXP_LNKSTA);
 		ret += snprintf(&buf[ret], PAGE_SIZE - ret, "%d\n", (link_status >> 4) & 0x3f);
 	}
 
@@ -362,7 +369,7 @@ static ssize_t sph_show_link_width(struct device *dev,
 
 static DEVICE_ATTR(link_width, 0444, sph_show_link_width, NULL);
 
-static void sph_process_commands(struct sph_pci_device *sph_pci)
+static void nnp_process_commands(struct nnp_pci_device *nnp_pci)
 {
 	u32 command_iosf_control;
 	u32 read_pointer;
@@ -372,7 +379,7 @@ static void sph_process_commands(struct sph_pci_device *sph_pci)
 	u64 high;
 	int i;
 
-	command_iosf_control = sph_mmio_read(sph_pci,
+	command_iosf_control = nnp_mmio_read(nnp_pci,
 					     ELBI_COMMAND_IOSF_CONTROL);
 	read_pointer = ELBI_BF_GET(command_iosf_control,
 				   ELBI_COMMAND_IOSF_CONTROL_READ_POINTER_MASK,
@@ -388,11 +395,11 @@ static void sph_process_commands(struct sph_pci_device *sph_pci)
 
 	for (i = 0; i < avail_slots; i++) {
 		read_pointer = (read_pointer + 1) % ELBI_COMMAND_FIFO_DEPTH;
-		low = sph_mmio_read(sph_pci,
+		low = nnp_mmio_read(nnp_pci,
 				    ELBI_COMMAND_FIFO_LOW(read_pointer));
-		high = sph_mmio_read(sph_pci,
+		high = nnp_mmio_read(nnp_pci,
 				     ELBI_COMMAND_FIFO_HIGH(read_pointer));
-		sph_pci->command_buf[i] = (high << 32) | low;
+		nnp_pci->command_buf[i] = (high << 32) | low;
 	}
 
 	//
@@ -409,7 +416,7 @@ static void sph_process_commands(struct sph_pci_device *sph_pci)
 			    ELBI_COMMAND_IOSF_CONTROL_READ_POINTER_MASK,
 			    ELBI_COMMAND_IOSF_CONTROL_READ_POINTER_SHIFT);
 
-		sph_mmio_write(sph_pci,
+		nnp_mmio_write(nnp_pci,
 			       ELBI_COMMAND_IOSF_CONTROL,
 			       command_iosf_control);
 	}
@@ -419,29 +426,29 @@ static void sph_process_commands(struct sph_pci_device *sph_pci)
 		    ELBI_COMMAND_IOSF_CONTROL_READ_POINTER_MASK,
 		    ELBI_COMMAND_IOSF_CONTROL_READ_POINTER_SHIFT);
 
-	sph_mmio_write(sph_pci,
+	nnp_mmio_write(nnp_pci,
 		       ELBI_COMMAND_IOSF_CONTROL,
 		       command_iosf_control);
 
-	if (sph_pci->sphcs)
-		s_callbacks->process_messages(sph_pci->sphcs,
-					      sph_pci->command_buf,
+	if (nnp_pci->sphcs)
+		s_callbacks->process_messages(nnp_pci->sphcs,
+					      nnp_pci->command_buf,
 					      avail_slots);
 }
 
-static void set_bus_master_state(struct sph_pci_device *sph_pci)
+static void set_bus_master_state(struct nnp_pci_device *nnp_pci)
 {
 	u32 iosf_status;
 	bool bme_en;
 
-	iosf_status = sph_mmio_read(sph_pci, ELBI_IOSF_STATUS);
+	iosf_status = nnp_mmio_read(nnp_pci, ELBI_IOSF_STATUS);
 	bme_en = (iosf_status & ELBI_IOSF_STATUS_LINE_BME_MASK) != 0;
-	if (bme_en != sph_pci->bus_master_en) {
+	if (bme_en != nnp_pci->bus_master_en) {
 		/* init DMA engine when bus master transition to enable */
 		if (bme_en)
-			sphcs_sph_init_dma_engine(sph_pci);
+			sphcs_sph_init_dma_engine(nnp_pci);
 
-		sph_pci->bus_master_en = bme_en;
+		nnp_pci->bus_master_en = bme_en;
 	}
 }
 
@@ -472,7 +479,7 @@ static void sph_warm_reset(void)
 	}
 }
 
-static void handle_dma_interrupt(struct sph_pci_device *sph_pci, u32 dma_read_status, u32 dma_write_status)
+static void handle_dma_interrupt(struct nnp_pci_device *nnp_pci, u32 dma_read_status, u32 dma_write_status)
 {
 	u32 recovery_action;
 	int i;
@@ -495,9 +502,9 @@ static void handle_dma_interrupt(struct sph_pci_device *sph_pci, u32 dma_read_st
 				if (dma_read_status & mask) {
 					u32 status_lo, status_hi;
 
-					status_lo = sph_mmio_read(sph_pci,
+					status_lo = nnp_mmio_read(nnp_pci,
 								  DMA_READ_ERR_STATUS_LOW_OFF);
-					status_hi = sph_mmio_read(sph_pci,
+					status_hi = nnp_mmio_read(nnp_pci,
 								  DMA_READ_ERR_STATUS_HIGH_OFF);
 
 					chan_status = SPHCS_DMA_STATUS_FAILED;
@@ -525,12 +532,12 @@ static void handle_dma_interrupt(struct sph_pci_device *sph_pci, u32 dma_read_st
 			if (chan_status) {
 				u64  usTime = (u64)0x0;
 
-				if (sph_pci->h2c_channels[i].usTime != 0)
-					usTime = sph_time_us() - sph_pci->h2c_channels[i].usTime;
+				if (nnp_pci->h2c_channels[i].usTime != 0)
+					usTime = nnp_time_us() - nnp_pci->h2c_channels[i].usTime;
 
 				/* send int upstream */
-				if (sph_pci->dmaSched)
-					s_callbacks->dma.h2c_xfer_complete_int(sph_pci->dmaSched, i, chan_status, recovery_action, (u32)usTime);
+				if (nnp_pci->dmaSched)
+					s_callbacks->dma.h2c_xfer_complete_int(nnp_pci->dmaSched, i, chan_status, recovery_action, (u32)usTime);
 
 			}
 		}
@@ -555,7 +562,7 @@ static void handle_dma_interrupt(struct sph_pci_device *sph_pci, u32 dma_read_st
 
 					chan_status = SPHCS_DMA_STATUS_FAILED;
 
-					status = sph_mmio_read(sph_pci,
+					status = nnp_mmio_read(nnp_pci,
 							       DMA_WRITE_ERR_STATUS_OFF);
 
 					if ((status & DMA_SET_CHAN_BIT(i, DMA_WR_APP_READ_ERR_OFF)) ||
@@ -575,35 +582,35 @@ static void handle_dma_interrupt(struct sph_pci_device *sph_pci, u32 dma_read_st
 			if (chan_status) {
 				u64 usTime = (u64)0x0;
 
-				if (sph_pci->c2h_channels[i].usTime > 0)
-					usTime = sph_time_us() - sph_pci->c2h_channels[i].usTime;
+				if (nnp_pci->c2h_channels[i].usTime > 0)
+					usTime = nnp_time_us() - nnp_pci->c2h_channels[i].usTime;
 
 				/* send int upstream */
-				if (sph_pci->dmaSched)
-					s_callbacks->dma.c2h_xfer_complete_int(sph_pci->dmaSched, i, chan_status, recovery_action, (u32)usTime);
+				if (nnp_pci->dmaSched)
+					s_callbacks->dma.c2h_xfer_complete_int(nnp_pci->dmaSched, i, chan_status, recovery_action, (u32)usTime);
 
 			}
 		}
 	}
 }
 
-static void read_and_clear_dma_status(struct sph_pci_device *sph_pci, u32 *dma_read_status, u32 *dma_write_status)
+static void read_and_clear_dma_status(struct nnp_pci_device *nnp_pci, u32 *dma_read_status, u32 *dma_write_status)
 {
 	//get and store DMA interrupt status
-	*dma_read_status  = sph_mmio_read(sph_pci, DMA_READ_INT_STATUS_OFF);
-	*dma_write_status = sph_mmio_read(sph_pci, DMA_WRITE_INT_STATUS_OFF);
+	*dma_read_status  = nnp_mmio_read(nnp_pci, DMA_READ_INT_STATUS_OFF);
+	*dma_write_status = nnp_mmio_read(nnp_pci, DMA_WRITE_INT_STATUS_OFF);
 
 	/* handle h2c (READ channels) */
 	if (*dma_read_status)
 		/* clear int status */
-		sph_mmio_write(sph_pci,
+		nnp_mmio_write(nnp_pci,
 			       DMA_READ_INT_CLEAR_OFF,
 			       *dma_read_status);
 
 	/* handle c2h (WRITE channels) */
 	if (*dma_write_status)
 		/* clear int status */
-		sph_mmio_write(sph_pci,
+		nnp_mmio_write(nnp_pci,
 			       DMA_WRITE_INT_CLEAR_OFF,
 			       *dma_write_status);
 }
@@ -611,13 +618,13 @@ static void read_and_clear_dma_status(struct sph_pci_device *sph_pci, u32 *dma_r
 
 static irqreturn_t interrupt_handler(int irq, void *data)
 {
-	struct sph_pci_device *sph_pci = (struct sph_pci_device *)data;
+	struct nnp_pci_device *nnp_pci = (struct nnp_pci_device *)data;
 	irqreturn_t ret;
 	unsigned long flags;
 	u32 dma_read_status = 0, dma_write_status = 0;
 	bool should_wake = false;
 
-	SPH_SPIN_LOCK_IRQSAVE(&sph_pci->irq_lock, flags);
+	NNP_SPIN_LOCK_IRQSAVE(&nnp_pci->irq_lock, flags);
 
 	/*
 	 * mask all interrupts (except LINE_FLR)
@@ -626,134 +633,134 @@ static irqreturn_t interrupt_handler(int irq, void *data)
 	 * request scenario. When this bit is set to 1, the p-code will handle
 	 * the event.
 	 */
-	sph_mmio_write(sph_pci,
+	nnp_mmio_write(nnp_pci,
 		       ELBI_IOSF_MSI_MASK,
 		       ~((uint32_t)(ELBI_IOSF_STATUS_LINE_FLR_MASK)));
 
-	sph_pci->host_status = sph_mmio_read(sph_pci, ELBI_IOSF_STATUS);
+	nnp_pci->host_status = nnp_mmio_read(nnp_pci, ELBI_IOSF_STATUS);
 
 #ifdef ULT
 	INT_STAT_INC(int_stats,
-		     (sph_pci->host_status &
+		     (nnp_pci->host_status &
 		      (s_host_status_int_mask | s_host_status_threaded_mask)));
 #endif
 
 	/* early exit if spurious interrupt */
-	if ((sph_pci->host_status &
+	if ((nnp_pci->host_status &
 	     (s_host_status_int_mask | s_host_status_threaded_mask)) == 0) {
-		sph_mmio_write(sph_pci,
+		nnp_mmio_write(nnp_pci,
 			       ELBI_IOSF_MSI_MASK,
 			       ~(s_host_status_int_mask | s_host_status_threaded_mask));
 		return IRQ_NONE;
 	}
 
-	if (sph_pci->host_status &
+	if (nnp_pci->host_status &
 	    ELBI_IOSF_STATUS_DMA_INT_MASK) {
-		read_and_clear_dma_status(sph_pci, &dma_read_status, &dma_write_status);
-		atomic64_or((dma_read_status | (((u64)dma_write_status) << 32)), &sph_pci->dma_status);
+		read_and_clear_dma_status(nnp_pci, &dma_read_status, &dma_write_status);
+		atomic64_or((dma_read_status | (((u64)dma_write_status) << 32)), &nnp_pci->dma_status);
 	}
 
-	if (sph_pci->host_status &
+	if (nnp_pci->host_status &
 	    ELBI_IOSF_STATUS_COMMAND_FIFO_NEW_COMMAND_MASK) {
-		atomic_set(&sph_pci->new_command, 1);
+		atomic_set(&nnp_pci->new_command, 1);
 	}
 
-	sph_mmio_write(sph_pci,
+	nnp_mmio_write(nnp_pci,
 		       ELBI_IOSF_STATUS,
-		       sph_pci->host_status & (s_host_status_int_mask | s_host_status_threaded_mask));
+		       nnp_pci->host_status & (s_host_status_int_mask | s_host_status_threaded_mask));
 
-	if (sph_pci->host_status &
+	if (nnp_pci->host_status &
 	    ELBI_IOSF_STATUS_RESPONSE_FIFO_READ_UPDATE_MASK) {
 		should_wake = true;
-		sph_pci->resp_fifo_read_update_count++;
+		nnp_pci->resp_fifo_read_update_count++;
 	}
 
-	if (sph_pci->host_status &
+	if (nnp_pci->host_status &
 	    ELBI_IOSF_STATUS_BME_CHANGE_MASK)
-		set_bus_master_state(sph_pci);
+		set_bus_master_state(nnp_pci);
 
-	if (sph_pci->host_status &
+	if (nnp_pci->host_status &
 	    ELBI_IOSF_STATUS_LINE_FLR_MASK) {
 		sph_log_err(GENERAL_LOG, "FLR Requested from host !!\n");
 
 		/* Let the host know the card is going down */
-		sph_mmio_write(sph_pci, ELBI_HOST_PCI_DOORBELL_VALUE, 0);
+		nnp_mmio_write(nnp_pci, ELBI_HOST_PCI_DOORBELL_VALUE, 0);
 
 		/* warm reset the card */
 		sph_warm_reset();
 	}
 
-	if (sph_pci->host_status &
+	if (nnp_pci->host_status &
 	    ELBI_IOSF_STATUS_HOT_RESET_MASK) {
 		sph_log_err(GENERAL_LOG, "Hot reset requested from host !!\n");
 
 		/* Let the host know the card is going down */
-		sph_mmio_write(sph_pci, ELBI_HOST_PCI_DOORBELL_VALUE, 0);
+		nnp_mmio_write(nnp_pci, ELBI_HOST_PCI_DOORBELL_VALUE, 0);
 
 		/* warm reset the card */
 		sph_warm_reset();
 	}
 
-	if (sph_pci->host_status &
+	if (nnp_pci->host_status &
 	    ELBI_IOSF_STATUS_PME_TURN_OFF_MASK) {
 		sph_log_err(GENERAL_LOG, "PME turn off requested from host !!\n");
 
 		/* Let the host know the card is going down */
-		sph_mmio_write(sph_pci, ELBI_HOST_PCI_DOORBELL_VALUE, 0);
+		nnp_mmio_write(nnp_pci, ELBI_HOST_PCI_DOORBELL_VALUE, 0);
 
 		/* warm reset the card */
 		sph_warm_reset();
 	}
 
-	if (sph_pci->sphcs &&
-	    (sph_pci->host_status &
+	if (nnp_pci->sphcs &&
+	    (nnp_pci->host_status &
 	     ELBI_IOSF_STATUS_DOORBELL_MASK)) {
-		u32 val = sph_mmio_read(sph_pci, ELBI_PCI_HOST_DOORBELL_VALUE);
+		u32 val = nnp_mmio_read(nnp_pci, ELBI_PCI_HOST_DOORBELL_VALUE);
 
 		/* Issue card reset if requested from host */
-		if (val & SPH_HOST_DRV_REQUEST_SELF_RESET_MASK) {
+		if (val & NNP_HOST_DRV_REQUEST_SELF_RESET_MASK) {
 			sph_log_err(GENERAL_LOG, "Self reset requested from host !!\n");
 			sph_warm_reset();
-		} else if ((val & SPH_HOST_KEEP_ALIVE_MASK) !=
-			   (sph_pci->host_doorbell_val & SPH_HOST_KEEP_ALIVE_MASK)) {
-			sph_pci->card_doorbell_val &= ~(SPH_CARD_KEEP_ALIVE_MASK);
-			sph_pci->card_doorbell_val |= (val & SPH_HOST_KEEP_ALIVE_MASK);
-			sph_mmio_write(sph_pci, ELBI_HOST_PCI_DOORBELL_VALUE, sph_pci->card_doorbell_val);
+		} else if ((val & NNP_HOST_KEEP_ALIVE_MASK) !=
+			   (nnp_pci->host_doorbell_val & NNP_HOST_KEEP_ALIVE_MASK)) {
+			nnp_pci->card_doorbell_val &= ~(NNP_CARD_KEEP_ALIVE_MASK);
+			nnp_pci->card_doorbell_val |= (val & NNP_HOST_KEEP_ALIVE_MASK);
+			nnp_mmio_write(nnp_pci, ELBI_HOST_PCI_DOORBELL_VALUE, nnp_pci->card_doorbell_val);
 		}
 
-		sph_pci->host_doorbell_val = val;
-		s_callbacks->host_doorbell_value_changed(sph_pci->sphcs, val);
+		nnp_pci->host_doorbell_val = val;
+		s_callbacks->host_doorbell_value_changed(nnp_pci->sphcs, val);
 	}
 
-	if (sph_pci->host_status & s_host_status_threaded_mask)
+	if (nnp_pci->host_status & s_host_status_threaded_mask)
 		ret = IRQ_WAKE_THREAD;
 	else
 		ret = IRQ_HANDLED;
 
 	/* Enable desired interrupts */
-	sph_mmio_write(sph_pci,
+	nnp_mmio_write(nnp_pci,
 		       ELBI_IOSF_MSI_MASK,
 		       ~(s_host_status_int_mask | s_host_status_threaded_mask));
 
-	SPH_SPIN_UNLOCK_IRQRESTORE(&sph_pci->irq_lock, flags);
+	NNP_SPIN_UNLOCK_IRQRESTORE(&nnp_pci->irq_lock, flags);
 
 	if (should_wake)
-		wake_up_all(&sph_pci->host_status_wait);
+		wake_up_all(&nnp_pci->host_status_wait);
 
 	return ret;
 }
 
 static irqreturn_t threaded_interrupt_handler(int irq, void *data)
 {
-	struct sph_pci_device *sph_pci = (struct sph_pci_device *)data;
+	struct nnp_pci_device *nnp_pci = (struct nnp_pci_device *)data;
 	u64 dma_status;
 
-	if (atomic_xchg(&sph_pci->new_command, 0))
-		sph_process_commands(sph_pci);
+	if (atomic_xchg(&nnp_pci->new_command, 0))
+		nnp_process_commands(nnp_pci);
 
-	dma_status = atomic64_xchg(&sph_pci->dma_status, 0);
+	dma_status = atomic64_xchg(&nnp_pci->dma_status, 0);
 	if (dma_status != 0) {
-		handle_dma_interrupt(sph_pci,
+		handle_dma_interrupt(nnp_pci,
 				     (u32)(dma_status & 0xffffffff),
 				     (u32)((dma_status >> 32) & 0xffffffff));
 	}
@@ -761,7 +768,7 @@ static irqreturn_t threaded_interrupt_handler(int irq, void *data)
 	return IRQ_HANDLED;
 }
 
-static int sph_setup_interrupts(struct sph_pci_device *sph_pci,
+static int nnp_setup_interrupts(struct nnp_pci_device *nnp_pci,
 				struct pci_dev        *pdev)
 {
 	int rc;
@@ -777,13 +784,13 @@ static int sph_setup_interrupts(struct sph_pci_device *sph_pci,
 				  threaded_interrupt_handler,
 				  IRQF_ONESHOT,
 				  "sph-msi",
-				  sph_pci);
+				  nnp_pci);
 	if (rc) {
 		sph_log_err(START_UP_LOG, "Error allocating MSI interrupt\n");
 		goto err_irq_req_fail;
 	}
 
-	sph_log_debug(START_UP_LOG, "sph_pcie MSI irq setup done\n");
+	sph_log_debug(START_UP_LOG, "nnp_pcie MSI irq setup done\n");
 
 	return 0;
 
@@ -792,14 +799,14 @@ err_irq_req_fail:
 	return rc;
 }
 
-static void sph_free_interrupts(struct sph_pci_device *sph_pci,
+static void nnp_free_interrupts(struct nnp_pci_device *nnp_pci,
 				struct pci_dev        *pdev)
 {
-	free_irq(pdev->irq, sph_pci);
+	free_irq(pdev->irq, nnp_pci);
 	pci_disable_msi(pdev);
 }
 
-static int sph_respq_write_mesg_nowait(struct sph_pci_device *sph_pci,
+static int sph_respq_write_mesg_nowait(struct nnp_pci_device *nnp_pci,
 				       u64                   *msg,
 				       u32                    size,
 				       u32                   *read_update_count)
@@ -812,12 +819,12 @@ static int sph_respq_write_mesg_nowait(struct sph_pci_device *sph_pci,
 	if (size < 1)
 		return 0;
 
-	SPH_SPIN_LOCK(&sph_pci->respq_lock);
+	NNP_SPIN_LOCK(&nnp_pci->respq_lock);
 
-	if (sph_pci->respq_free_slots < size) {
+	if (nnp_pci->respq_free_slots < size) {
 		/* read response fifo pointers and compute free slots in fifo */
-		SPH_SPIN_LOCK_IRQSAVE(&sph_pci->irq_lock, flags);
-		resp_pci_control = sph_mmio_read(sph_pci,
+		NNP_SPIN_LOCK_IRQSAVE(&nnp_pci->irq_lock, flags);
+		resp_pci_control = nnp_mmio_read(nnp_pci,
 						 ELBI_RESPONSE_PCI_CONTROL);
 		read_pointer = ELBI_BF_GET(resp_pci_control,
 					   ELBI_RESPONSE_PCI_CONTROL_READ_POINTER_MASK,
@@ -826,69 +833,69 @@ static int sph_respq_write_mesg_nowait(struct sph_pci_device *sph_pci,
 					    ELBI_RESPONSE_PCI_CONTROL_WRITE_POINTER_MASK,
 					    ELBI_RESPONSE_PCI_CONTROL_WRITE_POINTER_SHIFT);
 
-		sph_pci->respq_free_slots = ELBI_RESPONSE_FIFO_DEPTH - (write_pointer - read_pointer);
+		nnp_pci->respq_free_slots = ELBI_RESPONSE_FIFO_DEPTH - (write_pointer - read_pointer);
 
-		if (sph_pci->respq_free_slots < size) {
-			*read_update_count = sph_pci->resp_fifo_read_update_count;
-			SPH_SPIN_UNLOCK_IRQRESTORE(&sph_pci->irq_lock, flags);
-			SPH_SPIN_UNLOCK(&sph_pci->respq_lock);
+		if (nnp_pci->respq_free_slots < size) {
+			*read_update_count = nnp_pci->resp_fifo_read_update_count;
+			NNP_SPIN_UNLOCK_IRQRESTORE(&nnp_pci->irq_lock, flags);
+			NNP_SPIN_UNLOCK(&nnp_pci->respq_lock);
 			return -EAGAIN;
 		}
-		SPH_SPIN_UNLOCK_IRQRESTORE(&sph_pci->irq_lock, flags);
+		NNP_SPIN_UNLOCK_IRQRESTORE(&nnp_pci->irq_lock, flags);
 	}
 
 	/* Write all but the last message without generating interrupt on host */
 	for (i = 0; i < size-1; i++) {
-		sph_mmio_write(sph_pci,
+		nnp_mmio_write(nnp_pci,
 			       ELBI_RESPONSE_WRITE_WO_MSI_LOW,
 			       lower_32_bits(msg[i]));
-		sph_mmio_write(sph_pci,
+		nnp_mmio_write(nnp_pci,
 			       ELBI_RESPONSE_WRITE_WO_MSI_HIGH,
 			       upper_32_bits(msg[i]));
 	}
 
 	/* Write last message with generating interrupt on host */
-	sph_mmio_write(sph_pci,
+	nnp_mmio_write(nnp_pci,
 		       ELBI_RESPONSE_WRITE_W_MSI_LOW,
 		       lower_32_bits(msg[i]));
-	sph_mmio_write(sph_pci,
+	nnp_mmio_write(nnp_pci,
 		       ELBI_RESPONSE_WRITE_W_MSI_HIGH,
 		       upper_32_bits(msg[i]));
 
-	sph_pci->respq_free_slots -= size;
+	nnp_pci->respq_free_slots -= size;
 
-	SPH_SPIN_UNLOCK(&sph_pci->respq_lock);
+	NNP_SPIN_UNLOCK(&nnp_pci->respq_lock);
 
 	return 0;
 }
 
 static int sph_respq_write_mesg(void *hw_handle, u64 *msg, u32 size)
 {
-	struct sph_pci_device *sph_pci = (struct sph_pci_device *)hw_handle;
+	struct nnp_pci_device *nnp_pci = (struct nnp_pci_device *)hw_handle;
 	int rc;
 	u64 start = 0;
 	u32 read_update_count = 0;
-	bool update_sw_counter = SPH_SW_GROUP_IS_ENABLE(g_sph_sw_counters,
+	bool update_sw_counter = NNP_SW_GROUP_IS_ENABLE(g_nnp_sw_counters,
 							SPHCS_SW_COUNTERS_GROUP_IPC);
 
 	rc = sph_respq_write_mesg_nowait(hw_handle, msg, size, &read_update_count);
 	if (rc == -EAGAIN) {
 		if (update_sw_counter)
-			start = sph_time_us();
+			start = nnp_time_us();
 	} else {
 		goto end;
 	}
 
 	while (rc == -EAGAIN) {
-		rc = wait_event_interruptible(sph_pci->host_status_wait,
-					      read_update_count != sph_pci->resp_fifo_read_update_count);
+		rc = wait_event_interruptible(nnp_pci->host_status_wait,
+					      read_update_count != nnp_pci->resp_fifo_read_update_count);
 		if (rc)
 			break;
 		rc = sph_respq_write_mesg_nowait(hw_handle, msg, size, &read_update_count);
 	}
 
 	if (update_sw_counter)
-		SPH_SW_COUNTER_ADD(g_sph_sw_counters, SPHCS_SW_COUNTERS_IPC_RESPONSES_WAIT_TIME, sph_time_us() - start);
+		NNP_SW_COUNTER_ADD(g_nnp_sw_counters, SPHCS_SW_COUNTERS_IPC_RESPONSES_WAIT_TIME, nnp_time_us() - start);
 end:
 	if (rc)
 		sph_log_err(GENERAL_LOG, "Failed to write message size %d rc=%d!!\n", size, rc);
@@ -896,92 +903,92 @@ end:
 	return rc;
 }
 
-static void sphcs_sph_reset_wr_dma_engine(void *hw_handle)
+static void sphcs_nnp_reset_wr_dma_engine(void *hw_handle)
 {
-	struct sph_pci_device *sph_pci = (struct sph_pci_device *)hw_handle;
+	struct nnp_pci_device *nnp_pci = (struct nnp_pci_device *)hw_handle;
 
-	sph_mmio_write(sph_pci, DMA_WRITE_ENGINE_EN_OFF, 0);
+	nnp_mmio_write(nnp_pci, DMA_WRITE_ENGINE_EN_OFF, 0);
 	udelay(5);
-	sph_mmio_write(sph_pci, DMA_WRITE_ENGINE_EN_OFF, 1);
+	nnp_mmio_write(nnp_pci, DMA_WRITE_ENGINE_EN_OFF, 1);
 }
 
-static void sphcs_sph_reset_rd_dma_engine(void *hw_handle)
+static void sphcs_nnp_reset_rd_dma_engine(void *hw_handle)
 {
-	struct sph_pci_device *sph_pci = (struct sph_pci_device *)hw_handle;
+	struct nnp_pci_device *nnp_pci = (struct nnp_pci_device *)hw_handle;
 
-	sph_mmio_write(sph_pci, DMA_READ_ENGINE_EN_OFF, 0);
+	nnp_mmio_write(nnp_pci, DMA_READ_ENGINE_EN_OFF, 0);
 	udelay(5);
-	sph_mmio_write(sph_pci, DMA_READ_ENGINE_EN_OFF, 1);
+	nnp_mmio_write(nnp_pci, DMA_READ_ENGINE_EN_OFF, 1);
 }
 
 static int sphcs_sph_init_dma_engine(void *hw_handle)
 {
-	struct sph_pci_device *sph_pci = (struct sph_pci_device *)hw_handle;
+	struct nnp_pci_device *nnp_pci = (struct nnp_pci_device *)hw_handle;
 	u32 mask;
 	int i;
 	uint32_t reg;
 
 	/* initalization read channels */
 	for (i = 0; i < NUM_H2C_CHANNELS; i++) {
-		sph_mmio_write(sph_pci,
+		nnp_mmio_write(nnp_pci,
 			       DMA_READ_INT_CLEAR_OFF,
 			       (DMA_SET_CHAN_BIT(i, DMA_RD_ABORT_INT_CLEAR_OFF) |
 				DMA_SET_CHAN_BIT(i, DMA_RD_DONE_INT_CLEAR_OFF)));
-		sph_mmio_write(sph_pci, DMA_CH_CONTROL1_OFF_RDCH(i), 0);
-		sph_mmio_write(sph_pci, DMA_CH_CONTROL2_OFF_RDCH(i), 0);
-		sph_mmio_write(sph_pci, DMA_TRANSFER_SIZE_OFF_RDCH(i), 0);
-		sph_mmio_write(sph_pci, DMA_SAR_LOW_OFF_RDCH(i), 0);
-		sph_mmio_write(sph_pci, DMA_SAR_HIGH_OFF_RDCH(i), 0);
-		sph_mmio_write(sph_pci, DMA_DAR_LOW_OFF_RDCH(i), 0);
-		sph_mmio_write(sph_pci, DMA_DAR_HIGH_OFF_RDCH(i), 0);
-		sph_mmio_write(sph_pci, DMA_LLP_LOW_OFF_RDCH(i), 0);
-		sph_mmio_write(sph_pci, DMA_LLP_HIGH_OFF_RDCH(i), 0);
+		nnp_mmio_write(nnp_pci, DMA_CH_CONTROL1_OFF_RDCH(i), 0);
+		nnp_mmio_write(nnp_pci, DMA_CH_CONTROL2_OFF_RDCH(i), 0);
+		nnp_mmio_write(nnp_pci, DMA_TRANSFER_SIZE_OFF_RDCH(i), 0);
+		nnp_mmio_write(nnp_pci, DMA_SAR_LOW_OFF_RDCH(i), 0);
+		nnp_mmio_write(nnp_pci, DMA_SAR_HIGH_OFF_RDCH(i), 0);
+		nnp_mmio_write(nnp_pci, DMA_DAR_LOW_OFF_RDCH(i), 0);
+		nnp_mmio_write(nnp_pci, DMA_DAR_HIGH_OFF_RDCH(i), 0);
+		nnp_mmio_write(nnp_pci, DMA_LLP_LOW_OFF_RDCH(i), 0);
+		nnp_mmio_write(nnp_pci, DMA_LLP_HIGH_OFF_RDCH(i), 0);
 
 		/* enable LL mode local interrupt on abort */
-		reg = sph_mmio_read(sph_pci, DMA_READ_LL_ERR_EN_OFF);
+		reg = nnp_mmio_read(nnp_pci, DMA_READ_LL_ERR_EN_OFF);
 		reg |= DMA_SET_CHAN_BIT(i, DMA_RD_CHAN_LLLAIE_OFF);
-		sph_mmio_write(sph_pci, DMA_READ_LL_ERR_EN_OFF, reg);
+		nnp_mmio_write(nnp_pci, DMA_READ_LL_ERR_EN_OFF, reg);
 	}
 
 	/* enable interrupts for read channels */
 	mask = ~(((1U<<NUM_H2C_CHANNELS)-1) << DMA_RD_DONE_INT_MASK_OFF |
 		 ((1U<<NUM_H2C_CHANNELS)-1) << DMA_RD_ABORT_INT_MASK_OFF);
-	sph_mmio_write(sph_pci,
+	nnp_mmio_write(nnp_pci,
 		       DMA_READ_INT_MASK_OFF,
 		       mask);
 
 	/* initalization write channels */
 	for (i = 0; i < NUM_C2H_CHANNELS; i++) {
-		sph_mmio_write(sph_pci,
+		nnp_mmio_write(nnp_pci,
 			       DMA_WRITE_INT_CLEAR_OFF,
 			       (DMA_SET_CHAN_BIT(i, DMA_WR_ABORT_INT_CLEAR_OFF) |
 				DMA_SET_CHAN_BIT(i, DMA_WR_DONE_INT_CLEAR_OFF)));
-		sph_mmio_write(sph_pci, DMA_CH_CONTROL1_OFF_WRCH(i), 0);
-		sph_mmio_write(sph_pci, DMA_CH_CONTROL2_OFF_WRCH(i), 0);
-		sph_mmio_write(sph_pci, DMA_TRANSFER_SIZE_OFF_WRCH(i), 0);
-		sph_mmio_write(sph_pci, DMA_SAR_LOW_OFF_WRCH(i), 0);
-		sph_mmio_write(sph_pci, DMA_SAR_HIGH_OFF_WRCH(i), 0);
-		sph_mmio_write(sph_pci, DMA_DAR_LOW_OFF_WRCH(i), 0);
-		sph_mmio_write(sph_pci, DMA_DAR_HIGH_OFF_WRCH(i), 0);
-		sph_mmio_write(sph_pci, DMA_LLP_LOW_OFF_WRCH(i), 0);
-		sph_mmio_write(sph_pci, DMA_LLP_HIGH_OFF_WRCH(i), 0);
+		nnp_mmio_write(nnp_pci, DMA_CH_CONTROL1_OFF_WRCH(i), 0);
+		nnp_mmio_write(nnp_pci, DMA_CH_CONTROL2_OFF_WRCH(i), 0);
+		nnp_mmio_write(nnp_pci, DMA_TRANSFER_SIZE_OFF_WRCH(i), 0);
+		nnp_mmio_write(nnp_pci, DMA_SAR_LOW_OFF_WRCH(i), 0);
+		nnp_mmio_write(nnp_pci, DMA_SAR_HIGH_OFF_WRCH(i), 0);
+		nnp_mmio_write(nnp_pci, DMA_DAR_LOW_OFF_WRCH(i), 0);
+		nnp_mmio_write(nnp_pci, DMA_DAR_HIGH_OFF_WRCH(i), 0);
+		nnp_mmio_write(nnp_pci, DMA_LLP_LOW_OFF_WRCH(i), 0);
+		nnp_mmio_write(nnp_pci, DMA_LLP_HIGH_OFF_WRCH(i), 0);
 
 		/* enable LL mode local interrupt on abort */
-		reg = sph_mmio_read(sph_pci, DMA_WRITE_LL_ERR_EN_OFF);
+		reg = nnp_mmio_read(nnp_pci, DMA_WRITE_LL_ERR_EN_OFF);
 		reg |= DMA_SET_CHAN_BIT(i, DMA_RD_CHAN_LLLAIE_OFF);
-		sph_mmio_write(sph_pci, DMA_WRITE_LL_ERR_EN_OFF, reg);
+		nnp_mmio_write(nnp_pci, DMA_WRITE_LL_ERR_EN_OFF, reg);
 	}
 
 	/* enable interrupts for write channels */
 	mask = ~(((1U<<NUM_C2H_CHANNELS)-1) << DMA_WR_DONE_INT_MASK_OFF |
 		 ((1U<<NUM_C2H_CHANNELS)-1) << DMA_WR_ABORT_INT_MASK_OFF);
-	sph_mmio_write(sph_pci,
+	nnp_mmio_write(nnp_pci,
 		       DMA_WRITE_INT_MASK_OFF,
 		       mask);
 
 	/* enable DMA engine */
-	sphcs_sph_reset_rd_dma_engine(hw_handle);
-	sphcs_sph_reset_wr_dma_engine(hw_handle);
+	sphcs_nnp_reset_rd_dma_engine(hw_handle);
+	sphcs_nnp_reset_wr_dma_engine(hw_handle);
 
 	return 0;
 }
@@ -997,7 +1004,7 @@ static void *dma_set_lli_data_element(void *lliPtr,
 	bool is_last;
 
 	if (lli->num_filled >= lli->num_elements || lli->num_lists == 0) {
-		SPH_ASSERT(0);
+		NNP_ASSERT(0);
 		return lliPtr;
 	}
 
@@ -1041,7 +1048,23 @@ static void *dma_set_lli_data_element(void *lliPtr,
 	return lliPtr;
 }
 
-static void init_lli_desc(struct lli_desc *outLli, u32 nelements)
+static int sphcs_sph_dma_edit_lli_elem(struct lli_desc *lli, u32 elem_idx, dma_addr_t src, dma_addr_t dst)
+{
+	struct sph_dma_data_element *data_elem;
+
+	if (!lli || lli->num_elements <= elem_idx || !lli->vptr)
+		return -EINVAL;
+
+	data_elem = lli->vptr + sizeof(struct sph_lli_header) + elem_idx * sizeof(struct sph_dma_data_element);
+	data_elem->source_address_low = lower_32_bits(src);
+	data_elem->source_address_high = upper_32_bits(src);
+	data_elem->dest_address_low = lower_32_bits(dst);
+	data_elem->dest_address_high = upper_32_bits(dst);
+
+	return 0;
+}
+
+static void init_lli_desc(struct lli_desc *outLli, u32 nelements, bool single_list)
 {
 	u32 off;
 	u32 i, n;
@@ -1050,7 +1073,8 @@ static void init_lli_desc(struct lli_desc *outLli, u32 nelements)
 	outLli->num_filled = 0;
 	if (outLli->num_elements > 0 &&
 	    outLli->num_elements >= dma_lli_min_split &&
-	    dma_lli_split > 1)
+	    dma_lli_split > 1 &&
+	    !single_list)
 		outLli->num_lists = (outLli->num_elements >= dma_lli_split ? dma_lli_split : outLli->num_elements);
 	else
 		outLli->num_lists = 1;
@@ -1069,7 +1093,8 @@ int sphcs_sph_dma_init_lli(void            *hw_handle,
 			   struct lli_desc *outLli,
 			   struct sg_table *src,
 			   struct sg_table *dst,
-			   uint64_t         dst_offset)
+			   uint64_t         dst_offset,
+			   bool single_list)
 {
 	u32 nelem;
 
@@ -1080,7 +1105,7 @@ int sphcs_sph_dma_init_lli(void            *hw_handle,
 	if (nelem == 0)
 		return -EINVAL;
 
-	init_lli_desc(outLli, nelem);
+	init_lli_desc(outLli, nelem, single_list);
 
 	return 0;
 }
@@ -1135,7 +1160,7 @@ static int sphcs_sph_dma_init_lli_vec(void *hw_handle, struct lli_desc *outLli, 
 	if (nelem == 0)
 		return -EINVAL;
 
-	init_lli_desc(outLli, nelem);
+	init_lli_desc(outLli, nelem, false);
 
 	return 0;
 }
@@ -1264,19 +1289,19 @@ int sphcs_sph_dma_edit_lli(void *hw_handle, struct lli_desc *outLli, uint32_t si
 	return 0;
 }
 
-static inline void sphcs_sph_dma_set_ch_weights(struct sph_pci_device *sph_pci, int channel, u32 priority, u32 reg)
+static inline void sphcs_sph_dma_set_ch_weights(struct nnp_pci_device *nnp_pci, int channel, u32 priority, u32 reg)
 {
 	uint32_t weight;
 	uint32_t reg_val;
 	unsigned long flags;
 
-	SPH_SPIN_LOCK_IRQSAVE(&sph_pci->dma_lock_irq, flags);
+	NNP_SPIN_LOCK_IRQSAVE(&nnp_pci->dma_lock_irq, flags);
 	weight = priority * SPHCS_DMA_PRIORITY_FACTOR;
-	reg_val = sph_mmio_read(sph_pci, reg);
+	reg_val = nnp_mmio_read(nnp_pci, reg);
 	reg_val &= ~(0x1F<<(channel*5));
 	reg_val |= (weight<<(channel*5));
-	sph_mmio_write(sph_pci, reg, reg_val);
-	SPH_SPIN_UNLOCK_IRQRESTORE(&sph_pci->dma_lock_irq, flags);
+	nnp_mmio_write(nnp_pci, reg, reg_val);
+	NNP_SPIN_UNLOCK_IRQRESTORE(&nnp_pci->dma_lock_irq, flags);
 }
 
 int sphcs_sph_dma_start_xfer_h2c(void      *hw_handle,
@@ -1284,50 +1309,50 @@ int sphcs_sph_dma_start_xfer_h2c(void      *hw_handle,
 				 u32        priority,
 				 dma_addr_t lli_addr)
 {
-	struct sph_pci_device *sph_pci = (struct sph_pci_device *)hw_handle;
+	struct nnp_pci_device *nnp_pci = (struct nnp_pci_device *)hw_handle;
 
-	if (!sph_pci->bus_master_en)
+	if (!nnp_pci->bus_master_en)
 		return -EACCES;
 
 	/* program LLI mode */
-	sph_mmio_write(sph_pci,
+	nnp_mmio_write(nnp_pci,
 		       DMA_CH_CONTROL1_OFF_RDCH(channel),
 		       (DMA_CTRL_LLE | DMA_CTRL_CCS | DMA_CTRL_TD));
-	sph_mmio_write(sph_pci,
+	nnp_mmio_write(nnp_pci,
 		       DMA_CH_CONTROL2_OFF_RDCH(channel),
 		       0);
-	sph_mmio_write(sph_pci,
+	nnp_mmio_write(nnp_pci,
 		       DMA_TRANSFER_SIZE_OFF_RDCH(channel),
 		       0);
-	sph_mmio_write(sph_pci,
+	nnp_mmio_write(nnp_pci,
 		       DMA_SAR_LOW_OFF_RDCH(channel),
 		       0);
-	sph_mmio_write(sph_pci,
+	nnp_mmio_write(nnp_pci,
 		       DMA_SAR_HIGH_OFF_RDCH(channel),
 		       0);
-	sph_mmio_write(sph_pci,
+	nnp_mmio_write(nnp_pci,
 		       DMA_DAR_LOW_OFF_RDCH(channel),
 		       0);
-	sph_mmio_write(sph_pci,
+	nnp_mmio_write(nnp_pci,
 		       DMA_DAR_HIGH_OFF_RDCH(channel),
 		       0);
-	sph_mmio_write(sph_pci,
+	nnp_mmio_write(nnp_pci,
 		       DMA_LLP_LOW_OFF_RDCH(channel),
 		       lower_32_bits(lli_addr));
-	sph_mmio_write(sph_pci,
+	nnp_mmio_write(nnp_pci,
 		       DMA_LLP_HIGH_OFF_RDCH(channel),
 		       upper_32_bits(lli_addr));
 
-	sphcs_sph_dma_set_ch_weights(sph_pci, channel, priority, DMA_READ_CHAN_ARB_WEIGHT_LOW_REG);
+	sphcs_sph_dma_set_ch_weights(nnp_pci, channel, priority, DMA_READ_CHAN_ARB_WEIGHT_LOW_REG);
 
 	/* get time stamp */
-	if (SPH_SW_GROUP_IS_ENABLE(g_sph_sw_counters, SPHCS_SW_COUNTERS_GROUP_DMA))
-		sph_pci->h2c_channels[channel].usTime = sph_time_us();
+	if (NNP_SW_GROUP_IS_ENABLE(g_nnp_sw_counters, SPHCS_SW_COUNTERS_GROUP_DMA))
+		nnp_pci->h2c_channels[channel].usTime = nnp_time_us();
 	else
-		sph_pci->h2c_channels[channel].usTime = 0;
+		nnp_pci->h2c_channels[channel].usTime = 0;
 
 	/* start the channel */
-	sph_mmio_write(sph_pci,
+	nnp_mmio_write(nnp_pci,
 		       DMA_READ_DOORBELL_OFF,
 		       channel);
 
@@ -1339,50 +1364,50 @@ int sphcs_sph_dma_start_xfer_c2h(void      *hw_handle,
 				 u32        priority,
 				 dma_addr_t lli_addr)
 {
-	struct sph_pci_device *sph_pci = (struct sph_pci_device *)hw_handle;
+	struct nnp_pci_device *nnp_pci = (struct nnp_pci_device *)hw_handle;
 
-	if (!sph_pci->bus_master_en)
+	if (!nnp_pci->bus_master_en)
 		return -EACCES;
 
 	/* program LLI mode */
-	sph_mmio_write(sph_pci,
+	nnp_mmio_write(nnp_pci,
 		       DMA_CH_CONTROL1_OFF_WRCH(channel),
 		       (DMA_CTRL_LLE | DMA_CTRL_CCS | DMA_CTRL_TD));
-	sph_mmio_write(sph_pci,
+	nnp_mmio_write(nnp_pci,
 		       DMA_CH_CONTROL2_OFF_WRCH(channel),
 		       0);
-	sph_mmio_write(sph_pci,
+	nnp_mmio_write(nnp_pci,
 		       DMA_TRANSFER_SIZE_OFF_WRCH(channel),
 		       0);
-	sph_mmio_write(sph_pci,
+	nnp_mmio_write(nnp_pci,
 		       DMA_SAR_LOW_OFF_WRCH(channel),
 		       0);
-	sph_mmio_write(sph_pci,
+	nnp_mmio_write(nnp_pci,
 		       DMA_SAR_HIGH_OFF_WRCH(channel),
 		       0);
-	sph_mmio_write(sph_pci,
+	nnp_mmio_write(nnp_pci,
 		       DMA_DAR_LOW_OFF_WRCH(channel),
 		       0);
-	sph_mmio_write(sph_pci,
+	nnp_mmio_write(nnp_pci,
 		       DMA_DAR_HIGH_OFF_WRCH(channel),
 		       0);
-	sph_mmio_write(sph_pci,
+	nnp_mmio_write(nnp_pci,
 		       DMA_LLP_LOW_OFF_WRCH(channel),
 		       lower_32_bits(lli_addr));
-	sph_mmio_write(sph_pci,
+	nnp_mmio_write(nnp_pci,
 		       DMA_LLP_HIGH_OFF_WRCH(channel),
 		       upper_32_bits(lli_addr));
 
-	sphcs_sph_dma_set_ch_weights(sph_pci, channel, priority, DMA_WRITE_CHAN_ARB_WEIGHT_LOW_REG);
+	sphcs_sph_dma_set_ch_weights(nnp_pci, channel, priority, DMA_WRITE_CHAN_ARB_WEIGHT_LOW_REG);
 
 	/* get time stamp */
-	if (SPH_SW_GROUP_IS_ENABLE(g_sph_sw_counters, SPHCS_SW_COUNTERS_GROUP_DMA))
-		sph_pci->c2h_channels[channel].usTime = sph_time_us();
+	if (NNP_SW_GROUP_IS_ENABLE(g_nnp_sw_counters, SPHCS_SW_COUNTERS_GROUP_DMA))
+		nnp_pci->c2h_channels[channel].usTime = nnp_time_us();
 	else
-		sph_pci->c2h_channels[channel].usTime = 0;
+		nnp_pci->c2h_channels[channel].usTime = 0;
 
 	/* start the channel */
-	sph_mmio_write(sph_pci,
+	nnp_mmio_write(nnp_pci,
 		       DMA_WRITE_DOORBELL_OFF,
 		       channel);
 
@@ -1396,48 +1421,48 @@ int sphcs_sph_dma_start_xfer_h2c_single(void      *hw_handle,
 					dma_addr_t dst,
 					u32        size)
 {
-	struct sph_pci_device *sph_pci = (struct sph_pci_device *)hw_handle;
+	struct nnp_pci_device *nnp_pci = (struct nnp_pci_device *)hw_handle;
 
-	if (!sph_pci->bus_master_en)
+	if (!nnp_pci->bus_master_en)
 		return -EACCES;
 
 	/* program single mode */
-	sph_mmio_write(sph_pci,
+	nnp_mmio_write(nnp_pci,
 		       DMA_CH_CONTROL1_OFF_RDCH(channel),
 		       (DMA_CTRL_LIE | DMA_CTRL_TD));
-	sph_mmio_write(sph_pci,
+	nnp_mmio_write(nnp_pci,
 		       DMA_CH_CONTROL2_OFF_RDCH(channel),
 		       0);
-	sph_mmio_write(sph_pci,
+	nnp_mmio_write(nnp_pci,
 		       DMA_TRANSFER_SIZE_OFF_RDCH(channel),
 		       size);
-	sph_mmio_write(sph_pci,
+	nnp_mmio_write(nnp_pci,
 		       DMA_SAR_LOW_OFF_RDCH(channel),
 		       lower_32_bits(src));
-	sph_mmio_write(sph_pci,
+	nnp_mmio_write(nnp_pci,
 		       DMA_SAR_HIGH_OFF_RDCH(channel),
 		       upper_32_bits(src));
-	sph_mmio_write(sph_pci,
+	nnp_mmio_write(nnp_pci,
 		       DMA_DAR_LOW_OFF_RDCH(channel),
 		       lower_32_bits(dst));
-	sph_mmio_write(sph_pci,
+	nnp_mmio_write(nnp_pci,
 		       DMA_DAR_HIGH_OFF_RDCH(channel),
 		       upper_32_bits(dst));
-	sph_mmio_write(sph_pci,
+	nnp_mmio_write(nnp_pci,
 		       DMA_LLP_LOW_OFF_RDCH(channel), 0);
-	sph_mmio_write(sph_pci,
+	nnp_mmio_write(nnp_pci,
 		       DMA_LLP_HIGH_OFF_RDCH(channel), 0);
 
-	sphcs_sph_dma_set_ch_weights(sph_pci, channel, priority, DMA_READ_CHAN_ARB_WEIGHT_LOW_REG);
+	sphcs_sph_dma_set_ch_weights(nnp_pci, channel, priority, DMA_READ_CHAN_ARB_WEIGHT_LOW_REG);
 
 	/* get time stamp */
-	if (SPH_SW_GROUP_IS_ENABLE(g_sph_sw_counters, SPHCS_SW_COUNTERS_GROUP_DMA))
-		sph_pci->h2c_channels[channel].usTime = sph_time_us();
+	if (NNP_SW_GROUP_IS_ENABLE(g_nnp_sw_counters, SPHCS_SW_COUNTERS_GROUP_DMA))
+		nnp_pci->h2c_channels[channel].usTime = nnp_time_us();
 	else
-		sph_pci->h2c_channels[channel].usTime = 0;
+		nnp_pci->h2c_channels[channel].usTime = 0;
 
 	/* start the channel */
-	sph_mmio_write(sph_pci,
+	nnp_mmio_write(nnp_pci,
 		       DMA_READ_DOORBELL_OFF,
 		       channel);
 
@@ -1451,70 +1476,70 @@ int sphcs_sph_dma_start_xfer_c2h_single(void      *hw_handle,
 					dma_addr_t dst,
 					u32        size)
 {
-	struct sph_pci_device *sph_pci = (struct sph_pci_device *)hw_handle;
+	struct nnp_pci_device *nnp_pci = (struct nnp_pci_device *)hw_handle;
 
-	if (!sph_pci->bus_master_en)
+	if (!nnp_pci->bus_master_en)
 		return -EACCES;
 
 	/* program single mode */
-	sph_mmio_write(sph_pci,
+	nnp_mmio_write(nnp_pci,
 		       DMA_CH_CONTROL1_OFF_WRCH(channel),
 		       (DMA_CTRL_LIE | DMA_CTRL_TD));
-	sph_mmio_write(sph_pci,
+	nnp_mmio_write(nnp_pci,
 		       DMA_CH_CONTROL2_OFF_WRCH(channel),
 		       0);
-	sph_mmio_write(sph_pci,
+	nnp_mmio_write(nnp_pci,
 		       DMA_TRANSFER_SIZE_OFF_WRCH(channel),
 		       size);
-	sph_mmio_write(sph_pci,
+	nnp_mmio_write(nnp_pci,
 		       DMA_SAR_LOW_OFF_WRCH(channel),
 		       lower_32_bits(src));
-	sph_mmio_write(sph_pci,
+	nnp_mmio_write(nnp_pci,
 		       DMA_SAR_HIGH_OFF_WRCH(channel),
 		       upper_32_bits(src));
-	sph_mmio_write(sph_pci,
+	nnp_mmio_write(nnp_pci,
 		       DMA_DAR_LOW_OFF_WRCH(channel),
 		       lower_32_bits(dst));
-	sph_mmio_write(sph_pci,
+	nnp_mmio_write(nnp_pci,
 		       DMA_DAR_HIGH_OFF_WRCH(channel),
 		       upper_32_bits(dst));
-	sph_mmio_write(sph_pci,
+	nnp_mmio_write(nnp_pci,
 		       DMA_LLP_LOW_OFF_WRCH(channel), 0);
-	sph_mmio_write(sph_pci,
+	nnp_mmio_write(nnp_pci,
 		       DMA_LLP_HIGH_OFF_WRCH(channel), 0);
 
-	sphcs_sph_dma_set_ch_weights(sph_pci, channel, priority, DMA_WRITE_CHAN_ARB_WEIGHT_LOW_REG);
+	sphcs_sph_dma_set_ch_weights(nnp_pci, channel, priority, DMA_WRITE_CHAN_ARB_WEIGHT_LOW_REG);
 
 	/* get time stamp */
-	if (SPH_SW_GROUP_IS_ENABLE(g_sph_sw_counters, SPHCS_SW_COUNTERS_GROUP_DMA))
-		sph_pci->c2h_channels[channel].usTime = sph_time_us();
+	if (NNP_SW_GROUP_IS_ENABLE(g_nnp_sw_counters, SPHCS_SW_COUNTERS_GROUP_DMA))
+		nnp_pci->c2h_channels[channel].usTime = nnp_time_us();
 	else
-		sph_pci->c2h_channels[channel].usTime = 0;
+		nnp_pci->c2h_channels[channel].usTime = 0;
 
 	/* start the channel */
-	sph_mmio_write(sph_pci,
+	nnp_mmio_write(nnp_pci,
 		       DMA_WRITE_DOORBELL_OFF,
 		       channel);
 
 	return 0;
 }
 
-static void sphcs_sph_dma_abort_all_channles(struct sph_pci_device *sph_pci)
+static void sphcs_sph_dma_abort_all_channles(struct nnp_pci_device *nnp_pci)
 {
 #if 0
 	int i;
 
 	for (i = 0; i < NUM_H2C_CHANNELS; i++)
-		sph_mmio_write(sph_pci,
+		nnp_mmio_write(nnp_pci,
 			       DMA_READ_DOORBELL_OFF,
 			       BIT(DMA_DOORBELL_STOP_OFF) | i);
 
 	for (i = 0; i < NUM_C2H_CHANNELS; i++)
-		sph_mmio_write(sph_pci,
+		nnp_mmio_write(nnp_pci,
 			       DMA_WRITE_DOORBELL_OFF,
 			       BIT(DMA_DOORBELL_STOP_OFF) | i);
 
-	sphcs_sph_reset_dma_engine(sph_pci);
+	sphcs_nnp_reset_dma_engine(nnp_pci);
 #endif
 }
 
@@ -1527,56 +1552,56 @@ int sphcs_sph_dma_xfer_c2h_single(void      *hw_handle,
 				  u32       *usTime)
 {
 	u64 start_dma_time = 0, end_dma_time;
-	struct sph_pci_device *sph_pci = (struct sph_pci_device *)hw_handle;
+	struct nnp_pci_device *nnp_pci = (struct nnp_pci_device *)hw_handle;
 	u32 res_transfer_size, status, channel_status;
 	unsigned long time;
 	int channel = 0;
 
-	if (!sph_pci->bus_master_en)
+	if (!nnp_pci->bus_master_en)
 		return -EACCES;
 
 	/* Stop all DMA channels */
-	sphcs_sph_dma_abort_all_channles(sph_pci);
+	sphcs_sph_dma_abort_all_channles(nnp_pci);
 
 	/* program DMA without requesting local interrupt */
-	sph_mmio_write(sph_pci,
+	nnp_mmio_write(nnp_pci,
 		       DMA_CH_CONTROL1_OFF_WRCH(channel),
 		       DMA_CTRL_TD);
-	sph_mmio_write(sph_pci,
+	nnp_mmio_write(nnp_pci,
 		       DMA_CH_CONTROL2_OFF_WRCH(channel),
 		       0);
-	sph_mmio_write(sph_pci,
+	nnp_mmio_write(nnp_pci,
 		       DMA_TRANSFER_SIZE_OFF_WRCH(channel),
 		       size);
-	sph_mmio_write(sph_pci,
+	nnp_mmio_write(nnp_pci,
 		       DMA_SAR_LOW_OFF_WRCH(channel),
 		       lower_32_bits(src));
-	sph_mmio_write(sph_pci,
+	nnp_mmio_write(nnp_pci,
 		       DMA_SAR_HIGH_OFF_WRCH(channel),
 		       upper_32_bits(src));
-	sph_mmio_write(sph_pci,
+	nnp_mmio_write(nnp_pci,
 		       DMA_DAR_LOW_OFF_WRCH(channel),
 		       lower_32_bits(dst));
-	sph_mmio_write(sph_pci,
+	nnp_mmio_write(nnp_pci,
 		       DMA_DAR_HIGH_OFF_WRCH(channel),
 		       upper_32_bits(dst));
-	sph_mmio_write(sph_pci,
+	nnp_mmio_write(nnp_pci,
 		       DMA_LLP_LOW_OFF_WRCH(channel), 0);
-	sph_mmio_write(sph_pci,
+	nnp_mmio_write(nnp_pci,
 		       DMA_LLP_HIGH_OFF_WRCH(channel), 0);
 
-	if (SPH_SW_GROUP_IS_ENABLE(g_sph_sw_counters, SPHCS_SW_COUNTERS_GROUP_DMA))
-		start_dma_time = sph_time_us();
+	if (NNP_SW_GROUP_IS_ENABLE(g_nnp_sw_counters, SPHCS_SW_COUNTERS_GROUP_DMA))
+		start_dma_time = nnp_time_us();
 
 	/* start the DMA */
-	sph_mmio_write(sph_pci,
+	nnp_mmio_write(nnp_pci,
 		       DMA_WRITE_DOORBELL_OFF,
 		       channel);
 
 	/* wait for the DMA completion */
 	time = jiffies + msecs_to_jiffies(timeout_ms);
 	do {
-		status = sph_mmio_read(sph_pci,
+		status = nnp_mmio_read(nnp_pci,
 				       DMA_CH_CONTROL1_OFF_WRCH(channel));
 		channel_status = (status & DMA_CTRL_CHANNEL_STATUS_MASK) >> DMA_CTRL_CHANNEL_STATUS_OFF;
 	} while ((channel_status == DMA_CTRL_CHANNEL_STATUS_RUNNING) &&
@@ -1585,7 +1610,7 @@ int sphcs_sph_dma_xfer_c2h_single(void      *hw_handle,
 	/* Set error status */
 	if (channel_status == DMA_CTRL_CHANNEL_STATUS_STOPPED) {
 		/* Read the remaining transfer size*/
-		res_transfer_size = sph_mmio_read(sph_pci,
+		res_transfer_size = nnp_mmio_read(nnp_pci,
 						  DMA_TRANSFER_SIZE_OFF_WRCH(channel));
 
 		if (res_transfer_size == 0)
@@ -1596,7 +1621,7 @@ int sphcs_sph_dma_xfer_c2h_single(void      *hw_handle,
 		*dma_status = SPHCS_DMA_STATUS_FAILED;
 
 	if (start_dma_time != 0) {
-		end_dma_time = sph_time_us();
+		end_dma_time = nnp_time_us();
 		*usTime = (u32)(end_dma_time - start_dma_time);
 	}
 
@@ -1605,36 +1630,36 @@ int sphcs_sph_dma_xfer_c2h_single(void      *hw_handle,
 
 static u32 sph_get_host_doorbell_value(void *hw_handle)
 {
-	struct sph_pci_device *sph_pci = (struct sph_pci_device *)hw_handle;
+	struct nnp_pci_device *nnp_pci = (struct nnp_pci_device *)hw_handle;
 	u32 doorbell_val;
 
-	doorbell_val = sph_mmio_read(sph_pci, ELBI_PCI_HOST_DOORBELL_VALUE);
+	doorbell_val = nnp_mmio_read(nnp_pci, ELBI_PCI_HOST_DOORBELL_VALUE);
 	return doorbell_val;
 }
 
 static int sph_set_card_doorbell_value(void *hw_handle, u32 value)
 {
-	struct sph_pci_device *sph_pci = (struct sph_pci_device *)hw_handle;
+	struct nnp_pci_device *nnp_pci = (struct nnp_pci_device *)hw_handle;
 	unsigned long flags;
 
-	SPH_SPIN_LOCK_IRQSAVE(&sph_pci->irq_lock, flags);
-	value &= ~(SPH_CARD_KEEP_ALIVE_MASK);
-	value |= (sph_pci->host_doorbell_val & SPH_HOST_KEEP_ALIVE_MASK);
-	sph_pci->card_doorbell_val = value;
-	SPH_SPIN_UNLOCK_IRQRESTORE(&sph_pci->irq_lock, flags);
+	NNP_SPIN_LOCK_IRQSAVE(&nnp_pci->irq_lock, flags);
+	value &= ~(NNP_CARD_KEEP_ALIVE_MASK);
+	value |= (nnp_pci->host_doorbell_val & NNP_HOST_KEEP_ALIVE_MASK);
+	nnp_pci->card_doorbell_val = value;
+	NNP_SPIN_UNLOCK_IRQRESTORE(&nnp_pci->irq_lock, flags);
 
-	sph_mmio_write(sph_pci, ELBI_HOST_PCI_DOORBELL_VALUE, value);
+	nnp_mmio_write(nnp_pci, ELBI_HOST_PCI_DOORBELL_VALUE, value);
 
 	return 0;
 }
 
 static void sph_get_inbound_mem(void *hw_handle, dma_addr_t *base_addr, size_t *size)
 {
-	struct sph_pci_device *sph_pci = (struct sph_pci_device *)hw_handle;
+	struct nnp_pci_device *nnp_pci = (struct nnp_pci_device *)hw_handle;
 	u32 base_addr_lo, base_addr_hi;
 
-	base_addr_lo = sph_mmio_read(sph_pci, IATU_LWR_TARGET_ADDR_INBOUND_OFF(0));
-	base_addr_hi = sph_mmio_read(sph_pci, IATU_UPPER_TARGET_ADDR_INBOUND_OFF(0));
+	base_addr_lo = nnp_mmio_read(nnp_pci, IATU_LWR_TARGET_ADDR_INBOUND_OFF(0));
+	base_addr_hi = nnp_mmio_read(nnp_pci, IATU_UPPER_TARGET_ADDR_INBOUND_OFF(0));
 
 	*base_addr = ((u64)base_addr_hi << 32 | base_addr_lo);
 	*size = MAPPED_MEMORY_SIZE;
@@ -1644,7 +1669,7 @@ static void sph_get_inbound_mem(void *hw_handle, dma_addr_t *base_addr, size_t *
 #ifdef ULT
 static int debug_cmdq_show(struct seq_file *m, void *v)
 {
-	struct sph_pci_device *sph_pci = (struct sph_pci_device *)m->private;
+	struct nnp_pci_device *nnp_pci = (struct nnp_pci_device *)m->private;
 	u32 command_iosf_control;
 	u32 read_pointer;
 	u32 write_pointer;
@@ -1653,11 +1678,11 @@ static int debug_cmdq_show(struct seq_file *m, void *v)
 	u32 high;
 	int i;
 
-	if (unlikely(sph_pci == NULL))
+	if (unlikely(nnp_pci == NULL))
 		return -EINVAL;
 
 
-	command_iosf_control = sph_mmio_read(sph_pci,
+	command_iosf_control = nnp_mmio_read(nnp_pci,
 					     ELBI_COMMAND_IOSF_CONTROL);
 	read_pointer = ELBI_BF_GET(command_iosf_control,
 				   ELBI_COMMAND_IOSF_CONTROL_READ_POINTER_MASK,
@@ -1675,9 +1700,9 @@ static int debug_cmdq_show(struct seq_file *m, void *v)
 		   avail_slots);
 
 	for (i = 0; i < ELBI_COMMAND_FIFO_DEPTH; i++) {
-		low = sph_mmio_read(sph_pci,
+		low = nnp_mmio_read(nnp_pci,
 				    ELBI_COMMAND_FIFO_LOW(i));
-		high = sph_mmio_read(sph_pci,
+		high = nnp_mmio_read(nnp_pci,
 				     ELBI_COMMAND_FIFO_HIGH(i));
 
 		seq_printf(m, "%s %u: 0x%08x 0x%08x\n",
@@ -1704,7 +1729,7 @@ static const struct file_operations debug_cmdq_fops = {
 
 DEFINE_INT_STAT_DEBUGFS(int_stats);
 
-void sph_init_debugfs(struct sph_pci_device *sph_pci)
+void nnp_init_debugfs(struct nnp_pci_device *nnp_pci)
 {
 	struct dentry *f;
 
@@ -1720,7 +1745,7 @@ void sph_init_debugfs(struct sph_pci_device *sph_pci)
 	f = debugfs_create_file("cmdq",
 				0444,
 				s_debugfs_dir,
-				sph_pci,
+				nnp_pci,
 				&debug_cmdq_fops);
 	if (IS_ERR_OR_NULL(f))
 		goto err;
@@ -1737,21 +1762,22 @@ err:
 }
 #endif
 
-static struct sphcs_pcie_hw_ops s_pcie_sph_ops = {
+static struct sphcs_pcie_hw_ops s_pcie_nnp_ops = {
 	.write_mesg = sph_respq_write_mesg,
 	.get_host_doorbell_value = sph_get_host_doorbell_value,
 	.set_card_doorbell_value = sph_set_card_doorbell_value,
 	.get_inbound_mem = sph_get_inbound_mem,
 
 
-	.dma.reset_rd_dma_engine = sphcs_sph_reset_rd_dma_engine,
-	.dma.reset_wr_dma_engine = sphcs_sph_reset_wr_dma_engine,
+	.dma.reset_rd_dma_engine = sphcs_nnp_reset_rd_dma_engine,
+	.dma.reset_wr_dma_engine = sphcs_nnp_reset_wr_dma_engine,
 	.dma.init_dma_engine = sphcs_sph_init_dma_engine,
 	.dma.init_lli = sphcs_sph_dma_init_lli,
 	.dma.gen_lli = sphcs_sph_dma_gen_lli,
 	.dma.edit_lli = sphcs_sph_dma_edit_lli,
 	.dma.init_lli_vec = sphcs_sph_dma_init_lli_vec,
 	.dma.gen_lli_vec = sphcs_sph_dma_gen_lli_vec,
+	.dma.edit_lli_elem = sphcs_sph_dma_edit_lli_elem,
 	.dma.start_xfer_h2c = sphcs_sph_dma_start_xfer_h2c,
 	.dma.start_xfer_c2h = sphcs_sph_dma_start_xfer_c2h,
 	.dma.start_xfer_h2c_single = sphcs_sph_dma_start_xfer_h2c_single,
@@ -1759,56 +1785,56 @@ static struct sphcs_pcie_hw_ops s_pcie_sph_ops = {
 	.dma.xfer_c2h_single = sphcs_sph_dma_xfer_c2h_single,
 };
 
-static int sph_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
+static int nnp_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 {
-	struct sph_pci_device *sph_pci = NULL;
+	struct nnp_pci_device *nnp_pci = NULL;
 	u32 doorbell_val, status;
 	int rc = -ENODEV;
 	u32 dma_rs, dma_ws;
 
-	if (PCI_FUNC(pdev->devfn) != SPH_PCI_DEVFN) {
-		sph_log_err(START_UP_LOG, "unsupported pci.devfn=%u (driver only supports pci.devfn=%u)\n", PCI_FUNC(pdev->devfn), SPH_PCI_DEVFN);
+	if (PCI_FUNC(pdev->devfn) != NNP_PCI_DEVFN) {
+		sph_log_err(START_UP_LOG, "unsupported pci.devfn=%u (driver only supports pci.devfn=%u)\n", PCI_FUNC(pdev->devfn), NNP_PCI_DEVFN);
 		return -ENODEV;
 	}
 
-	sph_pci = kzalloc(sizeof(*sph_pci), GFP_KERNEL);
-	if (!sph_pci) {
+	nnp_pci = kzalloc(sizeof(*nnp_pci), GFP_KERNEL);
+	if (!nnp_pci) {
 		rc = -ENOMEM;
-		sph_log_err(START_UP_LOG, "sph_pci kmalloc failed rc %d\n", rc);
+		sph_log_err(START_UP_LOG, "nnp_pci kmalloc failed rc %d\n", rc);
 		goto alloc_fail;
 	}
 
-	sph_pci->pdev = pdev;
-	sph_pci->dev = &pdev->dev;
-	pci_set_drvdata(pdev, sph_pci);
+	nnp_pci->pdev = pdev;
+	nnp_pci->dev = &pdev->dev;
+	pci_set_drvdata(pdev, nnp_pci);
 
 	/* enable device */
 	rc = pci_enable_device(pdev);
 	if (rc) {
 		sph_log_err(START_UP_LOG, "failed to enable pci device. rc=%d\n", rc);
-		goto free_sph_pci;
+		goto free_nnp_pci;
 	}
 
 	/* enable bus master capability on device */
 	pci_set_master(pdev);
 
-	rc = pci_request_regions(pdev, sph_driver_name);
+	rc = pci_request_regions(pdev, nnp_driver_name);
 	if (rc) {
 		sph_log_err(START_UP_LOG, "failed to get pci regions.\n");
 		goto disable_device;
 	}
 
-	sph_pci->mmio.pa = pci_resource_start(pdev, SPH_PCI_MMIO_BAR);
-	sph_pci->mmio.len = pci_resource_len(pdev, SPH_PCI_MMIO_BAR);
-	sph_pci->mmio.va = pci_ioremap_bar(pdev, SPH_PCI_MMIO_BAR);
-	if (!sph_pci->mmio.va) {
+	nnp_pci->mmio.pa = pci_resource_start(pdev, NNP_PCI_MMIO_BAR);
+	nnp_pci->mmio.len = pci_resource_len(pdev, NNP_PCI_MMIO_BAR);
+	nnp_pci->mmio.va = pci_ioremap_bar(pdev, NNP_PCI_MMIO_BAR);
+	if (!nnp_pci->mmio.va) {
 		sph_log_err(START_UP_LOG, "Cannot remap MMIO BAR\n");
 		rc = -EIO;
 		goto release_regions;
 	}
 
-	sph_log_debug(START_UP_LOG, "sph_pcie mmio_start is 0x%llx\n", sph_pci->mmio.pa);
-	sph_log_debug(START_UP_LOG, "sph_pcie mmio_len   is 0x%zx\n", sph_pci->mmio.len);
+	sph_log_debug(START_UP_LOG, "nnp_pcie mmio_start is 0x%llx\n", nnp_pci->mmio.pa);
+	sph_log_debug(START_UP_LOG, "nnp_pcie mmio_len   is 0x%zx\n", nnp_pci->mmio.len);
 
 	rc = pci_set_dma_mask(pdev, DMA_BIT_MASK(64));
 	if (rc) {
@@ -1817,123 +1843,123 @@ static int sph_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 	}
 
 	/* clear interrupts mask and status */
-	sph_mmio_write(sph_pci,
+	nnp_mmio_write(nnp_pci,
 		       ELBI_IOSF_MSI_MASK,
 		       UINT_MAX);
 
-	read_and_clear_dma_status(sph_pci,
+	read_and_clear_dma_status(nnp_pci,
 				  &dma_rs,
 				  &dma_ws);
 
-	sph_mmio_write(sph_pci,
+	nnp_mmio_write(nnp_pci,
 		       ELBI_IOSF_STATUS,
 		       (s_host_status_int_mask | s_host_status_threaded_mask));
 
 
-	atomic64_set(&sph_pci->dma_status, 0);
-	atomic_set(&sph_pci->new_command, 0);
+	atomic64_set(&nnp_pci->dma_status, 0);
+	atomic_set(&nnp_pci->new_command, 0);
 
-	rc = sph_setup_interrupts(sph_pci, pdev);
+	rc = nnp_setup_interrupts(nnp_pci, pdev);
 	if (rc) {
-		sph_log_err(START_UP_LOG, "sph_setup_interrupts failed %d\n", rc);
+		sph_log_err(START_UP_LOG, "nnp_setup_interrupts failed %d\n", rc);
 		goto unmap_mmio;
 	}
 
-	init_waitqueue_head(&sph_pci->host_status_wait);
-	spin_lock_init(&sph_pci->respq_lock);
-	spin_lock_init(&sph_pci->irq_lock);
-	spin_lock_init(&sph_pci->dma_lock_irq);
+	init_waitqueue_head(&nnp_pci->host_status_wait);
+	spin_lock_init(&nnp_pci->respq_lock);
+	spin_lock_init(&nnp_pci->irq_lock);
+	spin_lock_init(&nnp_pci->dma_lock_irq);
 
 	/* done setting up the device, create the upper level sphcs object */
-	rc = s_callbacks->create_sphcs(sph_pci,
-				       sph_pci->dev,
-				       &s_pcie_sph_ops,
-				       &sph_pci->sphcs,
-				       &sph_pci->dmaSched);
+	rc = s_callbacks->create_sphcs(nnp_pci,
+				       nnp_pci->dev,
+				       &s_pcie_nnp_ops,
+				       &nnp_pci->sphcs,
+				       &nnp_pci->dmaSched);
 	if (rc) {
 		sph_log_err(START_UP_LOG, "Create sphcs failed rc=%d", rc);
 		goto free_interrupts;
 	}
 
 	/* create sysfs attributes */
-	rc = device_create_file(sph_pci->dev, &dev_attr_flr_mode);
+	rc = device_create_file(nnp_pci->dev, &dev_attr_flr_mode);
 	if (rc) {
 		sph_log_err(START_UP_LOG, "Failed to create attr rc=%d", rc);
 		goto free_interrupts;
 	}
 
-	rc = device_create_file(sph_pci->dev, &dev_attr_link_width);
+	rc = device_create_file(nnp_pci->dev, &dev_attr_link_width);
 	if (rc) {
 		sph_log_err(START_UP_LOG, "Failed to create attr rc=%d", rc);
-		device_remove_file(sph_pci->dev, &dev_attr_flr_mode);
+		device_remove_file(nnp_pci->dev, &dev_attr_flr_mode);
 		goto free_interrupts;
 	}
 
 	/* update bus master state - enable DMA if bus master is set */
-	set_bus_master_state(sph_pci);
+	set_bus_master_state(nnp_pci);
 
 	/* update default flr_mode in card status reg */
-	sph_mmio_write(sph_pci,
+	nnp_mmio_write(nnp_pci,
 		       ELBI_CPU_STATUS_2,
 		       s_flr_mode);
 
 	/* Update sphcs with current host doorbell value */
-	doorbell_val = sph_mmio_read(sph_pci, ELBI_PCI_HOST_DOORBELL_VALUE);
-	sph_pci->host_doorbell_val = doorbell_val;
-	s_callbacks->host_doorbell_value_changed(sph_pci->sphcs, doorbell_val);
-	status = sph_mmio_read(sph_pci, ELBI_IOSF_STATUS);
+	doorbell_val = nnp_mmio_read(nnp_pci, ELBI_PCI_HOST_DOORBELL_VALUE);
+	nnp_pci->host_doorbell_val = doorbell_val;
+	s_callbacks->host_doorbell_value_changed(nnp_pci->sphcs, doorbell_val);
+	status = nnp_mmio_read(nnp_pci, ELBI_IOSF_STATUS);
 	if (status & ELBI_IOSF_STATUS_DOORBELL_MASK)
-		sph_mmio_write(sph_pci, ELBI_IOSF_STATUS, ELBI_IOSF_STATUS_DOORBELL_MASK);
+		nnp_mmio_write(nnp_pci, ELBI_IOSF_STATUS, ELBI_IOSF_STATUS_DOORBELL_MASK);
 
 	/* Enable desired interrupts */
-	sph_mmio_write(sph_pci,
+	nnp_mmio_write(nnp_pci,
 		       ELBI_IOSF_MSI_MASK,
 		       ~(s_host_status_int_mask | s_host_status_threaded_mask));
 
 	/* check available message in command hwQ */
-	sph_process_commands(sph_pci);
+	nnp_process_commands(nnp_pci);
 
 #ifdef ULT
-	sph_init_debugfs(sph_pci);
+	nnp_init_debugfs(nnp_pci);
 #endif
 
-	sph_log_debug(START_UP_LOG, "sph_pcie probe done.\n");
+	sph_log_debug(START_UP_LOG, "nnp_pcie probe done.\n");
 
 	return 0;
 
 free_interrupts:
-	sph_free_interrupts(sph_pci, pdev);
+	nnp_free_interrupts(nnp_pci, pdev);
 unmap_mmio:
-	iounmap(sph_pci->mmio.va);
+	iounmap(nnp_pci->mmio.va);
 release_regions:
 	pci_release_regions(pdev);
 disable_device:
 	pci_disable_device(pdev);
-free_sph_pci:
-	kfree(sph_pci);
+free_nnp_pci:
+	kfree(nnp_pci);
 alloc_fail:
 	sph_log_err(START_UP_LOG, "Probe failed rc %d\n", rc);
 	return rc;
 }
 
-static void sph_remove(struct pci_dev *pdev)
+static void nnp_remove(struct pci_dev *pdev)
 {
-	struct sph_pci_device *sph_pci = NULL;
+	struct nnp_pci_device *nnp_pci = NULL;
 	int rc;
 
-	sph_pci = pci_get_drvdata(pdev);
-	if (!sph_pci)
+	nnp_pci = pci_get_drvdata(pdev);
+	if (!nnp_pci)
 		return;
 
-	device_remove_file(sph_pci->dev, &dev_attr_flr_mode);
-	device_remove_file(sph_pci->dev, &dev_attr_link_width);
+	device_remove_file(nnp_pci->dev, &dev_attr_flr_mode);
+	device_remove_file(nnp_pci->dev, &dev_attr_link_width);
 
 #ifdef ULT
 	debugfs_remove_recursive(s_debugfs_dir);
 	s_debugfs_dir = NULL;
 #endif
 
-	rc = s_callbacks->destroy_sphcs(sph_pci->sphcs);
+	rc = s_callbacks->destroy_sphcs(nnp_pci->sphcs);
 	if (rc)
 		sph_log_err(GO_DOWN_LOG, "FAILED to destroy sphcs during device remove !!!!\n");
 
@@ -1943,40 +1969,40 @@ static void sph_remove(struct pci_dev *pdev)
 	 * to flag the p-code that the driver unbound and any warm-reset
 	 * request should be handled directly by p-code.
 	 */
-	sph_mmio_write(sph_pci,
+	nnp_mmio_write(nnp_pci,
 		       ELBI_IOSF_MSI_MASK,
 		       UINT_MAX);
 
-	sph_free_interrupts(sph_pci, pdev);
-	iounmap(sph_pci->mmio.va);
+	nnp_free_interrupts(nnp_pci, pdev);
+	iounmap(nnp_pci->mmio.va);
 	pci_release_regions(pdev);
 	pci_disable_device(pdev);
-	kfree(sph_pci);
+	kfree(nnp_pci);
 }
 
-static const struct pci_device_id sph_pci_tbl[] = {
-	{PCI_DEVICE(SPH_PCI_VENDOR_ID, SPH_PCI_DEVICE_ID)},
+static const struct pci_device_id nnp_pci_tbl[] = {
+	{PCI_DEVICE(NNP_PCI_VENDOR_ID, NNP_PCI_DEVICE_ID)},
 	/* required last entry */
 	{ 0, }
 };
 
-static struct pci_driver sph_driver = {
-	.name = sph_driver_name,
-	.id_table = sph_pci_tbl,
-	.probe = sph_probe,
-	.remove = sph_remove
+static struct pci_driver nnp_driver = {
+	.name = nnp_driver_name,
+	.id_table = nnp_pci_tbl,
+	.probe = nnp_probe,
+	.remove = nnp_remove
 };
 
 int sphcs_hw_init(struct sphcs_pcie_callbacks *callbacks)
 {
 	int ret;
 
-	sph_log_debug(START_UP_LOG, "sph_pci hw_init vendor=0x%x device_id=0x%x\n",
-		      SPH_PCI_VENDOR_ID, SPH_PCI_DEVICE_ID);
+	sph_log_debug(START_UP_LOG, "nnp_pci hw_init vendor=0x%x device_id=0x%x\n",
+		      NNP_PCI_VENDOR_ID, NNP_PCI_DEVICE_ID);
 
 	s_callbacks = callbacks;
 
-	ret = pci_register_driver(&sph_driver);
+	ret = pci_register_driver(&nnp_driver);
 	if (ret) {
 		sph_log_err(START_UP_LOG, "pci_register_driver failed ret %d\n", ret);
 		goto error;
@@ -1993,6 +2019,6 @@ error:
 int sphcs_hw_cleanup(void)
 {
 	sph_log_debug(GO_DOWN_LOG, "Cleanup");
-	pci_unregister_driver(&sph_driver);
+	pci_unregister_driver(&nnp_driver);
 	return 0;
 }

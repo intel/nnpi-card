@@ -10,6 +10,7 @@
 #include <linux/kernel.h>
 #include <linux/spinlock.h>
 #include "ipc_chan_protocol.h"
+#include "sphcs_dma_sched.h"
 
 struct sphcs;
 struct sphcs_p2p_peer_dev;
@@ -53,12 +54,17 @@ void IPC_OPCODE_HANDLER(CHAN_P2P_UPDATE_PEER_DEV)(struct sphcs *sphcs, union h2c
 int sphcs_p2p_init_p2p_buf(bool is_src_buf, struct sphcs_p2p_buf *buf);
 void sphcs_p2p_remove_buffer(struct sphcs_p2p_buf *buf);
 
-int sphcs_p2p_send_fw_cr(struct sphcs_p2p_buf *buf);
-int sphcs_p2p_send_rel_cr(struct sphcs_p2p_buf *buf);
-int sphcs_p2p_ring_doorbell(struct sphcs_p2p_buf *buf);
+int sphcs_p2p_send_fw_cr_and_ring_db(struct sphcs_p2p_buf *buf,
+				     sphcs_dma_sched_completion_callback callback,
+				     void *callback_ctx);
+int sphcs_p2p_send_rel_cr_and_ring_db(struct sphcs_p2p_buf *buf,
+				      sphcs_dma_sched_completion_callback callback,
+				      void *callback_ctx);
 
 /* Called on doorbell value changed and looks for the forwarded credit or released credit*/
 int sphcs_p2p_new_message_arrived(void);
+
+u8 sphcs_p2p_get_peer_dev_id(struct sphcs_p2p_buf *buf);
 #else
 static inline int sphcs_p2p_init(struct sphcs *sphcs, struct sphcs_p2p_cbs *p2p_cbs)
 {
@@ -92,15 +98,16 @@ static inline void sphcs_p2p_remove_buffer(struct sphcs_p2p_buf *buf)
 
 }
 
-static inline int sphcs_p2p_send_fw_cr(struct sphcs_p2p_buf *buf)
+static inline int sphcs_p2p_send_fw_cr_and_ring_db(struct sphcs_p2p_buf *buf,
+					    sphcs_dma_sched_completion_callback callback,
+					    void *callback_ctx)
 {
 	return 0;
 }
-static inline int sphcs_p2p_send_rel_cr(struct sphcs_p2p_buf *buf)
-{
-	return 0;
-}
-static inline int sphcs_p2p_ring_doorbell(struct sphcs_p2p_buf *buf)
+
+static inline int sphcs_p2p_send_rel_cr_and_ring_db(struct sphcs_p2p_buf *buf,
+						    sphcs_dma_sched_completion_callback callback,
+						    void *callback_ctx)
 {
 	return 0;
 }
@@ -111,5 +118,9 @@ static inline int sphcs_p2p_new_message_arrived(void)
 	return 0;
 }
 
+static inline u8 sphcs_p2p_get_peer_dev_id(struct sphcs_p2p_buf *buf)
+{
+	return 0;
+}
 #endif
 #endif

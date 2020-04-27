@@ -11,6 +11,7 @@
 #include "inf_copy.h"
 #include "inf_req.h"
 #include "inf_cpylst.h"
+#include "sphcs_trace.h"
 
 //#define OPT_EXTRA_DEBUG
 
@@ -36,6 +37,7 @@ int inf_cmd_create(uint16_t              protocolID,
 	cmd->req_list = NULL;
 	cmd->edits = NULL;
 	cmd->edits_idx = 0;
+	cmd->sched_failed = NNP_IPC_NO_ERROR;
 
 	/* make sure context will not be destroyed during cmd life */
 	inf_context_get(context);
@@ -46,18 +48,12 @@ int inf_cmd_create(uint16_t              protocolID,
 	cmd->destroyed = 0;
 
 	cmd->num_reqs = 0;
-	cmd->num_left = 0;
+	atomic_set(&cmd->num_left, 0);
 
 	inf_exec_error_list_init(&cmd->error_list, context);
 	INIT_LIST_HEAD(&cmd->devres_id_ranges);
 
-	/* Allocate memory for overwrite DMA */
-	cmd->vptr = dma_alloc_coherent(g_the_sphcs->hw_device, SPH_PAGE_SIZE, &cmd->dma_addr, GFP_KERNEL);
-	if (unlikely(cmd->vptr == NULL)) {
-		kfree(cmd);
-		inf_context_put(context);
-		return -ENOMEM;
-	}
+	atomic_set(&cmd->sched_queued, 0);
 
 	*out_cmd = cmd;
 	return 0;
@@ -78,16 +74,34 @@ void destroy_cmd_on_create_failed(struct inf_cmd_list *cmd)
 	bool should_destroy;
 	unsigned long flags;
 
-	SPH_SPIN_LOCK_IRQSAVE(&cmd->lock_irq, flags);
+	NNP_SPIN_LOCK_IRQSAVE(&cmd->lock_irq, flags);
 
 	should_destroy = (cmd->destroyed == 0);
 	if (likely(should_destroy))
 		cmd->destroyed = -1;
 
-	SPH_SPIN_UNLOCK_IRQRESTORE(&cmd->lock_irq, flags);
+	NNP_SPIN_UNLOCK_IRQRESTORE(&cmd->lock_irq, flags);
 
 	if (likely(should_destroy))
 		inf_cmd_put(cmd);
+}
+
+static void attach_depend_pivot(struct inf_devres **devres_array,
+				uint16_t            array_size)
+{
+	uint16_t i;
+
+	for (i = 0; i < array_size; i++)
+		inf_devres_pivot_usecount_inc(devres_array[i]);
+}
+
+static void detach_depend_pivot(struct inf_devres **devres_array,
+				uint16_t            array_size)
+{
+	uint16_t i;
+
+	for (i = 0; i < array_size; i++)
+		inf_devres_pivot_usecount_dec(devres_array[i]);
 }
 
 static void release_cmd(struct kref *kref)
@@ -100,31 +114,37 @@ static void release_cmd(struct kref *kref)
 	int ret;
 	bool optimized = false;
 
-	SPH_ASSERT(is_inf_cmd_ptr(cmd));
+	NNP_ASSERT(is_inf_cmd_ptr(cmd));
 
-	SPH_SPIN_LOCK(&cmd->context->lock);
+	NNP_SPIN_LOCK(&cmd->context->lock);
 	hash_del(&cmd->hash_node);
-	SPH_SPIN_UNLOCK(&cmd->context->lock);
+	NNP_SPIN_UNLOCK(&cmd->context->lock);
 
 	if (likely(cmd->req_list != NULL)) {
 		for (i = 0; i < cmd->num_reqs; ++i) {
-			if (likely(cmd->req_list[i].f != NULL))
-				cmd->req_list[i].f->obj_put(&cmd->req_list[i]);
 			if (cmd->req_list[i].cmd_type == CMDLIST_CMD_COPYLIST) {
 				if (cmd->req_list[i].num_opt_depend_devres < cmd->req_list[i].cpylst->n_copies) {
 					kfree(cmd->req_list[i].opt_depend_devres);
+					detach_depend_pivot(cmd->req_list[i].cpylst->devreses,
+							    cmd->req_list[i].cpylst->n_copies);
 					optimized = true;
 				}
 			} else if (cmd->req_list[i].cmd_type == CMDLIST_CMD_INFREQ) {
 				if (cmd->req_list[i].i_num_opt_depend_devres < cmd->req_list[i].infreq->n_inputs) {
 					kfree(cmd->req_list[i].i_opt_depend_devres);
+					detach_depend_pivot(cmd->req_list[i].infreq->inputs,
+							    cmd->req_list[i].infreq->n_inputs);
 					optimized = true;
 				}
 				if (cmd->req_list[i].o_num_opt_depend_devres < cmd->req_list[i].infreq->n_outputs) {
 					kfree(cmd->req_list[i].o_opt_depend_devres);
+					detach_depend_pivot(cmd->req_list[i].infreq->outputs,
+							    cmd->req_list[i].infreq->n_outputs);
 					optimized = true;
 				}
 			}
+			if (likely(cmd->req_list[i].f != NULL))
+				cmd->req_list[i].f->obj_put(&cmd->req_list[i]);
 		}
 		kfree(cmd->req_list);
 		if (optimized)
@@ -140,16 +160,11 @@ static void release_cmd(struct kref *kref)
 			kfree(range);
 		}
 
-	dma_free_coherent(g_the_sphcs->hw_device, //TODO GLEB: can it be at fast path?
-			  SPH_PAGE_SIZE,
-			  cmd->vptr,
-			  cmd->dma_addr);
-
 	inf_exec_error_list_fini(&cmd->error_list);
 
 	if (likely(cmd->destroyed == 1))
 		sphcs_send_event_report(g_the_sphcs,
-					SPH_IPC_CMD_DESTROYED,
+					NNP_IPC_CMD_DESTROYED,
 					0,
 					cmd->context->chan->respq,
 					cmd->context->protocolID,
@@ -165,7 +180,7 @@ void inf_cmd_get(struct inf_cmd_list *cmd)
 	int ret;
 
 	ret = kref_get_unless_zero(&cmd->ref);
-	SPH_ASSERT(ret != 0);
+	NNP_ASSERT(ret != 0);
 }
 
 int inf_cmd_put(struct inf_cmd_list *cmd)
@@ -520,17 +535,20 @@ static void inf_cmd_clear_group_devres_optimization(struct inf_cmd_list *cmd)
 				kfree(req->opt_depend_devres);
 				req->opt_depend_devres = req->cpylst->devreses;
 				req->num_opt_depend_devres = req->cpylst->n_copies;
+				detach_depend_pivot(req->cpylst->devreses, req->cpylst->n_copies);
 			}
 		} else if (req->cmd_type == CMDLIST_CMD_INFREQ) {
 			if (req->i_num_opt_depend_devres < req->infreq->n_inputs) {
 				kfree(req->i_opt_depend_devres);
 				req->i_opt_depend_devres = req->infreq->inputs;
 				req->i_num_opt_depend_devres = req->infreq->n_inputs;
+				detach_depend_pivot(req->infreq->inputs, req->infreq->n_inputs);
 			}
 			if (req->o_num_opt_depend_devres < req->infreq->n_outputs) {
 				kfree(req->o_opt_depend_devres);
 				req->o_opt_depend_devres = req->infreq->outputs;
 				req->o_num_opt_depend_devres = req->infreq->n_outputs;
+				detach_depend_pivot(req->infreq->outputs, req->infreq->n_outputs);
 			}
 		}
 	}
@@ -540,6 +558,33 @@ static void inf_cmd_clear_group_devres_optimization(struct inf_cmd_list *cmd)
 			list_del(&range->node);
 			kfree(range);
 		}
+}
+
+static int add_devres_to_set(struct inf_devres *devres,
+			     struct id_set     *idset,
+			     struct inf_exec_req *req,
+			     struct list_head  *sets)
+{
+	if (inf_devres_is_p2p(devres)) {
+		/* generate new idset for p2p resources - cannpt be grouped with other resources */
+		struct id_set *new_idset = id_set_create(idset->is_output);
+
+		if (!new_idset)
+			return -1;
+		id_set_add_req(new_idset, req, idset);
+		if (id_range_add(&new_idset->ranges,
+				 devres->protocolID,
+				 devres->protocolID) != 0)
+			return -1;
+		id_set_merge(sets, new_idset);
+	} else {
+		if (id_range_add(&idset->ranges,
+				 devres->protocolID,
+				 devres->protocolID) != 0)
+			return -1;
+	}
+
+	return 0;
 }
 
 static int build_access_group_sets(struct inf_cmd_list *cmd,
@@ -571,9 +616,10 @@ static int build_access_group_sets(struct inf_cmd_list *cmd,
 				return -1;
 			id_set_add_req(idset, req, idset);
 			for (j = 0; j < req->cpylst->n_copies; j++) {
-				if (id_range_add(&idset->ranges,
-						 req->cpylst->copies[j]->devres->protocolID,
-						 req->cpylst->copies[j]->devres->protocolID) != 0)
+				if (add_devres_to_set(req->cpylst->copies[j]->devres,
+						      idset,
+						      req,
+						      sets) != 0)
 					return -1;
 				if (id_range_add(&cmd->devres_id_ranges,
 						 req->cpylst->copies[j]->devres->protocolID,
@@ -587,9 +633,10 @@ static int build_access_group_sets(struct inf_cmd_list *cmd,
 				return -1;
 			id_set_add_req(idset, req, idset);
 			for (j = 0; j < req->infreq->n_inputs; j++) {
-				if (id_range_add(&idset->ranges,
-						 req->infreq->inputs[j]->protocolID,
-						 req->infreq->inputs[j]->protocolID) != 0)
+				if (add_devres_to_set(req->infreq->inputs[j],
+						      idset,
+						      req,
+						      sets) != 0)
 					return -1;
 				if (id_range_add(&cmd->devres_id_ranges,
 						 req->infreq->inputs[j]->protocolID,
@@ -603,9 +650,10 @@ static int build_access_group_sets(struct inf_cmd_list *cmd,
 				return -1;
 			id_set_add_req(idset, req, idset);
 			for (j = 0; j < req->infreq->n_outputs; j++) {
-				if (id_range_add(&idset->ranges,
-						 req->infreq->outputs[j]->protocolID,
-						 req->infreq->outputs[j]->protocolID) != 0)
+				if (add_devres_to_set(req->infreq->outputs[j],
+						      idset,
+						      req,
+						      sets) != 0)
 					return -1;
 				if (id_range_add(&cmd->devres_id_ranges,
 						 req->infreq->outputs[j]->protocolID,
@@ -629,16 +677,17 @@ void inf_cmd_optimize_group_devres(struct inf_cmd_list *cmd)
 	uint16_t i;
 	struct id_set *idset, *tmp;
 	struct list_head sets;
-	struct id_range *r;
+	struct id_range *r, *tmpr;
 	struct inf_devres *devres;
+	struct inf_devres *pivot;
 	struct req_entry *re;
 	uint16_t id;
 	struct inf_devres_list_entry *devres_entry;
 	struct inf_cmd_list *c;
 	int success = false;
 
-	SPH_ASSERT(cmd != NULL);
-	SPH_ASSERT(cmd->status == CREATED);
+	NNP_ASSERT(cmd != NULL);
+	NNP_ASSERT(cmd->status == CREATED);
 
 	sph_log_debug(GENERAL_LOG, "cmd_optimize %d START num_reqs=%d\n", cmd->protocolID, cmd->num_reqs);
 	if (cmd->num_reqs == 0)
@@ -658,7 +707,7 @@ void inf_cmd_optimize_group_devres(struct inf_cmd_list *cmd)
 	 * for each exising command list - merge into same set and
 	 * re-optimize if some device resource is shared with the command list
 	 */
-	SPH_SPIN_LOCK(&cmd->context->lock);
+	NNP_SPIN_LOCK(&cmd->context->lock);
 	hash_for_each(cmd->context->cmd_hash, i, c, hash_node) {
 		if (c == cmd)
 			continue;
@@ -667,23 +716,23 @@ void inf_cmd_optimize_group_devres(struct inf_cmd_list *cmd)
 		if (id_range_intersect(NULL,
 				       &cmd->devres_id_ranges,
 				       &c->devres_id_ranges) > 0) {
-			SPH_SPIN_UNLOCK(&cmd->context->lock);
+			NNP_SPIN_UNLOCK(&cmd->context->lock);
 			sph_log_debug(GENERAL_LOG, "clearing opts of cmdlist %d\n", c->protocolID);
 			inf_cmd_clear_group_devres_optimization(c);
 			if (build_access_group_sets(c, &sets) != 0)
 				goto done;
-			SPH_SPIN_LOCK(&cmd->context->lock);
+			NNP_SPIN_LOCK(&cmd->context->lock);
 		}
 	}
-	SPH_SPIN_UNLOCK(&cmd->context->lock);
+	NNP_SPIN_UNLOCK(&cmd->context->lock);
 
 #ifdef OPT_EXTRA_DEBUG
 	dump_sets(&sets);
 #endif
 
-	/* add devres pivot of merged sets to devres_groups of requests */
+	/* add devres pivot for non-empty sets to devres_groups of requests */
 	list_for_each_entry_safe(idset, tmp, &sets, node) {
-		if (idset->merged && !list_empty(&idset->ranges)) {
+		if (!list_empty(&idset->ranges)) {
 			r = list_first_entry(&idset->ranges, struct id_range, node);
 			devres = inf_context_find_devres(cmd->context, r->first);
 			if (!devres)
@@ -696,31 +745,36 @@ void inf_cmd_optimize_group_devres(struct inf_cmd_list *cmd)
 				list_add_tail(&devres_entry->node, &re->idset->devres_groups);
 			}
 
-			list_del(&idset->node);
-			id_set_free(idset);
+			/* keep the "pivot" devres in all device resources of the group */
+			pivot = devres;
+			list_for_each_entry(r, &idset->ranges, node)
+				for (id = r->first; id <= r->last; id++) {
+					if (id == pivot->protocolID)
+						continue;
+					devres = inf_context_find_devres(cmd->context, id);
+					if (!devres)
+						goto done;
+
+					if (inf_devres_set_depend_pivot(devres, pivot) != 0) {
+						sph_log_debug(GENERAL_LOG, "Failed to set pivot for optimized set!\n");
+						goto done;
+					}
+				}
+
+			if (idset->merged) {
+				list_del(&idset->node);
+				id_set_free(idset);
+			} else {
+				list_for_each_entry_safe(r, tmpr, &idset->ranges, node) {
+					list_del(&r->node);
+					kfree(r);
+				}
+			}
 		}
 	}
 
-	/* final pass add free resources and build depend devres list into req */
+	/* final pass build depend devres list into req */
 	list_for_each_entry_safe(idset, tmp, &sets, node) {
-		/* add non-merged resources to non empty devres groups */
-		if (!list_empty(&idset->ranges)) {
-			list_for_each_entry(re, &idset->req_list, node) {
-				list_for_each_entry(r, &idset->ranges, node)
-					for (id = r->first; id <= r->last; id++) {
-						devres = inf_context_find_devres(cmd->context, id);
-						if (!devres)
-							goto done;
-
-						devres_entry = kzalloc(sizeof(*devres_entry), GFP_KERNEL);
-						if (!devres_entry)
-							goto done;
-						devres_entry->devres = devres;
-						list_add_tail(&devres_entry->node, &idset->devres_groups);
-					}
-			}
-		}
-
 		/*
 		 * allocate and store the list of optimized resources in the
 		 * request entry
@@ -760,6 +814,7 @@ void inf_cmd_optimize_group_devres(struct inf_cmd_list *cmd)
 				if (re->req->cmd_type == CMDLIST_CMD_COPYLIST) {
 					re->req->opt_depend_devres = opt_depend_devres;
 					re->req->num_opt_depend_devres = num_devres;
+					attach_depend_pivot(re->req->cpylst->devreses, re->req->cpylst->n_copies);
 					sph_log_debug(GENERAL_LOG, "optimized dependency list for cmdlist %d cpylst %d from %d to %d\n",
 						      re->req->cmd->protocolID,
 						      re->req->cpylst->idx_in_cmd,
@@ -769,6 +824,7 @@ void inf_cmd_optimize_group_devres(struct inf_cmd_list *cmd)
 					if (idset->is_output) {
 						re->req->o_opt_depend_devres = opt_depend_devres;
 						re->req->o_num_opt_depend_devres = num_devres;
+						attach_depend_pivot(re->req->infreq->outputs, re->req->infreq->n_outputs);
 						sph_log_debug(GENERAL_LOG, "optimized output dependency list for cmdlist %d infreq %d from %d to %d\n",
 							      re->req->cmd->protocolID,
 							      re->req->infreq->protocolID,
@@ -777,6 +833,7 @@ void inf_cmd_optimize_group_devres(struct inf_cmd_list *cmd)
 					} else {
 						re->req->i_opt_depend_devres = opt_depend_devres;
 						re->req->i_num_opt_depend_devres = num_devres;
+						attach_depend_pivot(re->req->infreq->inputs, re->req->infreq->n_inputs);
 						sph_log_debug(GENERAL_LOG, "optimized inout dependency list for cmdlist %d infreq %d from %d to %d\n",
 							      re->req->cmd->protocolID,
 							      re->req->infreq->protocolID,
@@ -809,17 +866,20 @@ done:
 						kfree(re->req->opt_depend_devres);
 						re->req->opt_depend_devres = re->req->cpylst->devreses;
 						re->req->num_opt_depend_devres = re->req->cpylst->n_copies;
+						detach_depend_pivot(re->req->cpylst->devreses, re->req->cpylst->n_copies);
 					}
 				} else if (re->req->cmd_type == CMDLIST_CMD_INFREQ) {
 					if (re->req->i_num_opt_depend_devres < re->req->infreq->n_inputs) {
 						kfree(re->req->i_opt_depend_devres);
 						re->req->i_opt_depend_devres = re->req->infreq->inputs;
 						re->req->i_num_opt_depend_devres = re->req->infreq->n_inputs;
+						detach_depend_pivot(re->req->infreq->inputs, re->req->infreq->n_inputs);
 					}
 					if (re->req->o_num_opt_depend_devres < re->req->infreq->n_outputs) {
 						kfree(re->req->o_opt_depend_devres);
 						re->req->o_opt_depend_devres = re->req->infreq->outputs;
 						re->req->o_num_opt_depend_devres = re->req->infreq->n_outputs;
+						detach_depend_pivot(re->req->infreq->outputs, re->req->infreq->n_outputs);
 					}
 				}
 			}
@@ -827,5 +887,21 @@ done:
 
 		list_del(&idset->node);
 		id_set_free(idset);
+	}
+}
+
+void send_cmd_list_completed_event(struct inf_cmd_list *cmd)
+{
+	if (cmd != NULL && atomic_dec_and_test(&cmd->num_left)) {
+		sphcs_send_event_report(g_the_sphcs,
+					NNP_IPC_EXECUTE_CMD_COMPLETE,
+					0,
+					cmd->context->chan->respq,
+					cmd->context->protocolID,
+					cmd->protocolID);
+		DO_TRACE(trace_cmdlist(SPH_TRACE_OP_STATUS_COMPLETE,
+			 cmd->context->protocolID, cmd->protocolID));
+		// for schedule
+		inf_cmd_put(cmd);
 	}
 }

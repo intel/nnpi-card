@@ -1,17 +1,10 @@
-/*
- * NNP-I Linux Driver
- * Copyright (c) 2017-2019, Intel Corporation.
+/********************************************
+ * Copyright (C) 2019-2020 Intel Corporation
  *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms and conditions of the GNU General Public License,
- * version 2, as published by the Free Software Foundation.
- *
- * This program is distributed in the hope it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
- *
-*/
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ ********************************************/
+
+
 
 #include "cve_device_group.h"
 #include "cve_driver_internal_macros.h"
@@ -249,39 +242,6 @@ u32 ice_get_usec_timediff(struct timespec *time1, struct timespec *time2)
 	return ret;
 }
 
-
-/* Return time diff in msec */
-static u32 __timespec_diff(struct timespec *time1, struct timespec *time2,
-		struct timespec *time_out)
-{
-	/* time_out = time1 - time2 */
-	u32 ret = 0;
-
-	if ((time1->tv_sec < time2->tv_sec) ||
-	((time1->tv_sec == time2->tv_sec) &&
-	(time1->tv_nsec <= time2->tv_nsec))) {
-		time_out->tv_sec = time_out->tv_nsec = 0;
-		ret = 0;
-		ASSERT(false);
-	} else {
-		time_out->tv_sec = time1->tv_sec - time2->tv_sec;
-		if (time1->tv_nsec < time2->tv_nsec) {
-			time_out->tv_nsec = time1->tv_nsec +
-				 1000000000L - time2->tv_nsec;
-			time_out->tv_sec--;
-		} else {
-			time_out->tv_nsec = time1->tv_nsec - time2->tv_nsec;
-		}
-		ret = (time_out->tv_sec * 1000) +
-				(time_out->tv_nsec / 1000000);
-	}
-
-	cve_os_log(CVE_LOGLEVEL_DEBUG,
-		"Elapsed time since Power Off request = %u msec\n",
-		ret);
-	return ret;
-}
-
 #ifdef RING3_VALIDATION
 static void *ice_pm_monitor_task(void *data)
 #else
@@ -293,9 +253,9 @@ static int ice_pm_monitor_task(void *data)
 	u32 configured_timeout_ms = (u32)ice_get_power_off_delay_param();
 	u32 time_60sec = 60000;
 	u32 timeout_msec = time_60sec;
-	struct timespec curr_ts, out_ts;
+	unsigned long cur_jiffy;
 	struct cve_device *head;
-	struct cve_device_group *device_group = (struct cve_device_group *)data;
+	struct cve_device_group *dg = (struct cve_device_group *)data;
 	const struct sphpb_callbacks *sphpb_cbs;
 #ifdef RING3_VALIDATION
 	void *retval = NULL;
@@ -313,8 +273,8 @@ static int ice_pm_monitor_task(void *data)
 	while (1) {
 
 		wq_status = cve_os_block_interruptible_timeout(
-				&device_group->power_off_wait_queue,
-				device_group->start_poweroff_thread,
+				&dg->power_off_wait_queue,
+				dg->start_poweroff_thread,
 				(timeout_msec * factor));
 		if (wq_status == -ERESTARTSYS) {
 			cve_os_log(CVE_LOGLEVEL_ERROR,
@@ -323,7 +283,7 @@ static int ice_pm_monitor_task(void *data)
 			goto out;
 		}
 
-		ret = cve_os_lock(&device_group->poweroff_dev_list_lock,
+		ret = cve_os_lock(&dg->poweroff_dev_list_lock,
 				CVE_INTERRUPTIBLE);
 		if (ret != 0) {
 			cve_os_log(CVE_LOGLEVEL_ERROR,
@@ -332,17 +292,16 @@ static int ice_pm_monitor_task(void *data)
 			goto out;
 		}
 
-		getnstimeofday(&curr_ts);
+		cur_jiffy = ice_os_get_current_jiffy();
 
-		head = device_group->poweroff_dev_list;
+		head = dg->poweroff_dev_list;
 		if (!head)
 			goto out_null_list;
 
 		icemask = 0;
-		timeout_msec = __timespec_diff(&curr_ts,
-					 &head->poweroff_ts, &out_ts);
 
-		while (timeout_msec >= configured_timeout_ms) {
+		while (jiffies_to_msecs(cur_jiffy - head->poff_jiffy) >=
+				configured_timeout_ms) {
 
 			/*
 			 * power_state must be ICE_POWER_OFF_INITIATED.
@@ -357,7 +316,7 @@ static int ice_pm_monitor_task(void *data)
 				ICEDRV_SWC_DEVICE_COUNTER_POWER_STATE,
 				ice_dev_get_power_state(head));
 
-			sphpb_cbs = device_group->sphpb.sphpb_cbs;
+			sphpb_cbs = dg->sphpb.sphpb_cbs;
 			if (sphpb_cbs && sphpb_cbs->set_power_state) {
 				ret = sphpb_cbs->set_power_state(
 						head->dev_index, false);
@@ -371,16 +330,13 @@ static int ice_pm_monitor_task(void *data)
 			}
 
 			cve_dle_remove_from_list(
-				device_group->poweroff_dev_list,
+				dg->poweroff_dev_list,
 				poweroff_list,
 				head);
 
-			head = device_group->poweroff_dev_list;
+			head = dg->poweroff_dev_list;
 			if (!head)
 				break;
-
-			timeout_msec = __timespec_diff(&curr_ts,
-						&head->poweroff_ts, &out_ts);
 		}
 
 		if (icemask)
@@ -388,15 +344,19 @@ static int ice_pm_monitor_task(void *data)
 
 out_null_list:
 
-		device_group->start_poweroff_thread = 0;
-		cve_os_unlock(&device_group->poweroff_dev_list_lock);
+		dg->start_poweroff_thread = 0;
+		cve_os_unlock(&dg->poweroff_dev_list_lock);
 
-		if (head)
-			timeout_msec = (configured_timeout_ms - timeout_msec);
-		else {
+		if (head) {
+			/* For how long (in msec) the head is in queue */
+			u32 time_spent = jiffies_to_msecs(cur_jiffy -
+							head->poff_jiffy);
+
+			timeout_msec = (configured_timeout_ms - time_spent);
+		} else {
 			timeout_msec = time_60sec;
 
-			if (terminate_thread(device_group))
+			if (terminate_thread(dg))
 				break;
 		}
 
@@ -955,6 +915,19 @@ enum resource_status ice_dg_check_resource_availability(struct ice_network *ntw)
 		status = RESOURCE_BUSY;
 
 out:
+	if (status != RESOURCE_OK) {
+		cve_os_log(CVE_LOGLEVEL_DEBUG,
+			"NtwID=0x%lx. Ntw_pBO=%d, Ntw_dICE=%d, DG_ippBO=%d, DG_ipdICE=%d, DG_nrpBO=%d, DG_nrdICE=%d\n",
+			(uintptr_t)ntw, ntw->temp_pbo_req, ntw->temp_dice_req,
+			dg->in_pool_pbo, dg->in_pool_dice,
+			dg->non_res_pbo, dg->non_res_dice);
+
+		cve_os_log(CVE_LOGLEVEL_DEBUG,
+			"NtwID=0x%lx. Ntw_Cntr=%d, DG_ipCntr=%d, DG_nrCntr=%d\n",
+			(uintptr_t)ntw, count, dg->num_avl_cntr,
+			dg->num_nonres_cntr);
+	}
+
 	return status;
 }
 

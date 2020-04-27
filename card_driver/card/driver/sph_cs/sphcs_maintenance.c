@@ -16,7 +16,6 @@
 #include "sphcs_power.h"
 #include "sph_log.h"
 #include "sphcs_cs.h"
-#include "sphcs_response_page_pool.h"
 #include "ipc_protocol.h"
 #include "sphcs_dma_sched.h"
 #include "dma_page_pool.h"
@@ -50,11 +49,11 @@ static bool s_force_update_fpga;
 static u16 s_board_id;
 static u16 s_fab_id;
 static u16 s_fpga_rev;
-static unsigned char s_prd_serial[SPH_PRD_SERIAL_LEN];
-static unsigned char s_brd_part_no[SPH_PART_NUM_LEN];
+static unsigned char s_prd_serial[NNP_PRD_SERIAL_LEN];
+static unsigned char s_brd_part_no[NNP_PART_NUM_LEN];
 
 
-static struct sph_sys_info s_sys_info_packet;
+static struct nnp_sys_info s_sys_info_packet;
 static bool                s_sys_info_packet_valid;
 
 
@@ -94,7 +93,7 @@ static long thermal_trip(void __user *arg)
 		return -ENODEV;
 
 	sphcs_send_event_report_ext(g_the_sphcs,
-				    SPH_IPC_THERMAL_TRIP_EVENT,
+				    NNP_IPC_THERMAL_TRIP_EVENT,
 				    trip_info.trip_num,
 				    NULL,
 				    -1,
@@ -196,13 +195,13 @@ static long set_sys_info(void __user *arg)
 	s_sys_info_packet.totalEccMemory = sys_info.total_ecc_memory;
 	memcpy(s_sys_info_packet.bios_version,
 	       sys_info.bios_version,
-	       SPH_BIOS_VERSION_LEN);
+	       NNP_BIOS_VERSION_LEN);
 	memcpy(s_sys_info_packet.board_name,
 	       sys_info.board_name,
-	       SPH_BOARD_NAME_LEN);
+	       NNP_BOARD_NAME_LEN);
 	memcpy(s_sys_info_packet.image_version,
 	       sys_info.image_version,
-	       SPH_IMAGE_VERSION_LEN);
+	       NNP_IMAGE_VERSION_LEN);
 	memcpy(s_sys_info_packet.prd_serial,
 	       s_prd_serial,
 	       sizeof(s_prd_serial));
