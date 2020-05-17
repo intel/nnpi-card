@@ -58,7 +58,6 @@
 #endif
 
 #include "ice_trace.h"
-#include "ice_debug_event.h"
 #include "intel_sphpb.h"
 #include "sph_mailbox.h"
 #include "sph_dvfs.h"
@@ -121,16 +120,12 @@ static int cve_dump_close(struct inode *inode, struct file *filp);
 
 
 /* Module parameters */
-int enable_llc;
 u32 g_icemask;
 u32 disable_embcb;
 u32 core_mask;
 u32 ice_fw_select;
 u32 block_mmu;
-u32 enable_b_step;
 u32 disable_clk_gating;
-u32 enable_mmu_pmon;
-u32 pin_atu = 1;
 struct config cfg_default;
 
 static u32 icemask_user;
@@ -138,62 +133,66 @@ static u32 enable_llc_config_via_axi_reg;
 static u32 sph_soc;
 static int ice_sch_preemption = 1;
 static u32 iccp_throttling = 1;
-
 static u32 initial_iccp_config[3] = {INITIAL_CDYN_VAL, RESET_CDYN_VAL,
 							BLOCKED_CDYN_VAL};
-static int ice_power_off_delay_ms = 1000;
+static int ice_power_off_delay_ms;
+#ifdef ENABLE_MEM_DETECT
 static int enable_ice_drv_memleak;
-
-module_param(enable_llc, int, 0);
-MODULE_PARM_DESC(enable_llc, "Enable LLC usage in driver");
+#endif
 
 module_param(icemask_user, int, 0);
 MODULE_PARM_DESC(icemask_user, "User provided ICE Mask");
 
-module_param(disable_embcb, int, 0);
-MODULE_PARM_DESC(disable_embcb, "Disable Embedded CB");
-
-module_param(core_mask, int, 0);
-MODULE_PARM_DESC(core_mask, "Disable TLC (0x1) | Disable IVP (0x2)");
-
-module_param(enable_llc_config_via_axi_reg, int, 0);
-MODULE_PARM_DESC(enable_llc_config_via_axi_reg, "Enable llc config via axi regsiter");
-
 module_param(sph_soc, int, 0);
 MODULE_PARM_DESC(sph_soc, "if set, means that driver is running on real SOC and not simulator");
+
+#ifdef _DEBUG
 
 module_param(ice_fw_select, int, 0);
 MODULE_PARM_DESC(ice_fw_select, "Permit the use of rtl debug FW (0=rtl/release FW [default], 1=rtl/debug FW)");
 
-module_param(ice_power_off_delay_ms, int, 0);
-MODULE_PARM_DESC(ice_power_off_delay_ms, "Delay in ms to power off ICEs after WL completion(value less than 0 signifies no power off)");
-
-module_param(block_mmu, int, 0);
-MODULE_PARM_DESC(block_mmu, "Enables MMU Block/Unblock for each Doorbell");
+#ifdef ENABLE_MEM_DETECT
 
 module_param(enable_ice_drv_memleak, int, 0);
 MODULE_PARM_DESC(enable_ice_drv_memleak, "If set to non-zero value memory leak detection in driver is enabled. Default is 0");
 
-module_param(enable_b_step, int, 0);
-MODULE_PARM_DESC(enable_b_step, "Enable B step flow in driver. Default 0 i.e disabled");
+#endif
 
-module_param(ice_sch_preemption, int, 0);
-MODULE_PARM_DESC(ice_sch_preemption, "Enable kernel premeption during inference scheduling");
+#endif
 
-module_param(disable_clk_gating, int, 0);
-MODULE_PARM_DESC(disable_clk_gating, "Disable DSP clock gating");
-
-module_param(iccp_throttling, int, 0);
-MODULE_PARM_DESC(iccp_throttling, "Enable/Disable throttling mode for B step. Default 1 i.e throttling enabled for B step");
-
-module_param_array(initial_iccp_config, int, NULL, 0);
-MODULE_PARM_DESC(initial_iccp_config, "Array of initial iccp config to be done {INITIAL_CDYN_VAL,RESET_CDYN_VAL,BLOCKED_CDYN_VAL}");
-
-module_param(enable_mmu_pmon, int, 0);
-MODULE_PARM_DESC(enable_mmu_pmon, "Enable dumping of MMU PMON after each job completion. Default is 0 i.e disabled");
-
-module_param(pin_atu, int, 0);
-MODULE_PARM_DESC(pin_atu, "Enable ATU pinning (Delphi-ATU0, DSE-ATU1, IVP-ATU2, TLC-ATU3)");
+/*
+* module_param(block_mmu, int, 0);
+* MODULE_PARM_DESC(block_mmu, "Enables MMU Block/Unblock for each Doorbell");
+*
+* module_param(enable_llc_config_via_axi_reg, int, 0);
+* MODULE_PARM_DESC(enable_llc_config_via_axi_reg, "Enable llc config via axi
+*	regsiter");
+*
+* module_param(disable_embcb, int, 0);
+* MODULE_PARM_DESC(disable_embcb, "Disable Embedded CB");
+*
+* module_param(core_mask, int, 0);
+* MODULE_PARM_DESC(core_mask, "Disable TLC (0x1) | Disable IVP (0x2)");
+*
+* module_param(ice_power_off_delay_ms, int, 0);
+* MODULE_PARM_DESC(ice_power_off_delay_ms, "Delay in ms to power off ICEs after
+*	WL completion(value less than 0 signifies no power off)");
+*
+* module_param(ice_sch_preemption, int, 0);
+* MODULE_PARM_DESC(ice_sch_preemption, "Enable kernel premeption during
+*	inference scheduling");
+*
+* module_param(disable_clk_gating, int, 0);
+* MODULE_PARM_DESC(disable_clk_gating, "Disable DSP clock gating");
+*
+* module_param(iccp_throttling, int, 0);
+* MODULE_PARM_DESC(iccp_throttling, "Enable/Disable throttling mode for B step.
+*	Default 1 i.e throttling enabled for B step");
+*
+* module_param_array(initial_iccp_config, int, NULL, 0);
+* MODULE_PARM_DESC(initial_iccp_config, "Array of initial iccp config to be done
+*	{INITIAL_CDYN_VAL,RESET_CDYN_VAL,BLOCKED_CDYN_VAL}");
+*/
 
 /* UITILITY FUNCTIONS */
 
@@ -1474,9 +1473,6 @@ void __cve_os_free_dma_contig(struct cve_device *cve_dev,
 	FUNC_LEAVE();
 }
 
-#ifdef IDC_ENABLE
-/* interrupts */
-
 cve_isr_retval_t cve_os_interrupt_handler(int irq, void *os_dev)
 {
 	if (cve_di_interrupt_handler(
@@ -1505,9 +1501,7 @@ int cve_probe_common(struct cve_os_device *linux_device, int dev_ind)
 {
 	int i, retval = 0;
 	u64 pe_reg_value;
-	struct dentry *file;
 	char dev_name[8];
-	char file_name[30];
 	u32 icemask_reg, active_ice;
 	struct cve_device_group *dg;
 
@@ -1517,25 +1511,82 @@ int cve_probe_common(struct cve_os_device *linux_device, int dev_ind)
 				"CVE KMD version: %s\n"
 				, KMD_VERSION);
 	if (ice_get_c_step_enable_flag()) {
-		memcpy(&cfg_default, &cfg_c, sizeof(cfg_c));
-		if (ice_fw_select == 1)
-			ice_fw_update_path(RTL_DEBUG_C_STEP_FW_PATH);
-		else
-			ice_fw_update_path(RTL_RELEASE_C_STEP_FW_PATH);
+		retval = ice_memcpy_s(&cfg_default, sizeof(cfg_c),
+				&cfg_c, sizeof(cfg_c));
+		if (retval < 0) {
+			cve_os_log(CVE_LOGLEVEL_ERROR,
+				"Safelib memcpy failed %d\n", retval);
+			goto out;
+		}
+		if (ice_fw_select == 1) {
+			retval = ice_fw_update_path(RTL_DEBUG_C_STEP_FW_PATH);
+			if (retval < 0) {
+				cve_os_log(CVE_LOGLEVEL_ERROR,
+					"Failed to Updated FW path %d",
+					retval);
+				goto out;
+			}
+		} else {
+			retval = ice_fw_update_path(RTL_RELEASE_C_STEP_FW_PATH);
+			if (retval < 0) {
+				cve_os_log(CVE_LOGLEVEL_ERROR,
+					"Failed to Updated FW path %d",
+					retval);
+				goto out;
+			}
+		}
 		cve_os_log(CVE_LOGLEVEL_INFO, "C STEP ENABLED\n");
 	} else if (ice_get_b_step_enable_flag()) {
-		memcpy(&cfg_default, &cfg_b, sizeof(cfg_b));
-		if (ice_fw_select == 1)
-			ice_fw_update_path(RTL_DEBUG_B_STEP_FW_PATH);
-		else
-			ice_fw_update_path(RTL_RELEASE_B_STEP_FW_PATH);
+		retval = ice_memcpy_s(&cfg_default, sizeof(cfg_b),
+				&cfg_b, sizeof(cfg_b));
+		if (retval < 0) {
+			cve_os_log(CVE_LOGLEVEL_ERROR,
+				"Safelib memcpy failed %d\n", retval);
+			goto out;
+		}
+		if (ice_fw_select == 1) {
+			retval = ice_fw_update_path(RTL_DEBUG_B_STEP_FW_PATH);
+			if (retval < 0) {
+				cve_os_log(CVE_LOGLEVEL_ERROR,
+					"Failed to Updated FW path %d",
+					retval);
+				goto out;
+			}
+		} else {
+			retval = ice_fw_update_path(RTL_RELEASE_B_STEP_FW_PATH);
+			if (retval < 0) {
+				cve_os_log(CVE_LOGLEVEL_ERROR,
+					"Failed to Updated FW path %d",
+					retval);
+				goto out;
+			}
+		}
 		cve_os_log(CVE_LOGLEVEL_INFO, "B STEP ENABLED\n");
 	} else {
-		memcpy(&cfg_default, &cfg_a, sizeof(cfg_a));
-		if (ice_fw_select == 1)
-			ice_fw_update_path(RTL_DEBUG_A_STEP_FW_PATH);
-		else
-			ice_fw_update_path(RTL_RELEASE_A_STEP_FW_PATH);
+		retval = ice_memcpy_s(&cfg_default, sizeof(cfg_a),
+				&cfg_a, sizeof(cfg_a));
+		if (retval < 0) {
+			cve_os_log(CVE_LOGLEVEL_ERROR,
+				"Safelib memcpy failed %d\n", retval);
+			goto out;
+		}
+		if (ice_fw_select == 1) {
+			retval = ice_fw_update_path(RTL_DEBUG_A_STEP_FW_PATH);
+			if (retval < 0) {
+				cve_os_log(CVE_LOGLEVEL_ERROR,
+					"Failed to Updated FW path %d",
+					retval);
+				goto out;
+			}
+		} else {
+			retval = ice_fw_update_path(RTL_RELEASE_A_STEP_FW_PATH);
+			if (retval < 0) {
+				cve_os_log(CVE_LOGLEVEL_ERROR,
+					"Failed to Updated FW path %d",
+					retval);
+				goto out;
+			}
+		}
 		cve_os_log(CVE_LOGLEVEL_INFO, "A STEP ENABLED\n");
 	}
 
@@ -1588,11 +1639,11 @@ int cve_probe_common(struct cve_os_device *linux_device, int dev_ind)
 		}
 	}
 
-	/* initialize iccp specific fops*/
-	retval = init_iccp_sysfs();
+	retval = init_ice_poweroff_sysfs();
 	if (retval != 0) {
-		cve_os_log(CVE_LOGLEVEL_WARNING,
-				"init_iccp_sysfs failed %d\n", retval);
+		cve_os_log_default(CVE_LOGLEVEL_ERROR,
+				"init_ice_poweroff_sysfs failed %d\n", retval);
+		goto out;
 	}
 
 	/*initialize sw debug dump*/
@@ -1609,6 +1660,7 @@ int cve_probe_common(struct cve_os_device *linux_device, int dev_ind)
 			"Could not find valid device group pointer\n");
 		goto out;
 	}
+
 	dg->sphmb.idc_mailbox_base = NULL;
 	retval = sphpb_map_idc_mailbox_base_registers(&dg->sphmb);
 	if (retval) {
@@ -1618,10 +1670,22 @@ int cve_probe_common(struct cve_os_device *linux_device, int dev_ind)
 		retval = 0;
 		goto create_idc;
 	}
+
 	dg->sphpb.sphpb_cbs = sph_power_balancer_register_driver(&icedrv_pbcbs);
 	if (!dg->sphpb.sphpb_cbs) {
 		cve_os_log(CVE_LOGLEVEL_ERROR,
 				"Unable to register sph power balancer\n");
+	} else {
+		/* Reporting already On ICEs to PB */
+		active_ice = (~g_icemask) & VALID_ICE_MASK;
+		while (active_ice && dg->sphpb.sphpb_cbs->set_power_state) {
+			i = __builtin_ctz(active_ice);
+			CVE_CLEAR_BIT(active_ice, i);
+
+			if (pe_reg_value & (1 << (i + 4)))
+				retval = dg->sphpb.sphpb_cbs->set_power_state(i,
+						true);
+		}
 	}
 
 	if (!ice_get_a_step_enable_flag()) {
@@ -1646,43 +1710,21 @@ create_idc:
 		/* If debugfs API failed driver will continue without it*/
 	}
 
-	/* Set registers set*/
-	linux_device->regset.base = linux_device->cached_mmio_base.iobase[0];
-	cve_di_get_debugfs_regs_list(&linux_device->regset.regs,
-			&linux_device->regset.nregs);
-
-	file = debugfs_create_regset32("registers",
-			S_IRUGO,
-			linux_device->dev_dir,
-			&linux_device->regset);
-	if (IS_ERR_OR_NULL(file)) {
-		cve_os_log(CVE_LOGLEVEL_ERROR,
-				"error creating regset\n");
-		/* If debugfs API failed driver will continue without it*/
-		debugfs_remove_recursive(linux_device->dev_dir);
-	}
-
+#ifndef DISABLE_DEBUGFS_ICE_DUMP
 	active_ice = (~g_icemask) & VALID_ICE_MASK;
 	while (active_ice) {
+		struct dentry *file;
+
 		i = __builtin_ctz(active_ice);
 		CVE_CLEAR_BIT(active_ice, i);
 
-		snprintf(file_name, sizeof(file_name),
-			"enable_hw_counters_%d",
-			linux_device->idc_dev.cve_dev[i].dev_index);
-
-		file = debugfs_create_u32(file_name,
-		 S_IRUGO | S_IWUGO, linux_device->dev_dir,
-		 &linux_device->idc_dev.cve_dev[i].is_hw_counters_enabled);
-
-		if (IS_ERR_OR_NULL(file)) {
+		retval = ice_snprintf_s_i(file_name, sizeof(file_name),
+				"cveDumpBuffer_%d", i);
+		if (retval < 0) {
 			cve_os_log(CVE_LOGLEVEL_ERROR,
-					"error creating enable_hw_counters\n");
-		/* If debugfs API failed driver will continue without it*/
+				"Safelib failed snprintf %d\n", retval);
+			return out;
 		}
-
-#ifndef DISABLE_DEBUGFS_ICE_DUMP
-		snprintf(file_name, sizeof(file_name), "cveDumpBuffer_%d", i);
 
 		file = debugfs_create_file(file_name,
 			0644, linux_device->dev_dir,
@@ -1694,9 +1736,9 @@ create_idc:
 					"error creating cveDumpBuffer\n");
 		/* If debugfs API failed driver will continue without it */
 		}
+	}
 #endif
 
-	}
 out:
 	FUNC_LEAVE();
 	return retval;
@@ -1736,8 +1778,7 @@ term_sysfsCall:
 	/* remove sw debug dump */
 	term_sw_debug_sysfs();
 
-	/*remove iccp specific fops*/
-	term_iccp_sysfs();
+	term_ice_poweroff_sysfs();
 
 	active_ice = (~g_icemask) & VALID_ICE_MASK;
 	while (active_ice) {
@@ -1755,150 +1796,25 @@ term_sysfsCall:
 
 FUNC_LEAVE();
 }
-#else
-/* interrupts */
-
-cve_isr_retval_t cve_os_interrupt_handler(int irq, void *os_dev)
-{
-	if (cve_di_interrupt_handler(
-			&((struct cve_os_device *)os_dev)->cve_dev))
-		return IRQ_WAKE_THREAD;
-
-	return IRQ_HANDLED;
-}
-
-cve_isr_retval_t cve_os_interrupt_handler_bh(int irq, void *os_dev)
-{
-
-	cve_di_interrupt_handler_deferred_proc(
-			&((struct cve_os_device *)os_dev)->cve_dev);
-	return IRQ_HANDLED;
-}
-
-/* device probe/remove */
-int cve_probe_common(struct cve_os_device *linux_device, int dev_ind)
-{	/* Changes will come because cve_os_device will now
-	 * contain idc_dev and not cve_dev. Extract cve_dev
-	 * using dev_ind.
-	 */
-	int retval = 0;
-	struct dentry *file;
-	char dev_name[8];
-	u64 pe_reg_value = 0;
-
-	FUNC_ENTER();
-
-	cve_os_log(CVE_LOGLEVEL_ERROR,
-				"CVE KMD version: %s\n"
-				, KMD_VERSION);
-
-	cve_os_log(CVE_LOGLEVEL_DEBUG,
-			"adding device ID = %d\n", dev_ind);
-
-	retval = cve_device_init(&linux_device->cve_dev, dev_ind, pe_reg_value);
-	if (retval != 0) {
-		cve_os_log(CVE_LOGLEVEL_ERROR,
-				"cve_device_init failed %d\n", retval);
-		goto out;
-	}
-
-	/* create cve_x directory */
-	snprintf(dev_name,
-			sizeof(dev_name),
-			"cve_%d",
-			linux_device->cve_dev.dev_index);
-
-	linux_device->dev_dir = debugfs_create_dir(dev_name, NULL);
-	if (IS_ERR_OR_NULL(linux_device->dev_dir)) {
-		cve_os_log(CVE_LOGLEVEL_ERROR,
-				"error creating CVE device debug directory\n");
-		/* If debugfs API failed driver will continue without it*/
-		goto out;
-	}
-
-	/* Set registers set*/
-	linux_device->regset.base = linux_device->cached_mmio_base.iobase[0];
-	cve_di_get_debugfs_regs_list(&linux_device->regset.regs,
-			&linux_device->regset.nregs);
-
-	file = debugfs_create_regset32("registers",
-			S_IRUGO,
-			linux_device->dev_dir,
-			&linux_device->regset);
-	if (IS_ERR_OR_NULL(file)) {
-		cve_os_log(CVE_LOGLEVEL_ERROR,
-				"error creating regset\n");
-		/* If debugfs API failed driver will continue without it*/
-		goto err;
-	}
-
-	file = debugfs_create_u32("enable_hw_counters",
-			S_IRUGO | S_IWUGO,
-			linux_device->dev_dir,
-			&linux_device->cve_dev.is_hw_counters_enabled);
-
-	if (IS_ERR_OR_NULL(file)) {
-		cve_os_log(CVE_LOGLEVEL_ERROR,
-				"error creating enable_hw_counters\n");
-		/* If debugfs API failed driver will continue without it*/
-		goto err;
-	}
-
-	file = debugfs_create_file("cveDumpBuffer",
-		0644, linux_device->dev_dir,
-		&linux_device->cve_dev.cve_dump_buf,
-		&fops_cve_dump);
-
-	if (IS_ERR_OR_NULL(file)) {
-		cve_os_log(CVE_LOGLEVEL_ERROR,
-				"error creating cveDumpBuffer\n");
-		/* If debugfs API failed driver will continue without it*/
-		goto err;
-	}
-
-
-out:
-	FUNC_LEAVE();
-	return retval;
-
-err:
-	debugfs_remove_recursive(linux_device->dev_dir);
-	goto out;
-}
-
-void cve_remove_common(struct cve_os_device *linux_device)
-{
-
-FUNC_ENTER();
-
-	cve_os_log(CVE_LOGLEVEL_DEBUG,
-			"Remove linux_device->cve_dev.dev_index = %d\n"
-			, linux_device->cve_dev.dev_index);
-
-	debugfs_remove_recursive(linux_device->dev_dir);
-
-	cve_device_clean(&linux_device->cve_dev);
-
-FUNC_LEAVE();
-}
-#endif
-
 
 /* user interface */
 static ssize_t show_misc_device_info(struct device *dev,
 		struct device_attribute *attr,
 		char *buf)
 {
-	ssize_t len = 0;
+	int len = 0;
 	struct cve_device_group *dg;
 	struct cve_device *cve_dev;
 
 	FUNC_ENTER();
 	dg = cve_dg_get();
 	cve_dev = dg->dev_info.icebo_list[0].dev_list;
-	len = sprintf(buf, "Revision = %x.%x\n",
+	len = ice_snprintf_s_uu(buf, PAGE_SIZE, "Revision = %x.%x\n",
 			cve_dev->version_info.major,
 			cve_dev->version_info.minor);
+	if (len < 0)
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+			"Safelib failed sprintf %d\n", len);
 	FUNC_LEAVE();
 	return len;
 }
@@ -2140,44 +2056,6 @@ static long cve_ioctl_misc(
 			retval = cve_ds_get_metadata(p);
 		}
 		break;
-	case ICE_IOCTL_HW_TRACE_CONFIG:
-		{
-			struct ice_hw_trace_config *p = &kparam.trace_cfg;
-
-			cve_os_log(CVE_LOGLEVEL_DEBUG,
-					    "ICE_IOCTL_HW_TRACE_CONFIG\n");
-			retval = ice_trace_config(p);
-		}
-		break;
-	case ICE_IOCTL_WAIT_FOR_DEBUG_EVENT:
-		{
-			struct ice_get_debug_event *p = &kparam.get_debug_event;
-
-			cve_os_log(CVE_LOGLEVEL_DEBUG,
-					    "ICE_IOCTL_WAIT_FOR_DEBUG_EVENT\n");
-			retval = ice_debug_wait_for_event(p);
-		}
-		break;
-	case ICE_IOCTL_DEBUG_CONTROL:
-		{
-			struct ice_debug_control_params *p =
-							&kparam.debug_control;
-
-			cve_os_log(CVE_LOGLEVEL_DEBUG,
-					    "ICE_IOCTL_DEBUG_CONTROL\n");
-			retval = ice_ds_debug_control(p);
-		}
-		break;
-	case ICE_IOCTL_SET_HW_CONFIG:
-		{
-			struct ice_set_hw_config_params *p =
-							&kparam.set_hw_config;
-
-			cve_os_log(CVE_LOGLEVEL_DEBUG,
-					    "ICE_IOCTL_SET_HW_CONFIG\n");
-			retval = ice_set_hw_config(p);
-		}
-		break;
 	case ICE_IOCTL_RESET_NETWORK:
 		{
 			struct ice_reset_network_params *p =
@@ -2248,7 +2126,6 @@ static int __init cve_init(void)
 	param.enable_llc_config_via_axi_reg = enable_llc_config_via_axi_reg;
 	param.ice_power_off_delay_ms = ice_power_off_delay_ms;
 	param.ice_sch_preemption = ice_sch_preemption;
-	param.enable_mmu_pmon = enable_mmu_pmon;
 	param.initial_iccp_config[0] = initial_iccp_config[0];
 	param.initial_iccp_config[1] = initial_iccp_config[1];
 	param.initial_iccp_config[2] = initial_iccp_config[2];
@@ -2266,7 +2143,7 @@ static int __init cve_init(void)
 	if (retval < 0) {
 		cve_os_log(CVE_LOGLEVEL_ERROR,
 				"misc_register failed %d\n", retval);
-		goto out;
+		goto cleanup_swc;
 	}
 
 	/*create sys/class/misc/intel_misc_cve/misc_device_info */
@@ -2314,6 +2191,7 @@ cleanup_device_info:
 			&dev_attr_misc_device_info);
 cleanup_misc:
 	misc_deregister(&cve_misc_device);
+cleanup_swc:
 	ice_swc_fini();
 	goto out;
 }
@@ -2357,11 +2235,15 @@ static void __dump_leak(void)
 
 static void __exit cve_exit(void)
 {
+	u32 active_ice;
+
 	FUNC_ENTER();
 
 	ice_di_deactivate_driver();
 
-	cve_dg_stop_poweroff_thread();
+	active_ice = (~g_icemask) & VALID_ICE_MASK;
+	if (active_ice)
+		cve_dg_stop_poweroff_thread();
 
 	/* platform specific part */
 	cve_unregister_driver();

@@ -565,246 +565,6 @@ static int regbar_port_croffset_sanity(struct cve_device *ice_dev,
 	}
 	return 0;
 }
-int ice_trace_set_ice_observers(struct ice_observer_config *dso_config,
-							u32 dev_index)
-{
-	struct cve_device *ice_dev;
-	int ret = 0;
-	int i;
-	u64 pe_mask, value;
-
-	FUNC_ENTER();
-
-	ice_dev = cve_device_get(dev_index);
-	if (!ice_dev) {
-		cve_os_log(CVE_LOGLEVEL_ERROR, "NULL ice_dev pointer\n");
-		ret = -ENODEV;
-		goto out;
-	}
-
-	if (ice_trace_hw_debug_check(ice_dev)) {
-		if (!dso_config && ((ice_dev->dso.dso_config_status ==
-						TRACE_STATUS_DEFAULT) ||
-				(ice_dev->dso.dso_config_status ==
-				TRACE_STATUS_DEFAULT_CONFIG_WRITE_DONE))) {
-			cve_os_log(CVE_LOGLEVEL_INFO, "No user dso config\n");
-			ret = 0;
-			goto out;
-		} else {
-			cve_os_log(CVE_LOGLEVEL_ERROR,
-			     "User dso config not allowed as HW DBG is ON\n");
-			ret = -EBUSY;
-			goto out;
-		}
-	}
-
-	i = 0;
-	if (dso_config) {
-		ice_dev->dso.reg_vals[i++] = dso_config->dtf_encoder_config;
-		ice_dev->dso.reg_vals[i++] = dso_config->cfg_dtf_src_config;
-		ice_dev->dso.reg_vals[i++] = dso_config->cfg_ptype_filter_ch0;
-		ice_dev->dso.reg_vals[i++] = dso_config->filter_match_low_ch0;
-		ice_dev->dso.reg_vals[i++] = dso_config->filter_match_high_ch0;
-		ice_dev->dso.reg_vals[i++] = dso_config->filter_mask_low_ch0;
-		ice_dev->dso.reg_vals[i++] = dso_config->filter_mask_high_ch0;
-		ice_dev->dso.reg_vals[i++] = dso_config->filter_inv_ch0;
-		ice_dev->dso.reg_vals[i++] = dso_config->cfg_ptype_filter_ch1;
-		ice_dev->dso.reg_vals[i++] = dso_config->filter_match_low_ch1;
-		ice_dev->dso.reg_vals[i++] = dso_config->filter_match_high_ch1;
-		ice_dev->dso.reg_vals[i++] = dso_config->filter_mask_low_ch1;
-		ice_dev->dso.reg_vals[i++] = dso_config->filter_mask_high_ch1;
-		ice_dev->dso.reg_vals[i++] = dso_config->filter_inv_ch1;
-		ice_dev->dso.dso_config_status =
-					TRACE_STATUS_USER_CONFIG_WRITE_PENDING;
-		ice_dev->dso.is_default_config = false;
-		cve_os_dev_log(CVE_LOGLEVEL_INFO, ice_dev->dev_index,
-						"DSO user config\n");
-	} else {
-		memcpy(ice_dev->dso.reg_vals, default_dso_reg_vals,
-						sizeof(default_dso_reg_vals));
-		memcpy(ice_dev->dso.reg_readback_vals, default_dso_reg_vals,
-						sizeof(default_dso_reg_vals));
-		ice_dev->dso.dso_config_status =
-				      TRACE_STATUS_DEFAULT_CONFIG_WRITE_PENDING;
-		ice_dev->dso.is_default_config = true;
-		cve_os_dev_log(CVE_LOGLEVEL_INFO,
-					ice_dev->dev_index,
-					"DSO default config\n");
-	}
-	pe_mask = (1 << ice_dev->dev_index) << 4;
-	value = cve_os_read_idc_mmio(ice_dev,
-				cfg_default.bar0_mem_icepe_offset);
-
-	/* If Device is ON */
-	if ((value & pe_mask) != pe_mask) {
-		cve_os_log(CVE_LOGLEVEL_INFO,
-				"ICE-%d not Powered ON, Reg write not done\n",
-				ice_dev->dev_index);
-		if (ice_dev->dso.is_default_config == true)
-			ice_dev->dso.dso_config_status = TRACE_STATUS_DEFAULT;
-		goto out;
-	}
-	ret = ice_trace_write_dso_regs(ice_dev);
-	if (ret)
-		cve_os_dev_log(CVE_LOGLEVEL_ERROR,
-					ice_dev->dev_index,
-					"ice_trace_write_dso_regs() failed\n");
-
-out:
-	FUNC_LEAVE();
-
-	return ret;
-}
-
-int ice_trace_set_perf_counter_setup(struct ice_perf_counter_setup *perf_ctr)
-{
-	struct cve_device *ice_dev;
-	int ret = 0;
-	u32 dev_index;
-	u64 pe_mask, value;
-	u32 curr_cfg;
-
-	FUNC_ENTER();
-	if (perf_ctr) {
-		cve_os_log(CVE_LOGLEVEL_ERROR,
-			"Ice perf counter is NULL\n");
-		ret = -EINVAL;
-		goto out;
-	}
-	dev_index = ffs(perf_ctr->ice_number) - 1;
-	if (dev_index >= NUM_ICE_UNIT) {
-		cve_os_log(CVE_LOGLEVEL_ERROR,
-	      "Invalid dev_index %d ice_number(bitmask) 0x%x\n",
-			dev_index, perf_ctr->ice_number);
-		ret = -EINVAL;
-		goto out;
-	}
-	ice_dev = cve_device_get(dev_index);
-	if (!ice_dev) {
-		cve_os_log(CVE_LOGLEVEL_ERROR, "NULL ice_dev pointer\n");
-		ret = -ENODEV;
-		goto out;
-	}
-
-	if (perf_ctr) {
-		cve_os_dev_log(CVE_LOGLEVEL_INFO,
-					ice_dev->dev_index,
-					"Perf Counter User config\n");
-		curr_cfg = ice_dev->perf_counter.perf_counter_config_len;
-		ice_dev->perf_counter.perf_counter_config_len++;
-
-		if (ice_dev->perf_counter.perf_counter_config_len >
-ICE_MAX_PMON_CONFIG) {
-			cve_os_log(CVE_LOGLEVEL_ERROR,
-				"PMON config len is beyond limit\n");
-			ret = -EINVAL;
-			goto out;
-		}
-
-		ice_dev->perf_counter.conf[curr_cfg].register_offset =
-					perf_ctr->register_offset;
-		ice_dev->perf_counter.conf[curr_cfg].counter_value =
-					perf_ctr->counter_value;
-		ice_dev->perf_counter.conf[curr_cfg].counter_config_mask =
-					perf_ctr->counter_config_mask;
-		ice_dev->perf_counter.perf_counter_config_status =
-				TRACE_STATUS_USER_CONFIG_WRITE_PENDING;
-
-		pe_mask = (1 << ice_dev->dev_index) << 4;
-		value = cve_os_read_idc_mmio(ice_dev,
-				cfg_default.bar0_mem_icepe_offset);
-
-		/* If Device is ON */
-		if ((value & pe_mask) != pe_mask) {
-			cve_os_log(CVE_LOGLEVEL_INFO,
-				"ICE-%d not Powered ON, Reg write not done\n",
-				ice_dev->dev_index);
-			goto out;
-		}
-		ret = ice_trace_configure_one_perf_counter(ice_dev, curr_cfg);
-	}
-out:
-	FUNC_LEAVE();
-	return ret;
-}
-
-int ice_trace_set_reg_reader_daemon(struct ice_register_reader_daemon *daemon,
-					u32 dev_index)
-{
-
-	struct cve_device *ice_dev;
-	int ret = 0;
-	u64 pe_mask, value;
-
-	FUNC_ENTER();
-
-	ice_dev = cve_device_get(dev_index);
-	if (!ice_dev) {
-		cve_os_log(CVE_LOGLEVEL_ERROR, "NULL ice_dev pointer\n");
-		ret = -ENODEV;
-		goto out;
-	}
-
-	if (!daemon) { /* Default config  reset all the value*/
-		ice_dev->daemon.conf.daemon_enable = 0; /* Disable */
-		ice_dev->daemon.conf.daemon_control = 0;
-		ice_dev->daemon.conf.daemon_table_len =
-					ICE_MAX_DAEMON_TABLE_LEN;
-
-		memset(ice_dev->daemon.conf.daemon_table, 0,
-				 ICE_MAX_DAEMON_TABLE_LEN * sizeof(u32));
-		ice_dev->daemon.daemon_config_status =
-				TRACE_STATUS_DEFAULT_CONFIG_WRITE_PENDING;
-		ice_dev->daemon.is_default_config = true;
-		cve_os_dev_log(CVE_LOGLEVEL_INFO,
-					ice_dev->dev_index,
-					"Daemon default config\n");
-		goto set_daemon;
-	}
-
-	ice_dev->daemon.conf.daemon_enable = daemon->daemon_enable;
-	ice_dev->daemon.conf.daemon_control = daemon->daemon_control;
-
-	if (daemon->daemon_table_len > ICE_MAX_DAEMON_TABLE_LEN) {
-		cve_os_log(CVE_LOGLEVEL_ERROR, "Table len is beyond limit\n");
-		ret = -EINVAL;
-		goto out;
-	}
-
-	ice_dev->daemon.conf.daemon_table_len = daemon->daemon_table_len;
-
-	memcpy(ice_dev->daemon.conf.daemon_table, daemon->daemon_table,
-					daemon->daemon_table_len * sizeof(u32));
-	ice_dev->daemon.is_default_config = false;
-	ice_dev->daemon.daemon_config_status =
-				TRACE_STATUS_USER_CONFIG_WRITE_PENDING;
-	cve_os_dev_log(CVE_LOGLEVEL_INFO, ice_dev->dev_index,
-					"Daemon USER config\n");
-set_daemon:
-	pe_mask = (1 << ice_dev->dev_index) << 4;
-	value = cve_os_read_idc_mmio(ice_dev,
-				cfg_default.bar0_mem_icepe_offset);
-
-	/* If Device is ON */
-	if ((value & pe_mask) != pe_mask) {
-		cve_os_log(CVE_LOGLEVEL_INFO,
-				"ICE-%d not Powered ON, Reg write not done\n",
-				ice_dev->dev_index);
-		if (ice_dev->daemon.is_default_config == true)
-			ice_dev->daemon.daemon_config_status =
-							TRACE_STATUS_DEFAULT;
-		goto out;
-	}
-	ret = ice_trace_configure_registers_reader_demon(ice_dev);
-	if (ret)
-		cve_os_dev_log(CVE_LOGLEVEL_ERROR, ice_dev->dev_index,
-					"Reader daemon restore failed\n");
-
-out:
-	FUNC_LEAVE();
-
-	return ret;
-}
 
 int ice_trace_write_dso_regs(struct cve_device *ice_dev)
 {
@@ -961,10 +721,6 @@ int  ice_trace_configure_registers_reader_demon(struct cve_device *ice_dev)
 	else
 		ice_dev->daemon.daemon_config_status =
 					TRACE_STATUS_USER_CONFIG_WRITE_DONE;
-	if (ice_dev->daemon.daemon_config_status ==
-				TRACE_STATUS_HW_CONFIG_WRITE_PENDING)
-		ice_dev->daemon.daemon_config_status =
-					TRACE_STATUS_HW_CONFIG_WRITE_DONE;
 
 	FUNC_LEAVE();
 
@@ -974,35 +730,33 @@ int  ice_trace_configure_registers_reader_demon(struct cve_device *ice_dev)
 int ice_trace_configure_perf_counter(struct cve_device *ice_dev)
 {
 	uint32_t i;
-	int ret = 0;
 	uint32_t max_len = ICE_MAX_PMON_CONFIG;
+	int ret = 0;
 
 	FUNC_ENTER();
 
 	for (i = 0; i < ice_dev->perf_counter.perf_counter_config_len; i++) {
 
-		ret = ice_trace_configure_one_perf_counter(ice_dev, i);
-		if (ret) {
-			cve_os_dev_log(CVE_LOGLEVEL_ERROR,
-			  ice_dev->dev_index,
-			  "Problem in Perf counter setup register:%d\n", i);
-			goto out;
-		} else {
-			cve_os_dev_log(CVE_LOGLEVEL_DEBUG,
+		ice_trace_configure_one_perf_counter(ice_dev, i);
+		cve_os_dev_log(CVE_LOGLEVEL_DEBUG,
 			  ice_dev->dev_index,
 			  "Perf counter setup register:%d restored\n", i);
-		}
 	}
 	if (ice_dev->perf_counter.is_default_config) {
 		ice_dev->perf_counter.perf_counter_config_len = 0;
-		memset(ice_dev->perf_counter.conf, 0,
+		ret = ice_memset_s(ice_dev->perf_counter.conf,
+			sizeof(ice_dev->perf_counter.conf), 0,
 			max_len * sizeof(u32));
+		if (ret < 0) {
+			cve_os_log(CVE_LOGLEVEL_ERROR,
+				"Safelib memset failed %d\n", ret);
+			return ret;
+		}
 		ice_dev->perf_counter.is_default_config = false;
 		cve_os_dev_log(CVE_LOGLEVEL_DEBUG,
 			ice_dev->dev_index,
 			"Perf counter table reset done\n");
 	}
-out:
 	FUNC_LEAVE();
 
 	return ret;
@@ -1173,11 +927,17 @@ int ice_trace_restore_hw_dso_regs(struct cve_device *ice_dev)
 	}
 	dso_addr_offset = (u64)(ice_dev->dso.sr_addr_base) +
 			(sizeof(u32) * ice_dev->dev_index * MAX_DSO_CONFIG_REG);
-	memcpy(ice_dev->dso.reg_vals, (u32 *)dso_addr_offset,
-					sizeof(u32) * MAX_DSO_CONFIG_REG);
+	ret = ice_memcpy_s(ice_dev->dso.reg_vals,
+		sizeof(u32) * MAX_DSO_CONFIG_REG,
+		(u32 *)dso_addr_offset,	sizeof(u32) * MAX_DSO_CONFIG_REG);
+	if (ret < 0) {
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+			"Safelib memcpy failed %d\n", ret);
+		goto out;
+	}
+
 	ice_dev->dso.dso_config_status =
 				      TRACE_STATUS_HW_CONFIG_WRITE_PENDING;
-
 	for (i = 0; i < MAX_DSO_CONFIG_REG; i++)
 		cve_os_dev_log(CVE_LOGLEVEL_DEBUG, ice_dev->dev_index,
 			"dso_reg[%d] = 0x%x\n", i, ice_dev->dso.reg_vals[i]);
@@ -1244,7 +1004,7 @@ static ssize_t show_dso_filter(struct kobject *kobj,
 				struct kobj_attribute *attr,
 				char *buf)
 {
-	int ret = 0;
+	int ret = 0, len = 0;
 	u32 dev_index;
 	u32 node_idx;
 	u8 reg_index = MAX_DSO_CONFIG_REG;
@@ -1255,13 +1015,13 @@ static ssize_t show_dso_filter(struct kobject *kobj,
 	struct trace_node_sysfs *node_ptr;
 	struct cve_device_group *dg;
 
-	ret = sscanf(kobj->name, "ice%u", &dev_index);
+	ret = ice_sscanf_s_u32(kobj->name, "ice%u", &dev_index);
 	/* This section is for physical ice (legacy) sysfs */
 	if (ret == 1) {
 		if (dev_index >= NUM_ICE_UNIT) {
 			cve_os_log(CVE_LOGLEVEL_ERROR, "wrong ice id %d\n",
 						dev_index);
-			return -EFAULT;
+			return ((ret == 0) ? -EFAULT : ret);
 		}
 
 		cve_os_log(CVE_LOGLEVEL_DEBUG, "ICE number %d\n", dev_index);
@@ -1294,19 +1054,31 @@ static ssize_t show_dso_filter(struct kobject *kobj,
 			"DSO readback value 0x%x, DSO cached vale 0x%x\n",
 			value, cached_value);
 
-		ret += sprintf((buf + ret),
+		len = ice_snprintf_s_u((buf + ret), PAGE_SIZE,
 			"Cached value:0x%x,",
 			cached_value);
-		ret += sprintf((buf + ret),
+		if (len < 0) {
+			cve_os_log(CVE_LOGLEVEL_ERROR,
+				"Safelib failed snprintf %d\n", len);
+			return len;
+		}
+		ret += len;
+		len = ice_snprintf_s_u((buf + ret), PAGE_SIZE,
 			" Last update:0x%x\n",
 			value);
+		if (len < 0) {
+			cve_os_log(CVE_LOGLEVEL_ERROR,
+				"Safelib failed snprintf %d\n", len);
+			return len;
+		}
+		ret += len;
 		cve_os_unlock(&g_cve_driver_biglock);
 
 		return ret;
 	}
 
 	dg = cve_dg_get();
-	ret = sscanf(kobj->name, "node%u", &node_idx);
+	ret = ice_sscanf_s_u32(kobj->name, "node%u", &node_idx);
 	/* This section is for  logical ice node sysfs */
 	if (ret == 1) {
 		if (node_idx >= dg->trace_node_cnt) {
@@ -1331,8 +1103,13 @@ static ssize_t show_dso_filter(struct kobject *kobj,
 			return -ERESTARTSYS;
 
 		value = node_ptr->job.dso.reg_vals[reg_index];
-		ret += sprintf((buf + ret),
+		ret += ice_snprintf_s_u((buf + ret), PAGE_SIZE,
 			"value:0x%x\n", value);
+		if (ret < 0) {
+			cve_os_log(CVE_LOGLEVEL_ERROR,
+				"Safelib failed snprintf %d\n", ret);
+			return ret;
+		}
 		cve_os_unlock(&g_cve_driver_biglock);
 		return ret;
 	}
@@ -1340,7 +1117,7 @@ static ssize_t show_dso_filter(struct kobject *kobj,
 	cve_os_log(CVE_LOGLEVEL_ERROR,
 			"FALIED to get valid ice/node id from %s\n",
 			kobj->name);
-	return -EFAULT;
+	return ((ret == 0) ? -EFAULT : ret);
 
 }
 
@@ -1355,11 +1132,11 @@ static ssize_t store_ntw_id(struct kobject *kobj,
 	struct cve_device_group *dg;
 
 	dg = cve_dg_get();
-	ret = sscanf(kobj->name, "node%u", &index);
+	ret = ice_sscanf_s_u32(kobj->name, "node%u", &index);
 	if (ret < 1 || index >= dg->trace_node_cnt) {
 		cve_os_log(CVE_LOGLEVEL_ERROR,
 			"Failed to get valid node id from %s\n", kobj->name);
-		return -EFAULT;
+		return ((ret == 0) ? -EFAULT : ret);
 	}
 	nw_id = (char *)buf;
 	nw_id = strim(nw_id);
@@ -1385,11 +1162,11 @@ static ssize_t store_infer_num(struct kobject *kobj,
 	struct cve_device_group *dg;
 
 	dg = cve_dg_get();
-	ret = sscanf(kobj->name, "node%u", &index);
+	ret = ice_sscanf_s_u32(kobj->name, "node%u", &index);
 	if (ret < 1 || index >= dg->trace_node_cnt) {
 		cve_os_log(CVE_LOGLEVEL_ERROR,
 			"Failed to get valid node id from %s\n", kobj->name);
-		return -EFAULT;
+		return ((ret == 0) ? -EFAULT : ret);
 	}
 	infer_num = (char *)buf;
 	infer_num = strim(infer_num);
@@ -1413,11 +1190,11 @@ static ssize_t store_ctx_id(struct kobject *kobj,
 	struct cve_device_group *dg;
 
 	dg = cve_dg_get();
-	ret = sscanf(kobj->name, "node%u", &index);
+	ret = ice_sscanf_s_u32(kobj->name, "node%u", &index);
 	if (ret < 1 || index >= dg->trace_node_cnt) {
 		cve_os_log(CVE_LOGLEVEL_ERROR,
 			"Failed to get valid node id from %s\n", kobj->name);
-		return -EFAULT;
+		return ((ret == 0) ? -EFAULT : ret);
 	}
 	ctx_id = (char *)buf;
 	ctx_id = strim(ctx_id);
@@ -1445,7 +1222,7 @@ static ssize_t store_dso_filter(struct kobject *kobj,
 	if (ret < 0)
 		return ret;
 
-	ret = sscanf(kobj->name, "ice%u", &dev_index);
+	ret = ice_sscanf_s_u32(kobj->name, "ice%u", &dev_index);
 	/* This section of code deals with Physical ice (legacy) sysfs */
 	if (ret == 1) {
 		if (dev_index >= NUM_ICE_UNIT) {
@@ -1480,7 +1257,7 @@ static ssize_t store_dso_filter(struct kobject *kobj,
 		cve_os_unlock(&g_cve_driver_biglock);
 		return count;
 	}
-	ret = sscanf(kobj->name, "node%u", &node_idx);
+	ret = ice_sscanf_s_u32(kobj->name, "node%u", &node_idx);
 	/* This section of code deals with Logical ice sysfs */
 	if (ret == 1) {
 
@@ -1514,7 +1291,7 @@ static ssize_t store_dso_filter(struct kobject *kobj,
 	cve_os_log(CVE_LOGLEVEL_ERROR,
 			"failed to get valid ice/node id from %s\n",
 			kobj->name);
-	return -EFAULT;
+	return ((ret == 0) ? -EFAULT : ret);
 
 }
 
@@ -1522,7 +1299,7 @@ static ssize_t show_pmoninfo(struct kobject *kobj,
 				struct kobj_attribute *attr,
 				char *buf)
 {
-	int ret = 0;
+	int ret = 0, len = 0;
 	u32 i;
 	u32 size;
 	struct pmoninfo_details pmon_arr[] = {
@@ -1642,27 +1419,40 @@ static ssize_t show_pmoninfo(struct kobject *kobj,
 
 	size = sizeof(pmon_arr) / sizeof(struct pmoninfo_details);
 
-	ret = sprintf((buf + ret),
+	ret = snprintf((buf + ret), PAGE_SIZE,
 		"-1, -1, RESET, ICE_PMON_RSESET_CONFIG, \"Reset PMON Configuration\"\n");
 	for (i = 0; i < size; i++) {
-		ret += sprintf((buf + ret), "%d, 0x%x, %s, %s, \"%s\"\n",
+		len = ice_snprintf_s_uusss((buf + ret), PAGE_SIZE,
+				"%d, 0x%x, %s, %s, \"%s\"\n",
 				pmon_arr[i].index,
 				pmon_arr[i].reg_offset,
 				pmon_arr[i].group_name,
 				pmon_arr[i].name, pmon_arr[i].desc);
+			if (len < 0) {
+				cve_os_log(CVE_LOGLEVEL_ERROR,
+					"Safelib failed snprintf %d\n", len);
+				return len;
+			}
+			ret += len;
 	}
 
 	if (!ice_get_a_step_enable_flag()) {
 		size = sizeof(pmon_arr_p2) /
 				sizeof(struct pmoninfo_details);
 		for (i = 0; i < size; i++) {
-			ret += sprintf((buf + ret),
+			len = ice_snprintf_s_uusss((buf + ret), PAGE_SIZE,
 				"%d, 0x%x, %s, %s, \"%s\"\n",
 				pmon_arr_p2[i].index,
 				pmon_arr_p2[i].reg_offset,
 				pmon_arr_p2[i].group_name,
 				pmon_arr_p2[i].name,
 				pmon_arr_p2[i].desc);
+			if (len < 0) {
+				cve_os_log(CVE_LOGLEVEL_ERROR,
+					"Safelib failed snprintf %d\n", len);
+				return len;
+			}
+			ret += len;
 		}
 	}
 	return ret;
@@ -1711,36 +1501,61 @@ static ssize_t get_dump_pmon_status(struct kobject *kobj,
 
 	index = get_ice_pmon_index(attr);
 
-	if (index == ICE_MMU_PMON_INDEX)
-		ret += sprintf((buf + ret), "%d\n",
+	if (index == ICE_MMU_PMON_INDEX) {
+		ret = ice_snprintf_s_i((buf + ret), PAGE_SIZE, "%d\n",
 			(device_group->dump_ice_mmu_pmon)?1:0);
-	else if (index == ICE_DELPHI_PMON_INDEX)
-		ret += sprintf((buf + ret), "%d\n",
+		if (ret < 0) {
+			cve_os_log(CVE_LOGLEVEL_ERROR,
+				"Safelib failed snprintf %d\n", ret);
+			return ret;
+		}
+	} else if (index == ICE_DELPHI_PMON_INDEX) {
+		ret = ice_snprintf_s_i((buf + ret), PAGE_SIZE, "%d\n",
 			(device_group->dump_ice_delphi_pmon)?1:0);
-	else
-		ret += sprintf((buf + ret), "bad ice PMON param\n");
-
+		if (ret < 0) {
+			cve_os_log(CVE_LOGLEVEL_ERROR,
+				"Safelib failed snprintf %d\n", ret);
+			return ret;
+		}
+	} else {
+		ret = snprintf((buf + ret), PAGE_SIZE,
+				"bad ice PMON param\n");
+	}
 	return ret;
 }
 
 static ssize_t show_trace_node_cnt(struct kobject *kobj,
 		struct kobj_attribute *attr, char *buf)
 {
+	int ret = 0;
 	struct cve_device_group *dg;
 
 	dg = cve_dg_get();
 
-	return sprintf(buf, "%d\n", dg->trace_node_cnt);
+	ret = ice_snprintf_s_u(buf, PAGE_SIZE, "%d\n", dg->trace_node_cnt);
+	if (ret < 0)
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+			"Safelib failed snprintf %d\n", ret);
+
+	return ret;
+
 }
 
 static ssize_t show_trace_update_status(struct kobject *kobj,
 		struct kobj_attribute *attr, char *buf)
 {
+	int ret = 0;
 	struct cve_device_group *dg;
 
 	dg = cve_dg_get();
 
-	return sprintf(buf, "%d\n", dg->trace_update_status);
+	ret = ice_snprintf_s_i(buf, PAGE_SIZE,
+			"%d\n", dg->trace_update_status);
+	if (ret < 0)
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+			"Safelib failed snprintf %d\n", ret);
+
+	return ret;
 }
 
 static ssize_t show_ctx_id(struct kobject *kobj,
@@ -1752,13 +1567,19 @@ static ssize_t show_ctx_id(struct kobject *kobj,
 	int ret;
 
 	dg = cve_dg_get();
-	ret = sscanf(kobj->name, "node%u", &index);
+	ret = ice_sscanf_s_u32(kobj->name, "node%u", &index);
 	if (ret < 1 || index >= dg->trace_node_cnt) {
 		cve_os_log(CVE_LOGLEVEL_ERROR,
 			"FAILED to get valid node id from %s\n", kobj->name);
-		return -EFAULT;
+		return ((ret == 0) ? -EFAULT : ret);
 	}
-	return sprintf(buf, "%lld\n", dg->node_group_sysfs[index].ctx_id);
+	ret = ice_snprintf_s_i(buf, PAGE_SIZE, "%lld\n",
+			dg->node_group_sysfs[index].ctx_id);
+	if (ret < 0)
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+			"Safelib failed snprintf %d\n", ret);
+
+	return ret;
 }
 
 static ssize_t show_ntw_id(struct kobject *kobj,
@@ -1769,14 +1590,20 @@ static ssize_t show_ntw_id(struct kobject *kobj,
 	int ret;
 
 	dg = cve_dg_get();
-	ret = sscanf(kobj->name, "node%u", &index);
+	ret = ice_sscanf_s_u32(kobj->name, "node%u", &index);
 	if (ret < 1 || index >= dg->trace_node_cnt) {
 		cve_os_log(CVE_LOGLEVEL_ERROR,
 			"FAILED to get valid node id from %s\n", kobj->name);
-		return -EFAULT;
+		return ((ret == 0) ? -EFAULT : ret);
 	}
 
-	return sprintf(buf, "%lld\n", dg->node_group_sysfs[index].ntw_id);
+	ret = ice_snprintf_s_u(buf, PAGE_SIZE,
+		"%lld\n", dg->node_group_sysfs[index].ntw_id);
+	if (ret < 0)
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+			"Safelib failed snprintf %d\n", ret);
+
+	return ret;
 }
 
 static ssize_t show_infer_num(struct kobject *kobj,
@@ -1787,47 +1614,61 @@ static ssize_t show_infer_num(struct kobject *kobj,
 	struct cve_device_group *dg;
 
 	dg = cve_dg_get();
-	ret = sscanf(kobj->name, "node%u", &index);
+	ret = ice_sscanf_s_u32(kobj->name, "node%u", &index);
 	if (ret < 1 || index >= dg->trace_node_cnt) {
 		cve_os_log(CVE_LOGLEVEL_ERROR,
 			"FAILED to get valid node id from %s\n", kobj->name);
-		return -EFAULT;
+		return ((ret == 0) ? -EFAULT : ret);
 	}
 
-	return sprintf(buf, "%lld\n", dg->node_group_sysfs[index].infer_num);
+	ret = ice_snprintf_s_u(buf, PAGE_SIZE,
+			"%lld\n", dg->node_group_sysfs[index].infer_num);
+	if (ret < 0)
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+			"Safelib failed snprintf %d\n", ret);
+
+	return ret;
 }
 
 static ssize_t show_jobs(struct kobject *kobj,
 		struct kobj_attribute *attr, char *buf)
 {
-	int ret = 0;
+	int ret = 0, len = 0;
 	int i;
 	struct trace_node_sysfs *node;
 	u32 index;
 	struct cve_device_group *dg;
 
 	dg = cve_dg_get();
-	ret = sscanf(kobj->name, "node%u", &index);
+	ret = ice_sscanf_s_u32(kobj->name, "node%u", &index);
 	if (ret < 1 || index >= dg->trace_node_cnt) {
 		cve_os_log(CVE_LOGLEVEL_ERROR,
 			"FAILED to get valid node id from %s\n", kobj->name);
-		return -EFAULT;
+		return ((ret == 0) ? -EFAULT : ret);
 	}
 	node = &dg->node_group_sysfs[index];
 
-	for (i = 0; i < node->job_count; i++)
-		ret += sprintf(buf + ret, "%u,", node->job_list[i]);
-
+	for (i = 0; i < node->job_count; i++) {
+		len = ice_snprintf_s_u(buf + ret, PAGE_SIZE,
+				"%u,", node->job_list[i]);
+		if (len < 0) {
+			cve_os_log(CVE_LOGLEVEL_ERROR,
+				"Safelib failed snprintf %d\n", len);
+			return len;
+		}
+		ret += len;
+	}
 	buf[ret-1] = '\n';
 	return ret;
 }
 
-void init_dso_default_nodes(struct trace_node_sysfs *trace_node)
+int init_dso_default_nodes(struct trace_node_sysfs *trace_node)
 {
 	int i;
 	struct ice_dso_regs_data *local_dso;
 	struct ice_read_daemon_config *local_daemon;
 	struct ice_perf_counter_config *local_perf_counter;
+	int ret = 0;
 
 	local_dso = &trace_node->job.dso;
 	local_daemon = &trace_node->job.daemon;
@@ -1837,10 +1678,21 @@ void init_dso_default_nodes(struct trace_node_sysfs *trace_node)
 		local_dso->reg_offsets[i].croffset =
 			__get_dso_regoffset(i);
 	}
-	memcpy(local_dso->reg_vals, default_dso_reg_vals,
-						sizeof(default_dso_reg_vals));
-	memcpy(local_dso->reg_readback_vals, default_dso_reg_vals,
-			sizeof(default_dso_reg_vals));
+	ret = ice_memcpy_s(local_dso->reg_vals, sizeof(default_dso_reg_vals),
+			default_dso_reg_vals, sizeof(default_dso_reg_vals));
+	if (ret < 0) {
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+			"Safelib memcpy failed %d\n", ret);
+		return ret;
+	}
+	ret = ice_memcpy_s(local_dso->reg_readback_vals,
+			sizeof(default_dso_reg_vals),
+			default_dso_reg_vals, sizeof(default_dso_reg_vals));
+	if (ret < 0) {
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+			"Safelib memcpy failed %d\n", ret);
+		return ret;
+	}
 	local_dso->reg_num = MAX_DSO_CONFIG_REG;
 	local_dso->dso_config_status = TRACE_STATUS_DEFAULT;
 	ice_trace_dso_register_uncore_callbacks(local_dso);
@@ -1853,6 +1705,7 @@ void init_dso_default_nodes(struct trace_node_sysfs *trace_node)
 
 	/*Initalize perf Counter config length to 0 */
 	local_perf_counter->perf_counter_config_len = 0;
+	return ret;
 }
 
 int create_kobj_nodes(void)
@@ -1874,7 +1727,13 @@ int create_kobj_nodes(void)
 	}
 
 	for (i = 0; i < dg->trace_node_cnt; i++) {
-		snprintf(name, sizeof(name), "node%d", i);
+		ret = ice_snprintf_s_i(name, sizeof(name), "node%d", i);
+		if (ret < 0) {
+			cve_os_log(CVE_LOGLEVEL_ERROR,
+				"Safelib failed snprintf %d\n", ret);
+			goto clear_out;
+		}
+
 		dg->node_group_sysfs[i].node_kobj = kobject_create_and_add(name,
 							jobs_kobj);
 		if (!dg->node_group_sysfs[i].node_kobj) {
@@ -1904,7 +1763,12 @@ int create_kobj_nodes(void)
 		dg->node_group_sysfs[i].ntw_id = DEFAULT_ID;
 		dg->node_group_sysfs[i].infer_num = DEFAULT_ID;
 
-		init_dso_default_nodes(&dg->node_group_sysfs[i]);
+		ret = init_dso_default_nodes(&dg->node_group_sysfs[i]);
+		if (ret < 0) {
+			cve_os_log(CVE_LOGLEVEL_ERROR,
+				"Failed to init default dso nodes %d\n", ret);
+			goto clear_filters;
+		}
 
 	}
 	return i;
@@ -2069,11 +1933,11 @@ ssize_t store_jobs(struct kobject *kobj,
 
 	dg = cve_dg_get();
 
-	ret = sscanf(kobj->name, "node%u", &index);
+	ret = ice_sscanf_s_u32(kobj->name, "node%u", &index);
 	if (ret < 1 || index >= dg->trace_node_cnt) {
 		cve_os_log(CVE_LOGLEVEL_ERROR,
 			"falied to get valid node id from %s\n", kobj->name);
-		return -EFAULT;
+		return ((ret == 0) ? -EFAULT : ret);
 	}
 	node = &dg->node_group_sysfs[index];
 	while ((dump_s = strsep((char **)&buf, ",")) != NULL) {
@@ -2133,11 +1997,11 @@ static int get_ice_id_from_kobj(const char *name, u32 *dev_index)
 {
 	int ret = 0;
 
-	ret = sscanf(name, "ice%u", dev_index);
+	ret = ice_sscanf_s_u32(name, "ice%u", dev_index);
 	if (ret < 1) {
 		cve_os_log(CVE_LOGLEVEL_ERROR, "failed getting ice id %s\n",
 						name);
-		return -EFAULT;
+		return ((ret == 0) ? -EFAULT : ret);
 	}
 	if (*dev_index >= NUM_ICE_UNIT) {
 		cve_os_log(CVE_LOGLEVEL_ERROR, "wrong ice id %d\n", *dev_index);
@@ -2151,7 +2015,7 @@ static ssize_t read_ice_mmu_pmon(struct kobject *kobj,
 				struct kobj_attribute *attr,
 				char *buf)
 {
-	int ret = 0;
+	int ret = 0, len = 0;
 	int i = 0;
 	u32 dev_index;
 	struct cve_device *dev;
@@ -2168,9 +2032,12 @@ static ssize_t read_ice_mmu_pmon(struct kobject *kobj,
 	}
 
 	if (!dev->dg->dump_ice_mmu_pmon) {
-		ret += sprintf((buf + ret),
+		ret = ice_snprintf_s_i((buf + ret), PAGE_SIZE,
 			"Error:%d Trying to read PMONs without enabling.\n",
 			-EPERM);
+		if (ret < 0)
+			cve_os_log(CVE_LOGLEVEL_ERROR,
+				"Safelib failed snprintf %d\n", ret);
 		return ret;
 	}
 
@@ -2187,16 +2054,17 @@ static ssize_t read_ice_mmu_pmon(struct kobject *kobj,
 	cve_os_log(CVE_LOGLEVEL_DEBUG, "attr: %s\n",
 						attr->attr.name);
 
-	if ((dev->power_state == ICE_POWER_ON) ||
-		(dev->power_state == ICE_POWER_OFF_INITIATED)) {
-
-		get_ice_mmu_pmon_regs(dev);
-	}
 	for (i = 0; i < ICE_MAX_MMU_PMON; i++) {
-		ret += sprintf((buf + ret),
+		len = ice_snprintf_s_su((buf + ret), PAGE_SIZE,
 			"%s\t:%u\n",
 			dev->mmu_pmon[i].pmon_name,
 			dev->mmu_pmon[i].pmon_value);
+		if (len < 0) {
+			cve_os_log(CVE_LOGLEVEL_ERROR,
+				"Safelib failed snprintf %d\n", len);
+			return len;
+		}
+		ret += len;
 	}
 
 	cve_os_unlock(&device_group->poweroff_dev_list_lock);
@@ -2207,7 +2075,7 @@ static ssize_t read_ice_delphi_pmon(struct kobject *kobj,
 				struct kobj_attribute *attr,
 				char *buf)
 {
-	int ret = 0;
+	int ret = 0, len = 0;
 	int i = 0;
 	u32 dev_index;
 	struct cve_device *dev;
@@ -2228,9 +2096,12 @@ static ssize_t read_ice_delphi_pmon(struct kobject *kobj,
 	}
 
 	if (!dev->dg->dump_ice_delphi_pmon) {
-		ret += sprintf((buf + ret),
+		ret = ice_snprintf_s_i((buf + ret), PAGE_SIZE,
 			"Error:%d Trying to read PMONs without enabling.\n",
 			-EPERM);
+		if (ret < 0)
+			cve_os_log(CVE_LOGLEVEL_ERROR,
+				"Safelib failed snprintf %d\n", ret);
 		return ret;
 	}
 
@@ -2247,11 +2118,6 @@ static ssize_t read_ice_delphi_pmon(struct kobject *kobj,
 	cve_os_log(CVE_LOGLEVEL_DEBUG, "attr: %s\n",
 						attr->attr.name);
 
-	if ((dev->power_state == ICE_POWER_ON) ||
-		(dev->power_state == ICE_POWER_OFF_INITIATED)) {
-
-		get_ice_delphi_pmon_regs(dev);
-	}
 	for (i = 0; i < ICE_MAX_DELPHI_PMON; i++) {
 		if (ice_get_a_step_enable_flag()) {
 			if (i >= ICE_MAX_A_STEP_DELPHI_PMON)
@@ -2266,42 +2132,66 @@ static ssize_t read_ice_delphi_pmon(struct kobject *kobj,
 		case ICE_DELPHI_PMON_CNN_COMPUTE_CYCLES:
 		case ICE_DELPHI_PMON_CNN_OUTPUT_WRITE_CYCLES:
 
-			ret += sprintf((buf + ret),
+			len = ice_snprintf_s_su((buf + ret), PAGE_SIZE,
 				"%s\t:%u\n",
 				dev->delphi_pmon[i].pmon_name,
 				dev->delphi_pmon[i].pmon_value);
+			if (len < 0) {
+				cve_os_log(CVE_LOGLEVEL_ERROR,
+					"Safelib failed snprintf %d\n", len);
+				return len;
+			}
+			ret += len;
 		break;
 
 		case ICE_DELPHI_PMON_CYCLES_COUNT_OVERFLOW:
 			perf_status_reg.val = dev->delphi_pmon[i].pmon_value;
 
-			ret += sprintf((buf + ret),
+			len = ice_snprintf_s_uu((buf + ret), PAGE_SIZE,
 				"Per_Layer_Cycles_Overflow\t:%u\nTotal_Cycles_Overflow\t:%u\n",
 				perf_status_reg.field.per_lyr_cyc_cnt_saturated,
 				perf_status_reg.field.total_cyc_cnt_saturated);
+			if (len < 0) {
+				cve_os_log(CVE_LOGLEVEL_ERROR,
+					"Safelib failed snprintf %d\n", len);
+				return len;
+			}
+			ret += len;
 		break;
 
 		case ICE_DELPHI_PMON_GEMM_CNN_STARTUP:
 			startup_cnt_reg.val = dev->delphi_pmon[i].pmon_value;
-			ret += sprintf((buf + ret),
+			len = ice_snprintf_s_uu((buf + ret), PAGE_SIZE,
 				"CNN_Startup_Count\t:%u\nGemm_Startup_Count\t:%u\n",
 				startup_cnt_reg.field.pe_startup_perf_cnt,
 				startup_cnt_reg.field.gemm_startup_perf_cnt);
+			if (len < 0) {
+				cve_os_log(CVE_LOGLEVEL_ERROR,
+					"Safelib failed snprintf %d\n", len);
+				return len;
+			}
+			ret += len;
 
 		break;
 
 		case ICE_DELPHI_PMON_CONFIG_CREDIT_LATENCY:
 			latency_cnt_reg.val = dev->delphi_pmon[i].pmon_value;
-			ret += sprintf((buf + ret),
+			len = ice_snprintf_s_uu((buf + ret), PAGE_SIZE,
 				"Credit_Reset_Latency_Count\t:%u\nCfg_Latency_Count\t:%u\n",
 				latency_cnt_reg.field.
 						credit_reset_latency_perf_cnt,
 				latency_cnt_reg.field.cfg_latency_perf_cnt);
+			if (len < 0) {
+				cve_os_log(CVE_LOGLEVEL_ERROR,
+					"Safelib failed snprintf %d\n", len);
+				return len;
+			}
+			ret += len;
 		break;
 
 		case ICE_DELPHI_PMON_PERF_COUNTERS_OVR_FLW:
 			ovr_flow_reg.val = dev->delphi_pmon[i].pmon_value;
-			ret += sprintf((buf + ret),
+			len = ice_snprintf_s_uuuuuuuu((buf + ret), PAGE_SIZE,
 				"CNN_Startup_Overflow\t:%u\nGemm_Startup_Overflow\t:%u\nGemm_Compute_Overflow\t:%u\nGemm_Teardown_Overflow\t:%u\nCNN_Compute_Overflow\t:%u\nCNN_Teardown_Overflow\t:%u\nCredit_Reset_latency_Overflow\t:%u\nCfg_Latency_Overflow\t:%u\n",
 			ovr_flow_reg.field.pe_startup_perf_cnt_ovr_flow,
 			ovr_flow_reg.field.gemm_startup_perf_cnt_ovr_flow,
@@ -2312,6 +2202,12 @@ static ssize_t read_ice_delphi_pmon(struct kobject *kobj,
 			ovr_flow_reg.field.
 				credit_reset_latency_perf_cnt_ovr_flow,
 			ovr_flow_reg.field.cfg_latency_perf_cnt_ovr_flow);
+			if (len < 0) {
+				cve_os_log(CVE_LOGLEVEL_ERROR,
+					"Safelib failed snprintf %d\n", len);
+				return len;
+			}
+			ret += len;
 		break;
 
 		default:
@@ -2351,14 +2247,14 @@ ssize_t store_pmon(struct kobject *kobj,
 
 	dg = cve_dg_get();
 
-	ret = sscanf(kobj->name, "ice%u", &dev_index);
+	ret = ice_sscanf_s_u32(kobj->name, "ice%u", &dev_index);
 	if (ret < 1) {
-		ret = sscanf(kobj->name, "node%u", &node_index);
+		ret = ice_sscanf_s_u32(kobj->name, "node%u", &node_index);
 		if (ret < 1 || node_index >= dg->trace_node_cnt) {
 			cve_os_log(CVE_LOGLEVEL_ERROR,
 				"failed to get valid ice/node id form %s\n",
 					kobj->name);
-			return -EFAULT;
+			return ((ret == 0) ? -EFAULT : ret);
 		}
 		goto node_pmon;
 	}
@@ -2963,17 +2859,22 @@ out:
 	FUNC_LEAVE();
 	return ret;
 }
-
 void perform_daemon_reset(struct cve_device *ice_dev)
 {
+	int ret = 0;
+
 	/*Daemon reset to default values */
 	ice_dev->daemon.conf.daemon_enable = 0; /* Disable */
 	ice_dev->daemon.conf.daemon_control = 0;
 	ice_dev->daemon.conf.daemon_table_len =
 				ICE_MAX_DAEMON_TABLE_LEN;
 
-	memset(ice_dev->daemon.conf.daemon_table, 0,
+	ret = ice_memset_s(ice_dev->daemon.conf.daemon_table,
+			ICE_MAX_DAEMON_TABLE_LEN * sizeof(u32), 0,
 			 ICE_MAX_DAEMON_TABLE_LEN * sizeof(u32));
+	if (ret < 0)
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+			"Safelib memset failed %d\n", ret);
 	ice_dev->daemon.daemon_config_status =
 			TRACE_STATUS_SYSFS_USER_CONFIG_WRITE_PENDING;
 	ice_dev->daemon.restore_needed_from_suspend = false;
@@ -2985,14 +2886,22 @@ void perform_daemon_reset(struct cve_device *ice_dev)
 
 void perform_daemon_reset_node(struct hwtrace_job *job)
 {
+	int ret = 0;
+
 	/*Daemon reset to default values */
 	job->daemon.conf.daemon_enable = 0; /* Disable */
 	job->daemon.conf.daemon_control = 0;
 	job->daemon.conf.daemon_table_len =
 				ICE_MAX_DAEMON_TABLE_LEN;
 
-	memset(job->daemon.conf.daemon_table, 0,
+	ret = ice_memset_s(job->daemon.conf.daemon_table,
+			ICE_MAX_DAEMON_TABLE_LEN * sizeof(u32), 0,
 			 ICE_MAX_DAEMON_TABLE_LEN * sizeof(u32));
+	/* This is a debug feature error is logged*/
+	if (ret < 0)
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+			"Safelib memset failed %d\n", ret);
+
 	job->daemon.daemon_config_status =
 			TRACE_STATUS_SYSFS_USER_CONFIG_WRITE_PENDING;
 	job->daemon.restore_needed_from_suspend = false;
@@ -3002,6 +2911,8 @@ void perform_daemon_reset_node(struct hwtrace_job *job)
 }
 void perform_daemon_suspend(struct cve_device *ice_dev)
 {
+	int ret = 0;
+
 	/*Daemon reset to default values */
 
 	ice_dev->daemon.reset_conf.daemon_enable = 0; /* Disable */
@@ -3009,8 +2920,16 @@ void perform_daemon_suspend(struct cve_device *ice_dev)
 	ice_dev->daemon.reset_conf.daemon_table_len =
 				ICE_MAX_DAEMON_TABLE_LEN;
 
-	memset(ice_dev->daemon.reset_conf.daemon_table, 0,
+	ret = ice_memset_s(ice_dev->daemon.reset_conf.daemon_table,
+			ICE_MAX_DAEMON_TABLE_LEN * sizeof(u32), 0,
 			 ICE_MAX_DAEMON_TABLE_LEN * sizeof(u32));
+	/*
+	 * This is a debug feature
+	 * Safelib error get logged only
+	 */
+	if (ret < 0)
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+			"Safelib memset failed %d\n", ret);
 	ice_dev->daemon.daemon_config_status =
 			TRACE_STATUS_SYSFS_USER_CONFIG_WRITE_PENDING;
 	cve_os_dev_log(CVE_LOGLEVEL_INFO,
@@ -3030,8 +2949,13 @@ static int ice_trace_dso_sysfs_init(struct cve_device *ice_dev)
 		cve_os_dev_log(CVE_LOGLEVEL_ERROR, ice_dev->dev_index,
 				"dso filter sysfs group creation failed\n");
 	} else {
-		memcpy(ice_dev->dso.reg_readback_vals, default_dso_reg_vals,
-					sizeof(default_dso_reg_vals));
+		ret = ice_memcpy_s(ice_dev->dso.reg_readback_vals,
+			sizeof(default_dso_reg_vals), default_dso_reg_vals,
+			sizeof(default_dso_reg_vals));
+		if (ret < 0) {
+			cve_os_log(CVE_LOGLEVEL_ERROR,
+				"Safelib memcpy failed %d\n", ret);
+		}
 	}
 	return ret;
 }
@@ -3174,7 +3098,13 @@ ice_sysfs_physical:
 
 ice_sysfs:
 	ice_dev->ice_kobj = NULL;
-	snprintf(name, sizeof(name), "ice%d", ice_dev->dev_index);
+	ret = ice_snprintf_s_u(name, sizeof(name), "ice%d", ice_dev->dev_index);
+	if (ret < 0) {
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+			"Safelib failed snprintf %d\n", ret);
+		goto enable_pmon_sysfs_free;
+	}
+
 	ice_dev->ice_kobj = kobject_create_and_add(name, physical_ice_kobj);
 	if (!ice_dev->ice_kobj) {
 		cve_os_dev_log(CVE_LOGLEVEL_ERROR, ice_dev->dev_index,
@@ -3480,12 +3410,25 @@ out:
 	return ret;
 }
 #endif /* !RING3_VALIDATION*/
-void ice_trace_set_default_dso(struct cve_device *ice_dev)
+int ice_trace_set_default_dso(struct cve_device *ice_dev)
 {
-	memcpy(ice_dev->dso.reg_vals, default_dso_reg_vals,
-						sizeof(default_dso_reg_vals));
-	memcpy(ice_dev->dso.reg_readback_vals, default_dso_reg_vals,
-						sizeof(default_dso_reg_vals));
+	int ret = 0;
+
+	ret = ice_memcpy_s(ice_dev->dso.reg_vals, sizeof(default_dso_reg_vals),
+			default_dso_reg_vals, sizeof(default_dso_reg_vals));
+	if (ret < 0) {
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+			"Safelib memcpy failed %d\n", ret);
+		goto out;
+	}
+	ret = ice_memcpy_s(ice_dev->dso.reg_readback_vals,
+			sizeof(default_dso_reg_vals), default_dso_reg_vals,
+			sizeof(default_dso_reg_vals));
+	if (ret < 0)
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+			"Safelib memcpy failed %d\n", ret);
+out:
+	return ret;
 }
 
 int ice_trace_init_dso(struct cve_device *ice_dev)
@@ -3526,10 +3469,19 @@ int ice_trace_init_dso(struct cve_device *ice_dev)
 			ice_dev->dso.reg_offsets[i].croffset =
 						__get_dso_regoffset(i);
 	}
-	memcpy(ice_dev->dso.reg_vals, default_dso_reg_vals,
-						sizeof(default_dso_reg_vals));
-	memcpy(ice_dev->dso.reg_readback_vals, default_dso_reg_vals,
-						sizeof(default_dso_reg_vals));
+	ret = ice_memcpy_s(ice_dev->dso.reg_vals, sizeof(default_dso_reg_vals),
+			default_dso_reg_vals, sizeof(default_dso_reg_vals));
+	if (ret < 0) {
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+			"Safelib memcpy failed %d\n", ret);
+		goto out;
+	}
+	ret = ice_memcpy_s(ice_dev->dso.reg_readback_vals,
+			sizeof(default_dso_reg_vals), default_dso_reg_vals,
+			sizeof(default_dso_reg_vals));
+	if (ret < 0)
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+			"Safelib memcpy failed %d\n", ret);
 out:
 	FUNC_LEAVE();
 	return ret;

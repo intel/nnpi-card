@@ -13,6 +13,7 @@
 #include "inf_copy.h"
 #include "inf_exec_req.h"
 #include "ioctl_inf.h"
+#include "inf_ptr2id.h"
 
 static void treat_credit_release_failure(struct inf_exec_req *req, enum event_val eventVal)
 {
@@ -116,6 +117,11 @@ int inf_devres_create(uint16_t            protocolID,
 	devres->destroyed = 0;
 	devres->is_p2p_src = (devres->usage_flags & IOCTL_INF_RES_P2P_SRC) ? true : false;
 	devres->is_p2p_dst = (devres->usage_flags & IOCTL_INF_RES_P2P_DST) ? true : false;
+	devres->ptr2id = add_ptr2id(devres);
+	if (unlikely(devres->ptr2id == 0)) {
+		rc = -ENOMEM;
+		goto failed_to_init_p2p_buf;
+	}
 
 	if (inf_devres_is_p2p(devres)) {
 		rc = sphcs_p2p_init_p2p_buf(devres->is_p2p_src, &devres->p2p_buf);
@@ -203,7 +209,7 @@ void send_runtime_destroy_devres(struct inf_devres *devres)
 	int ret;
 
 	/* send runtime command to destroy the device resource */
-	cmd_args.drv_handle = (uint64_t)(uintptr_t)devres;
+	cmd_args.drv_handle = devres->ptr2id;
 	cmd_args.rt_handle = devres->rt_handle;
 	ret = inf_cmd_queue_add(&devres->context->cmdq,
 				SPHCS_RUNTIME_CMD_DESTROY_RESOURCE,
@@ -278,6 +284,7 @@ static void release_devres(struct kref *kref)
 					devres->protocolID);
 
 	ret = inf_context_put(devres->context);
+	del_ptr2id(devres);
 
 	kfree(devres);
 }

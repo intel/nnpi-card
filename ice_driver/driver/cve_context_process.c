@@ -53,11 +53,13 @@ int cve_context_process_create(
 
 	context_process->context_pid = context_pid;
 	retval = cve_os_init_wait_que(&context_process->events_wait_queue);
+#ifdef RING3_VALIDATION
 	if (retval != 0) {
 		cve_os_log(CVE_LOGLEVEL_ERROR,
 				"events_wait_queue init failed  %d\n", retval);
 		goto failed_to_init;
 	}
+#endif
 
 	/* add the new context to the list */
 	cve_dle_add_to_list_after(
@@ -73,8 +75,10 @@ int cve_context_process_create(
 	cve_os_unlock(&g_cve_driver_biglock);
 	return 0;
 
+#ifdef RING3_VALIDATION
 failed_to_init:
 	OS_FREE(context_process, sizeof(*context_process));
+#endif
 failed_to_alloc:
 	cve_os_unlock(&g_cve_driver_biglock);
 out:

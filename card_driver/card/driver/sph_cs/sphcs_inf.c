@@ -32,6 +32,132 @@
 #include "sphcs_cmd_chan.h"
 #include "safe_mem_lib.h"
 #include <linux/module.h>
+#include "inf_ptr2id.h"
+
+#define PTR2ID_SLOTS_HASH_BITS 16
+static DEFINE_HASHTABLE(ptr2id_slots_hash, PTR2ID_SLOTS_HASH_BITS);
+static DEFINE_SPINLOCK(ptr2id_lock);
+static unsigned int ptr2id_counter;
+
+struct ptr2id_struct {
+	unsigned int id;
+	void *ptr;
+	struct hlist_node hash_node;
+};
+
+static void *id2ptr(unsigned int id)
+{
+	struct ptr2id_struct *p_id;
+	unsigned int lid;
+
+	if (!id)
+		return NULL;
+	lid = (unsigned int)id;
+	NNP_SPIN_LOCK(&ptr2id_lock);
+	hash_for_each_possible(ptr2id_slots_hash, p_id, hash_node, lid)
+		if (p_id->id == lid) {
+			NNP_SPIN_UNLOCK(&ptr2id_lock);
+			return p_id->ptr;
+		}
+	NNP_SPIN_UNLOCK(&ptr2id_lock);
+	return NULL;
+}
+
+static unsigned int ptr2id(void *ptr)
+{
+	struct ptr2id_struct *p_id;
+	int bkt;
+
+	NNP_SPIN_LOCK(&ptr2id_lock);
+
+	hash_for_each(ptr2id_slots_hash, bkt, p_id, hash_node) {
+		if (p_id->ptr == ptr) {
+			NNP_SPIN_UNLOCK(&ptr2id_lock);
+			return p_id->id;
+		}
+	}
+	NNP_SPIN_UNLOCK(&ptr2id_lock);
+	return 0;
+}
+
+static unsigned int get_new_id(void)
+{
+	unsigned int i = 1;
+	unsigned int id;
+
+	while (i++ != 0) {
+		NNP_SPIN_LOCK(&ptr2id_lock);
+		ptr2id_counter++;
+		if (ptr2id_counter == 0)
+			ptr2id_counter++;//Handle overflow
+		id = ptr2id_counter;
+		NNP_SPIN_UNLOCK(&ptr2id_lock);
+		if (id2ptr(id) == NULL)
+			return id;
+	}
+	return 0; // no free id available
+}
+
+unsigned int add_ptr2id(void *ptr)
+{
+	struct ptr2id_struct *p_id;
+	unsigned int id;
+
+	if (!ptr)
+		return 0;
+
+	id = ptr2id(ptr);
+	if (id)
+		return id;
+
+	p_id = kzalloc(sizeof(*p_id), GFP_KERNEL);
+	if (WARN_ON(!p_id))
+		return 0;
+
+	p_id->ptr = ptr;
+	p_id->id = get_new_id();
+	if (p_id->id == 0) {
+		kfree(p_id);
+		return 0;
+	}
+	NNP_SPIN_LOCK(&ptr2id_lock);
+	hash_add(ptr2id_slots_hash, &p_id->hash_node, p_id->id);
+	NNP_SPIN_UNLOCK(&ptr2id_lock);
+	return p_id->id;
+}
+
+void del_ptr2id(void *ptr)
+{
+	int i;
+	struct hlist_node *tmp;
+	struct ptr2id_struct *p_id;
+
+	NNP_SPIN_LOCK(&ptr2id_lock);
+	hash_for_each_safe(ptr2id_slots_hash, i, tmp, p_id, hash_node) {
+		if (p_id->ptr == ptr) {
+			hash_del(&p_id->hash_node);
+			NNP_SPIN_UNLOCK(&ptr2id_lock);
+			kfree(p_id);
+			return;
+		}
+	}
+	NNP_SPIN_UNLOCK(&ptr2id_lock);
+}
+
+
+void clean_ptr2id(void)
+{
+	int i;
+	struct hlist_node *tmp;
+	struct ptr2id_struct *p_id;
+
+	NNP_SPIN_LOCK(&ptr2id_lock);
+	hash_for_each_safe(ptr2id_slots_hash, i, tmp, p_id, hash_node) {
+		hash_del(&p_id->hash_node);
+		kfree(p_id);
+	}
+	NNP_SPIN_UNLOCK(&ptr2id_lock);
+}
 
 /* min system memory threshold in KB */
 static uint32_t mem_thr;
@@ -602,7 +728,7 @@ static long sphcs_inf_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 		list_for_each_entry(req,
 				    &g_the_sphcs->inf_data->daemon->alloc_req_list,
 				    node) {
-			if ((uint64_t)req == reply.drv_handle) {
+			if ((uint64_t)req ==  (uint64_t)id2ptr(reply.drv_handle)) {
 				list_del(&req->node);
 				break;
 			}
@@ -675,7 +801,7 @@ static long sphcs_inf_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 		if (unlikely(ret != 0))
 			return -EIO;
 
-		devres = (struct inf_devres *)(uintptr_t)reply.drv_handle;
+		devres = (struct inf_devres *)id2ptr(reply.drv_handle);
 		if (unlikely(!is_inf_devres_ptr(devres)))
 			return -EINVAL;
 
@@ -752,7 +878,7 @@ failed_devres:
 		if (unlikely(ret != 0))
 			return -EIO;
 
-		devnet = (struct inf_devnet *)(uintptr_t)reply.devnet_drv_handle;
+		devnet = (struct inf_devnet *)id2ptr(reply.devnet_drv_handle);
 		if (unlikely(!is_inf_devnet_ptr(devnet)))
 			return -EINVAL;
 
@@ -837,8 +963,7 @@ failed_devnet:
 		ret = copy_from_user(&reply, (void __user *)arg, sizeof(reply));
 		if (unlikely(ret != 0))
 			return -EIO;
-
-		infreq = (struct inf_req *)(uintptr_t)reply.infreq_drv_handle;
+		infreq = (struct inf_req *)id2ptr(reply.infreq_drv_handle);
 		if (unlikely(!is_inf_req_ptr(infreq)))
 			return -EINVAL;
 
@@ -916,8 +1041,7 @@ failed_infreq:
 				     sizeof(reply));
 		if (unlikely(ret != 0))
 			return -EIO;
-
-		infreq = (struct inf_req *)(uintptr_t)reply.infreq_drv_handle;
+		infreq = (struct inf_req *)id2ptr(reply.infreq_drv_handle);
 		if (unlikely(!is_inf_req_ptr(infreq)))
 			return -EINVAL;
 
@@ -969,7 +1093,7 @@ failed_infreq:
 		default:
 			err = -EFAULT;
 		}
-		req->f->complete(req, err,
+		inf_req_complete(req, err,
 				 reply.i_error_msg,
 				 (reply.i_error_msg_size > 0 ? -reply.i_error_msg_size : 0));
 
@@ -1001,8 +1125,7 @@ failed_infreq:
 				sizeof(reply));
 		if (unlikely(ret != 0))
 			return -EIO;
-
-		devnet = (struct inf_devnet *) (uintptr_t) reply.devnet_drv_handle;
+		devnet = (struct inf_devnet *)id2ptr(reply.devnet_drv_handle);
 		if (unlikely(!is_inf_devnet_ptr(devnet)))
 			return -EINVAL;
 
@@ -1053,13 +1176,12 @@ failed_infreq:
 				sizeof(reply));
 		if (unlikely(ret != 0))
 			return -EIO;
-
-		devnet = (struct inf_devnet *) (uintptr_t) reply.devnet_drv_handle;
+		devnet = (struct inf_devnet *)id2ptr(reply.devnet_drv_handle);
 		if (unlikely(!is_inf_devnet_ptr(devnet)))
 			return -EINVAL;
 
 		if (reply.cmdlist_drv_handle != 0) {
-			cmdlist = (struct inf_cmd_list *)(uintptr_t)reply.cmdlist_drv_handle;
+			cmdlist = (struct inf_cmd_list *)id2ptr(reply.cmdlist_drv_handle);
 			if (unlikely(!is_inf_cmd_ptr(cmdlist)))
 				return -EINVAL;
 			inf_exec_error_list_devnet_reset_done(&cmdlist->error_list,
@@ -1243,12 +1365,12 @@ void IPC_OPCODE_HANDLER(CHAN_INF_CONTEXT)(struct sphcs *sphcs,
 
 	work->cmd.value = cmd->value;
 	work->chan = chan;
-
 	INIT_WORK(&work->work, context_op_work_handler);
-	queue_work(chan->wq, &work->work);
 
 	DO_TRACE_IF(!cmd->destroy && !cmd->recover, trace_infer_create(SPH_TRACE_INF_CONTEXT,
 			cmd->chanID, cmd->chanID, SPH_TRACE_OP_STATUS_QUEUED, -1, -1));
+
+	queue_work(chan->wq, &work->work);
 }
 
 void IPC_OPCODE_HANDLER(CHAN_SYNC)(struct sphcs   *sphcs,
@@ -1396,9 +1518,10 @@ void IPC_OPCODE_HANDLER(CHAN_INF_RESOURCE)(struct sphcs                  *sphcs,
 	work->cmd.value[1] = cmd->value[1];
 	work->context = context;
 	INIT_WORK(&work->work, resource_op_work_handler);
-	queue_work(context->chan->wq, &work->work);
 
 	DO_TRACE_IF(!cmd->destroy, trace_infer_create(SPH_TRACE_INF_DEVRES, cmd->chanID, cmd->resID, SPH_TRACE_OP_STATUS_QUEUED, -1, -1));
+
+	queue_work(context->chan->wq, &work->work);
 
 	return;
 
@@ -1677,7 +1800,6 @@ static int cmdlist_create_dma_complete(struct sphcs *sphcs,
 
 				if (atomic_dec_and_test(&cmd->num_left)) {//after finilize is done
 					cmd->req_list[cmd->num_reqs].size = cmd->req_list[cmd->num_reqs].cpylst->size;
-					cmd->req_list[cmd->num_reqs].lli = &cmd->req_list[cmd->num_reqs].cpylst->lli;
 					DO_TRACE(trace_cpylist_create(SPH_TRACE_OP_STATUS_COMPLETE,
 							 cmd->context->protocolID, cmd->protocolID, cmd->num_reqs));
 					++cmd->num_reqs;
@@ -1966,9 +2088,10 @@ void IPC_OPCODE_HANDLER(CHAN_INF_CMDLIST)(struct sphcs                      *sph
 	work->cmd.value = cmd->value;
 	work->context = context;
 	INIT_WORK(&work->work, cmdlist_op_work_handler);
-	queue_work(context->chan->wq, &work->work);
 
 	DO_TRACE(trace_infer_create(SPH_TRACE_INF_COMMAND_LIST, cmd->chanID, cmd->cmdID, SPH_TRACE_OP_STATUS_QUEUED, -1, -1));
+
+	queue_work(context->chan->wq, &work->work);
 
 	return;
 
@@ -2023,7 +2146,7 @@ static int network_op_dma_complete(struct sphcs *sphcs,
 	struct network_dma_data *data = (struct network_dma_data *)ctx;
 	uint8_t event;
 	enum event_val val;
-	int ret;
+	int ret = 0;
 	uint16_t *packet_ptr;
 	struct inf_devnet *devnet = data->devnet;
 	struct network_edit_data *edit_data = (struct network_edit_data *)devnet->edit_data;
@@ -2082,8 +2205,8 @@ static int network_op_dma_complete(struct sphcs *sphcs,
 		   data->num_res * sizeof(uint64_t) +
 		   data->config_data_size;
 
-	edit_data->cmd.devnet_drv_handle = (uint64_t)devnet;
 	edit_data->cmd.devnet_rt_handle = (uint64_t)devnet->rt_handle;
+	edit_data->cmd.devnet_drv_handle = (uint64_t)devnet->ptr2id;
 	edit_data->cmd.num_devres_rt_handles = data->num_res;
 	edit_data->cmd.config_data_size = data->config_data_size;
 	edit_data->cmd.network_id = (uint32_t)devnet->protocolID;
@@ -2361,9 +2484,10 @@ void IPC_OPCODE_HANDLER(CHAN_INF_NETWORK)(struct sphcs *sphcs, union h2c_ChanInf
 	work->cmd.value[1] = cmd->value[1];
 	work->context = context;
 	INIT_WORK(&work->work, network_op_work_handler);
-	queue_work(context->chan->wq, &work->work);
 
 	DO_TRACE_IF(!cmd->destroy, trace_infer_create(SPH_TRACE_INF_NETWORK, cmd->chanID, cmd->netID, SPH_TRACE_OP_STATUS_QUEUED, -1, -1));
+
+	queue_work(context->chan->wq, &work->work);
 
 	return;
 
@@ -2506,11 +2630,13 @@ void IPC_OPCODE_HANDLER(CHAN_COPY_OP)(struct sphcs                  *sphcs,
 	work->cmd.value[1] = cmd->value[1];
 	work->context = context;
 	INIT_WORK(&work->work, copy_op_work_handler);
-	queue_work(context->chan->wq, &work->work);
 
-	DO_TRACE_IF(!work->cmd.subres_copy && !cmd->destroy,
+	DO_TRACE_IF(!cmd->subres_copy && !cmd->destroy,
 			trace_infer_create((cmd->c2h ? SPH_TRACE_INF_C2H_COPY_HANDLE : SPH_TRACE_INF_H2C_COPY_HANDLE),
 					cmd->chanID, cmd->protCopyID, SPH_TRACE_OP_STATUS_QUEUED, -1, -1));
+
+	queue_work(context->chan->wq, &work->work);
+
 	return;
 
 send_error:
@@ -2822,7 +2948,7 @@ void IPC_OPCODE_HANDLER(CHAN_SCHEDULE_COPY)(struct sphcs                 *sphcs,
 
 	inf_copy_req_init(req, copy, NULL, cmd->copySize, cmd->priority);
 
-	ret = req->f->schedule(req);
+	ret = inf_copy_req_sched(req);
 	if (unlikely(ret < 0)) {
 		kmem_cache_free(copy->context->exec_req_slab_cache, req);
 		val = NNP_IPC_NO_MEMORY;
@@ -2884,7 +3010,7 @@ void IPC_OPCODE_HANDLER(CHAN_SCHEDULE_COPY_LARGE)(struct sphcs                 *
 
 	inf_copy_req_init(req, copy, NULL, cmd->copySize, cmd->priority);
 
-	ret = req->f->schedule(req);
+	ret = inf_copy_req_sched(req);
 	if (unlikely(ret < 0)) {
 		kmem_cache_free(copy->context->exec_req_slab_cache, req);
 		val = NNP_IPC_NO_MEMORY;
@@ -2945,7 +3071,7 @@ static void copy_subres_op_work_handler(struct work_struct *work)
 		goto put_copy;
 	}
 
-	ret = req->f->schedule(req);
+	ret = inf_copy_req_sched(req);
 	if (unlikely(ret < 0)) {
 		kmem_cache_free(copy->context->exec_req_slab_cache, req);
 		val = NNP_IPC_NO_MEMORY;
@@ -3128,8 +3254,11 @@ static void handle_sched_cmdlist(struct inf_cmd_list *cmdlist,
 				if (req->cpylst->priorities[k] == 1)
 					req->priority = 1;
 			}
-			if (inf_cpylst_build_cur_lli(req->cpylst) == 0)
-				req->lli = &req->cpylst->cur_lli;
+			if (inf_cpylst_build_cur_lli(req->cpylst) != 0) {
+				kmem_cache_free(context->exec_req_slab_cache, req);
+				break;
+			}
+			req->lli = &req->cpylst->cur_lli;
 		}
 
 		atomic_inc(&cmdlist->num_left);
@@ -3647,9 +3776,10 @@ void IPC_OPCODE_HANDLER(CHAN_INF_REQ_OP)(struct sphcs             *sphcs,
 	work->cmd.value = cmd->value;
 	work->context = context;
 	INIT_WORK(&work->work, inf_req_op_work_handler);
-	queue_work(context->chan->wq, &work->work);
 
 	DO_TRACE_IF(!cmd->destroy, trace_infer_create(SPH_TRACE_INF_INF_REQ, cmd->chanID, cmd->infreqID, SPH_TRACE_OP_STATUS_QUEUED, -1, -1));
+
+	queue_work(context->chan->wq, &work->work);
 
 	return;
 
@@ -3720,7 +3850,7 @@ void IPC_OPCODE_HANDLER(CHAN_SCHEDULE_INF_REQ)(struct sphcs                   *s
 			cmd->debugOn,
 			cmd->collectInfo);
 
-	ret = req->f->schedule(req);
+	ret = infreq_req_sched(req);
 	inf_req_put(infreq);
 	if (unlikely(ret < 0)) {
 		kmem_cache_free(context->exec_req_slab_cache, req);
@@ -3817,8 +3947,8 @@ static void network_property_op_work_handler(struct work_struct *work)
 		NNP_SPIN_UNLOCK(&devnet->lock);
 
 		memset(&cmd_args, 0, sizeof(cmd_args));
-		cmd_args.devnet_drv_handle = (uint64_t)devnet;
 		cmd_args.devnet_rt_handle = (uint64_t)devnet->rt_handle;
+		cmd_args.devnet_drv_handle = (uint64_t)devnet->ptr2id;
 		cmd_args.reserve_resource = op->cmd.property_val;
 		if (op->cmd.property_val)
 			cmd_args.timeout = op->cmd.timeout;
@@ -3943,7 +4073,7 @@ int sphcs_alloc_resource(struct sphcs                 *sphcs,
 	list_add_tail(&alloc_req->node, &sphcs->inf_data->daemon->alloc_req_list);
 	NNP_SPIN_UNLOCK(&sphcs->inf_data->daemon->lock);
 
-	cmd_args.drv_handle = (uint64_t)alloc_req;
+	cmd_args.drv_handle = (uint64_t)add_ptr2id(alloc_req);
 	cmd_args.size = size;
 	cmd_args.page_size = page_size;
 
@@ -3958,6 +4088,7 @@ int sphcs_alloc_resource(struct sphcs                 *sphcs,
 		list_del(&alloc_req->node);
 		NNP_SPIN_UNLOCK(&sphcs->inf_data->daemon->lock);
 		mutex_unlock(&sphcs->inf_data->io_lock);
+		del_ptr2id(alloc_req);
 		kfree(alloc_req);
 	}
 
@@ -4127,6 +4258,7 @@ unreg:
 
 int inference_fini(struct sphcs *sphcs)
 {
+	clean_ptr2id();
 	sphcs_p2p_fini(sphcs);
 	sphcs_ctx_uids_fini();
 	destroy_workqueue(sphcs->inf_data->inf_wq);

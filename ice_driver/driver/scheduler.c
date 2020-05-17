@@ -19,7 +19,6 @@
 #else
 #include "icedrv_sw_trace.h"
 #endif
-#include "ice_debug_event.h"
 
 enum sch_status {
 	/* Ok */
@@ -147,15 +146,17 @@ static enum sch_status __process_inf_node(struct execution_node *node)
 	struct ice_network *ntw = inf->ntw;
 	enum resource_status res_status;
 	enum sch_status status = SCH_STATUS_DONE;
+	struct cve_device_group *dg = cve_dg_get();
 
 	ASSERT(!ntw->ntw_running);
 
-	/* TODO: Clear ntw->reset_ntw must be done by Scheduler */
-	if (ntw->reset_ntw) {
+	if ((dg->icedc_state == ICEDC_STATE_CARD_RESET_REQUIRED) ||
+		(ntw->reset_ntw)) {
 
 		cve_os_log(CVE_LOGLEVEL_INFO,
-			"Ntw in error state. Inference will be discarded. NtwID=0x%lx, InfID=0x%lx\n",
-			(uintptr_t)ntw, (uintptr_t)inf);
+			"Inference will be discarded. CardReset=%d, NtwReset=%d, NtwID=0x%lx, InfID=0x%lx\n",
+			(dg->icedc_state == ICEDC_STATE_CARD_RESET_REQUIRED),
+			ntw->reset_ntw, (uintptr_t)ntw, (uintptr_t)inf);
 
 		ntw->curr_exe = inf;
 
@@ -163,6 +164,8 @@ static enum sch_status __process_inf_node(struct execution_node *node)
 
 		status = SCH_STATUS_DISCARD;
 		goto del_and_exit;
+
+	/* TODO: Clear ntw->reset_ntw must be done by Scheduler */
 	}
 
 	res_status = ice_ds_ntw_borrow_resource(ntw);
@@ -387,7 +390,6 @@ static enum sch_status __schedule_node(struct execution_node *node)
 #ifdef _DEBUG
 	struct cve_device *head, *next;
 	u32 ices_bitmap = 0;
-	struct ice_debug_event_info_power_on evt_info;
 #endif
 
 	ntw->curr_exe = inf;
@@ -440,13 +442,6 @@ static enum sch_status __schedule_node(struct execution_node *node)
 			next = cve_dle_next(next, owner_list);
 		} while (next != head);
 	}
-
-	evt_info.network_id = ntw->network_id;
-	evt_info.powered_on_ices = ices_bitmap;
-
-	/* Send Ice debug event (ICE_POWER_ON) */
-	ice_debug_wake_up_event(ICE_DEBUG_EVENT_ICE_POWERED_ON,
-				&evt_info);
 #endif
 
 	status = SCH_STATUS_DONE;
@@ -565,6 +560,8 @@ bool ice_lsch_del_inf_from_queue(struct ice_infer *inf,
 				(uintptr_t)inf->ntw, (uintptr_t)inf,
 				inf->inf_pr);
 
+			ASSERT(inf->inf_pr < EXE_INF_PRIORITY_MAX);
+
 			cve_dle_remove_from_list(
 				ntw->sch_queue[inf->inf_pr],
 				ntw_queue[inf->inf_pr], &inf->inf_sch_node);
@@ -574,6 +571,8 @@ bool ice_lsch_del_inf_from_queue(struct ice_infer *inf,
 				"Removing Inf Node from Sch Queue. NtwId=0x%lx, InfId=0x%lx, Pr=%d\n",
 				(uintptr_t)inf->ntw, (uintptr_t)inf,
 				inf->inf_pr);
+
+			ASSERT(inf->inf_pr < EXE_INF_PRIORITY_MAX);
 
 			cve_dle_remove_from_list(
 				sch_queue[inf->inf_pr],

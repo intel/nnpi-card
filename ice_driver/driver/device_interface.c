@@ -36,7 +36,6 @@
 #endif
 
 #include "ice_sw_counters.h"
-#include "ice_debug_event.h"
 #ifndef RING3_VALIDATION
 #include "intel_sphpb.h"
 #else
@@ -156,9 +155,6 @@ struct di_job {
 #define IVP_ATU_MAPPING 2
 #define TLC_ATU_MAPPING 3
 #define MAX_DEBUGFS_REG_NR 14
-
-/* registers to be exposed through debugfs*/
-struct debugfs_reg32 registers_fs[MAX_DEBUGFS_REG_NR];
 
 static void __dump_mmu_pmon(struct cve_device *ice);
 static void __dump_delphi_pmon(struct cve_device *ice);
@@ -395,7 +391,7 @@ static void print_kernel_buffer(
 
 #endif
 #else
-	if ((print_debug) || (dg->dump_conf.cb_dump))
+	if (print_debug)
 #endif
 		cve_os_print_kernel_buffer(buffer_addr, size_bytes, buf_name);
 
@@ -620,17 +616,15 @@ static void dispatch_next_subjobs(struct di_job *job,
 	cve_os_write_mmio_32(dev,
 		cfg_default.mmio_cb_doorbell_offset, db);
 
-	getnstimeofday(&dev->busy_start_time);
+	dev->busy_start_time = trace_clock_local();
 	ice_swc_counter_set(dev->hswc,
 		ICEDRV_SWC_DEVICE_COUNTER_BUSY_START_TIME,
-		(dev->busy_start_time.tv_sec * USEC_PER_SEC) +
-		(dev->busy_start_time.tv_nsec / NSEC_PER_USEC));
+		(nsec_to_usec(dev->busy_start_time)));
 	ice_swc_counter_add(dev->hswc, ICEDRV_SWC_DEVICE_COUNTER_IDLE_TIME,
-		ice_get_usec_timediff(&dev->busy_start_time,
-		&dev->idle_start_time));
+		nsec_to_usec(dev->busy_start_time - dev->idle_start_time));
 	cve_os_log(CVE_LOGLEVEL_DEBUG,
-		"busy_start_time.tv_sec=%ld busy_start_time.tv_nsec=%ld\n",
-		dev->busy_start_time.tv_sec, dev->busy_start_time.tv_nsec);
+		"busy_start_time(usec)=%llu\n",
+		nsec_to_usec(dev->busy_start_time));
 
 	DO_TRACE(trace_icedrvScheduleJob(
 				SPH_TRACE_OP_STATE_START,
@@ -766,6 +760,7 @@ int set_idc_registers(struct ice_network *ntw, uint8_t lock)
 	struct cve_device *dev;
 	bool all_on = true;
 	uint64_t mask = 0;
+	u64 t;
 
 	if (lock) {
 		ret = cve_os_lock(&dg->poweroff_dev_list_lock,
@@ -881,6 +876,7 @@ int set_idc_registers(struct ice_network *ntw, uint8_t lock)
 
 	ice_pe_val = value;
 	sphpb_cbs = dg->sphpb.sphpb_cbs;
+	t = trace_clock_local();
 
 	do {
 		if (mask & (1ULL << (dev->dev_index + 4))) {
@@ -888,6 +884,11 @@ int set_idc_registers(struct ice_network *ntw, uint8_t lock)
 			ice_swc_counter_set(dev->hswc,
 					ICEDRV_SWC_DEVICE_COUNTER_POWER_STATE,
 					ICE_POWER_ON);
+
+			dev->idle_start_time = t;
+			ice_swc_counter_set(dev->hswc,
+				ICEDRV_SWC_DEVICE_COUNTER_IDLE_START_TIME,
+				nsec_to_usec(dev->idle_start_time));
 
 			if (sphpb_cbs && sphpb_cbs->set_power_state) {
 				ret = sphpb_cbs->set_power_state(dev->dev_index,
@@ -1162,26 +1163,6 @@ void cve_di_start_running(struct cve_device *cve_dev)
 	/* enable ICE interrupts including errors */
 	di_enable_interrupts(cve_dev);
 
-#if !defined RING3_VALIDATION
-/*
- * delay is needed to work around debugger
- * re-connected upon CVE reset
- * with CVE2.0 Silicon , this W/A is not needed
- * a fix is available via register setting
- * refer to cve_decouple_debuger_reset()
- */
-	if (cve_debug_get(DEBUG_TENS_EN)) {
-
-		cve_os_dev_log(CVE_LOGLEVEL_ERROR,
-				cve_dev->dev_index,
-				"BEFORE! STALL FOR DEBUGGER RECONNECT 10sec\n");
-
-		mdelay(10000);
-		cve_os_dev_log(CVE_LOGLEVEL_ERROR,
-				cve_dev->dev_index,
-				"AFTER! STALL FOR DEBUGGER RECONNECT 10sec\n");
-	}
-#endif
 	/* Release all stalled cores */
 	cve_os_write_mmio_32(cve_dev,
 		cfg_default.ice_prog_cores_ctrl_offset, core_mask);
@@ -1372,8 +1353,8 @@ static void __calc_cb_executon_time(struct cve_device *dev,
 
 	*exec_time = 0;
 	cve_os_log(CVE_LOGLEVEL_DEBUG,
-		"idle_start_time.tv_sec=%ld idle_start_time.tv_nsec=%ld\n",
-		dev->idle_start_time.tv_sec, dev->idle_start_time.tv_nsec);
+		"idle_start_time(usec)=%llu\n",
+		nsec_to_usec(dev->idle_start_time));
 	cb_descriptor =
 		&dev->fifo_desc->fifo.cb_desc_vaddr[job->first_cb_desc];
 	first_cb_start_time = cb_descriptor->start_time;
@@ -1429,7 +1410,8 @@ static struct ice_network *__get_ntw_of_overflowed_cntr(int cntr_id,
 	 */
 	if (dg->base_addr_hw_cntr[cntr_id].cntr_ntw_id != INVALID_NETWORK_ID) {
 		evct_prot_reg.val = cve_os_read_idc_mmio(dev->cve_dev, reg);
-		if (evct_prot_reg.field.OVF) {
+		if ((evct_prot_reg.field.OVF) ||
+			ice_os_get_user_idc_intst()) {
 			/* Shouldn't we clead OVF by writing 1? */
 			cve_os_log_default(CVE_LOGLEVEL_ERROR,
 			"Error: NtwID:0x%llx Counter:%x overflow\n",
@@ -1450,7 +1432,7 @@ int cve_di_interrupt_handler(struct idc_device *idc_dev)
 	u64 status64, userIDCIntStatus;
 	u32 status_lo = 0, status_hi = 0, status_hl = 0;
 	struct cve_device *cve_dev = NULL;
-	struct timespec cur_ts;
+	u64 cur_ts;
 
 	u32 head = atomic_read(&idc_dev->status_q_head);
 	u32 tail = atomic_read(&idc_dev->status_q_tail);
@@ -1519,7 +1501,7 @@ int cve_di_interrupt_handler(struct idc_device *idc_dev)
 	}
 
 	isr_status_node->int_jiffy = ice_os_get_current_jiffy();
-	getnstimeofday(&cur_ts);
+	cur_ts = trace_clock_local();
 
 	/* Currently only serving ICE Int Request, not Ice Error request */
 	status_lo = (status64 & 0x0000FFF0);
@@ -1531,17 +1513,15 @@ int cve_di_interrupt_handler(struct idc_device *idc_dev)
 			goto exit;
 		cve_dev = &idc_dev->cve_dev[index];
 
-		cve_dev->idle_start_time.tv_sec = cur_ts.tv_sec;
-		cve_dev->idle_start_time.tv_nsec = cur_ts.tv_nsec;
+		cve_dev->idle_start_time = cur_ts;
 
 		ice_swc_counter_set(cve_dev->hswc,
 			ICEDRV_SWC_DEVICE_COUNTER_IDLE_START_TIME,
-			(cve_dev->idle_start_time.tv_sec * USEC_PER_SEC) +
-			(cve_dev->idle_start_time.tv_nsec / NSEC_PER_USEC));
+			nsec_to_usec(cve_dev->idle_start_time));
 		ice_swc_counter_add(cve_dev->hswc,
 			ICEDRV_SWC_DEVICE_COUNTER_BUSY_TIME,
-			ice_get_usec_timediff(&cve_dev->idle_start_time,
-			&cve_dev->busy_start_time));
+			nsec_to_usec(cve_dev->idle_start_time -
+			cve_dev->busy_start_time));
 
 		project_hook_interrupt_handler_entry(cve_dev);
 
@@ -1710,25 +1690,11 @@ void cve_di_interrupt_handler_deferred_proc(struct idc_device *dev)
 		if (idc_err_status.field.illegal_access ||
 			idc_err_status.field.sem_err ||
 			idc_err_status.field.ice_write_err ||
-			idc_err_status.field.ice_read_err) {
-
-			/* TODO: Disable rmmod based on this */
-			dg->icedc_state = ICEDC_STATE_CARD_RESET_REQUIRED;
-
-		} else if (idc_err_status.field.cntr_err ||
-			idc_err_status.field.cntr_oflow_err) {
-
-			struct ice_network *ntw;
-
-			/* Affects all Networks that are using counter */
-			for (i = 0; i < MAX_HW_COUNTER_NR; i++) {
-				ntw = __get_ntw_of_overflowed_cntr(i, dev);
-
-				if (ntw)
-					ice_ds_block_network(ntw, NULL,
-						idc_err_status.val, false);
-			}
-		} else if (idc_err_status.field.attn_err) {
+			idc_err_status.field.ice_read_err ||
+			idc_err_status.field.asf_ice1_err ||
+			idc_err_status.field.asf_ice0_err ||
+			idc_err_status.field.attn_err ||
+			idc_err_status.field.cntr_err) {
 
 			struct ice_network *ntw, *ntw_head;
 
@@ -1747,6 +1713,26 @@ void cve_di_interrupt_handler_deferred_proc(struct idc_device *dev)
 
 				ntw = cve_dle_next(ntw, resource_list);
 			} while (ntw != ntw_head);
+
+			if (!idc_err_status.field.attn_err &&
+				!idc_err_status.field.cntr_err) {
+				/* TODO: Disable rmmod based on this */
+				dg->icedc_state =
+				ICEDC_STATE_CARD_RESET_REQUIRED;
+			}
+
+		} else if (idc_err_status.field.cntr_oflow_err) {
+
+			struct ice_network *ntw;
+
+			/* Affects all Networks that are using counter */
+			for (i = 0; i < MAX_HW_COUNTER_NR; i++) {
+				ntw = __get_ntw_of_overflowed_cntr(i, dev);
+
+				if (ntw)
+					ice_ds_block_network(ntw, NULL,
+						idc_err_status.val, false);
+			}
 		}
 	}
 
@@ -1812,15 +1798,6 @@ void cve_di_interrupt_handler_deferred_proc(struct idc_device *dev)
 		/* Get the first CBD that was executed by this Job */
 		cb_descriptor = &fifo->cb_desc_vaddr[job->first_cb_desc];
 		sub_job = get_desc_subjob(cb_descriptor);
-
-		if (is_tlc_bp_interrupt(status)) {
-			cve_os_dev_log_default(CVE_LOGLEVEL_ERROR,
-				cve_dev->dev_index,
-				"TLC BP interrupt received status= 0x%08x\n",
-				 status);
-			ice_debug_create_event_node(cve_dev, job->ds_hjob);
-			goto end;
-		}
 
 		/* check ECB error only if one sub job was subbmitted */
 		if (sub_job->embedded_sub_job) {
@@ -1948,6 +1925,10 @@ void cve_di_interrupt_handler_deferred_proc(struct idc_device *dev)
 						(void *)job->ds_hjob,
 						SPH_TRACE_OP_STATUS_FAIL,
 						status));
+		} else if (dg->icedc_state ==
+				ICEDC_STATE_CARD_RESET_REQUIRED) {
+			job_status = CVE_JOBSTATUS_ABORTED;
+
 		} else {
 			/* if job is entirely completed */
 			cve_os_log(CVE_LOGLEVEL_DEBUG,
@@ -1955,7 +1936,7 @@ void cve_di_interrupt_handler_deferred_proc(struct idc_device *dev)
 			job_status = CVE_JOBSTATUS_COMPLETED;
 
 		}
-		if (ice_dump_mmu_pmon() || dg->dump_ice_mmu_pmon) {
+		if (dg->dump_ice_mmu_pmon) {
 			get_ice_mmu_pmon_regs(cve_dev);
 			__dump_mmu_pmon(cve_dev);
 		}
@@ -2129,15 +2110,9 @@ int cve_di_handle_submit_job(
 			goto err;
 		}
 
-		retval = cve_mm_get_buffer_addresses(buffer->ntw_buf_alloc,
-				&cve_vaddr, &offset, &address);
+		cve_mm_get_buffer_addresses(buffer->ntw_buf_alloc,
+			&cve_vaddr, &offset, &address);
 
-		if (retval < 0) {
-			cve_os_log_default(CVE_LOGLEVEL_ERROR,
-					"Buf:%p alloc_info:%p failed(%d) to get va\n",
-					buffer, buffer->ntw_buf_alloc, retval);
-			goto err;
-		}
 
 		cve_os_log(CVE_LOGLEVEL_DEBUG,
 			"CBD_Idx=%d, SubJobIdx=%d, CB_BufferID=0x%llx, ICEVA:0x%llx, IAVA=0x%lx, Offset:%u\n",
@@ -2197,48 +2172,6 @@ u32 cve_di_get_device_reset_flag(struct cve_device *cve_dev)
 	return cve_dev->di_cve_needs_reset;
 }
 
-void cve_di_get_debugfs_regs_list(const struct debugfs_reg32 **regs,
-		u32 *num_of_regs)
-{
-	/* rgisters to be exposed through debugfs*/
-	struct debugfs_reg32 registers[] = {
-	{"atu0_tlb_misses", cfg_default.mmu_base +
-				cfg_default.mmu_atu_misses_offset},
-	{"atu1_tlb_misses", cfg_default.mmu_base +
-				cfg_default.mmu_atu_misses_offset + 4},
-	{"atu2_tlb_misses", cfg_default.mmu_base +
-				cfg_default.mmu_atu_misses_offset + 8},
-	{"atu3_tlb_misses", cfg_default.mmu_base +
-				cfg_default.mmu_atu_misses_offset + 12},
-	{"atu0_tlb_hits", cfg_default.mmu_base +
-				cfg_default.mmu_atu_transactions_offset},
-	{"atu1_tlb_hits", cfg_default.mmu_base +
-				cfg_default.mmu_atu_transactions_offset + 4},
-	{"atu2_tlb_hits", cfg_default.mmu_base +
-				cfg_default.mmu_atu_transactions_offset + 8},
-	{"atu3_tlb_hits", cfg_default.mmu_base +
-				cfg_default.mmu_atu_transactions_offset + 12},
-	{"mmu_reads", cfg_default.mmu_base +
-				cfg_default.mmu_read_issued_offset},
-	{"mmu_writes", cfg_default.mmu_base +
-				cfg_default.mmu_write_issued_offset},
-	{"atu0_pt", cfg_default.mmu_atu0_base +
-			cfg_default.mmu_atu_pt_base_addr_offset},
-	{"atu1_pt", cfg_default.mmu_atu1_base +
-			cfg_default.mmu_atu_pt_base_addr_offset},
-	{"atu2_pt", cfg_default.mmu_atu2_base +
-			cfg_default.mmu_atu_pt_base_addr_offset},
-	{"atu3_pt", cfg_default.mmu_atu3_base +
-			cfg_default.mmu_atu_pt_base_addr_offset},
-
-	};
-
-	memcpy(registers_fs, registers, sizeof(registers));
-
-	*regs = registers_fs;
-	*num_of_regs = ARRAY_SIZE(registers_fs);
-}
-
 void cve_di_set_hw_counters(struct cve_device *cve_dev)
 {
 	union ice_mmu_inner_mem_mmu_config_t reg;
@@ -2252,11 +2185,8 @@ void cve_di_set_hw_counters(struct cve_device *cve_dev)
 	reg.val = cve_os_read_mmio_32(cve_dev, offset_bytes);
 
 	/* Enable/Disable HW counters */
-	if (ice_dump_mmu_pmon() || dg->dump_ice_mmu_pmon)
+	if (dg->dump_ice_mmu_pmon)
 		reg.field. ACTIVATE_PERFORMANCE_COUNTERS = 1;
-	else
-		reg.field.ACTIVATE_PERFORMANCE_COUNTERS =
-			cve_dev->is_hw_counters_enabled;
 
 	cve_os_write_mmio_32(cve_dev, offset_bytes, reg.val);
 }

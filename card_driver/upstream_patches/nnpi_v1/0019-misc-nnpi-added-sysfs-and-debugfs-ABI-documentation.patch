@@ -1,0 +1,258 @@
+From b5848d568acd9485c2fcb71b4704026ba05291ac Mon Sep 17 00:00:00 2001
+From: Guy Zadicario <guy.zadicario@intel.com>
+Date: Mon, 20 Apr 2020 18:27:31 +0300
+Subject: [PATCH 19/19] misc: nnpi: added sysfs and debugfs ABI documentation
+
+---
+ .../ABI/testing/debugfs-driver-intel_nnpi     |   6 +
+ .../ABI/testing/sysfs-driver-intel_nnpi       | 225 ++++++++++++++++++
+ 2 files changed, 231 insertions(+)
+ create mode 100644 Documentation/ABI/testing/debugfs-driver-intel_nnpi
+ create mode 100644 Documentation/ABI/testing/sysfs-driver-intel_nnpi
+
+diff --git a/Documentation/ABI/testing/debugfs-driver-intel_nnpi b/Documentation/ABI/testing/debugfs-driver-intel_nnpi
+new file mode 100644
+index 000000000000..535b148631be
+--- /dev/null
++++ b/Documentation/ABI/testing/debugfs-driver-intel_nnpi
+@@ -0,0 +1,6 @@
++What:           /sys/kernel/debug/intel_nnpidrv/<n>/msg_sched/status
++Date:           April 2020
++KernelVersion:  5.6
++Contact:        guy.zadicario@intel.com
++Description:    Displays message scheduler thread statistics, including
++                number of commands sent and pending for each command queue.
+diff --git a/Documentation/ABI/testing/sysfs-driver-intel_nnpi b/Documentation/ABI/testing/sysfs-driver-intel_nnpi
+new file mode 100644
+index 000000000000..7022db0358bb
+--- /dev/null
++++ b/Documentation/ABI/testing/sysfs-driver-intel_nnpi
+@@ -0,0 +1,225 @@
++What:           /sys/class/nnpi/nnpi<n>/enable
++Date:           April 2020
++KernelVersion:  5.6
++Contact:        guy.zadicario@intel.com
++Description:    Enable state of the device for inference application
++                usage. Writing 0/1 will disable/enable the device,
++                Writing "abort" will disable the device and will
++                notify all inference applications to exit.
++
++What:           /sys/class/nnpi/nnpi<n>/boot_image
++Date:           April 2020
++KernelVersion:  5.6
++Contact:        guy.zadicario@intel.com
++Description:    Name of boot image firmware filename that will be used
++                on next device reset. Default is intel/nnpi/disk.img
++
++What:           /sys/class/nnpi/nnpi<n>/reset
++Date:           April 2020
++KernelVersion:  5.6
++Contact:        guy.zadicario@intel.com
++Description:    Write-only. Writing 1 will function reset the device
++                but only if it is disabled. Writing "force" will force
++                device reset.
++
++What:           /sys/class/nnpi/nnpi<n>/clock_stamp
++Date:           April 2020
++KernelVersion:  5.6
++Contact:        guy.zadicario@intel.com
++Description:    Send a trace event to the device that will be visible
++                in the device trace log.
++
++What:           /sys/class/nnpi/nnpi<n>/total_unprotected_mem
++Date:           April 2020
++KernelVersion:  5.6
++Contact:        guy.zadicario@intel.com
++Description:    Total of non-ecc-protected DRAM on device, in KB units
++
++What:           /sys/class/nnpi/nnpi<n>/total_protected_mem
++Date:           April 2020
++KernelVersion:  5.6
++Contact:        guy.zadicario@intel.com
++Description:    Total of ecc-protected DRAM on device, in KB units
++
++What:           /sys/class/nnpi/nnpi<n>/protocol_version
++Date:           April 2020
++KernelVersion:  5.6
++Contact:        guy.zadicario@intel.com
++Description:    A Version string describing the version of the device
++                command protocol version.
++
++What:           /sys/class/nnpi/nnpi<n>/channels
++Date:           April 2020
++KernelVersion:  5.6
++Contact:        guy.zadicario@intel.com
++Description:    Dumps a list of all command channels and the process-id
++                of the process created the channel.
++
++What:           /sys/class/nnpi/nnpi<n>/cecc_threshold
++Date:           April 2020
++KernelVersion:  5.6
++Contact:        guy.zadicario@intel.com
++Description:    Threshold value specifying how many device corrected ECC
++                errors should occur before informing uevent of the error.
++
++What:           /sys/class/nnpi/nnpi<n>/ucecc_threshold
++Date:           April 2020
++KernelVersion:  5.6
++Contact:        guy.zadicario@intel.com
++Description:    Threshold value specifying how many device un-corrected ECC
++                errors should occur before informing uevent of the error.
++
++What:           /sys/class/nnpi/nnpi<n>/pcie_inject
++Date:           April 2020
++KernelVersion:  5.6
++Contact:        guy.zadicario@intel.com
++Description:    Write-only, injects pcie error to the device for testing purposes.
++
++What:           /sys/class/nnpi/nnpi<n>/crashlog_size
++Date:           April 2020
++KernelVersion:  5.6
++Contact:        guy.zadicario@intel.com
++Description:    Size of device crash log. zero if no device crash log exist.
++
++What:           /sys/class/nnpi/nnpi<n>/crashlog
++Date:           April 2020
++KernelVersion:  5.6
++Contact:        guy.zadicario@intel.com
++Description:    Binary attribute containing the device crash log content.
++
++What:           /sys/class/nnpi/nnpi<n>/post_code
++Date:           April 2020
++KernelVersion:  5.6
++Contact:        guy.zadicario@intel.com
++Description:    Device boot stage post code, updated by device BIOS during device boot.
++
++What:           /sys/class/nnpi/nnpi<n>/flash_progress
++Date:           April 2020
++KernelVersion:  5.6
++Contact:        guy.zadicario@intel.com
++Description:    Device bios flash progress in percent. Valid only when device BIOS flash
++                is in progress.
++
++What:           /sys/class/nnpi/nnpi<n>/ice_units
++Date:           April 2020
++KernelVersion:  5.6
++Contact:        guy.zadicario@intel.com
++Description:    Number of ICE units on the device.
++
++What:           /sys/class/nnpi/nnpi<n>/bios_version
++Date:           April 2020
++KernelVersion:  5.6
++Contact:        guy.zadicario@intel.com
++Description:    Device BIOS version string
++
++What:           /sys/class/nnpi/nnpi<n>/image_version
++Date:           April 2020
++KernelVersion:  5.6
++Contact:        guy.zadicario@intel.com
++Description:    Version string of the boot image used to boot the device.
++
++What:           /sys/class/nnpi/nnpi<n>/board_name
++Date:           April 2020
++KernelVersion:  5.6
++Contact:        guy.zadicario@intel.com
++Description:    Device board type name
++
++What:           /sys/class/nnpi/nnpi<n>/board_part_num
++Date:           April 2020
++KernelVersion:  5.6
++Contact:        guy.zadicario@intel.com
++Description:    Device part number string
++
++What:           /sys/class/nnpi/nnpi<n>/board_serial_num
++Date:           April 2020
++KernelVersion:  5.6
++Contact:        guy.zadicario@intel.com
++Description:    Device serial number string
++
++What:           /sys/class/nnpi/nnpi<n>/active_contexts_num
++Date:           April 2020
++KernelVersion:  5.6
++Contact:        guy.zadicario@intel.com
++Description:    Number of active inference contexts running
++
++What:           /sys/class/nnpi/nnpi<n>/fpga_revision
++Date:           April 2020
++KernelVersion:  5.6
++Contact:        guy.zadicario@intel.com
++Description:    Device FPGA revision number
++
++What:           /sys/class/nnpi/nnpi<n>/card_stepping
++Date:           April 2020
++KernelVersion:  5.6
++Contact:        guy.zadicario@intel.com
++Description:    Device processor stepping
++
++What:           /sys/class/nnpi/nnpi<n>/boot_state
++Date:           April 2020
++KernelVersion:  5.6
++Contact:        guy.zadicario@intel.com
++Description:    Device boot state string, describing device boot
++                stage or "Ready" when boot completed.
++
++What:           /sys/class/nnpi/nnpi<n>/boot_fail_reason
++Date:           April 2020
++KernelVersion:  5.6
++Contact:        guy.zadicario@intel.com
++Description:    Device boot failure reason string.
++
++What:           /sys/class/nnpi/nnpi<n>/card_state
++Date:           April 2020
++KernelVersion:  5.6
++Contact:        guy.zadicario@intel.com
++Description:    Device operational state string.
++
++What:           /sys/class/nnpi/nnpi<n>/ipc_event_h2c_en
++Date:           April 2020
++KernelVersion:  5.6
++Contact:        guy.zadicario@intel.com
++Description:    Enable tracing of commands send to device based on
++                command op-code. Writing command op-code will generate
++                ftrace event each time the command is sent to device.
++
++What:           /sys/class/nnpi/nnpi<n>/ipc_event_h2c_dis
++Date:           April 2020
++KernelVersion:  5.6
++Contact:        guy.zadicario@intel.com
++Description:    Disable tracing of commands send to device based on
++                command op-code. Writing command op-code will disable
++                ftrace event generation for this command op-code.
++
++What:           /sys/class/nnpi/nnpi<n>/ipc_event_c2h_en
++Date:           April 2020
++KernelVersion:  5.6
++Contact:        guy.zadicario@intel.com
++Description:    Enable tracing of responses received from device based on
++                response code. Writing response code will generate
++                ftrace event each time such response received from device.
++
++What:           /sys/class/nnpi/nnpi<n>/ipc_event_c2h_dis
++Date:           April 2020
++KernelVersion:  5.6
++Contact:        guy.zadicario@intel.com
++Description:    Disable tracing of responses received from device based on
++                response code. Writing response code will disable
++                ftrace event generation when such response is received.
++
++What:           /sys/class/nnpi/nnpi<n>/ipc_counters
++Date:           April 2020
++KernelVersion:  5.6
++Contact:        guy.zadicario@intel.com
++Description:    Writing 0/1 enables/disable command queue statistics counters,
++                dumps the counter values.
++
++What:           /sys/class/nnpi/nnpi<n>/uncorr_counters
++Date:           April 2020
++KernelVersion:  5.6
++Contact:        guy.zadicario@intel.com
++Description:    Dumps counters of various device uncorrected errors.
++
++What:           /sys/class/nnpi/nnpi<n>/corr_counters
++Date:           April 2020
++KernelVersion:  5.6
++Contact:        guy.zadicario@intel.com
++Description:    Dumps counters of various device corrected errors.
+-- 
+2.22.0
+

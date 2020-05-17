@@ -120,7 +120,7 @@ static const struct sph_sw_counter_info g_swc_sub_network_info[] = {
 	"Driver defined network handle"},
 	/* ICEDRV_SWC_SUB_NETWORK_TOTAL_JOBS */
 	{ICEDRV_SWC_SUB_NETWORK_GROUP_GEN, "totalJobs",
-	"Toatl number of jobs for this sub network"},
+	"Total number of jobs for this sub network"},
 	/* ICEDRV_SWC_SUB_NETWORK_COUNTER_INF_CREATED */
 	{ICEDRV_SWC_SUB_NETWORK_GROUP_GEN, "inferTotal",
 	 "Total number of Created Infer Request"},
@@ -132,7 +132,10 @@ static const struct sph_sw_counter_info g_swc_sub_network_info[] = {
 	 "Number of Infer Requests that are completed"},
 	/* ICEDRV_SWC_SUB_NETWORK_COUNTER_INF_DESTROYED */
 	{ICEDRV_SWC_SUB_NETWORK_GROUP_GEN, "inferDestroyed",
-	 "Total number of Destroyed Infer Request"}
+	 "Total number of Destroyed Infer Request"},
+	/* ICEDRV_SWC_SUB_NETWORK_NETBUSYTIME */
+	{ICEDRV_SWC_SUB_NETWORK_GROUP_GEN, "netBusyTime",
+	"Network's total busy duration in microseconds"}
 };
 
 static const struct sph_sw_counters_set g_swc_sub_network_set = {
@@ -383,13 +386,7 @@ int _swc_destroy_node(enum ICEDRV_SWC_CLASS class, void *master, u64 node_id)
 		goto exit;
 	}
 
-	ret = sph_remove_sw_counters_values_node(value->sw_counters);
-	if (ret) {
-		cve_os_log(CVE_LOGLEVEL_ERROR,
-				"Error:%d SW Counter deletion with ID:%u class:%d failed\n",
-				ret, (u32)node_id, class);
-		goto exit;
-	}
+	sph_remove_sw_counters_values_node(value->sw_counters);
 
 	if (class == ICEDRV_SWC_CLASS_INFER_DEVICE ||
 			class == ICEDRV_SWC_CLASS_DEVICE) {

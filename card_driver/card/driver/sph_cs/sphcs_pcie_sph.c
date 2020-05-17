@@ -245,7 +245,7 @@ struct sph_lli_header {
 	uint32_t num_lists_keep;
 	uint64_t xfer_size_keep;
 	struct sph_dma_data_element cut_element_next;
-	uint32_t size;
+	uint64_t size;
 };
 
 static int sphcs_sph_init_dma_engine(void *hw_handle);
@@ -1139,6 +1139,8 @@ u64 sphcs_sph_dma_gen_lli(void            *hw_handle,
 		return 0;
 	}
 
+	lli_header->size = transfer_size;
+
 	return transfer_size;
 }
 
@@ -1202,6 +1204,8 @@ static u64 sphcs_sph_dma_gen_lli_vec(void *hw_handle, struct lli_desc *outLli, u
 		return 0;
 	}
 
+	lli_header->size = total_transfer_size;
+
 	return total_transfer_size;
 }
 
@@ -1227,64 +1231,74 @@ static void restore_lli(struct lli_desc *lli)
 	}
 }
 
-int sphcs_sph_dma_edit_lli(void *hw_handle, struct lli_desc *outLli, uint32_t size)
+int sphcs_sph_dma_edit_lli(void *hw_handle, struct lli_desc *outLli, uint64_t size)
 {
 	struct sph_lli_header *lli_header = (struct sph_lli_header *)outLli->vptr;
 	struct sph_dma_data_element *data_element;
-	uint32_t totalSize;
+	uint64_t totalSize;
 	uint32_t list_idx = 0;
 	uint32_t i;
 
-	if (size > 0) {
-		if (lli_header->cut_element) {
-			if (lli_header->size == size)
-				return 0;
-			restore_lli(outLli);
-		}
-
-		data_element = (struct sph_dma_data_element *)((uintptr_t)outLli->vptr + outLli->offsets[list_idx]);
-		totalSize = data_element->transfer_size;
-		while (totalSize < size) {
-			data_element++;
-			if (data_element->control & DMA_CTRL_LLP) {
-				if (list_idx < outLli->num_lists - 1) {
-					list_idx++;
-					data_element = (struct sph_dma_data_element *)((uintptr_t)outLli->vptr + outLli->offsets[list_idx]);
-				} else {
-					sph_log_err(EXECUTE_COMMAND_LOG, "ERROR: edit size %d is too big\n", size);
-					return 0;
-				}
-			}
-			totalSize += data_element->transfer_size;
-		}
-
-		lli_header->cut_element = data_element;
-		lli_header->cut_element_transfer_size = data_element->transfer_size;
-		lli_header->cut_element_ctrl_flag  = data_element->control;
-
-		if (totalSize > size)
-			data_element->transfer_size -= totalSize - size;
-
-		//Set local interrupt enable bit for last element
-		data_element->control |= DMA_CTRL_LIE;
-
-		//Set next element is link
-		data_element++;
-		memcpy(&lli_header->cut_element_next, data_element, sizeof(*data_element));
-		memset(data_element, 0, sizeof(*data_element));
-		data_element->control = DMA_CTRL_LLP;
-
-		lli_header->size = size;
-		lli_header->num_lists_keep = outLli->num_lists;
-		lli_header->xfer_size_keep = outLli->xfer_size[list_idx];
-		lli_header->cut_list_idx = list_idx;
-		outLli->num_lists = list_idx + 1;
-		outLli->xfer_size[list_idx] = size;
-		for (i = 0; i < list_idx; i++)
-			outLli->xfer_size[list_idx] -= outLli->xfer_size[i];
-	} else { //restore lli to previous state
-		restore_lli(outLli);
+	if (size == 0) {
+		NNP_ASSERT(!"edit_lli size should be greater than 0!");
+		return -EINVAL;
 	}
+
+	if (lli_header->size == size)
+		return 0;
+	if (lli_header->cut_element)
+		restore_lli(outLli);
+
+	data_element = (struct sph_dma_data_element *)((uintptr_t)outLli->vptr + outLli->offsets[list_idx]);
+	totalSize = data_element->transfer_size;
+	while (totalSize < size) {
+		data_element++;
+		if (data_element->control & DMA_CTRL_LLP) {
+			if (list_idx < outLli->num_lists - 1) {
+				list_idx++;
+				data_element = (struct sph_dma_data_element *)((uintptr_t)outLli->vptr + outLli->offsets[list_idx]);
+			} else {
+				sph_log_err(EXECUTE_COMMAND_LOG, "ERROR: edit size %llu is too big\n", size);
+				return 0;
+			}
+		}
+		totalSize += data_element->transfer_size;
+	}
+
+	if (totalSize == size &&
+	    list_idx == outLli->num_lists - 1 &&
+	    (data_element->control & DMA_CTRL_LIE) &&
+	    ((data_element+1)->control & DMA_CTRL_LLP)) {
+		/* no need to cut, size is of the full lli length */
+		lli_header->size = size;
+
+		return 0;
+	}
+
+	lli_header->cut_element = data_element;
+	lli_header->cut_element_transfer_size = data_element->transfer_size;
+	lli_header->cut_element_ctrl_flag  = data_element->control;
+
+	if (totalSize > size)
+		data_element->transfer_size -= totalSize - size;
+
+	//Set local interrupt enable bit for last element
+	data_element->control |= DMA_CTRL_LIE;
+
+	//Set next element is link
+	data_element++;
+	memcpy(&lli_header->cut_element_next, data_element, sizeof(*data_element));
+	memset(data_element, 0, sizeof(*data_element));
+	data_element->control = DMA_CTRL_LLP;
+
+	lli_header->size = size;
+	lli_header->num_lists_keep = outLli->num_lists;
+	lli_header->xfer_size_keep = outLli->xfer_size[list_idx];
+	lli_header->cut_list_idx = list_idx;
+	outLli->num_lists = list_idx + 1;
+	outLli->xfer_size[list_idx] = size;
+	for (i = 0; i < list_idx; i++)
+		outLli->xfer_size[list_idx] -= outLli->xfer_size[i];
 
 	return 0;
 }

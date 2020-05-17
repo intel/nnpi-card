@@ -226,14 +226,6 @@ u32 cve_di_get_device_reset_flag(struct cve_device *cve_dev);
  */
 void cve_di_mask_interrupts(struct cve_device *cve_dev);
 
-/*
- * Set address of registers array and its size
- * outputs :regs - address of registers array
- *	num_of_regs - address where number of registers will be set
- */
-void cve_di_get_debugfs_regs_list(const struct debugfs_reg32 **regs,
-		u32 *num_of_regs);
-
 void cve_di_set_hw_counters(struct cve_device *cve_dev);
 
 /**

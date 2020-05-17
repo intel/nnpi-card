@@ -88,12 +88,6 @@ static inline int is_other_wd_error(u32 status)
 		cfg_default.mmio_cnc_wd_intr_mask)) != 0);
 }
 
-static inline int is_tlc_bp_interrupt(u32 status)
-{
-	return ((status &
-			cfg_default.mmio_intr_status_tlc_reserved_mask) != 0);
-}
-
 static inline int is_tlc_panic(u32 status)
 {
 	return ((status &

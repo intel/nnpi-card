@@ -21,6 +21,7 @@
 #ifndef RING3_VALIDATION
 #include <linux/tracepoint.h>
 #endif
+#include "ice_safe_func.h"
 
 #define DO_TRACE(x) (x)
 #define DO_TRACE_IF(cond, x) do {\
@@ -33,6 +34,10 @@ void icedrv_sw_trace_init(void);
 #define SPH_TP_STRUCT__entry TP_STRUCT__entry
 #define SPH_TP_fast_assign   TP_fast_assign
 #define SPH_TP_printk        TP_printk
+
+#define MAX_LLC_RES_CNT 4
+#define MAX_ENTRY_MARKER 12
+#define MAX_ENTRY_RESOURCE 6
 
 TRACE_EVENT(SPH_TRACE_ICEDRV_CREATE_CONTEXT,
 	TP_PROTO(u8 state, u64 ctxID, u64 internalctxId,
@@ -81,7 +86,9 @@ TRACE_EVENT(SPH_TRACE_ICEDRV_CREATE_NETWORK,
 			__entry->netID = netID;
 			__entry->subNetId = subNetId;
 			__entry->internalNetId = internalNetId;
-			__memcpy(__entry->resource, resource, sizeof(u32)*6);
+			ice_memcpy_s(__entry->resource, sizeof(u32) *
+				MAX_ENTRY_RESOURCE, resource,
+				sizeof(u32) * MAX_ENTRY_RESOURCE);
 			__entry->status = status;
 			__entry->reason = reason;
 	),
@@ -170,7 +177,9 @@ TRACE_EVENT(SPH_TRACE_ICEDRV_RESOURCE_RELEASE,
 		__entry->resResource = resResource;
 		__entry->icesReserved = icesReserved;
 		__entry->countersReserved = countersReserved;
-		memcpy(__entry->llcReserved, llcReserved, sizeof(u32)*4);
+		ice_memcpy_s(__entry->llcReserved,
+			sizeof(u32) * MAX_LLC_RES_CNT,
+			llcReserved, sizeof(u32) * MAX_LLC_RES_CNT);
 	),
 	SPH_TP_printk(
 		"state=%s ctxID=%llu netID=0x%llx subNetId=0x%llx(0x%llx) resResourceFlag=%d Released (ICEMask=0x%llx, CounterMask=0x%llx, clos{C0=%u C1=%u C2=%u C3=%u})",
@@ -289,7 +298,9 @@ TRACE_EVENT(SPH_TRACE_ICEDRV_NETWORK_RESOURCE,
 		__entry->internalNetId = internalNetId;
 		__entry->icesReserved = icesReserved;
 		__entry->countersReserved = countersReserved;
-		memcpy(__entry->llcReserved, llcReserved, sizeof(u32)*4);
+		ice_memcpy_s(__entry->llcReserved,
+			sizeof(u32) * MAX_LLC_RES_CNT,
+			llcReserved, sizeof(u32) * MAX_LLC_RES_CNT);
 	),
 	SPH_TP_printk(
 		"state=%s ctxID=%llu netID=0x%llx subNetId=0x%llx(0x%llx) Reserved (ICEMask=0x%llx, CounterMask=0x%llx, clos{C0=%u C1=%u C2=%u C3=%u})",
@@ -530,7 +541,8 @@ TRACE_EVENT(SPH_TRACE_ICEDRV_POWER_ON,
 			__entry->inferID = inferID;
 			__entry->timeStamp = timeStamp;
 			__entry->status = status;
-			memcpy(__entry->marker, marker, 12);
+			ice_memcpy_s(__entry->marker, MAX_ENTRY_MARKER, marker,
+				MAX_ENTRY_MARKER);
 	),
 	SPH_TP_printk(
 		"state=%s iceId=%u ctx=0x%llx netID=0x%llx subNetId=0x%llx(0x%llx) inferID=0x%llx timeStamp=0x%llx status=%s syncMarker=%s",

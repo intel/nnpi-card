@@ -699,10 +699,9 @@ int cve_mm_map_kva(cve_mm_allocation_t halloc)
 int cve_mm_unmap_kva(cve_mm_allocation_t halloc)
 {
 	struct allocation_desc *alloc = (struct allocation_desc *)halloc;
-	int err = 0;
 
 	if (alloc->is_mapped) {
-		err = cve_osmm_unmap_kva(alloc->halloc, alloc->vaddr);
+		cve_osmm_unmap_kva(alloc->halloc, alloc->vaddr);
 		alloc->is_mapped = false;
 		cve_os_log(CVE_LOGLEVEL_DEBUG,
 				"Unamp Surface VA:%llu FD:%llu SZ:0x%llx\n",
@@ -710,7 +709,7 @@ int cve_mm_unmap_kva(cve_mm_allocation_t halloc)
 				alloc->size_bytes);
 	}
 
-	return err;
+	return 0;
 }
 
 
@@ -730,7 +729,7 @@ void cve_mm_print_user_buffer(cve_mm_allocation_t halloc,
 
 #endif
 #else
-	if ((print_debug) || (dg->dump_conf.cb_dump))
+	if (print_debug)
 #endif
 	{
 		cve_osmm_print_user_buffer(
@@ -941,28 +940,10 @@ static void __calc_surf_va(struct allocation_desc *alloc_desc,
 	struct cve_patch_point_descriptor *pp_desc, u64 *surf_ice_va)
 {
 	ice_va_t base_surf_va = 0;
-	ice_va_t __maybe_unused print_va;
-	struct cve_device_group *dg = cve_dg_get();
 
 	base_surf_va = cve_osmm_alloc_get_iova(alloc_desc->halloc);
 
 	__calc_pp_va(base_surf_va, 0, pp_desc, surf_ice_va);
-
-	/* PatchingBufID->Surface ID,
-	 * RefSurID ->which surface is being patched
-	*/
-	if (dg->dump_conf.post_patch_surf_dump) {
-		if (pp_desc->is_msb)
-			print_va = ((*surf_ice_va) >> 32);
-		else
-			print_va = ((*surf_ice_va) & 0xFFFFFFFF);
-
-		cve_os_log(CVE_LOGLEVEL_INFO,
-			"New PatchValue calculated. PatchingBufId:%d RefSurfaceID:%d BufferICEVA=0x%llx, IsMSB=%u, PatchValue=0x%llx\n",
-			pp_desc->patching_buf_index,
-			pp_desc->allocation_buf_index,
-			base_surf_va, pp_desc->is_msb, print_va);
-	}
 }
 
 static int  __create_pp_mirror_image(
@@ -986,7 +967,14 @@ static int  __create_pp_mirror_image(
 		goto out;
 	}
 	/* Mirroring is required to store counter patch point information */
-	memcpy(&pp->pp_desc, cur_pp_desc, sizeof(*cur_pp_desc));
+	ret = ice_memcpy_s(&pp->pp_desc, sizeof(*cur_pp_desc),
+			cur_pp_desc, sizeof(*cur_pp_desc));
+	if (ret < 0) {
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+			"Safelib memcpy failed %d\n", ret);
+		OS_FREE(pp, sz);
+		goto out;
+	}
 
 	if (cur_pp_desc->patch_point_type == ICE_PP_TYPE_SURFACE) {
 		/* Add this PP desc to Ntw list */
@@ -1082,7 +1070,6 @@ static int __process_surf_pp(struct cve_patch_point_descriptor *cur_pp_desc,
 	u64  ks_value;
 	u64 *patch_address = NULL;
 	struct ice_pp_copy *surf_pp;
-	struct cve_device_group *dg = cve_dg_get();
 
 	buf_idx = cur_pp_desc->patching_buf_index;
 	cb_buf_info = &buf_list[buf_idx];
@@ -1100,9 +1087,6 @@ static int __process_surf_pp(struct cve_patch_point_descriptor *cur_pp_desc,
 	cb_alloc_desc =
 		(struct allocation_desc *)cb_buf_info->ntw_buf_alloc;
 	alloc_desc = (struct allocation_desc *)ad->ntw_buf_alloc;
-
-	if (dg->dump_conf.post_patch_surf_dump)
-		cb_buf_info->dump = 1;
 
 	ret = __get_patch_point_addr_and_val(cb_alloc_desc,
 			cur_pp_desc, &patch_address, &ks_value);

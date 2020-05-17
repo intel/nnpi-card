@@ -18,6 +18,7 @@
 #include "inf_exec_req.h"
 #include "nnp_error.h"
 #include "sphcs_trace.h"
+#include "sph_safe.h"
 
 static int inf_cpylst_req_sched(struct inf_exec_req *req);
 static enum EXEC_REQ_READINESS inf_cpylst_req_ready(struct inf_exec_req *req);
@@ -36,6 +37,7 @@ static void treat_cpylst_failure(struct inf_exec_req *req,
 				 int32_t              error_msg_size);
 
 static void inf_cpylst_req_release(struct kref *kref);
+
 
 struct func_table const s_cpylst_funcs = {
 	.schedule = inf_cpylst_req_sched,
@@ -92,7 +94,7 @@ static int cpylst_complete_cb(struct sphcs *sphcs, void *ctx, const void *user_d
 	}
 #endif
 
-	req->f->complete(req, err, NULL, 0);
+	inf_cpylst_req_complete(req, err, NULL, 0);
 
 	return err;
 }
@@ -134,7 +136,7 @@ int inf_cpylst_create(struct inf_cmd_list *cmd,
 		goto free_priorities;
 	}
 
-	cpylst->cur_sizes = kcalloc(num_copies, sizeof(uint64_t), GFP_KERNEL);
+	cpylst->cur_sizes = kmalloc_array(num_copies, sizeof(uint64_t), GFP_KERNEL);
 	if (unlikely(cpylst->cur_sizes == NULL)) {
 		sph_log_err(CREATE_COMMAND_LOG, "FATAL: line:%u failed to allocate array of current sizes\n", __LINE__);
 		goto free_sizes;
@@ -206,12 +208,15 @@ static bool genlli_get_next(void             *ctx,
 {
 	struct genlli_iterator *it = (struct genlli_iterator *)ctx;
 
-	if (it->curr_idx < it->cpylst->n_copies) {
-		*out_src = inf_copy_src_sgt(it->cpylst->copies[it->curr_idx]);
-		*out_dst = inf_copy_dst_sgt(it->cpylst->copies[it->curr_idx]);
-		*out_max_size = it->sizes[it->curr_idx];
-		++it->curr_idx;
-		return true;
+	for ( ; it->curr_idx < it->cpylst->n_copies; ++it->curr_idx) {
+		if (it->sizes[it->curr_idx] > 0) {
+			*out_src = inf_copy_src_sgt(it->cpylst->copies[it->curr_idx]);
+			*out_dst = inf_copy_dst_sgt(it->cpylst->copies[it->curr_idx]);
+			*out_max_size = it->sizes[it->curr_idx];
+			++it->curr_idx;
+
+			return true;
+		}
 	}
 
 	return false;
@@ -246,6 +251,13 @@ static int inf_cpylst_init_llis(struct inf_cpylst *cpylst)
 	if (unlikely(cpylst->cur_lli.vptr == NULL)) {
 		sph_log_err(CREATE_COMMAND_LOG, "FATAL: line:%u failed to allocate current lli buffer\n", __LINE__);
 		return -ENOMEM;
+	}
+
+	if (cpylst->size == 0) {
+		cpylst->lli.num_lists = 0;
+		cpylst->lli.num_elements = 0;
+
+		return 0;
 	}
 
 	/* allocate and generate lli for default params */
@@ -286,6 +298,13 @@ int inf_cpylst_build_cur_lli(struct inf_cpylst *cpylst)
 	u64 total_entries_bytes;
 	u32 prev_lli_size;
 	int ret;
+
+	if (cpylst->size == 0) {
+		cpylst->cur_lli.num_lists = 0;
+		cpylst->cur_lli.num_elements = 0;
+
+		return 0;
+	}
 
 	/* we must re-initialize lli since it may be divided to different sub-lists */
 	it.cpylst = cpylst;
@@ -338,9 +357,10 @@ int inf_cpylst_add_copy(struct inf_cpylst *cpylst,
 
 	inf_copy_get(copy);
 
-	size = size != 0 ? size : copy->devres->size;
+	size = size <= copy->devres->size ? size : copy->devres->size;
 	cpylst->copies[cpylst->added_copies] = copy;
 	cpylst->sizes[cpylst->added_copies] = size;
+	cpylst->cur_sizes[cpylst->added_copies] = copy->devres->size;
 	cpylst->priorities[cpylst->added_copies] = priority;
 	cpylst->devreses[cpylst->added_copies] = copy->devres;
 	++cpylst->added_copies;
@@ -431,6 +451,7 @@ void inf_cpylst_req_init(struct inf_exec_req *req,
 	req->time = 0;
 	req->num_opt_depend_devres = req->cpylst->n_copies;
 	req->opt_depend_devres = req->cpylst->devreses;
+	req->lli = &cpylst->lli;
 }
 
 static int inf_cpylst_req_sched(struct inf_exec_req *req)
@@ -613,6 +634,11 @@ static int inf_cpylst_req_execute(struct inf_exec_req *req)
 	if (inf_context_get_state(req->context) != CONTEXT_OK)
 		return -NNPER_CONTEXT_BROKEN;
 
+	if (req->size == 0) {
+		inf_cpylst_req_complete(req, 0, NULL, 0);
+
+		return 0;
+	}
 	return sphcs_dma_sched_start_xfer_multi(g_the_sphcs->dmaSched,
 						&req->cpylst->multi_xfer_handle,
 						desc,
@@ -634,6 +660,9 @@ static void treat_cpylst_failure(struct inf_exec_req *req,
 
 	NNP_ASSERT(req->cmd_type == CMDLIST_CMD_COPYLIST);
 
+	if (error_msg == NULL)
+		error_msg_size = 0;
+
 	cpylst = req->cpylst;
 
 	rc = inf_exec_error_details_alloc(CMDLIST_CMD_COPYLIST,
@@ -644,7 +673,7 @@ static void treat_cpylst_failure(struct inf_exec_req *req,
 					  &err_details);
 	if (likely(rc == 0)) {
 		if (error_msg_size > 0)
-			memcpy(err_details->error_msg, error_msg, error_msg_size);
+			safe_c_memcpy(err_details->error_msg, error_msg_size, error_msg, error_msg_size);
 
 		inf_exec_error_list_add(&req->cmd->error_list, err_details);
 	}
@@ -828,12 +857,12 @@ static int inf_cpylst_migrate_priority(struct inf_exec_req *req, uint8_t priorit
 	int i;
 
 	//TODO CPYLST migrate recurcively
-	if (req->priority != priority)
-		for (i = 0; i < req->cpylst->lli.num_lists; i++)
+	if (req->size > 0 && req->priority != priority)
+		for (i = 0; i < req->lli->num_lists; i++)
 			ret |= inf_update_priority(req,
 						   priority,
 						   req->cpylst->copies[0]->card2Host,
-						   req->cpylst->lli.dma_addr + req->cpylst->lli.offsets[i]);
+						   req->lli->dma_addr + req->lli->offsets[i]);
 
 	return ret;
 }

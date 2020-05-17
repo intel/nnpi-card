@@ -45,7 +45,6 @@ struct mmio_base_addr {
 
 struct cve_device_group;
 
-#ifdef IDC_ENABLE
 struct cve_os_device {
 	struct device *dev;
 #ifndef RING3_VALIDATION
@@ -53,23 +52,9 @@ struct cve_os_device {
 	struct clk *cve_clk;
 	struct mmio_base_addr cached_mmio_base;
 	struct dentry *dev_dir;
-	struct debugfs_regset32 regset;
 #endif
 	struct idc_device idc_dev;
 };
-#else
-struct cve_os_device {
-	struct device *dev;
-#ifndef RING3_VALIDATION
-	struct reset_control *rstc;
-	struct clk *cve_clk;
-	struct mmio_base_addr cached_mmio_base;
-	struct dentry *dev_dir;
-	struct debugfs_regset32 regset;
-#endif
-	struct cve_device cve_dev;
-};
-#endif
 
 /*
  * ((struct cve_os_device *)(char *)cve_dev_ptr)

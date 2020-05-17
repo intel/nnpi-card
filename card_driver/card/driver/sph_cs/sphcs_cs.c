@@ -123,15 +123,16 @@ static void IPC_OPCODE_HANDLER(QUERY_VERSION)(
 				struct sphcs *sphcs,
 				union h2c_QueryVersionMsg *msg)
 {
-	union c2h_QueryVersionReply2Msg replyMsg;
+	union c2h_QueryVersionReply3Msg replyMsg;
 	u64 msg_size;
 
 	replyMsg.value[0] = 0;
 	replyMsg.value[1] = 0;
+	replyMsg.value[2] = 0;
 	// respond with the driver and protocol versions
-	replyMsg.opcode = NNP_IPC_C2H_OP_QUERY_VERSION_REPLY2;
-	replyMsg.driverVersion = NNP_IPC_PROTOCOL_VERSION;
-	replyMsg.protocolVersion = NNP_IPC_CHAN_PROTOCOL_VERSION;
+	replyMsg.opcode = NNP_IPC_C2H_OP_QUERY_VERSION_REPLY3;
+	replyMsg.protocolVersion = NNP_IPC_PROTOCOL_VERSION;
+	replyMsg.chanProtocolVer = NNP_IPC_CHAN_PROTOCOL_VERSION;
 
 	/* Build the channel protocol opcode sizes vec */
 	#define C2H_OPCODE(name, val, type)   /*SPH_IGNORE_STYLE_CHECK*/      \
@@ -141,7 +142,15 @@ static void IPC_OPCODE_HANDLER(QUERY_VERSION)(
 	#include "ipc_chan_c2h_opcodes.h"
 	#undef C2H_OPCODE
 
-	sphcs_msg_scheduler_queue_add_msg(sphcs->public_respq, replyMsg.value, 2);
+	/* Build the channel protocol opcode sizes vec */
+	#define H2C_OPCODE(name, val, type)   /*SPH_IGNORE_STYLE_CHECK*/      \
+		msg_size = sizeof(type)/sizeof(u64);                          \
+		replyMsg.chanCmdOpSize |= (msg_size << 2*(val-32));
+
+	#include "ipc_chan_h2c_opcodes.h"
+	#undef H2C_OPCODE
+
+	sphcs_msg_scheduler_queue_add_msg(sphcs->public_respq, replyMsg.value, 3);
 }
 
 static void IPC_OPCODE_HANDLER(SETUP_CRASH_DUMP)(
@@ -168,22 +177,6 @@ static void IPC_OPCODE_HANDLER(SETUP_SYS_INFO_PAGE)(
 	/* send host sys_info packet, if available */
 	sphcs_maint_send_sys_info();
 
-}
-
-static void IPC_OPCODE_HANDLER(CLOCK_SYNC)(
-			struct sphcs       *sphcs,
-			union ClockSyncMsg *cmd)
-{
-	union ClockSyncMsg msg;
-
-	// send echo to the host
-	memset(msg.value, 0, sizeof(msg.value));
-	msg.opcode  = NNP_IPC_C2H_OP_CLOCK_SYNC;
-	msg.o_card_ts = local_clock();
-	msg.iteration = cmd->iteration;
-	sphcs_msg_scheduler_queue_add_msg(g_the_sphcs->public_respq,
-				    (u64 *)msg.value,
-				    sizeof(msg) / sizeof(u64));
 }
 
 #define CLOCK_STAMP_TYPE_STR_SIZE 7
@@ -242,6 +235,8 @@ int find_and_destroy_channel(struct sphcs *sphcs, uint16_t protocolID)
 	chan->destroyed = true;
 	hash_del(&chan->hash_node);
 	NNP_SPIN_UNLOCK_BH(&sphcs->lock_bh);
+
+	drain_workqueue(chan->wq);
 
 	if (chan->destroy_cb)
 		(*chan->destroy_cb)(chan, chan->destroy_cb_ctx);
@@ -447,9 +442,6 @@ static int sphcs_process_messages(struct sphcs *sphcs, u64 *hw_msg, u32 hw_size)
 			break;
 		case H2C_OPCODE_NAME(SETUP_SYS_INFO_PAGE):
 			HANDLE_COMMAND(SETUP_SYS_INFO_PAGE, union h2c_setup_sys_info_page);
-			break;
-		case H2C_OPCODE_NAME(CLOCK_SYNC):
-			HANDLE_COMMAND(CLOCK_SYNC, union ClockSyncMsg);
 			break;
 		case H2C_OPCODE_NAME(CHANNEL_OP):
 			HANDLE_COMMAND(CHANNEL_OP, union h2c_ChannelOp);

@@ -1107,6 +1107,10 @@ err_done:
 	kfree(channel);
 	channel = NULL;
 done:
+	if (channel != NULL) {
+		pend->dma_data.cmd_chan->destroy_cb = sphcs_chan_genmsg_hangup;
+		pend->dma_data.cmd_chan->destroy_cb_ctx = (void *)(uintptr_t)channel->channel_id;
+	}
 	/* send connect reply message back to host */
 	msg2.value = 0;
 	msg2.opcode = NNP_IPC_C2H_OP_CHAN_GENERIC_MSG_PACKET;
@@ -1119,10 +1123,6 @@ done:
 	sphcs_msg_scheduler_queue_add_msg(pend->dma_data.cmd_chan->respq, &msg2.value, 1);
 	if (!channel)
 		sphcs_cmd_chan_put(pend->dma_data.cmd_chan);
-	else {
-		pend->dma_data.cmd_chan->destroy_cb = sphcs_chan_genmsg_hangup;
-		pend->dma_data.cmd_chan->destroy_cb_ctx = (void *)(uintptr_t)channel->channel_id;
-	}
 
 	rc = dma_page_pool_set_page_free(sphcs->dma_page_pool, pend->dma_data.dma_page_hndl);
 	if (rc)
@@ -1454,6 +1454,7 @@ int process_genmsg_command(struct sphcs *sphcs,
 			}
 
 			channel->hanging_up = 1;
+			channel->cmd_chan->destroy_cb = NULL;
 
 			if (channel->closing == _chnl_open) {
 				/* channel is not yet closing add empty read packet */
@@ -1744,6 +1745,7 @@ int sphcs_init_genmsg_interface(void)
  */
 void sphcs_release_genmsg_interface(void)
 {
+	ida_destroy(&s_genmsg.channel_ida);
 	release_service_list();
 	device_destroy(s_class, s_devnum);
 	class_destroy(s_class);

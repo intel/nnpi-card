@@ -42,11 +42,11 @@ static ssize_t show_ice_error(struct kobject *kobj,
 	u32 dev_index;
 	int ret = 0;
 
-	ret = sscanf(attr->attr.name, "ice%u", &dev_index);
+	ret = ice_sscanf_s_u32(attr->attr.name, "ice%u", &dev_index);
 	if (ret < 1) {
 		cve_os_log(CVE_LOGLEVEL_ERROR, "failed getting ice id %s\n",
 			kobj->name);
-		return -EFAULT;
+		return ((ret == 0) ? -EFAULT : ret);
 	}
 	if (dev_index >= NUM_ICE_UNIT) {
 		cve_os_log(CVE_LOGLEVEL_ERROR, "wrong ice id %d\n", dev_index);
@@ -56,7 +56,10 @@ static ssize_t show_ice_error(struct kobject *kobj,
 	cve_os_log(CVE_LOGLEVEL_DEBUG, "ICE number %d\n", dev_index);
 	cve_os_log(CVE_LOGLEVEL_DEBUG, "attr: %s\n", attr->attr.name);
 
-	ret = sprintf(buf, "0x%x\n", fld_intst[dev_index]);
+	ret = ice_snprintf_s_u(buf, PAGE_SIZE, "0x%x\n", fld_intst[dev_index]);
+	if (ret < 0)
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+			"Safelib failed snprintf %d\n", ret);
 
 	return ret;
 }
@@ -75,11 +78,11 @@ static ssize_t store_ice_error(struct kobject *kobj,
 		return ret;
 	}
 
-	ret = sscanf(attr->attr.name, "ice%u", &dev_index);
+	ret = ice_sscanf_s_u32(attr->attr.name, "ice%u", &dev_index);
 	if (ret < 1) {
 		cve_os_log(CVE_LOGLEVEL_ERROR, "failed getting ice id %s\n",
 			kobj->name);
-		return -EFAULT;
+		return ((ret == 0) ? -EFAULT : ret);
 	}
 	if (dev_index >= NUM_ICE_UNIT) {
 		cve_os_log(CVE_LOGLEVEL_ERROR, "wrong ice id %d\n", dev_index);
@@ -99,12 +102,18 @@ static ssize_t show_all_ice_error(struct kobject *kobj,
 		struct kobj_attribute *attr, char *buf)
 {
 	int i;
+	int ret = 0;
 
 	for (i = 0; i < 12; i++)
 		cve_os_log(CVE_LOGLEVEL_DEBUG,
 			"Error status in ICE%d is 0x%x\n", i, fld_intst[i]);
 
-	return sprintf(buf, "0x%x\n", fld_intst[1]);
+	ret = ice_snprintf_s_u(buf, PAGE_SIZE, "0x%x\n", fld_intst[1]);
+	if (ret < 0)
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+			"Safelib failed snprintf %d\n", ret);
+
+	return ret;
 }
 
 static ssize_t store_all_ice_error(struct kobject *kobj,
@@ -129,7 +138,14 @@ static ssize_t store_all_ice_error(struct kobject *kobj,
 static ssize_t show_icedc_error(struct kobject *kobj,
 		struct kobj_attribute *attr, char *buf)
 {
-	return sprintf(buf, "0x%llx\n", icedc_error);
+	int ret = 0;
+
+	ret = ice_snprintf_s_u(buf, PAGE_SIZE, "0x%llx\n", icedc_error);
+	if (ret < 0)
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+			"Safelib failed snprintf %d\n", ret);
+
+	return ret;
 }
 
 static ssize_t store_icedc_error(struct kobject *kobj,

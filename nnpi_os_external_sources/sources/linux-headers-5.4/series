@@ -12,8 +12,9 @@
 0012-EDAC-igen6-Add-debugfs-interface-for-Intel-client-So.patch
 0013-thermal_sysfs.patch
 0014-Temporary-fix-for-buggy-IFWI-that-keeps-using-boot-m.patch
-0015-Added-INTEL_FAM6_ICELAKE_NNPI-to-intel-family.h-and-intel_rapl.c.patch
 0015-no_panic_timeout_on_mce_icli.patch
 0016-mei-me-4.15-add-ice-lake-point-device-ids.patch
 0017-uart8250_force_polling.patch
 0018-intel_th-msu-Make-stopping-the-trace-optional.patch
+0019-staging-android-ion-scattered-alloc-failure-and-infinite-loop.patch
+0020-Added-INTEL_FAM6_ICELAKE_NNPI-to-intel-family.h-and-intel_rapl.c.patch

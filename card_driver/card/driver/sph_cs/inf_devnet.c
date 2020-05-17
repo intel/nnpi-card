@@ -13,6 +13,7 @@
 #include "inf_context.h"
 #include "inf_req.h"
 #include "sphcs_trace.h"
+#include "inf_ptr2id.h"
 
 int inf_devnet_add_devres(struct inf_devnet *devnet,
 			  struct inf_devres *devres)
@@ -117,6 +118,9 @@ int inf_devnet_create(uint16_t protocolID,
 	devnet->context = context;
 	devnet->created = false;
 	devnet->destroyed = 0;
+	devnet->ptr2id = add_ptr2id(devnet);
+	if (unlikely(devnet->ptr2id == 0))
+		goto free_devnet;
 
 	hash_init(devnet->infreq_hash);
 	spin_lock_init(&devnet->lock);
@@ -231,6 +235,7 @@ static void release_devnet(struct kref *kref)
 					devnet->protocolID);
 
 	ret = inf_context_put(devnet->context);
+	del_ptr2id(devnet);
 
 	kfree(devnet);
 }
@@ -390,7 +395,7 @@ static int inf_req_create_dma_complete_callback(struct sphcs *sphcs,
 		goto send_error;
 	}
 
-	cmd_args->infreq_drv_handle = (uint64_t)(uintptr_t)infreq;
+	cmd_args->infreq_drv_handle = infreq->ptr2id;
 	cmd_args->devnet_rt_handle = infreq->devnet->rt_handle;
 	cmd_args->n_inputs = n_inputs;
 	cmd_args->n_outputs = n_outputs;

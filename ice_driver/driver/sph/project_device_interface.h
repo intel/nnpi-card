@@ -116,6 +116,8 @@ void __store_ice_max_freq(void);
 u32 __get_ice_max_freq(void);
 void __get_ice_mmu_pmon_regs(struct cve_device *dev);
 void __get_ice_delphi_pmon_regs(struct cve_device *dev);
+int ice_poweroff_sysfs_init(void);
+void ice_poweroff_sysfs_term(void);
 
 #define __no_op_return_success 0
 
@@ -135,6 +137,8 @@ void __get_ice_delphi_pmon_regs(struct cve_device *dev);
 #define term_sw_debug_sysfs() __no_op_stub
 #define get_ice_mmu_pmon_regs(x) __no_op_stub
 #define get_ice_delphi_pmon_regs(x) __no_op_stub
+#define init_ice_poweroff_sysfs() __no_op_return_success
+#define term_ice_poweroff_sysfs() __no_op_stub
 #else
 #define init_icedrv_sysfs() icedrv_sysfs_init()
 #define term_icedrv_sysfs() icedrv_sysfs_term()
@@ -151,6 +155,8 @@ void __get_ice_delphi_pmon_regs(struct cve_device *dev);
 #define term_sw_debug_sysfs() sw_debug_sysfs_term()
 #define get_ice_mmu_pmon_regs(x) __get_ice_mmu_pmon_regs(x)
 #define get_ice_delphi_pmon_regs(x) __get_ice_delphi_pmon_regs(x)
+#define init_ice_poweroff_sysfs() ice_poweroff_sysfs_init()
+#define term_ice_poweroff_sysfs() ice_poweroff_sysfs_term()
 #endif
 
 int ice_di_get_core_blob_sz(void);

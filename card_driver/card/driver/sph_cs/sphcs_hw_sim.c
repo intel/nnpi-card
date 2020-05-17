@@ -193,10 +193,11 @@ static u64 hw_sim_dma_gen_lli_vec(void *hw_handle, struct lli_desc *outLli, uint
 	return total_transfer_size;
 }
 
-static int hw_sim_dma_edit_lli(void *hw_handle, struct lli_desc *outLli, uint32_t size)
+static int hw_sim_dma_edit_lli(void *hw_handle, struct lli_desc *outLli, uint64_t size)
 {
+	NNP_ASSERT(size > 0);
 	/* Set header */
-	((union sgl_data_element *)outLli->vptr)->bytes_to_copy = (size > 0) ? size : SIZE_MAX;
+	((union sgl_data_element *)outLli->vptr)->bytes_to_copy = size;
 
 	return 0;
 }

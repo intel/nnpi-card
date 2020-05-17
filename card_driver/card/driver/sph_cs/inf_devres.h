@@ -61,6 +61,7 @@ struct inf_devres {
 	bool is_p2p_src;
 	bool is_p2p_dst;
 	struct sphcs_p2p_buf p2p_buf;
+	unsigned int ptr2id;
 
 	/* The device resource contains inconsistent data */
 	bool is_dirty;

@@ -36,12 +36,6 @@ int cve_driver_init(void)
 	/*debug fs and module params set*/
 	cve_debug_init();
 
-#ifdef ENABLE_MEM_DETECT
-	if (mem_detect_en)
-		cve_os_log(CVE_LOGLEVEL_ERROR,
-				"### Starting Memory detection on driver\n");
-#endif
-
 #ifdef RING3_VALIDATION
 	/*FixMe:Currently w/o error check as coral api returns void */
 	size_t pa_size = 0x100000000;
@@ -61,11 +55,13 @@ int cve_driver_init(void)
 #endif
 
 	retval = cve_fw_init();
+#ifdef RING3_VALIDATION
 	if (retval != 0) {
 		cve_os_log(CVE_LOGLEVEL_ERROR,
 				"cve_fw_init failed %d\n", retval);
 		goto debug_cleanup;
 	}
+#endif
 
 	retval = ice_kmd_create_dg();
 	if (retval != 0) {
@@ -74,40 +70,37 @@ int cve_driver_init(void)
 		goto debug_cleanup;
 	}
 
-	retval = cve_dg_start_poweroff_thread();
-	if (retval != 0) {
-		cve_os_log(CVE_LOGLEVEL_ERROR,
-				"failed to start poweroff thread %d\n", retval);
-		goto debug_cleanup;
-	}
+	cve_dg_start_poweroff_thread();
 
 	retval = cve_os_interface_init();
+#ifdef RING3_VALIDATION
 	if (retval != 0) {
 		cve_os_log(CVE_LOGLEVEL_ERROR,
 				"os_driver_init failed %d\n", retval);
 		goto dg_cleanup;
 	}
+#endif
 
-	retval = ice_sch_init();
-	if (retval != 0) {
-		cve_os_log(CVE_LOGLEVEL_ERROR,
-				"ice_sch_init failed %d\n", retval);
-		goto os_interface_cleanup;
-	}
+	ice_sch_init();
 
 	retval = cve_os_lock_init(&g_cve_driver_biglock);
+#ifdef RING3_VALIDATION
 	if (retval != 0) {
 		cve_os_log(CVE_LOGLEVEL_ERROR,
 				"os_lock_init failed %d\n", retval);
 		goto os_interface_cleanup;
 	}
+#endif
+
 
 	return 0;
 
+#ifdef RING3_VALIDATION
 os_interface_cleanup:
 	cve_os_interface_cleanup();
 dg_cleanup:
 	ice_kmd_destroy_dg();
+#endif
 debug_cleanup:
 	cve_debug_destroy();
 

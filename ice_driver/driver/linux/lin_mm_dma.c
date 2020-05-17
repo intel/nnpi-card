@@ -955,7 +955,7 @@ static int ice_osmm_get_sgt(struct cve_dma_handle **dma_handle,
 
 undo_loop:
 	/* TODO: Duplicate Code. try using ice_osmm_release_sgt() */
-	for (j = 0; j < i; j++) {
+	for (j = 0; (j < i) && cve_alloc_list; j++) {
 		struct cve_os_allocation *cve_alloc =
 			cve_alloc_list;
 
@@ -1165,8 +1165,15 @@ int cve_osmm_inf_dma_buf_map(u64 inf_id,
 	inf_alloc->page_sz = ntw_alloc->page_sz;
 	inf_alloc->page_shift = ntw_alloc->page_shift;
 	inf_alloc->ice_pages_nr = ntw_alloc->ice_pages_nr;
-	memcpy(inf_alloc->hdomain, hdomain,
+	retval = ice_memcpy_s(inf_alloc->hdomain, MAX_CVE_DEVICES_NR *
+		sizeof(os_domain_handle), hdomain,
 		dma_domain_array_size * sizeof(os_domain_handle));
+	if (retval < 0) {
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+				"Safelib memcpy failed %d\n", retval);
+		goto out;
+	}
+
 	inf_alloc->dma_domain_array_size = ntw_alloc->dma_domain_array_size;
 
 	cve_os_log(CVE_LOGLEVEL_DEBUG,
@@ -1256,8 +1263,14 @@ int cve_osmm_dma_buf_map(os_domain_handle *hdomain,
 	alloc->page_shift = iova_desc->page_shift;
 	alloc->buf_meta_data.partition_id = iova_desc->partition_id;
 	alloc->ice_pages_nr = calc_alloc_cve_pages_nr(alloc);
-	memcpy(alloc->hdomain, hdomain,
+	retval = ice_memcpy_s(alloc->hdomain, MAX_CVE_DEVICES_NR *
+			sizeof(os_domain_handle), hdomain,
 		dma_domain_array_size * sizeof(os_domain_handle));
+	if (retval < 0) {
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+				"Safelib memcpy failed %d\n", retval);
+		goto out;
+	}
 	alloc->dma_domain_array_size = dma_domain_array_size;
 
 	if (INFER_MEM_ONLY(mem_type)) {
@@ -1493,7 +1506,6 @@ err_begin_cpu_access:
 
 int cve_osmm_unmap_kva(os_allocation_handle alloc_hdl, void *vaddr)
 {
-	int err = 0;
 	struct lin_mm_allocation *mm_alloc_info =
 		(struct lin_mm_allocation *)alloc_hdl;
 	struct dma_buf *dbuf = mm_alloc_info->dbuf;
@@ -1505,7 +1517,7 @@ int cve_osmm_unmap_kva(os_allocation_handle alloc_hdl, void *vaddr)
 	dma_buf_vunmap(dbuf, vaddr);
 	dma_buf_end_cpu_access(dbuf, DMA_BIDIRECTIONAL);
 
-	return err;
+	return 0;
 }
 
 u8 ice_osmm_alloc_get_page_shift(os_allocation_handle halloc)

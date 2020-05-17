@@ -48,6 +48,7 @@ struct inf_devnet {
 
 	struct nnp_sw_counters *sw_counters;
 	bool serial_infreq_exec;
+	unsigned int ptr2id;
 };
 
 int inf_devnet_create(uint16_t protocolID,

@@ -10,6 +10,7 @@
 #include <linux/atomic.h>
 #include "ioctl_inf.h"
 #include "nnp_error.h"
+#include "inf_ptr2id.h"
 
 void inf_req_try_execute(struct inf_exec_req *req)
 {
@@ -315,9 +316,8 @@ void inf_exec_error_list_clear(struct inf_exec_error_list *error_list,
 			reply.total_size = NNP_IPC_NO_SUCH_NET;
 			goto send_reply;
 		}
-
-		reset_cmd.devnet_drv_handle = (uint64_t)devnet;
-		reset_cmd.cmdlist_drv_handle = (uint64_t)(uintptr_t)cmdlist;
+		reset_cmd.devnet_drv_handle = devnet->ptr2id;
+		reset_cmd.cmdlist_drv_handle = (cmdlist?cmdlist->ptr2id:0);
 		reset_cmd.devnet_rt_handle = devnet->rt_handle;
 		reset_cmd.flags = 0;
 		ret = inf_cmd_queue_add(&error_list->context->cmdq,

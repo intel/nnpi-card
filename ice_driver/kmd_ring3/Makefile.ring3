@@ -37,7 +37,8 @@ INCLUDES+= \
 	-I $(DRIVER_DIR)/linux \
 	-I $(DRIVER_DIR)/../external/hw_interface/$(HW_SHORT_NAME) \
 	-I $(DRIVER_DIR)/../external/hw_interface/$(HW_SHORT_NAME)/a_step \
-	-I $(VERSION_DIR)
+	-I $(VERSION_DIR) \
+	-I $(DRIVER_DIR)/ice_safe_lib
 
 ifdef DEBUG
 CFLAGS=-g -O0 $(INCLUDES) -Wall -Werror
@@ -107,10 +108,10 @@ SRCS+=$(VERSION_DIR)/version.c\
 	os_interface_stub.c\
 	$(DRIVER_DIR)/cve_device.c\
 	$(DRIVER_DIR)/ice_trace.c\
-	$(DRIVER_DIR)/ice_debug_event.c\
 	$(DRIVER_DIR)/ice_debug.c\
 	$(DRIVER_DIR)/icedrv_internal_sw_counter_funcs.c \
-        icedrv_sw_trace_stub.c
+        icedrv_sw_trace_stub.c\
+	$(DRIVER_DIR)/ice_safe_lib/ice_safe_func.c\
 
 CFLAGS  += -DRING3_VALIDATION -I$(CORAL_DIR)/src
 LDFLAGS += -shared -lcoral_drv -L$(CORAL_DRIVER_DLL_DIR) -Wl,-rpath,'$$ORIGIN'

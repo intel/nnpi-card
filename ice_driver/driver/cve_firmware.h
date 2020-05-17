@@ -21,6 +21,7 @@
 #include "cve_driver_internal_types.h"
 #include "doubly_linked_list.h"
 #include "memory_manager.h"
+#include "ice_safe_func.h"
 
 #define MAX_NAME_LEN 1024
 
@@ -165,6 +166,6 @@ int cve_fw_load_firmware_via_files(struct cve_device *cve_dev,
 		Version **out_fw_version);
 
 #ifndef RING3_VALIDATION
-void ice_fw_update_path(const char *path);
+int ice_fw_update_path(const char *path);
 #endif
 #endif /* _CVE_FIRMWARE_H_ */

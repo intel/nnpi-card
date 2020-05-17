@@ -47,7 +47,7 @@ int cve_ds_open_context(
 		int64_t obj_id,
 		u64 *out_context_id);
 
-void config_ds_trace_node_sysfs(struct cve_device *dev, struct ice_network *ntw,
+int config_ds_trace_node_sysfs(struct cve_device *dev, struct ice_network *ntw,
 		struct job_descriptor *job, int id);
 /*
  * closes a connection channel with a user
@@ -224,13 +224,9 @@ void ice_ds_ntw_release_resource(struct ice_network *ntw);
 enum resource_status ice_ds_ntw_borrow_resource(struct ice_network *ntw);
 void ice_ds_ntw_return_resource(struct ice_network *ntw);
 
-int ice_ds_debug_control(struct ice_debug_control_params *dc);
-
 int ice_di_get_core_blob_sz(void);
 
 int ice_ds_dispatch_jg(struct jobgroup_descriptor *jobgroup);
-
-int ice_set_hw_config(struct ice_set_hw_config_params *set_hw_config);
 
 int ice_ds_raise_event(struct ice_network *ntw,
 	enum cve_jobs_group_status status,

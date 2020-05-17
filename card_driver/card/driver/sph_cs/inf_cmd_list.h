@@ -36,6 +36,7 @@ struct inf_cmd_list {
 	uint16_t             edits_idx;
 	atomic_t             sched_queued;
 	enum event_val       sched_failed;
+	unsigned int         ptr2id;
 
 	// list of devres ids acccessed by this command list.
 	// Used for devres_group optimization

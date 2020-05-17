@@ -15,6 +15,7 @@
 #include <linux/version.h>
 #include <linux/kmod.h>
 #include "sphcs_cmd_chan.h"
+#include "sph_safe.h"
 
 struct net_dma_command_data {
 	void *vptr;
@@ -230,7 +231,7 @@ static void sphcs_net_dev_setup(struct net_device *netdev)
 {
 	sph_log_debug(ETH_LOG, "SPH_NET - sphcs_net_dev_setup(%s)\n", netdev->name);
 
-	memcpy(netdev->dev_addr, s_mac_addr, ETH_ALEN);
+	safe_c_memcpy(netdev->dev_addr, ETH_ALEN, s_mac_addr, ETH_ALEN);
 
 	ether_setup(netdev);
 	netdev->netdev_ops = &ndo;
@@ -325,7 +326,7 @@ static void sphcs_net_dev_rx(struct net_device *netdev, int data_size,
 		return;
 	}
 
-	memcpy(skb_put(skb, data_size), buf, data_size);
+	safe_c_memcpy(skb_put(skb, data_size), data_size, buf, data_size);
 
 	skb->dev = netdev;
 	skb->protocol = eth_type_trans(skb, netdev);
@@ -540,7 +541,7 @@ static void config_card_eth(struct work_struct *work)
 		op->chan->destroy_cb = NULL;
 	} else if (op->chan->h2c_rb[0].host_sgt.sgl && op->chan->h2c_rb[0].size > 0 &&
 		   op->chan->c2h_rb[0].host_sgt.sgl && op->chan->c2h_rb[0].size > 0) {
-		memcpy(s_mac_addr, &op->cmd.value[10], ETH_ALEN);
+		safe_c_memcpy(s_mac_addr, ETH_ALEN, &op->cmd.value[10], ETH_ALEN);
 		ret = sphcs_net_dev_init(op->chan->h2c_rb[0].size / NNP_PAGE_SIZE,
 					 op->chan->c2h_rb[0].size / NNP_PAGE_SIZE);
 		if (ret == 0) {
@@ -588,7 +589,7 @@ void IPC_OPCODE_HANDLER(CHAN_ETH_CONFIG)(struct sphcs                 *sphcs,
 	if (!work)
 		goto fail;
 
-	memcpy(work->cmd.value, cmd->value, sizeof(cmd->value));
+	safe_c_memcpy(work->cmd.value, 16, cmd->value, sizeof(cmd->value));
 	work->sphcs = sphcs;
 	work->chan = chan;
 	INIT_WORK(&work->work, config_card_eth);

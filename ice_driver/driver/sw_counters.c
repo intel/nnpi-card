@@ -21,6 +21,7 @@
 #include <linux/uaccess.h>
 #include <linux/fcntl.h>
 #include "sph_log.h"
+#include "ice_safe_func.h"
 
 
 #define SPH_SW_COUNTERS_GLOBAL_DIR_NAME		"sw_counters"
@@ -249,13 +250,17 @@ ssize_t read_counters_descriptor(struct file *file,
 				 size_t count)
 {
 	struct sph_sw_counters_bin_file_attr *counters_att = (struct sph_sw_counters_bin_file_attr *)attr;
+	int ret = 0;
 
 	/* check for minimum value - buffer length or requested count */
 	count = min((u32)(counters_att->info_size - (u32)pos), (u32)count);
 
 	/* copy output to buffer */
-	memcpy(buf, counters_att->info_buf + pos, count);
-
+	ret = ice_memcpy_s(buf, PAGE_SIZE, counters_att->info_buf + pos, count);
+	if (ret < 0) {
+		sph_log_err(GENERAL_LOG, "Safelib memcpy failed %d\n", ret);
+		return ret;
+	}
 	return count;
 }
 
@@ -399,7 +404,11 @@ static void move_to_stale_list(struct gen_sync_attr                 *gen_sync,
 	}
 
 	stale_node->kobj = kobject_get(kobj);
-	memcpy(&stale_node->bin_file, attr, sizeof(struct sph_sw_counters_bin_file_attr));
+	ret = ice_memcpy_s(&stale_node->bin_file, sizeof(struct sph_sw_counters_bin_file_attr), attr, sizeof(struct sph_sw_counters_bin_file_attr));
+	if (ret < 0) {
+		sph_log_err(GENERAL_LOG, "Safelib memcpy failed %d\n", ret);
+		goto fail_create;
+	}
 
 	spin_lock(&gen_sync->lock);
 	if (++gen_sync->stale_seq == 0)
