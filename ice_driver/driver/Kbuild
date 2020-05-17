@@ -69,6 +69,8 @@ subdir-ccflags-y += -I$(src)/../null_device/common
 subdir-ccflags-y += -I$(src)/../null_device/nulldev_kmd_ring0
 endif
 
+subdir-ccflags-y += -I$(src)/ice_safe_lib
+
 $(MODULE_NAME)-y := cve_driver.o
 $(MODULE_NAME)-y += c_step_regs.o
 $(MODULE_NAME)-y += b_step_regs.o
@@ -122,6 +124,4 @@ $(MODULE_NAME)-$(CVE_PLATFORM_SUPPORT) += linux/platform/cve_platform_driver.o
 # DTF/DSO trace interface
 $(MODULE_NAME)-y += ice_trace.o
 
-# ICE Debug event flow interface
-$(MODULE_NAME)-y += ice_debug_event.o
-
+$(MODULE_NAME)-$(CONFIG_SPH) += ice_safe_lib/ice_safe_func.o \

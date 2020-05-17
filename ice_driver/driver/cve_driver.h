@@ -714,68 +714,13 @@ struct ice_register_reader_daemon {
 	__u32 daemon_table[ICE_MAX_DAEMON_TABLE_LEN];
 };
 
-struct ice_hw_trace_config {
-	/* in, num of observer configurations */
-	__u32 ice_observer_count;
-	/* in, num of performance related counter setup configurations */
-	__u32 ice_perf_counter_setup_count;
-	/* in, num of register reader daemon configurations */
-	__u32 ice_reg_daemon_count;
-	/* in, list of dso observer configurations */
-	struct ice_observer_config *observer_list;
-	/* in, list of performance related counter setup configurations */
-	struct ice_perf_counter_setup *counter_setup_list;
-	/* in, list of register reader daemon configurations */
-	struct ice_register_reader_daemon *reg_daemon_list;
-};
-
 /*
  * parameter for IOCTL-get-debug-event
  */
 
-enum ice_debug_event_type {
-	ICE_DEBUG_EVENT_ICE_POWERED_ON = 0x1,
-	ICE_DEBUG_EVENT_TLC_BP = 0x2
-};
-
-struct ice_debug_event_info_power_on {
-	/*out,  indicate which ices are powered on */
-	__u32 powered_on_ices;
-	/*out,  indicate network_id associated with the ices */
-	__u64 network_id;
-};
-
-struct ice_debug_event_info_bp {
-	/*out, indicate which ice gave break point interrupt */
-	__u32 ice_index;
-	/*out,  indicate network_id associated with the ice */
-	__u64 network_id;
-};
-
-struct ice_get_debug_event {
-	/*in, timeout in milliseconds */
-	__u32 timeout_msec;
-	/* out, debug wait status*/
-	enum cve_wait_event_status debug_wait_status;
-	/* in,out, debug event type*/
-	enum ice_debug_event_type debug_event;
-	/* out, different event related info */
-	union {
-		struct ice_debug_event_info_power_on power_on_evt_info;
-		struct ice_debug_event_info_bp bp_evt_info;
-	};
-};
-
 /*
  * parameter for IOCTL-debug-control
  */
-enum ice_debug_control_type {
-	/* powered on ICE MASK */
-	ICE_DEBUG_CONTROL_GET_POWERED_ON_ICEMASK = 1,
-	/* Get ICE dump */
-	ICE_DEBUG_CONTROL_GET_ICE_DUMP
-};
-
 enum ice_dump_status {
 	/* ice dump completed succefully */
 	ICE_DEBUG_ICE_DUMP_COMPLETE = 1,
@@ -801,23 +746,6 @@ struct ice_debug_control_ice_dump {
 	enum ice_dump_status ice_dump_status;
 };
 
-struct ice_debug_control_params {
-	/* in/out, opaque holder */
-	__u64 user_data;
-	/* in, debug control type */
-	enum ice_debug_control_type type;
-};
-
-struct ice_set_hw_config_params {
-	/*in, different configs related info */
-	union {
-		struct ice_hw_config_llc_freq llc_freq_config;
-		struct ice_hw_config_ice_freq ice_freq_config;
-	};
-	/*in, configuration type*/
-	enum hw_config_type config_type;
-};
-
 struct ice_reset_network_params {
 	/* in, id of the context */
 	__u64 contextid;
@@ -841,10 +769,6 @@ struct cve_ioctl_param {
 		struct cve_get_event get_event;
 		struct cve_get_version_params get_version;
 		struct cve_get_metadata_params get_metadata;
-		struct ice_hw_trace_config trace_cfg;
-		struct ice_get_debug_event get_debug_event;
-		struct ice_debug_control_params debug_control;
-		struct ice_set_hw_config_params set_hw_config;
 		struct ice_reset_network_params reset_network;
 	};
 };
@@ -875,23 +799,15 @@ struct cve_ioctl_param {
 #define CVE_IOCTL_GET_METADATA \
 	_IOR(CVE_IOCTL_SEQ_NUM, 13, struct cve_ioctl_param)
 
-#define ICE_IOCTL_HW_TRACE_CONFIG \
-	_IOW(CVE_IOCTL_SEQ_NUM, 14, struct cve_ioctl_param)
-
-#define ICE_IOCTL_WAIT_FOR_DEBUG_EVENT \
-	_IOWR(CVE_IOCTL_SEQ_NUM, 15, struct cve_ioctl_param)
-#define ICE_IOCTL_DEBUG_CONTROL \
-	_IOWR(CVE_IOCTL_SEQ_NUM, 16, struct cve_ioctl_param)
 #define CVE_IOCTL_CREATE_NETWORK \
 	_IOWR(CVE_IOCTL_SEQ_NUM, 17, struct cve_ioctl_param)
 #define CVE_IOCTL_DESTROY_NETWORK \
 	_IOWR(CVE_IOCTL_SEQ_NUM, 18, struct cve_ioctl_param)
 #define CVE_IOCTL_MANAGE_RESOURCE \
 	_IOWR(CVE_IOCTL_SEQ_NUM, 19, struct cve_ioctl_param)
-#define ICE_IOCTL_SET_HW_CONFIG \
-	_IOW(CVE_IOCTL_SEQ_NUM, 20, struct cve_ioctl_param)
 #define ICE_IOCTL_RESET_NETWORK \
 	_IOW(CVE_IOCTL_SEQ_NUM, 21, struct cve_ioctl_param)
 #define CVE_IOCTL_REPORT_SHARED_SURFACES \
 	_IOW(CVE_IOCTL_SEQ_NUM, 22, struct cve_ioctl_param)
 #endif /* _CVE_DRIVER_H_ */
+

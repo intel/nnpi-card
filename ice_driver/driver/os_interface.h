@@ -17,6 +17,7 @@
 #include "os_interface_impl.h"
 #include "sph_log.h"
 #include "linux/sched.h"
+#include <linux/trace_clock.h>
 #endif
 
 #include "cve_fw_structs.h"
@@ -44,12 +45,9 @@
 extern u32 g_icemask;
 extern u32 disable_embcb;
 extern u32 core_mask;
-extern int enable_llc;
 extern u32 ice_fw_select;
 extern u32 block_mmu;
-extern u32 enable_b_step;
 extern u32 disable_clk_gating;
-extern u32 pin_atu;
 
 typedef u32 cve_virtual_address_t;
 typedef u32 pt_entry_t;
@@ -188,70 +186,43 @@ enum cve_log_level {
 
 /* Logging facility mainly for release build */
 #if SPH_LOGGER == 1
-#define cve_os_log_default(level, fmt, ...) do {\
-		switch (level) {\
-		case CVE_LOGLEVEL_ERROR:\
-			sph_log_err(ICE_KMD_CATEGORY, fmt, ##__VA_ARGS__);\
-			break;\
-		case CVE_LOGLEVEL_WARNING:\
-			sph_log_warn(ICE_KMD_CATEGORY, fmt, ##__VA_ARGS__);\
-			break;\
-		case CVE_LOGLEVEL_INFO:\
-			sph_log_info(ICE_KMD_CATEGORY, fmt, ##__VA_ARGS__);\
-			break;\
-		} \
-	} while (0)
-#define _cve_os_log_default(level, fmt, ...) do {\
-		switch (level) {\
-		case CVE_LOGLEVEL_ERROR:\
-			sph_log_err(ICE_KMD_CATEGORY, fmt, ##__VA_ARGS__);\
-			break;\
-		case CVE_LOGLEVEL_WARNING:\
-			sph_log_warn(ICE_KMD_CATEGORY, fmt, ##__VA_ARGS__);\
-			break;\
-		case CVE_LOGLEVEL_INFO:\
-			sph_log_info(ICE_KMD_CATEGORY, fmt, ##__VA_ARGS__);\
-			break;\
-		} \
-	} while (0)
+
+#define sph_log_CVE_LOGLEVEL_ERROR	sph_log_err
+#define sph_log_CVE_LOGLEVEL_WARNING	sph_log_warn
+#define sph_log_CVE_LOGLEVEL_INFO	sph_log_info
+#define sph_log(func, fmt, ...)	\
+		func(ICE_KMD_CATEGORY, fmt, ##__VA_ARGS__)
+
+#define cve_os_log_default(level, fmt, ...) \
+		sph_log(sph_log_##level, fmt, ##__VA_ARGS__)
+
+#define _cve_os_log_default(level, fmt, ...) \
+		sph_log(sph_log_##level, fmt, ##__VA_ARGS__)
+
 #define cve_os_dev_log_default(level, cve_dev, fmt, ...) \
 		_cve_os_log_default(level, \
 			"[PID:%d] %s(%d) : ICE%d: "fmt, current->pid, \
 			__FILENAME__, __LINE__, cve_dev, ##__VA_ARGS__)
 #else
-#define cve_os_log_default(level, fmt, ...) do {\
-		switch (level) {\
-		case CVE_LOGLEVEL_ERROR:\
-			pr_err(fmt, ##__VA_ARGS__);\
-			break;\
-		case CVE_LOGLEVEL_WARNING:\
-			pr_warn(fmt, ##__VA_ARGS__);\
-			break;\
-		case CVE_LOGLEVEL_INFO:\
-			pr_info(fmt, ##__VA_ARGS__);\
-			break;\
-		} \
-	} while (0)
-#define _cve_os_log_default(level, fmt, ...) do {\
-		switch (level) {\
-		case CVE_LOGLEVEL_ERROR:\
-			pr_err(fmt, ##__VA_ARGS__);\
-			break;\
-		case CVE_LOGLEVEL_WARNING:\
-			pr_warn(fmt, ##__VA_ARGS__);\
-			break;\
-		case CVE_LOGLEVEL_INFO:\
-			pr_info(fmt, ##__VA_ARGS__);\
-			break;\
-		} \
-	} while (0)
+
+#define pr_CVE_LOGLEVEL_ERROR		pr_err
+#define pr_CVE_LOGLEVEL_WARNING		pr_warn
+#define pr_CVE_LOGLEVEL_INFO		pr_info
+#define pr_log(func, fmt, ...)	\
+		func(fmt, ##__VA_ARGS__)
+
+#define cve_os_log_default(level, fmt, ...) \
+		pr_log(pr_##level, fmt, ##__VA_ARGS__)
+
+#define _cve_os_log_default(level, fmt, ...) \
+		pr_log(pr_##level, fmt, ##__VA_ARGS__)
+
 #define cve_os_dev_log_default(level, cve_dev, fmt, ...) \
 		_cve_os_log_default(level, \
 			"ICE : [PID:%d] %s(%d) :%s: ICE%d: "fmt, \
 			getpid(), __FILENAME__, \
 			__LINE__, __func__, cve_dev, ##__VA_ARGS__)
 #endif
-
 
 #if SPH_LOGGER == 1
 #define cve_os_log(level, fmt, ...) \
@@ -308,73 +279,6 @@ struct ice_drv_memleak {
 #endif
 
 
-#ifdef ENABLE_MEM_DETECT
-
-#define OS_ALLOC_ZERO(size_bytes, out_ptr) ({ \
-	int ret = __cve_os_malloc_zero(size_bytes, out_ptr); \
-	if (mem_detect_en) \
-		cve_os_log(CVE_LOGLEVEL_ERROR, \
-		"Allocated non-dma block. size=%lu vaddress=%p\n", \
-		size_bytes, *out_ptr); \
-	ret; \
-})
-
-#define OS_FREE(base_address, size_bytes) ({ \
-	int ret = __cve_os_free(base_address, size_bytes); \
-	if (mem_detect_en) \
-		cve_os_log(CVE_LOGLEVEL_ERROR, \
-			"Freed non-dma block. size=%u vaddr=%p\n", \
-			(u32)size_bytes, base_address); \
-	ret; \
-})
-
-#define OS_ALLOC_DMA_CONTIG(cve_dev, size_of_elem, num_of_elem, \
-		out_vaddr, out_dma_addr, aligned) ({ \
-	int ret = __cve_os_alloc_dma_contig(cve_dev, size_of_elem, \
-		num_of_elem, out_vaddr, out_dma_addr, aligned); \
-	if (mem_detect_en) \
-		cve_os_log(CVE_LOGLEVEL_ERROR, \
-		"Allocated contig dma block. size=%u dma_addr=%p vaddr=%p\n", \
-		(u32)size_of_elem*num_of_elem, \
-		(void *)(uintptr_t)(out_dma_addr)->mem_handle.dma_address, \
-		*out_vaddr); \
-	ret; \
-})
-
-#define OS_FREE_DMA_CONTIG(cve_dev, size_of_elem, vaddr, dma_addr, aligned) ({ \
-	__cve_os_free_dma_contig(cve_dev, size_of_elem, \
-		vaddr, dma_addr, aligned); \
-	if (mem_detect_en) \
-		cve_os_log(CVE_LOGLEVEL_ERROR, \
-		"Freed contig dma block. size=%u dma_addr=%p vaddr=%p\n", \
-		(u32)size_of_elem, \
-		(void *)(uintptr_t)(dma_addr)->mem_handle.dma_address, \
-		vaddr); \
-})
-
-#define OS_ALLOC_DMA_SG(cve_dev, size_of_elem, num_of_elem, out_dma_addr, \
-		is_single_contig_mem) ({ \
-	int ret = __cve_os_alloc_dma_sg(cve_dev, size_of_elem, \
-		num_of_elem, out_dma_addr, is_single_contig_mem); \
-	if (mem_detect_en) \
-		cve_os_log(CVE_LOGLEVEL_ERROR, \
-		"Allocated sg dma block. size=%u dma_addr=%p\n", \
-		(u32)size_of_elem*num_of_elem, \
-		(void *)(uintptr_t)(out_dma_addr)->mem_handle.dma_address); \
-	ret; \
-})
-
-#define OS_FREE_DMA_SG(cve_dev, size_of_elem, dma_addr) ({ \
-	__cve_os_free_dma_sg(cve_dev, size_of_elem, dma_addr); \
-	if (mem_detect_en) \
-		cve_os_log(CVE_LOGLEVEL_ERROR, \
-		"Freed sg dma block. size=%u dma_addr=%p\n", \
-		(u32)size_of_elem, \
-		(void *)(uintptr_t)(dma_addr)->mem_handle.dma_address); \
-})
-
-#else /* ENABLE_MEM_DETECT */
-
 #define OS_ALLOC_ZERO(size_bytes, out_ptr) ({ \
 	int ret = __cve_os_malloc_zero(size_bytes, out_ptr); \
 	ret; \
@@ -406,7 +310,6 @@ struct ice_drv_memleak {
 #define OS_FREE_DMA_SG(cve_dev, size_of_elem, dma_addr) ({ \
 	__cve_os_free_dma_sg(cve_dev, size_of_elem, dma_addr); \
 })
-#endif
 
 /*
  * Tensilica debugger specific
@@ -827,6 +730,7 @@ uint64_t get_llc_freq(void);
 uint64_t get_ice_freq(void);
 
 unsigned long ice_os_get_current_jiffy(void);
+#define nsec_to_usec(x) ((x) / 1000)
 
 #ifdef RING3_VALIDATION
 

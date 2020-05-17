@@ -7,11 +7,7 @@
 #define _IPC_CHAN_PROTOCOL_ULT_H
 
 #ifdef ULT
-#ifdef __KERNEL__
 #include <linux/types.h>
-#else
-#include <stdbool.h>
-#endif
 #include "ipc_chan_protocol.h"
 
 #pragma pack(push, 1)
@@ -28,31 +24,31 @@ NNP_STATIC_ASSERT(NNP_IPC_ULT2_NUM_OPCODES <= 16, "Opcode ID overflow for ULT2 o
 
 union ULT2HwQMsg {
 	struct {
-		u64 opcode       :  6;
-		u64 channelID    : NNP_IPC_CHANNEL_BITS;
-		u64 ultOpcode    :  4;
-		u64 ultMsgId     :  5;
-		u64 ultMsgsNum   : 16;
-		u64 ultMsgSeqNum : 16;
-		u64 reserved     :  7;
+		__le64 opcode       :  6;
+		__le64 channelID    : NNP_IPC_CHANNEL_BITS;
+		__le64 ultOpcode    :  4;
+		__le64 ultMsgId     :  5;
+		__le64 ultMsgsNum   : 16;
+		__le64 ultMsgSeqNum : 16;
+		__le64 reserved     :  7;
 	};
 
-	u64 value;
+	__le64 value;
 };
 CHECK_MESSAGE_SIZE(union ULT2HwQMsg, 1);
 
 union ULT2DmaPingMsg {
 	struct {
-		u64 opcode       :  6;
-		u64 channelID    : NNP_IPC_CHANNEL_BITS;
-		u64 ultOpcode    :  4;
-		u64 rbID         :  1;
-		u64 seq          : 16;
-		u64 size         : 12;
-		u64 reserved     : 15;
+		__le64 opcode       :  6;
+		__le64 channelID    : NNP_IPC_CHANNEL_BITS;
+		__le64 ultOpcode    :  4;
+		__le64 rbID         :  1;
+		__le64 seq          : 16;
+		__le64 size         : 12;
+		__le64 reserved     : 15;
 	};
 
-	u64 value;
+	__le64 value;
 };
 CHECK_MESSAGE_SIZE(union ULT2HwQMsg, 1);
 

@@ -49,7 +49,6 @@
 #endif
 
 #include "ice_trace.h"
-#include "ice_debug_event.h"
 /* GLOBAL VARIABLES */
 #define DEBUG_STR "DEBUG"
 #define WARNING_STR "WARNING"
@@ -69,7 +68,6 @@ bool print_debug;
 static u32 icemask;
 u32 block_mmu = 1;
 struct config cfg_default;
-u32 pin_atu = 1;
 
 /* log file */
 static FILE* pLogStream = NULL;
@@ -84,8 +82,6 @@ struct cve_debug_st {
 
 /* This variable contains the debug-fs value of debug_wd_en */
 u32 enable_wdt_debugfs;
-int mem_detect_en;
-int enable_llc = 0;
 
 /* cve_debug doesn't contain the default value, but the real value that
  * was read from the env. variable
@@ -352,7 +348,7 @@ int cve_os_interface_init(void)
 	int retval;
 	u32 i,j, dev_count = 0;
 	u32 devices_nr = g_driver_settings.config->devices_nr;
-	u32 icemask_user, icemask_reg, active_ice, enable_mmu_pmon = 0;
+	u32 icemask_user, icemask_reg, active_ice;
 	u32 enable_llc_config_via_axi_reg = 0;
 	char *icemask_user_str = NULL;
 	char *coral_config = NULL;
@@ -361,7 +357,6 @@ int cve_os_interface_init(void)
 	char hw_folder[20];
 	char *workspace = getenv("WORKSPACE");
 	char *env_llc_config_via_axi_reg;
-	char *mmu_pmon_str = NULL;
 	struct ice_drv_config param;
 	u64 pe_reg_value;
 
@@ -378,18 +373,13 @@ int cve_os_interface_init(void)
 	if (env_llc_config_via_axi_reg)
 		sscanf(env_llc_config_via_axi_reg, "%x", &enable_llc_config_via_axi_reg);
 
-	mmu_pmon_str = getenv("ENABLE_MMU_PMON");
-	if (mmu_pmon_str)
-		sscanf(mmu_pmon_str, "%x", &enable_mmu_pmon);
-
-
-	param.enable_mmu_pmon = enable_mmu_pmon;
 	param.enable_llc_config_via_axi_reg = enable_llc_config_via_axi_reg;
 	/* For RING3, space is always set to 0*/
 	param.sph_soc = 0;
-	/* For RING3, ice_power_off_delay is 1000 ms */
+	/* For RING3, ice_power_off_delay is 0 ms */
 
-	param.ice_power_off_delay_ms = 1000;
+	/* Should expose ENV to set this value */
+	param.ice_power_off_delay_ms = 0;
 	if(getenv("ENABLE_C_STEP") != NULL) {
 		param.enable_sph_b_step = false;
 		param.enable_sph_c_step = true;
@@ -584,7 +574,11 @@ void getnstimeofday(struct timespec *ts) {
 
 uint64_t trace_clock_local(void)
 {
-	return 0;
+	struct timespec ts;
+
+	getnstimeofday(&ts);
+
+	return ((ts.tv_sec * 1000000000) + (ts.tv_nsec));
 }
 
 #else
@@ -1002,34 +996,11 @@ int cve_ioctl_misc(int fd, int request, struct cve_ioctl_param *param)
 				param->get_version.networkid,
 				&param->get_version.out_versions);
 		break;
-	case ICE_IOCTL_HW_TRACE_CONFIG:
-		{
-			cve_os_log(CVE_LOGLEVEL_DEBUG,
-					"Simulation mode ICE_IOCTL_HW_TRACE_CONFIG\n");
-			retval = ice_trace_config(&param->trace_cfg);
-		}
-		break;
 	case CVE_IOCTL_GET_METADATA:
 		cve_os_log(CVE_LOGLEVEL_DEBUG,
 				"Simulation mode - CVE_IOCTL_GET_METADATA\n");
 		retval = cve_ds_get_metadata(
 				&param->get_metadata);
-		break;
-	case ICE_IOCTL_WAIT_FOR_DEBUG_EVENT:
-		cve_os_log(CVE_LOGLEVEL_DEBUG,
-				"Simulation mode - ICE_IOCTL_WAIT_FOR_DEBUG_EVENT\n");
-		retval = ice_debug_wait_for_event(
-				&param->get_debug_event);
-		break;
-	case ICE_IOCTL_DEBUG_CONTROL:
-		cve_os_log(CVE_LOGLEVEL_DEBUG,
-				"Simulation mode - ICE_IOCTL_DEBUG_CONTROL\n");
-		retval = ice_ds_debug_control(&param->debug_control);
-		break;
-	case ICE_IOCTL_SET_HW_CONFIG:
-		cve_os_log(CVE_LOGLEVEL_DEBUG,
-				"Simulation mode - ICE_IOCTL_SET_ICE_FREQ\n");
-		retval = ice_set_hw_config(&param->set_hw_config);
 		break;
 	case ICE_IOCTL_RESET_NETWORK:
 		cve_os_log(CVE_LOGLEVEL_DEBUG,
@@ -1419,24 +1390,12 @@ int wait_for_completion_timeout(struct completion *c, int timeout)
 
 void cve_debug_init (void)
 {
-	const char* mem_detect_env_val = getenv("CVE_DRIVER_MEMORY_DETECT_ENABLE");
-	if (mem_detect_env_val == NULL) {
-		mem_detect_en = 0;
-	}
-	else {
-		mem_detect_en = atoi(mem_detect_env_val);
-	}
 }
 
 u32 cve_debug_get(enum cve_debug_config d_config)
 {
 	switch (d_config) {
-		case DEBUG_TENS_EN:
 		case DEBUG_WD_EN:
-		case DEBUG_DTF_SRC_EN:
-		case DEBUG_DTF_DST_EN:
-		case DEBUG_RECOVERY_EN:
-		case DEBUG_CONF_NUM:
 		{
 			const char* cur_debug_val = getenv(cve_debug[d_config].str);
 			if (cur_debug_val == NULL){

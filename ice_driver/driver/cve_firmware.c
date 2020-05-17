@@ -782,7 +782,8 @@ int cve_fw_map_sections(
 	struct cve_surface_descriptor surf;
 	ice_va_t va = 0;
 
-	memset(&surf, 0, sizeof(struct cve_surface_descriptor));
+	ice_memset_s(&surf, sizeof(surf), 0,
+			sizeof(struct cve_surface_descriptor));
 
 	/* allocate dma addr array in fw mapped structure */
 	retval = OS_ALLOC_ZERO(
@@ -848,13 +849,6 @@ int cve_fw_map_sections(
 
 		/* hold the number of mapped sections - for err handling */
 		mapped_sections_nr++;
-
-		if (cve_debug_get(DEBUG_TENS_EN)) {
-			/* enabling write permissions for all FW sections */
-			permissions = (s->permissions | CVE_MM_PROT_WRITE);
-			cve_os_log(CVE_LOGLEVEL_DEBUG,
-					"changing permissions for FW sections\n");
-		}
 
 		cve_os_log(CVE_LOGLEVEL_DEBUG,
 			COLOR_YELLOW(
@@ -1118,40 +1112,162 @@ void cve_mapped_fw_sections_cleanup(
 
 /* API FUNCTIONS */
 #ifndef RING3_VALIDATION
-void ice_fw_update_path(const char *path)
+int ice_fw_update_path(const char *path)
 {
 	u32 i;
 	char fw_dir[MAX_NAME_LEN];
+	int ret = 0;
 
-	strncpy(fw_dir, path, MAX_NAME_LEN-1);
+	ret = ice_strncpy_s(fw_dir, sizeof(fw_dir), path, MAX_NAME_LEN-1);
+	if (ret < 0) {
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+			"Safelib strncpy failed %d\n", ret);
+		return ret;
+	}
 
 	for (i = 0; i < ARRAY_SIZE(fw_binaries_files); i++) {
-		strncpy(fw_binaries_files[i].binary_file_name,
+		ret = ice_strncpy_s(fw_binaries_files[i].binary_file_name,
+				sizeof(fw_binaries_files[i].binary_file_name),
 				fw_dir, MAX_NAME_LEN-1);
-		strncpy(fw_binaries_files[i].map_file_name,
+		if (ret < 0) {
+			cve_os_log(CVE_LOGLEVEL_ERROR,
+				"Safelib strncpy failed %d\n", ret);
+			return ret;
+		}
+		ret = ice_strncpy_s(fw_binaries_files[i].map_file_name,
+				sizeof(fw_binaries_files[i].map_file_name),
 				fw_dir, MAX_NAME_LEN-1);
+		if (ret < 0) {
+			cve_os_log(CVE_LOGLEVEL_ERROR,
+				"Safelib strncpy failed %d\n", ret);
+			return ret;
+		}
 		fw_binaries_files[i].binary_file_name[MAX_NAME_LEN-1] = 0;
 		fw_binaries_files[i].map_file_name[MAX_NAME_LEN-1] = 0;
 	}
 
-	strcat(fw_binaries_files[0].binary_file_name, TLC_FW_BIN_NAME);
-	strcat(fw_binaries_files[0].map_file_name, TLC_FW_MAP_NAME);
-	strcat(fw_binaries_files[1].binary_file_name, IVP_FW_BIN_NAME);
-	strcat(fw_binaries_files[1].map_file_name, IVP_FW_MAP_NAME);
-	strcat(fw_binaries_files[2].binary_file_name, ASIP_FW_BIN_NAME);
-	strcat(fw_binaries_files[2].map_file_name, ASIP_FW_MAP_NAME);
-	strcat(fw_binaries_files[3].binary_file_name, IVP_BANK0_FW_BIN_NAME);
-	strcat(fw_binaries_files[3].map_file_name, IVP_BANK0_FW_MAP_NAME);
-	strcat(fw_binaries_files[4].binary_file_name, IVP_BANK1_FW_BIN_NAME);
-	strcat(fw_binaries_files[4].map_file_name, IVP_BANK1_FW_MAP_NAME);
-	strcat(fw_binaries_files[5].binary_file_name, ASIP_BANK0_FW_BIN_NAME);
-	strcat(fw_binaries_files[5].map_file_name, ASIP_BANK0_FW_MAP_NAME);
-	strcat(fw_binaries_files[6].binary_file_name, ASIP_BANK1_FW_BIN_NAME);
-	strcat(fw_binaries_files[6].map_file_name, ASIP_BANK1_FW_MAP_NAME);
-	strcat(fw_binaries_files[7].binary_file_name,
-				LOAD_AND_CLEAR_CACHE_BIN_NAME);
-	strcat(fw_binaries_files[7].map_file_name,
-				LOAD_AND_CLEAR_CACHE_MAP_NAME);
+	ret = ice_strcat_s(fw_binaries_files[0].binary_file_name,
+		sizeof(fw_binaries_files[0].binary_file_name), TLC_FW_BIN_NAME);
+	if (ret < 0) {
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+			"Safelib strcat failed %d\n", ret);
+		return ret;
+	}
+	ret = ice_strcat_s(fw_binaries_files[0].map_file_name,
+		sizeof(fw_binaries_files[0].map_file_name), TLC_FW_MAP_NAME);
+	if (ret < 0) {
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+			"Safelib strcat failed %d\n", ret);
+		return ret;
+	}
+	ret = ice_strcat_s(fw_binaries_files[1].binary_file_name,
+		sizeof(fw_binaries_files[1].binary_file_name), IVP_FW_BIN_NAME);
+	if (ret < 0) {
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+			"Safelib strcat failed %d\n", ret);
+		return ret;
+	}
+	ret = ice_strcat_s(fw_binaries_files[1].map_file_name,
+		sizeof(fw_binaries_files[1].map_file_name), IVP_FW_MAP_NAME);
+	if (ret < 0) {
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+			"Safelib strcat failed %d\n", ret);
+		return ret;
+	}
+	ret = ice_strcat_s(fw_binaries_files[2].binary_file_name,
+		sizeof(fw_binaries_files[2].binary_file_name),
+		ASIP_FW_BIN_NAME);
+	if (ret < 0) {
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+			"Safelib strcat failed %d\n", ret);
+		return ret;
+	}
+	ret = ice_strcat_s(fw_binaries_files[2].map_file_name,
+		sizeof(fw_binaries_files[2].map_file_name), ASIP_FW_MAP_NAME);
+	if (ret < 0) {
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+			"Safelib strcat failed %d\n", ret);
+		return ret;
+	}
+	ret = ice_strcat_s(fw_binaries_files[3].binary_file_name,
+		sizeof(fw_binaries_files[3].binary_file_name),
+		IVP_BANK0_FW_BIN_NAME);
+	if (ret < 0) {
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+			"Safelib strcat failed %d\n", ret);
+		return ret;
+	}
+	ret = ice_strcat_s(fw_binaries_files[3].map_file_name,
+		sizeof(fw_binaries_files[3].map_file_name),
+		IVP_BANK0_FW_MAP_NAME);
+	if (ret < 0) {
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+			"Safelib strcat failed %d\n", ret);
+		return ret;
+	}
+	ret = ice_strcat_s(fw_binaries_files[4].binary_file_name,
+		sizeof(fw_binaries_files[4].binary_file_name),
+		IVP_BANK1_FW_BIN_NAME);
+	if (ret < 0) {
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+			"Safelib strcat failed %d\n", ret);
+		return ret;
+	}
+	ret = ice_strcat_s(fw_binaries_files[4].map_file_name,
+		sizeof(fw_binaries_files[4].map_file_name),
+		IVP_BANK1_FW_MAP_NAME);
+	if (ret < 0) {
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+			"Safelib strcat failed %d\n", ret);
+		return ret;
+	}
+	ret = ice_strcat_s(fw_binaries_files[5].binary_file_name,
+		sizeof(fw_binaries_files[5].binary_file_name),
+		ASIP_BANK0_FW_BIN_NAME);
+	if (ret < 0) {
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+			"Safelib strcat failed %d\n", ret);
+		return ret;
+	}
+	ret = ice_strcat_s(fw_binaries_files[5].map_file_name,
+		sizeof(fw_binaries_files[5].map_file_name),
+		ASIP_BANK0_FW_MAP_NAME);
+	if (ret < 0) {
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+			"Safelib strcat failed %d\n", ret);
+		return ret;
+	}
+	ret = ice_strcat_s(fw_binaries_files[6].binary_file_name,
+		sizeof(fw_binaries_files[6].binary_file_name),
+		ASIP_BANK1_FW_BIN_NAME);
+	if (ret < 0) {
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+			"Safelib strcat failed %d\n", ret);
+		return ret;
+	}
+	ret = ice_strcat_s(fw_binaries_files[6].map_file_name,
+		sizeof(fw_binaries_files[6].map_file_name),
+		ASIP_BANK1_FW_MAP_NAME);
+	if (ret < 0) {
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+			"Safelib strcat failed %d\n", ret);
+		return ret;
+	}
+	ret = ice_strcat_s(fw_binaries_files[7].binary_file_name,
+		sizeof(fw_binaries_files[7].binary_file_name),
+		LOAD_AND_CLEAR_CACHE_BIN_NAME);
+	if (ret < 0) {
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+			"Safelib strcat failed %d\n", ret);
+		return ret;
+	}
+	ret = ice_strcat_s(fw_binaries_files[7].map_file_name,
+		sizeof(fw_binaries_files[7].map_file_name),
+		LOAD_AND_CLEAR_CACHE_MAP_NAME);
+	if (ret < 0)
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+			"Safelib strcat failed %d\n", ret);
+	return ret;
 
 }
 #endif
@@ -1401,6 +1517,8 @@ int cve_fw_init(void)
 	char *workspace = getenv("WORKSPACE");
 	char fw_dir[MAX_NAME_LEN];
 	unsigned char stepping = 0;
+	int workspace_len = 0, fw_pack_dir_base_len = 0,
+	    rtl_a_step_base_dir_len = 0, rtl_release_dir_len = 0;
 
 	if (getenv("ENABLE_C_STEP") != NULL) {
 		stepping = HW_STEP_C;
@@ -1416,16 +1534,45 @@ int cve_fw_init(void)
 	/* Check if the worst case scenario length is not exceeding
 	 * MAX_NAME_LEN
 	 */
-	if (strnlen(workspace, MAX_NAME_LEN) + strlen(FW_PACK_DIR_BASE)
-		+ strlen(RTL_A_STEP_FW_BASE_PACKAGE_DIR)
-		+ strlen("/rtl/release") > MAX_NAME_LEN - 1) {
+	workspace_len = ice_strlen_s(workspace, MAX_NAME_LEN);
+	if (workspace_len < 0 || workspace_len >= MAX_NAME_LEN) {
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+			"Safelib failed strlen %d\n", workspace_len);
+		goto out;
+	}
+
+	fw_pack_dir_base_len = ice_strlen_s(FW_PACK_DIR_BASE, MAX_NAME_LEN);
+	if (fw_pack_dir_base_len < 0 || fw_pack_dir_base_len >= MAX_NAME_LEN) {
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+			"Safelib failed strlen %d\n", fw_pack_dir_base_len);
+		goto out;
+	}
+
+	rtl_a_step_base_dir_len = ice_strlen_s(RTL_A_STEP_FW_BASE_PACKAGE_DIR,
+			MAX_NAME_LEN);
+	if (rtl_a_step_base_dir_len < 0 ||
+			rtl_a_step_base_dir_len >= MAX_NAME_LEN) {
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+			"Safelib failed strlen %d\n", rtl_a_step_base_dir_len);
+		goto out;
+	}
+
+	rtl_release_dir_len = ice_strlen_s("/rtl/release", MAX_NAME_LEN);
+	if (rtl_release_dir_len < 0 || rtl_release_dir_len >= MAX_NAME_LEN) {
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+			"Safelib failed strlen %d\n", rtl_release_dir_len);
+		goto out;
+	}
+
+	if ((workspace_len + fw_pack_dir_base_len + rtl_a_step_base_dir_len +
+			rtl_release_dir_len) > MAX_NAME_LEN - 1) {
 
 		cve_os_log(CVE_LOGLEVEL_ERROR,
 			"workspace is too long(%d), should be under %d\n",
-			strnlen(workspace, MAX_NAME_LEN),
-			MAX_NAME_LEN - 1 - strlen(FW_PACK_DIR_BASE)
-			- strlen(RTL_A_STEP_FW_BASE_PACKAGE_DIR)
-			- strlen("/rtl/release"));
+			workspace_len,
+			MAX_NAME_LEN - 1 - fw_pack_dir_base_len
+			- rtl_a_step_base_dir_len
+			- rtl_release_dir_len);
 		goto out;
 	}
 
@@ -1437,48 +1584,188 @@ int cve_fw_init(void)
 					"WORKSPACE env variable is not set");
 				ASSERT(workspace == NULL);
 			}
-			strcpy(fw_dir, workspace);
-			strcat(fw_dir, FW_PACK_DIR_BASE);
+			retval = ice_strncpy_s(fw_dir, MAX_NAME_LEN, workspace,
+					MAX_NAME_LEN);
+			if (retval < 0) {
+				cve_os_log(CVE_LOGLEVEL_ERROR,
+					"Safelib strcat failed %d\n", retval);
+				goto out;
+			}
 
-			if (stepping == HW_STEP_C)
-				strcat(fw_dir, RTL_C_STEP_FW_BASE_PACKAGE_DIR);
-			else if (stepping == HW_STEP_B)
-				strcat(fw_dir, RTL_B_STEP_FW_BASE_PACKAGE_DIR);
-			else
-				strcat(fw_dir, RTL_A_STEP_FW_BASE_PACKAGE_DIR);
+			retval = ice_strcat_s(fw_dir, sizeof(fw_dir),
+					FW_PACK_DIR_BASE);
+			if (retval < 0) {
+				cve_os_log(CVE_LOGLEVEL_ERROR,
+					"Safelib strcat failed %d\n", retval);
+				goto out;
+			}
 
+			if (stepping == HW_STEP_C) {
+				retval = ice_strcat_s(fw_dir, sizeof(fw_dir),
+						RTL_C_STEP_FW_BASE_PACKAGE_DIR);
+				if (retval < 0) {
+					cve_os_log(CVE_LOGLEVEL_ERROR,
+						"Safelib strcat failed %d\n",
+						retval);
+					goto out;
+				}
+			} else if (stepping == HW_STEP_B) {
+				retval = ice_strcat_s(fw_dir, sizeof(fw_dir),
+						RTL_B_STEP_FW_BASE_PACKAGE_DIR);
+				if (retval < 0) {
+					cve_os_log(CVE_LOGLEVEL_ERROR,
+						"Safelib strcat failed %d\n",
+						retval);
+					goto out;
+				}
+			} else {
+				retval = ice_strcat_s(fw_dir, sizeof(fw_dir),
+						RTL_A_STEP_FW_BASE_PACKAGE_DIR);
+				if (retval < 0) {
+					cve_os_log(CVE_LOGLEVEL_ERROR,
+						"Safelib strcat failed %d\n",
+						retval);
+					goto out;
+				}
+			}
 			if (strcmp(fw_selection, xstr(RTL_DEBUG_FW)) == 0) {
-				strcat(fw_dir, "/rtl/debug");
+				retval = ice_strcat_s(fw_dir,
+						sizeof(fw_dir), "/rtl/debug");
+				if (retval < 0) {
+					cve_os_log(CVE_LOGLEVEL_ERROR,
+						"Safelib strcat failed %d\n",
+						retval);
+					goto out;
+				}
 			} else if (strcmp(fw_selection,
 						xstr(RTL_RELEASE_FW)) == 0) {
-				strcat(fw_dir, "/rtl/release");
+				retval = ice_strcat_s(fw_dir, sizeof(fw_dir),
+						"/rtl/release");
+				if (retval < 0) {
+					cve_os_log(CVE_LOGLEVEL_ERROR,
+						"Safelib strcat failed %d\n",
+						retval);
+					goto out;
+				}
 			} else if (strcmp(fw_selection, xstr(CORAL_FW)) == 0) {
-				strcat(fw_dir, "/coral");
+				retval = ice_strcat_s(fw_dir,
+						sizeof(fw_dir), "/coral");
+				if (retval < 0) {
+					cve_os_log(CVE_LOGLEVEL_ERROR,
+						"Safelib strcat failed %d\n",
+						retval);
+					goto out;
+				}
 			} else {
-				strcat(fw_dir, "/rtl/release");
+				retval = ice_strcat_s(fw_dir, sizeof(fw_dir),
+						"/rtl/release");
+				if (retval < 0) {
+					cve_os_log(CVE_LOGLEVEL_ERROR,
+						"Safelib strcat failed %d\n",
+						retval);
+					goto out;
+				}
 			}
 			fw_dir_path = fw_dir;
 		} else if (stepping) {
-			strcpy(fw_dir, workspace);
-			strcat(fw_dir, FW_PACK_DIR_BASE);
-			if (stepping == HW_STEP_C)
-				strcat(fw_dir, RTL_C_STEP_FW_BASE_PACKAGE_DIR);
-			else
-				strcat(fw_dir, RTL_B_STEP_FW_BASE_PACKAGE_DIR);
+			retval = ice_strncpy_s(fw_dir, MAX_NAME_LEN, workspace,
+					MAX_NAME_LEN);
+			if (retval < 0) {
+				cve_os_log(CVE_LOGLEVEL_ERROR,
+					"Safelib strcat failed %d\n", retval);
+				goto out;
+			}
 
-			strcat(fw_dir, "/rtl/release");
+			retval = ice_strcat_s(fw_dir, sizeof(fw_dir),
+					FW_PACK_DIR_BASE);
+			if (retval < 0) {
+				cve_os_log(CVE_LOGLEVEL_ERROR,
+					"Safelib strcat failed %d\n",
+					retval);
+				goto out;
+			}
+			if (stepping == HW_STEP_C) {
+				retval = ice_strcat_s(fw_dir, sizeof(fw_dir),
+						RTL_C_STEP_FW_BASE_PACKAGE_DIR);
+				if (retval < 0) {
+					cve_os_log(CVE_LOGLEVEL_ERROR,
+						"Safelib strcat failed %d\n",
+						retval);
+					goto out;
+				}
+			} else {
+				retval = ice_strcat_s(fw_dir, sizeof(fw_dir),
+						RTL_B_STEP_FW_BASE_PACKAGE_DIR);
+				if (retval < 0) {
+					cve_os_log(CVE_LOGLEVEL_ERROR,
+						"Safelib strcat failed %d\n",
+						retval);
+					goto out;
+				}
+			}
+			retval = ice_strcat_s(fw_dir, sizeof(fw_dir),
+					"/rtl/release");
+			if (retval < 0) {
+				cve_os_log(CVE_LOGLEVEL_ERROR,
+					"Safelib strcat failed %d\n",
+					retval);
+				goto out;
+			}
 			fw_dir_path = fw_dir;
 		}
 		if (coral_mode && (strcmp(coral_mode, xstr(PERF_MODE)) == 0)) {
-			strcpy(fw_dir, workspace);
-			strcat(fw_dir, FW_PACK_DIR_BASE);
-			if (stepping == HW_STEP_C)
-				strcat(fw_dir, RTL_C_STEP_FW_BASE_PACKAGE_DIR);
-			else if (stepping == HW_STEP_B)
-				strcat(fw_dir, RTL_B_STEP_FW_BASE_PACKAGE_DIR);
-			else
-				strcat(fw_dir, RTL_A_STEP_FW_BASE_PACKAGE_DIR);
-			strcat(fw_dir, "/rtl/release");
+			retval = ice_strncpy_s(fw_dir, MAX_NAME_LEN, workspace,
+					MAX_NAME_LEN);
+			if (retval < 0) {
+				cve_os_log(CVE_LOGLEVEL_ERROR,
+					"Safelib strcat failed %d\n", retval);
+				goto out;
+			}
+
+			retval = ice_strcat_s(fw_dir, sizeof(fw_dir),
+					FW_PACK_DIR_BASE);
+			if (retval < 0) {
+				cve_os_log(CVE_LOGLEVEL_ERROR,
+					"Safelib strcat failed %d\n",
+					retval);
+				goto out;
+			}
+			if (stepping == HW_STEP_C) {
+				retval = ice_strcat_s(fw_dir, sizeof(fw_dir),
+						RTL_C_STEP_FW_BASE_PACKAGE_DIR);
+				if (retval < 0) {
+					cve_os_log(CVE_LOGLEVEL_ERROR,
+						"Safelib strcat failed %d\n",
+						retval);
+					goto out;
+				}
+			} else if (stepping == HW_STEP_B) {
+				retval = ice_strcat_s(fw_dir, sizeof(fw_dir),
+						RTL_B_STEP_FW_BASE_PACKAGE_DIR);
+				if (retval < 0) {
+					cve_os_log(CVE_LOGLEVEL_ERROR,
+						"Safelib strcat failed %d\n",
+						retval);
+					goto out;
+				}
+			} else {
+				retval = ice_strcat_s(fw_dir, sizeof(fw_dir),
+						RTL_A_STEP_FW_BASE_PACKAGE_DIR);
+				if (retval < 0) {
+					cve_os_log(CVE_LOGLEVEL_ERROR,
+						"Safelib strcat failed %d\n",
+						retval);
+					goto out;
+				}
+			}
+			retval = ice_strcat_s(fw_dir, sizeof(fw_dir),
+					"/rtl/release");
+			if (retval < 0) {
+				cve_os_log(CVE_LOGLEVEL_ERROR,
+					"Safelib strcat failed %d\n",
+					retval);
+				goto out;
+			}
 
 			fw_dir_path = fw_dir;
 
@@ -1489,10 +1776,10 @@ int cve_fw_init(void)
 			}
 		}
 		/* Override current firmware values */
-		if (strlen(fw_dir_path) > MAX_NAME_LEN) {
+		retval = ice_strlen_s(fw_dir_path, MAX_NAME_LEN);
+		if (retval < 0 || retval >= MAX_NAME_LEN) {
 			cve_os_log(CVE_LOGLEVEL_ERROR,
-				"CVE_FW_DIR_PATH is too long (%s), should be under 1024\n",
-				strlen(fw_dir_path));
+					"Safelib strlen failed %d\n", retval);
 			goto out;
 		}
 
@@ -1505,10 +1792,24 @@ int cve_fw_init(void)
 		}
 
 		for (i = 0; i < ARRAY_SIZE(fw_binaries_files); i++) {
-			strncpy(fw_binaries_files[i].binary_file_name,
+			retval = ice_strncpy_s(fw_binaries_files[i].
+				binary_file_name,
+				sizeof(fw_binaries_files[i].binary_file_name),
 				fw_dir_path, MAX_NAME_LEN-1);
-			strncpy(fw_binaries_files[i].map_file_name,
+			if (retval < 0) {
+				cve_os_log(CVE_LOGLEVEL_ERROR,
+					"Safelib strncpy failed %d\n", retval);
+				goto out;
+			}
+			retval = ice_strncpy_s(fw_binaries_files[i].
+				map_file_name,
+				sizeof(fw_binaries_files[i].map_file_name),
 				fw_dir_path, MAX_NAME_LEN-1);
+			if (retval < 0) {
+				cve_os_log(CVE_LOGLEVEL_ERROR,
+					"Safelib strncpy failed %d\n", retval);
+				goto out;
+			}
 fw_binaries_files[i].binary_file_name[MAX_NAME_LEN-1] = 0;
 			fw_binaries_files[i].map_file_name[MAX_NAME_LEN-1] = 0;
 
@@ -1516,38 +1817,134 @@ fw_binaries_files[i].binary_file_name[MAX_NAME_LEN-1] = 0;
 		cve_os_log(CVE_LOGLEVEL_DEBUG,
 				"fw_dir_path %s\n", fw_dir_path);
 
-		strcat(fw_binaries_files[0].binary_file_name,
-				TLC_FW_BIN_NAME);
-		strcat(fw_binaries_files[0].map_file_name,
-				TLC_FW_MAP_NAME);
-		strcat(fw_binaries_files[1].binary_file_name,
-				IVP_FW_BIN_NAME);
-		strcat(fw_binaries_files[1].map_file_name,
-				IVP_FW_MAP_NAME);
-		strcat(fw_binaries_files[2].binary_file_name,
-				ASIP_FW_BIN_NAME);
-		strcat(fw_binaries_files[2].map_file_name,
-				ASIP_FW_MAP_NAME);
-		strcat(fw_binaries_files[3].binary_file_name,
-				IVP_BANK0_FW_BIN_NAME);
-		strcat(fw_binaries_files[3].map_file_name,
-				IVP_BANK0_FW_MAP_NAME);
-		strcat(fw_binaries_files[4].binary_file_name,
-				IVP_BANK1_FW_BIN_NAME);
-		strcat(fw_binaries_files[4].map_file_name,
-				IVP_BANK1_FW_MAP_NAME);
-		strcat(fw_binaries_files[5].binary_file_name,
-				ASIP_BANK0_FW_BIN_NAME);
-		strcat(fw_binaries_files[5].map_file_name,
-				ASIP_BANK0_FW_MAP_NAME);
-		strcat(fw_binaries_files[6].binary_file_name,
-				ASIP_BANK1_FW_BIN_NAME);
-		strcat(fw_binaries_files[6].map_file_name,
-				ASIP_BANK1_FW_MAP_NAME);
-		strcat(fw_binaries_files[7].binary_file_name,
-				LOAD_AND_CLEAR_CACHE_BIN_NAME);
-		strcat(fw_binaries_files[7].map_file_name,
-				LOAD_AND_CLEAR_CACHE_MAP_NAME);
+		retval = ice_strcat_s(fw_binaries_files[0].binary_file_name,
+			sizeof(fw_binaries_files[0].binary_file_name),
+			TLC_FW_BIN_NAME);
+		if (retval < 0) {
+			cve_os_log(CVE_LOGLEVEL_ERROR,
+				"Safelib strcat failed %d\n", retval);
+			goto out;
+		}
+		retval = ice_strcat_s(fw_binaries_files[0].map_file_name,
+			sizeof(fw_binaries_files[0].map_file_name),
+			TLC_FW_MAP_NAME);
+		if (retval < 0) {
+			cve_os_log(CVE_LOGLEVEL_ERROR,
+				"Safelib strcat failed %d\n", retval);
+			goto out;
+		}
+		retval = ice_strcat_s(fw_binaries_files[1].binary_file_name,
+			sizeof(fw_binaries_files[1].binary_file_name),
+			IVP_FW_BIN_NAME);
+		if (retval < 0) {
+			cve_os_log(CVE_LOGLEVEL_ERROR,
+				"Safelib strcat failed %d\n", retval);
+			goto out;
+		}
+		retval = ice_strcat_s(fw_binaries_files[1].map_file_name,
+			sizeof(fw_binaries_files[1].map_file_name),
+			IVP_FW_MAP_NAME);
+		if (retval < 0) {
+			cve_os_log(CVE_LOGLEVEL_ERROR,
+				"Safelib strcat failed %d\n", retval);
+			goto out;
+		}
+		retval = ice_strcat_s(fw_binaries_files[2].binary_file_name,
+			sizeof(fw_binaries_files[2].map_file_name),
+			ASIP_FW_BIN_NAME);
+		if (retval < 0) {
+			cve_os_log(CVE_LOGLEVEL_ERROR,
+				"Safelib strcat failed %d\n", retval);
+			goto out;
+		}
+		retval = ice_strcat_s(fw_binaries_files[2].map_file_name,
+			sizeof(fw_binaries_files[2].map_file_name),
+			ASIP_FW_MAP_NAME);
+		if (retval < 0) {
+			cve_os_log(CVE_LOGLEVEL_ERROR,
+				"Safelib strcat failed %d\n", retval);
+			goto out;
+		}
+		retval = ice_strcat_s(fw_binaries_files[3].binary_file_name,
+			sizeof(fw_binaries_files[3].binary_file_name),
+			IVP_BANK0_FW_BIN_NAME);
+		if (retval < 0) {
+			cve_os_log(CVE_LOGLEVEL_ERROR,
+				"Safelib strcat failed %d\n", retval);
+			goto out;
+		}
+		retval = ice_strcat_s(fw_binaries_files[3].map_file_name,
+			sizeof(fw_binaries_files[3].binary_file_name),
+			IVP_BANK0_FW_MAP_NAME);
+		if (retval < 0) {
+			cve_os_log(CVE_LOGLEVEL_ERROR,
+				"Safelib strcat failed %d\n", retval);
+			goto out;
+		}
+		retval = ice_strcat_s(fw_binaries_files[4].binary_file_name,
+			sizeof(fw_binaries_files[4].binary_file_name),
+			IVP_BANK1_FW_BIN_NAME);
+		if (retval < 0) {
+			cve_os_log(CVE_LOGLEVEL_ERROR,
+				"Safelib strcat failed %d\n", retval);
+			goto out;
+		}
+		retval = ice_strcat_s(fw_binaries_files[4].map_file_name,
+			sizeof(fw_binaries_files[4].binary_file_name),
+			IVP_BANK1_FW_MAP_NAME);
+		if (retval < 0) {
+			cve_os_log(CVE_LOGLEVEL_ERROR,
+				"Safelib strcat failed %d\n", retval);
+			goto out;
+		}
+		retval = ice_strcat_s(fw_binaries_files[5].binary_file_name,
+			sizeof(fw_binaries_files[5].binary_file_name),
+			ASIP_BANK0_FW_BIN_NAME);
+		if (retval < 0) {
+			cve_os_log(CVE_LOGLEVEL_ERROR,
+				"Safelib strcat failed %d\n", retval);
+			goto out;
+		}
+		retval = ice_strcat_s(fw_binaries_files[5].map_file_name,
+			sizeof(fw_binaries_files[5].binary_file_name),
+			ASIP_BANK0_FW_MAP_NAME);
+		if (retval < 0) {
+			cve_os_log(CVE_LOGLEVEL_ERROR,
+				"Safelib strcat failed %d\n", retval);
+			goto out;
+		}
+		retval = ice_strcat_s(fw_binaries_files[6].binary_file_name,
+			sizeof(fw_binaries_files[6].binary_file_name),
+			ASIP_BANK1_FW_BIN_NAME);
+		if (retval < 0) {
+			cve_os_log(CVE_LOGLEVEL_ERROR,
+				"Safelib strcat failed %d\n", retval);
+			goto out;
+		}
+		retval = ice_strcat_s(fw_binaries_files[6].map_file_name,
+			sizeof(fw_binaries_files[6].binary_file_name),
+			ASIP_BANK1_FW_MAP_NAME);
+		if (retval < 0) {
+			cve_os_log(CVE_LOGLEVEL_ERROR,
+				"Safelib strcat failed %d\n", retval);
+			goto out;
+		}
+		retval = ice_strcat_s(fw_binaries_files[7].binary_file_name,
+			sizeof(fw_binaries_files[7].binary_file_name),
+			LOAD_AND_CLEAR_CACHE_BIN_NAME);
+		if (retval < 0) {
+			cve_os_log(CVE_LOGLEVEL_ERROR,
+				"Safelib strcat failed %d\n", retval);
+			goto out;
+		}
+		retval = ice_strcat_s(fw_binaries_files[7].map_file_name,
+			sizeof(fw_binaries_files[7].binary_file_name),
+			LOAD_AND_CLEAR_CACHE_MAP_NAME);
+		if (retval < 0) {
+			cve_os_log(CVE_LOGLEVEL_ERROR,
+				"Safelib strcat failed %d\n", retval);
+			goto out;
+		}
 
 	}
 

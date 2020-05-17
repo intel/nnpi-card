@@ -37,7 +37,6 @@ struct ice_drv_config {
 	u8 ice_sch_preemption;
 	u8 iccp_throttling;
 	u32 initial_iccp_config[3];
-	u8 enable_mmu_pmon;
 };
 
 /*
@@ -142,10 +141,11 @@ u8 ice_enable_llc_config_via_axi_reg(void);
 /* Check if code is running on real SOC */
 u8 ice_is_soc(void);
 
+/* set driver's ice power off delay config parameter */
+void ice_set_power_off_delay_param(int time_ms);
+
 /* retrieve status of driver's ice power off delay config parameter */
 int ice_get_power_off_delay_param(void);
-
-u32 ice_get_usec_timediff(struct timespec *time1, struct timespec *time2);
 
 /* retrieve  a step enable flag */
 int ice_get_a_step_enable_flag(void);
@@ -173,9 +173,6 @@ u32 ice_get_reset_cdyn_val(void);
 
 /*retrive blocked cdyn requested value */
 u32 ice_get_blocked_cdyn_val(void);
-
-/*check if user has requested to dump MMu PMONs after Job completion*/
-u8 ice_dump_mmu_pmon(void);
 
 enum resource_status ice_dg_check_resource_availability(
 		struct ice_network *ntw);

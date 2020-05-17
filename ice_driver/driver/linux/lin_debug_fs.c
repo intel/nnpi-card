@@ -19,13 +19,8 @@
 
 /* GLOBAL VARIABLES */
 static struct dentry *dirret;
-static int tens_en;
-int mem_detect_en;
 /* This variable contains the debug-fs value of debug_wd_en */
 u32 enable_wdt_debugfs;
-
-module_param(tens_en, int, 0);
-module_param(mem_detect_en, int, 0);
 
 struct cve_debug_st {
 	const	char *str;	/* debug fs file name*/
@@ -34,7 +29,6 @@ struct cve_debug_st {
 };
 
 static struct cve_debug_st cve_debug[] = {
-		{"debug_tens_en", 0, 0644},
 		{"debug_wd_en", 1, 0644},
 		{"dtf_src_en", 0, 0644},
 		{"dtf_dst_en", 0, 0644},
@@ -48,14 +42,6 @@ void cve_debug_init(void)
 	struct dentry *u32int;
 	u32 i;
 
-	/*module params section*/
-
-	/*
-	 * module parameter - needed to allow
-	 * write-able FW sections at module init
-	 */
-	cve_debug[DEBUG_TENS_EN].val = tens_en;
-
 	/*debugfs section*/
 
 	/* create a directory by the name cve in /sys/kernel/debugfs */
@@ -65,7 +51,6 @@ void cve_debug_init(void)
 				"error creating debug CVE directory\n");
 		goto out;
 	}
-
 
 	for (i = 0 ; i < DEBUG_CONF_NUM ; i++) {
 		/* create a file which handles on/off of debug config  */

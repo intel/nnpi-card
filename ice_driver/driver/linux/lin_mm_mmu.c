@@ -658,13 +658,14 @@ static void __configure_partition_sz(u64 *sz_per_page_alignment,
 	}
 }
 
-static void __configure_extended_partition_sz(
+static int __configure_extended_partition_sz(
 		u64 *infer_buf_page_config, u64 *partition_sz_list)
 {
 	u8 i;
 	u32 max_active_infer;
 	u64 sz, infer_sz = 0;
 	u64 sum = 0;
+	int ret = 0;
 
 	for (i = IOVA_PAGE_ALIGNMENT_32K; i < IOVA_PAGE_ALIGNMENT_MAX; i++)
 		infer_sz += infer_buf_page_config[i];
@@ -673,8 +674,12 @@ static void __configure_extended_partition_sz(
 		cve_os_log(CVE_LOGLEVEL_DEBUG,
 			"Infer has zero buff size requirement\n");
 
-		memset(partition_sz_list, 0, IOVA_PAGE_ALIGNMENT_MAX *
-			sizeof(u64));
+		ret = ice_memset_s(partition_sz_list,
+				IOVA_PAGE_ALIGNMENT_MAX * sizeof(u64), 0,
+				IOVA_PAGE_ALIGNMENT_MAX * sizeof(u64));
+		if (ret < 0)
+			cve_os_log(CVE_LOGLEVEL_ERROR,
+				"Safelib memset failed %d\n", ret);
 
 		goto end;
 	}
@@ -703,7 +708,7 @@ static void __configure_extended_partition_sz(
 	ASSERT(sum <= (ICE_VA_HIGH_TOTAL_SZ - ICE_VA_HIGH_PHY_SZ));
 
 end:
-	return;
+	return ret;
 }
 
 static void __do_mmu_config(struct cve_lin_mm_domain *domain,
@@ -785,16 +790,22 @@ static void __do_mmu_config(struct cve_lin_mm_domain *domain,
 
 }
 
-static void __do_extended_mmu_config(struct cve_lin_mm_domain *domain,
+static int __do_extended_mmu_config(struct cve_lin_mm_domain *domain,
 		u64 *infer_buf_page_config)
 {
 	u8 partition = MEM_PARTITION_HIGHER_32KB;
 	struct ice_mmu_config *mmu_config;
 	u64 end = 0;
 	u64 _sz_per_page_alignment[IOVA_PAGE_ALIGNMENT_MAX] = {0};
+	int ret = 0;
 
-	__configure_extended_partition_sz(infer_buf_page_config,
+	ret = __configure_extended_partition_sz(infer_buf_page_config,
 			_sz_per_page_alignment);
+	if (ret < 0) {
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+			"configure extended partiton %d\n", ret);
+		return ret;
+	}
 
 	for (; partition < ICE_MEM_MAX_PARTITION; partition++) {
 		mmu_config = &domain->mmu_config[partition];
@@ -834,6 +845,7 @@ static void __do_extended_mmu_config(struct cve_lin_mm_domain *domain,
 				mmu_config->va_start,
 				mmu_config->va_end);
 	}
+	return ret;
 
 }
 
@@ -863,10 +875,11 @@ static int lin_mm_domain_init(u8 id, u64 *sz_per_page_alignment,
 	__do_mmu_config(cve_domain, sz_per_page_alignment,
 			infer_buf_page_config);
 
-	memset(cve_domain->page_sz_reg_config_arr, 0,
+	ice_memset_s(cve_domain->page_sz_reg_config_arr,
+		ICE_PAGE_SZ_CONFIG_REG_COUNT *
+		sizeof(cve_domain->page_sz_reg_config_arr[0]), 0,
 		ICE_PAGE_SZ_CONFIG_REG_COUNT *
 		sizeof(cve_domain->page_sz_reg_config_arr[0]));
-
 	__config_page_sz_reg_array(cve_domain);
 
 	/*
@@ -970,8 +983,12 @@ static int lin_mm_domain_extend(u64 *infer_buf_page_config,
 
 	FUNC_ENTER();
 
-	__do_extended_mmu_config(cve_domain, infer_buf_page_config);
-
+	retval = __do_extended_mmu_config(cve_domain, infer_buf_page_config);
+	if (retval < 0) {
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+			"Extended mmu config failed %d\n", retval);
+		return retval;
+	}
 	__config_page_sz_reg_array(cve_domain);
 
 	mmu_config = &cve_domain->mmu_config[ICE_MEM_BASE_PARTITION];

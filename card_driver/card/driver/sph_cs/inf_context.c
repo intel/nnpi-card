@@ -17,6 +17,7 @@
 #include "periodic_timer.h"
 #include "nnp_error.h"
 #include "sphcs_inf.h"
+#include "inf_ptr2id.h"
 
 static void update_sw_counters(void *ctx)
 {
@@ -516,9 +517,10 @@ void del_all_active_create_and_inf_requests(struct inf_context *context)
 					NNP_SPIN_UNLOCK(&devnet->lock);
 					found = true;
 					NNP_SPIN_UNLOCK(&context->lock);
-					active_req->f->complete(active_req,
-								-NNPER_CONTEXT_BROKEN,
-								NULL, 0);
+					inf_req_complete(active_req,
+							 -NNPER_CONTEXT_BROKEN,
+							 NULL,
+							 0);
 					NNP_SPIN_LOCK(&context->lock);
 					NNP_SPIN_LOCK(&devnet->lock);
 					break;
@@ -646,7 +648,7 @@ int inf_context_create_devres(struct inf_context *context,
 		return ret;
 
 	/* place a create device resource command for the runtime */
-	cmd_args.drv_handle = (uint64_t)(uintptr_t)devres;
+	cmd_args.drv_handle = devres->ptr2id;
 	cmd_args.size = byte_size * depth;
 	cmd_args.align = align;
 	cmd_args.usage_flags = usage_flags;

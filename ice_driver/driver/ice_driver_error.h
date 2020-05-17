@@ -130,6 +130,8 @@ enum ice_kerror_type {
 	ICEDRV_KERROR_INVALID_BUFFER_IDX, /*[1150]*/
 	/** Invalid Buffer */
 	ICEDRV_KERROR_INVALID_BUFFER, /*[1151]*/
+	/** Invalid Job Group Count */
+	ICEDRV_KERROR_INVALID_JG_COUNT, /*[1152]*/
 };
 
 #endif /* _ICE_DRIVER_ERROR_H_ */

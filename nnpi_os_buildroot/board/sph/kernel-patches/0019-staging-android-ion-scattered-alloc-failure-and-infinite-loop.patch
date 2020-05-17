@@ -1,0 +1,99 @@
+From 18c8609c8be0079169ae0f89fb523698fae805d6 Mon Sep 17 00:00:00 2001
+From: farah kassabri <farah.kassabri@intel.com>
+Date: Mon, 4 May 2020 21:08:17 -0400
+Subject: [PATCH] ion: Add protection for scattered allocation. Prevent
+ infinite loop in chunks allocation loop. Free successfully allocated buffer
+ chunks in case of allocation failure
+
+---
+ drivers/staging/android/ion/ion_chunk_heap.c | 34 ++++++++++++++++----
+ 1 file changed, 28 insertions(+), 6 deletions(-)
+
+diff --git a/drivers/staging/android/ion/ion_chunk_heap.c b/drivers/staging/android/ion/ion_chunk_heap.c
+index 1b96a71431df..a949f202eacd 100644
+--- a/drivers/staging/android/ion/ion_chunk_heap.c
++++ b/drivers/staging/android/ion/ion_chunk_heap.c
+@@ -77,6 +77,10 @@ static int ion_chunk_heap_allocate_scattered(struct ion_chunk_heap *chunk_heap,
+ 	unsigned long chunk_size;
+ 	unsigned long paddr;
+ 	unsigned long num_of_chunks = 0;
++	unsigned long scatterlist_max_seg_aligned = SCATTERLIST_MAX_SEGMENT & (~(size_of_small_chunks - 1));
++
++	if (!buf_size || !scatterlist_max_seg_aligned)
++		return -EINVAL;
+ 
+ 	/* Allocate array containing physical addresses of the chunks.
+ 	 * Some of these chunks may be large ones - thus the overall number
+@@ -88,8 +92,8 @@ static int ion_chunk_heap_allocate_scattered(struct ion_chunk_heap *chunk_heap,
+ 		return -ENOMEM;
+ 
+ 	chunk_size = 1UL << (fls64(buf_size) - 1);
+-	if (chunk_size > SCATTERLIST_MAX_SEGMENT)
+-		chunk_size = SCATTERLIST_MAX_SEGMENT;
++	if (chunk_size > scatterlist_max_seg_aligned)
++		chunk_size = scatterlist_max_seg_aligned;
+ 
+ 	do {
+ 		pr_debug("Chunk size 0x%lX\n", chunk_size);
+@@ -100,6 +104,8 @@ static int ion_chunk_heap_allocate_scattered(struct ion_chunk_heap *chunk_heap,
+ 				    data);
+ 		if (paddr == 0) {
+ 			chunk_size >>= 1;
++			if (chunk_size > size_of_small_chunks)
++				chunk_size = ALIGN(chunk_size, size_of_small_chunks);
+ 		} else {
+ 			/* Fill chunk descriptor */
+ 			chunks[num_of_chunks].paddr = paddr;
+@@ -109,13 +115,21 @@ static int ion_chunk_heap_allocate_scattered(struct ion_chunk_heap *chunk_heap,
+ 			/* Adjust next allocated chunk size if needed */
+ 			buf_size -= chunk_size;
+ 
+-			if (buf_size < chunk_size) {
++			pr_debug("paddr 0x%lX, buf_size 0x%lX, chunk size 0x%lX\n", paddr, buf_size, chunk_size);
++
++			if (buf_size < chunk_size && buf_size) {
+ 				chunk_size = 1UL << (fls64(buf_size) - 1);
+-				if (chunk_size > SCATTERLIST_MAX_SEGMENT)
+-					chunk_size = SCATTERLIST_MAX_SEGMENT;
++				if (chunk_size > scatterlist_max_seg_aligned)
++					chunk_size = scatterlist_max_seg_aligned;
+ 			}
+ 		}
+-	} while (buf_size != 0);
++	} while (buf_size != 0 && chunk_size >= size_of_small_chunks);
++
++	if (buf_size) {
++		pr_err("Failed to allocate buffer\n");
++		rc = -ENOMEM;
++		goto failed_to_alloc_sgt;
++	}
+ 
+ 	pr_debug("Number of chunks 0x%lX\n", num_of_chunks);
+ 
+@@ -133,8 +147,13 @@ static int ion_chunk_heap_allocate_scattered(struct ion_chunk_heap *chunk_heap,
+ 			    chunks[i].size, 0);
+ 		sg = sg_next(sg);
+ 	}
++	goto done;
+ 
+ failed_to_alloc_sgt:
++	/* Free successfully allocated chunks */
++	for (i = 0; i < num_of_chunks; i++)
++		gen_pool_free(chunk_heap->pool, chunks[i].paddr, chunks[i].size);
++done:
+ 	vfree(chunks);
+ 	return rc;
+ }
+@@ -170,6 +189,9 @@ static int ion_chunk_heap_allocate(struct ion_heap *heap,
+ 	if (allocated_size > chunk_heap->size - chunk_heap->allocated)
+ 		return -ENOMEM;
+ 
++	pr_debug("requested size: 0x%lX, alignment: 0x%X, allocated_chunk: 0x%lX, allocated_size: 0x%lX",
++				size, alignment, allocated_chunk, allocated_size);
++
+ 	table = kmalloc(sizeof(*table), GFP_KERNEL);
+ 	if (!table)
+ 		return -ENOMEM;
+-- 
+2.22.0
+

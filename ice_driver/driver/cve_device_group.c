@@ -32,7 +32,7 @@ struct cve_device_group *g_cve_dev_group_list;
 static struct ice_drv_config drv_config_param = {
 	.enable_llc_config_via_axi_reg = 0,
 	.sph_soc = 0,
-	.ice_power_off_delay_ms = 1000,
+	.ice_power_off_delay_ms = 0,
 	.enable_sph_b_step = false,
 	.enable_sph_c_step = false,
 	.ice_sch_preemption = 1,
@@ -40,14 +40,13 @@ static struct ice_drv_config drv_config_param = {
 	.initial_iccp_config[0] = INITIAL_CDYN_VAL,
 	.initial_iccp_config[1] = RESET_CDYN_VAL,
 	.initial_iccp_config[2] = BLOCKED_CDYN_VAL,
-	.enable_mmu_pmon = 0
 };
-
 
 static struct cve_device_group *__get_ref_to_dg(void)
 {
 	return g_cve_dev_group_list;
 }
+
 static int cve_dg_add_hw_counter(struct cve_device_group *p)
 {
 	int retval = CVE_DEFAULT_ERROR_CODE;
@@ -207,39 +206,13 @@ static void update_dg_config(void)
 	g_driver_settings.config = &config_param_single_dg_all_dev;
 }
 
-/* Return time diff in usec */
-u32 ice_get_usec_timediff(struct timespec *time1, struct timespec *time2)
+/* Return true if time1 > time2 else false */
+static u32 __is_time_greater(const u64 t1, const u64 t2)
 {
-	struct timespec time_out;
-	/* time_out = time1 - time2 */
-	u32 ret = 0;
-
-	if ((time1->tv_sec < time2->tv_sec) ||
-	((time1->tv_sec == time2->tv_sec) &&
-	(time1->tv_nsec <= time2->tv_nsec))) {
-		time_out.tv_sec = time_out.tv_nsec = 0;
-		ret = 0;
-		cve_os_log(CVE_LOGLEVEL_ERROR,
-				"Prev Time(Sec:%lu Nsec:%lu) cannot be smaller than Cur Time(Sec:%lu Nsec:%lu)\n",
-		time1->tv_sec, time1->tv_nsec,
-		time2->tv_sec, time2->tv_nsec);
-	} else {
-		time_out.tv_sec = time1->tv_sec - time2->tv_sec;
-		if (time1->tv_nsec < time2->tv_nsec) {
-			time_out.tv_nsec = time1->tv_nsec +
-				 NSEC_PER_SEC - time2->tv_nsec;
-			time_out.tv_sec--;
-		} else {
-			time_out.tv_nsec = time1->tv_nsec - time2->tv_nsec;
-		}
-		ret = (time_out.tv_sec * USEC_PER_SEC) +
-				(time_out.tv_nsec / NSEC_PER_USEC);
-	}
-
-	cve_os_log(CVE_LOGLEVEL_DEBUG,
-		"Elapsed time = %u usec\n",
-		ret);
-	return ret;
+	if (t1 < t2)
+		return 0;
+	else
+		return 1;
 }
 
 #ifdef RING3_VALIDATION
@@ -250,13 +223,15 @@ static int ice_pm_monitor_task(void *data)
 {
 	int ret = 0, wq_status;
 	u32 icemask;
-	u32 configured_timeout_ms = (u32)ice_get_power_off_delay_param();
+	u32 configured_timeout_ms;
 	u32 time_60sec = 60000;
 	u32 timeout_msec = time_60sec;
 	unsigned long cur_jiffy;
 	struct cve_device *head;
 	struct cve_device_group *dg = (struct cve_device_group *)data;
 	const struct sphpb_callbacks *sphpb_cbs;
+	u64 t;
+
 #ifdef RING3_VALIDATION
 	void *retval = NULL;
 	u32 factor = 1;
@@ -292,6 +267,8 @@ static int ice_pm_monitor_task(void *data)
 			goto out;
 		}
 
+		/* Value can be changed dynamically through sysfs */
+		configured_timeout_ms = (u32)ice_get_power_off_delay_param();
 		cur_jiffy = ice_os_get_current_jiffy();
 
 		head = dg->poweroff_dev_list;
@@ -299,22 +276,31 @@ static int ice_pm_monitor_task(void *data)
 			goto out_null_list;
 
 		icemask = 0;
+		t = trace_clock_local();
 
 		while (jiffies_to_msecs(cur_jiffy - head->poff_jiffy) >=
 				configured_timeout_ms) {
 
-			/*
-			 * power_state must be ICE_POWER_OFF_INITIATED.
-			 * If someone turns it on then it is their
-			 * responsibility to remove it from this list.
+			/* The ICEs can be in either ON or INITIATED state
+			 * because maybe power-off thread started after
+			 * executing some tests.
 			 */
-			ASSERT(head->power_state == ICE_POWER_OFF_INITIATED);
+			ASSERT((head->power_state == ICE_POWER_OFF_INITIATED) ||
+				(head->power_state == ICE_POWER_ON));
 
 			icemask |= (1 << head->dev_index);
 			ice_dev_set_power_state(head, ICE_POWER_OFF);
 			ice_swc_counter_set(head->hswc,
-				ICEDRV_SWC_DEVICE_COUNTER_POWER_STATE,
-				ice_dev_get_power_state(head));
+					ICEDRV_SWC_DEVICE_COUNTER_POWER_STATE,
+					ice_dev_get_power_state(head));
+
+			if (!__is_time_greater(head->idle_start_time,
+						head->busy_start_time)) {
+				head->idle_start_time = t;
+				ice_swc_counter_set(head->hswc,
+				ICEDRV_SWC_DEVICE_COUNTER_IDLE_START_TIME,
+				nsec_to_usec(head->idle_start_time));
+			}
 
 			sphpb_cbs = dg->sphpb.sphpb_cbs;
 			if (sphpb_cbs && sphpb_cbs->set_power_state) {
@@ -395,11 +381,13 @@ int ice_kmd_create_dg(void)
 
 	/* Power off wait queue Initialization */
 	retval = cve_os_init_wait_que(&device_group->power_off_wait_queue);
+#ifdef RING3_VALIDATION
 	if (retval != 0) {
 		cve_os_log(CVE_LOGLEVEL_ERROR,
 				"events_wait_queue init failed  %d\n", retval);
 		goto out_dev_data_fail;
 	}
+#endif
 
 	/* initialize dispatcher data */
 	retval = cve_ds_create_ds_dev_data(device_group);
@@ -433,13 +421,7 @@ int ice_kmd_create_dg(void)
 	device_group->dev_info.active_device_nr = 0;
 	device_group->icedc_state = ICEDC_STATE_NO_ERROR;
 
-	device_group->dump_conf.cb_dump = 0;
 	device_group->dump_conf.pt_dump = 0;
-	device_group->dump_conf.post_patch_surf_dump = 0;
-	device_group->dump_conf.ice_reset = 0;
-	device_group->dump_conf.llc_config = 0;
-	device_group->dump_conf.page_size_config = 0;
-
 #ifdef _DEBUG
 	device_group->dg_exe_order = 0;
 #endif
@@ -454,6 +436,9 @@ int ice_kmd_create_dg(void)
 	device_group->total_dice = 0;
 	device_group->in_pool_dice = 0;
 	device_group->non_res_dice = 0;
+	device_group->poweroff_dev_list = NULL;
+
+	cve_os_lock_init(&device_group->poweroff_dev_list_lock);
 
 	device_group->dg_clos_manager.size = MAX_CLOS_SIZE_MB;
 	ice_os_read_clos((void *)&device_group->dg_clos_manager);
@@ -680,21 +665,14 @@ void cve_dg_print(struct cve_device_group *group)
 
 int cve_dg_start_poweroff_thread(void)
 {
-	int retval;
 	struct cve_device_group *device_group = g_cve_dev_group_list;
 
-	device_group->poweroff_dev_list = NULL;
-	device_group->start_poweroff_thread = 0;
-	retval = cve_os_lock_init(&device_group->poweroff_dev_list_lock);
-	if (retval != 0) {
-		cve_os_log(CVE_LOGLEVEL_ERROR,
-				"cve_os_lock_init failed %d\n", retval);
-		goto out;
-	}
+	/* To turn off any devices already in queue */
+	device_group->start_poweroff_thread = 1;
 
-	if (ice_get_power_off_delay_param() < 0) {
+	if (!ice_get_power_off_delay_param()) {
 		cve_os_log(CVE_LOGLEVEL_INFO,
-				"Power off thead creation skipped\n");
+				"Power off thread creation skipped\n");
 		goto out;
 	}
 
@@ -708,16 +686,23 @@ int cve_dg_start_poweroff_thread(void)
 #endif
 
 out:
-	return retval;
+	return 0;
 }
 
 void cve_dg_stop_poweroff_thread(void)
 {
 	struct cve_device_group *device_group = g_cve_dev_group_list;
 
-	if (ice_get_power_off_delay_param() < 0) {
+	if (!ice_get_power_off_delay_param()) {
+		/*
+		 * If here, it means Power-off thread was never started and
+		 * ICEDrv is about to be unloaded. Not reporting to PB because
+		 * anyways it will reset its status when ICEDrv is unregistered
+		 */
 		cve_os_log(CVE_LOGLEVEL_DEBUG,
-				"power of thread was not created\n");
+				"Power off thread was not created. Forcing all ICEs off\n");
+		unset_idc_registers_multi(0xFFF, true);
+
 		return;
 	}
 
@@ -743,7 +728,6 @@ void ice_set_driver_config_param(struct ice_drv_config *param)
 	drv_config_param.enable_llc_config_via_axi_reg =
 			param->enable_llc_config_via_axi_reg;
 	drv_config_param.sph_soc = param->sph_soc;
-	drv_config_param.ice_power_off_delay_ms = param->ice_power_off_delay_ms;
 	drv_config_param.enable_sph_b_step = param->enable_sph_b_step;
 	drv_config_param.enable_sph_c_step = param->enable_sph_c_step;
 	drv_config_param.ice_sch_preemption = param->ice_sch_preemption;
@@ -751,10 +735,10 @@ void ice_set_driver_config_param(struct ice_drv_config *param)
 	drv_config_param.initial_iccp_config[0] = param->initial_iccp_config[0];
 	drv_config_param.initial_iccp_config[1] = param->initial_iccp_config[1];
 	drv_config_param.initial_iccp_config[2] = param->initial_iccp_config[2];
-	drv_config_param.enable_mmu_pmon = param->enable_mmu_pmon;
+	ice_set_power_off_delay_param(param->ice_power_off_delay_ms);
 
 	cve_os_log(CVE_LOGLEVEL_INFO,
-			"DriverConfig: enable_llc_config_via_axi_reg:%d sph_soc:%d ice_power_off_delay_ms:%d, is_b_step_enabled: %d is_c_step_enabled: %d Preemption:%d is_iccp_throttling_enabled:%d initial_cdyn:0x%x reset_cdyn:0x%x blocked_cdyn:0x%x MmuPmon:%d\n",
+			"DriverConfig: enable_llc_config_via_axi_reg:%d sph_soc:%d ice_power_off_delay_ms:%d, is_b_step_enabled: %d is_c_step_enabled: %d Preemption:%d is_iccp_throttling_enabled:%d initial_cdyn:0x%x reset_cdyn:0x%x blocked_cdyn:0x%x\n",
 			drv_config_param.enable_llc_config_via_axi_reg,
 			drv_config_param.sph_soc,
 			drv_config_param.ice_power_off_delay_ms,
@@ -764,8 +748,7 @@ void ice_set_driver_config_param(struct ice_drv_config *param)
 			drv_config_param.iccp_throttling,
 			drv_config_param.initial_iccp_config[0],
 			drv_config_param.initial_iccp_config[1],
-			drv_config_param.initial_iccp_config[2],
-			drv_config_param.enable_mmu_pmon);
+			drv_config_param.initial_iccp_config[2]);
 }
 
 struct ice_drv_config *ice_get_driver_config_param(void)
@@ -778,9 +761,19 @@ u8 ice_enable_llc_config_via_axi_reg(void)
 	return drv_config_param.enable_llc_config_via_axi_reg;
 }
 
+void ice_set_power_off_delay_param(int time_ms)
+{
+	drv_config_param.ice_power_off_delay_ms = time_ms;
+}
+
 int ice_get_power_off_delay_param(void)
 {
-	return drv_config_param.ice_power_off_delay_ms;
+	int delay = drv_config_param.ice_power_off_delay_ms;
+
+	if (delay <= 0)
+		return 0;
+	else
+		return drv_config_param.ice_power_off_delay_ms;
 }
 
 int ice_get_a_step_enable_flag(void)
@@ -855,11 +848,6 @@ u8 ice_is_soc(void)
 u8 ice_sch_allow_preemption(void)
 {
 	return drv_config_param.ice_sch_preemption;
-}
-
-u8 ice_dump_mmu_pmon(void)
-{
-	return drv_config_param.enable_mmu_pmon;
 }
 
 enum resource_status ice_dg_check_resource_availability(struct ice_network *ntw)

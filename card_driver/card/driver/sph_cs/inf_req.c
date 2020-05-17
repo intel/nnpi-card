@@ -19,17 +19,14 @@
 #include "sphcs_trace.h"
 #include "sphcs_sw_counters.h"
 #include "sphcs_ibecc.h"
+#include "sph_safe.h"
+#include "inf_ptr2id.h"
 
 static struct inf_devres *devres_for_err_inj;
 static void *addr_for_err_inj;
 
-static int infreq_req_sched(struct inf_exec_req *req);
 static enum EXEC_REQ_READINESS inf_req_ready(struct inf_exec_req *req);
 static int inf_req_execute(struct inf_exec_req *req);
-static void inf_req_complete(struct inf_exec_req *req,
-			     int                  err,
-			     const void          *error_msg,
-			     int32_t              error_msg_size);
 static void send_infreq_report(struct inf_exec_req *req,
 			       enum event_val       eventVal);
 static int inf_req_infreq_put(struct inf_exec_req *req);
@@ -98,9 +95,13 @@ int inf_req_create(uint16_t            protocolID,
 			   NET_SPHCS_SW_COUNTERS_NUM_INFER_CMDS);
 
 	infreq->devnet = devnet;
+	infreq->ptr2id = add_ptr2id(infreq);
+	if (unlikely(infreq->ptr2id == 0)) {
+		ret = -ENOMEM;
+		goto free_infreq;
+	}
+	infreq->exec_cmd.infreq_drv_handle = infreq->ptr2id;
 	inf_devnet_get(devnet);
-
-	infreq->exec_cmd.infreq_drv_handle = (uint64_t)(uintptr_t)infreq;
 	infreq->exec_cmd.infreq_rt_handle = 0; /* will be set after runtime
 						* created the infer req object
 						*/
@@ -233,6 +234,7 @@ static void release_infreq(struct kref *kref)
 		kfree(infreq->outputs);
 	if (likely(infreq->config_data != NULL))
 		kfree(infreq->config_data);
+	del_ptr2id(infreq);
 	kfree(infreq);
 }
 
@@ -289,7 +291,7 @@ void infreq_req_init(struct inf_exec_req *req,
 	req->o_opt_depend_devres = infreq->outputs;
 }
 
-static int infreq_req_sched(struct inf_exec_req *req)
+int infreq_req_sched(struct inf_exec_req *req)
 {
 	struct inf_req *infreq;
 	int err;
@@ -667,6 +669,9 @@ static void treat_infreq_failure(struct inf_exec_req *req,
 
 	NNP_ASSERT(req->cmd_type == CMDLIST_CMD_INFREQ);
 
+	if (error_msg == NULL)
+		error_msg_size = 0;
+
 	infreq = req->infreq;
 	rc = inf_exec_error_details_alloc(CMDLIST_CMD_INFREQ,
 					  infreq->protocolID,
@@ -682,7 +687,7 @@ static void treat_infreq_failure(struct inf_exec_req *req,
 			if (unlikely(rc != 0))
 				strncpy(err_details->error_msg, "<Failed to get error message>", err_details->error_msg_size);
 		} else if (error_msg_size > 0) {
-			memcpy(err_details->error_msg, error_msg, error_msg_size);
+			safe_c_memcpy(err_details->error_msg, error_msg_size, error_msg, error_msg_size);
 		}
 
 		inf_exec_error_list_add(req->cmd != NULL ? &req->cmd->error_list :
@@ -709,10 +714,10 @@ static void treat_infreq_failure(struct inf_exec_req *req,
 		inf_devres_set_dirty(infreq->outputs[i], true);
 }
 
-static void inf_req_complete(struct inf_exec_req *req,
-			     int                  err,
-			     const void          *error_msg,
-			     int32_t              error_msg_size)
+void inf_req_complete(struct inf_exec_req *req,
+		      int                  err,
+		      const void          *error_msg,
+		      int32_t              error_msg_size)
 {
 	struct inf_req *infreq;
 	struct inf_context *context;

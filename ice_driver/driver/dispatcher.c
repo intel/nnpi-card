@@ -39,11 +39,24 @@
 #include "ice_debug.h"
 #include "ice_trace.h"
 #include "icedrv_internal_sw_counter_funcs.h"
+#include "ice_safe_func.h"
 
 
 /* max number of Shared_Read requests from the leader, that */
 /* were not yet matched by the follower. */
 #define MAX_SHARED_DISTANCE 0x40
+#define MAX_NUM_JG_DESC 1
+
+/* Since the physical memory is 16GB and the page size is 32KB then the
+* MAX_BUFFER_COUNT will be equal to 16GB/32KB which is 524288 and this value
+* will be taken as upper_bound for infer_buf_count, num_buf_desc
+* and index_num
+*/
+#define MAX_BUFFER_COUNT 524288
+
+/* MAX_FW_SIZE_BYTES value corresponds to the max fw size in bytes and */
+/* can be calculated as 10240*1024 bytes */
+#define MAX_FW_SIZE_BYTES 10485760
 
 /*Calculate average ice cycles */
 #define __calc_ice_max_cycle(max_ice_cycle, total_time) \
@@ -141,8 +154,10 @@ out:
 	return ret;
 }
 
-static void __reset_infer_event(struct cve_completion_event *event)
+static int __reset_infer_event(struct cve_completion_event *event)
 {
+	int ret = 0;
+
 	event->infer_id = 0;
 	event->ntw_id = 0;
 	event->jobs_group_status = CVE_JOBSGROUPSTATUS_PENDING;
@@ -150,8 +165,13 @@ static void __reset_infer_event(struct cve_completion_event *event)
 	event->icedc_err_status = 0;
 	event->ice_err_status = 0;
 	event->shared_read_err_status = 0;
-	memset(event->total_time, 0,
-			sizeof(event->total_time[0]) * MAX_CVE_DEVICES_NR);
+	ret = ice_memset_s(event->total_time,
+			sizeof(event->total_time[0]) * MAX_CVE_DEVICES_NR,
+			0, sizeof(event->total_time[0]) * MAX_CVE_DEVICES_NR);
+	if (ret < 0)
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+				"Safelib memset failed %d\n", ret);
+	return ret;
 }
 
 static int __move_completion_events_to_main_list(
@@ -168,7 +188,7 @@ static int __move_completion_events_to_main_list(
 	while (inf->infer_events) {
 		struct cve_completion_event *event = inf->infer_events;
 
-		__reset_infer_event(event);
+		 __reset_infer_event(event);
 		cve_dle_remove_from_list(inf->infer_events,
 			infer_list, event);
 		cve_dle_remove_from_list(context_process->alloc_events,
@@ -558,7 +578,7 @@ static void do_reset(struct cve_device *cve_dev,
 	 * through PMON configuration. Enabled if requested explictly via knob
 	 */
 	/* Enable/Disable HW counters */
-	if (ice_dump_mmu_pmon() || cve_dev->dg->dump_ice_mmu_pmon)
+	if (cve_dev->dg->dump_ice_mmu_pmon)
 		cve_di_set_hw_counters(cve_dev);
 
 
@@ -857,7 +877,7 @@ static int __dispatch_single_job(
 	struct ice_network *ntw = jobgroup->network;
 	struct ice_infer *inf = ntw->curr_exe;
 	struct job_descriptor *job = jobgroup->next_dispatch;
-	int ret = 0;
+	int ret = 0, len = 0;
 	struct cve_device_group *dg = cve_dg_get();
 	u64 __maybe_unused po_ts;
 	char sync_marker[12];
@@ -917,8 +937,13 @@ static int __dispatch_single_job(
 
 		po_ts = trace_clock_local();
 
-		snprintf(sync_marker, sizeof(sync_marker),
+		len = ice_snprintf_s_u(sync_marker, sizeof(sync_marker),
 				"0xDEAD1CE%x\n", cve_dev->dev_index);
+		if (len < 0) {
+			cve_os_log(CVE_LOGLEVEL_ERROR,
+				"Safelib snprintf failed %d\n", len);
+			return len;
+		}
 
 		DO_TRACE(trace_icedrvPowerOn(
 			SPH_TRACE_OP_STATE_PO,
@@ -986,7 +1011,7 @@ out:
 	return ret;
 }
 
-void config_ds_trace_node_sysfs(struct cve_device *dev, struct ice_network *ntw,
+int config_ds_trace_node_sysfs(struct cve_device *dev, struct ice_network *ntw,
 		struct job_descriptor *job, int job_id)
 {
 	u32 index, count;
@@ -997,6 +1022,7 @@ void config_ds_trace_node_sysfs(struct cve_device *dev, struct ice_network *ntw,
 	u64 ctx_id = ntw->wq->context->swc_node.sw_id;
 	u64 ntw_id = ntw->swc_node.sw_id;
 	u64 infer_num = ntw->curr_exe->infer_id;
+	int retval = 0;
 
 	/*TODO: Optimize loop*/
 	for (index = 0; index < dg->trace_node_cnt; index++)
@@ -1013,13 +1039,34 @@ void config_ds_trace_node_sysfs(struct cve_device *dev, struct ice_network *ntw,
 					 node[index].infer_num == DEFAULT_ID)) {
 
 				dev->logical_dso = true;
-				memcpy(&dev->dso, &node[index].job.dso,
+				retval = ice_memcpy_s(&dev->dso,
+					sizeof(struct ice_dso_regs_data),
+					&node[index].job.dso,
 					sizeof(struct ice_dso_regs_data));
-				memcpy(&dev->perf_counter,
-						&node[index].job.perf_counter,
+				if (retval < 0) {
+					cve_os_log(CVE_LOGLEVEL_ERROR,
+					"Safelib memcpy failed %d\n", retval);
+					return retval;
+				}
+
+				retval = ice_memcpy_s(&dev->perf_counter,
+					sizeof(struct ice_perf_counter_config),
+					&node[index].job.perf_counter,
 					sizeof(struct ice_perf_counter_config));
-				memcpy(&dev->daemon, &node[index].job.daemon,
+				if (retval < 0) {
+					cve_os_log(CVE_LOGLEVEL_ERROR,
+					"Safelib memcpy failed %d\n", retval);
+					return retval;
+				}
+				retval = ice_memcpy_s(&dev->daemon,
+					sizeof(struct ice_read_daemon_config),
+					&node[index].job.daemon,
 					sizeof(struct ice_read_daemon_config));
+				if (retval < 0) {
+					cve_os_log(CVE_LOGLEVEL_ERROR,
+					"Safelib memcpy Failed %d\n", retval);
+					return retval;
+				}
 
 				cve_os_log(CVE_LOGLEVEL_DEBUG,
 				     "job_graph_iceid %d, user jobid with %d\n",
@@ -1037,6 +1084,7 @@ void config_ds_trace_node_sysfs(struct cve_device *dev, struct ice_network *ntw,
 		dev->dso.is_default_config = true;
 		ice_trace_set_default_dso(dev);
 	}
+	return retval;
 }
 
 int ice_ds_dispatch_jg(struct jobgroup_descriptor *jobgroup)
@@ -1071,6 +1119,7 @@ int ice_ds_dispatch_jg(struct jobgroup_descriptor *jobgroup)
 	}
 
 	dg->num_running_ntw++;
+	ntw->wq->num_ntw_running++;
 
 	if ((dg->num_running_ntw == 1)
 		&& (dg->clos_state != CLOS_STATE_SINGLE_NTW)) {
@@ -1120,8 +1169,11 @@ int ice_ds_dispatch_jg(struct jobgroup_descriptor *jobgroup)
 				"ERROR cve dev is NULL");
 			ASSERT(false);
 		}
-		if (dg->trace_node_cnt > 0)
-			config_ds_trace_node_sysfs(dev, ntw, job, i);
+		if (dg->trace_node_cnt > 0) {
+			retval = config_ds_trace_node_sysfs(dev, ntw, job, i);
+			if (retval < 0)
+				goto exit;
+		}
 
 		ice_mask |= (1 << dev->dev_index);
 		cve_os_log(CVE_LOGLEVEL_DEBUG,
@@ -1162,6 +1214,8 @@ exit:
 		ntw->swc_node.sw_id, ntw->network_id,
 		ntw->curr_exe->swc_node.sw_id,
 		SPH_TRACE_OP_STATUS_ICE, ice_mask));
+
+	ntw->busy_start_time = trace_clock_local();
 
 	if (!ice_sch_preemption())
 		os_enable_preemption();
@@ -1243,6 +1297,7 @@ static int cve_create_workqueue(
 	new_workqueue->wq_id = 1;
 	new_workqueue->num_ntw_using_pool = 0;
 	new_workqueue->num_ntw_reserving_pool = 0;
+	new_workqueue->num_ntw_running = 0;
 
 	/* add the new workqueue to context list */
 	cve_dle_add_to_list_after(context->wq_list,
@@ -1342,10 +1397,24 @@ int ice_ds_raise_event(struct ice_network *ntw,
 		event.icedc_err_status = ntw->icedc_err_status;
 		event.ice_err_status = ntw->ice_err_status;
 		event.shared_read_err_status = ntw->shared_read_err_status;
-		memcpy(event.total_time, ntw->ntw_exec_time,
+		ret = ice_memcpy_s(event.total_time,
+			MAX_CVE_DEVICES_NR * sizeof(event.total_time[0]),
+			ntw->ntw_exec_time,
 			MAX_CVE_DEVICES_NR * sizeof(event.total_time[0]));
-		memcpy(event.ice_error_status, ntw->ice_error_status,
+		if (ret < 0) {
+			cve_os_log(CVE_LOGLEVEL_ERROR,
+			"Safelib memcpy Failed %d\n", ret);
+			return ret;
+		}
+		ret = ice_memcpy_s(event.ice_error_status,
+			MAX_CVE_DEVICES_NR * sizeof(event.ice_error_status[0]),
+			ntw->ice_error_status,
 			MAX_CVE_DEVICES_NR * sizeof(event.ice_error_status[0]));
+		if (ret < 0) {
+			cve_os_log(CVE_LOGLEVEL_ERROR,
+			"Safelib memcpy Failed %d\n", ret);
+			return ret;
+		}
 		event.max_ice_cycle = max_ice_cycle;
 
 		if (dg->icedc_state == ICEDC_STATE_CARD_RESET_REQUIRED) {
@@ -1362,13 +1431,27 @@ int ice_ds_raise_event(struct ice_network *ntw,
 	}
 
 	/* reset execution time before scheduling another inference */
-	memset(ntw->ntw_exec_time, 0,
+	ret = ice_memset_s(ntw->ntw_exec_time,
+			MAX_CVE_DEVICES_NR * sizeof(ntw->ntw_exec_time[0]), 0,
 			MAX_CVE_DEVICES_NR * sizeof(ntw->ntw_exec_time[0]));
+	if (ret < 0) {
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+				"Safelib memset failed %d\n", ret);
+		return ret;
+	}
 
 	/* reset error state */
 	ntw->icedc_err_status = 0;
-	memset(ntw->ice_error_status, 0,
+
+	/* Reset error state, logging Safelib error, but not returning. */
+	ret = ice_memset_s(ntw->ice_error_status, MAX_CVE_DEVICES_NR *
+			sizeof(ntw->ice_error_status[0]), 0,
 			MAX_CVE_DEVICES_NR * sizeof(ntw->ice_error_status[0]));
+	if (ret < 0) {
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+				"Safelib memset failed %d\n", ret);
+		return ret;
+	}
 
 	/* Reset counters before scheduling */
 	__ntw_reset_cntr(ntw);
@@ -1403,7 +1486,7 @@ int ice_ds_raise_event(struct ice_network *ntw,
 				infer_list, event_ptr);
 
 		cve_os_log(CVE_LOGLEVEL_INFO,
-			"Generating completion event(%p) for NtwID:0x%llx InferID:%llx. Status:%s\n",
+			"Generating completion event(%p) for NtwID:0x%llx InferID:0x%llx. Status:%s\n",
 			event_ptr,
 			ntw->network_id, inf->infer_id,
 			get_cve_jobs_group_status_str(abort));
@@ -2014,7 +2097,6 @@ out:
 static int __destroy_buf(struct ice_network *ntw,
 	struct cve_ntw_buffer *buf)
 {
-	int ret = 0;
 	struct ds_context *context = NULL;
 	struct cve_workqueue *wq = NULL;
 	cve_context_id_t dummy_context_id = 0;
@@ -2022,11 +2104,7 @@ static int __destroy_buf(struct ice_network *ntw,
 	wq = ntw->wq;
 	context = wq->context;
 
-	ret = cve_mm_unmap_kva(buf->ntw_buf_alloc);
-	if (ret < 0) {
-		cve_os_log(CVE_LOGLEVEL_ERROR,
-			"cve_mm_unmap_kva failed %d\n", ret);
-	}
+	cve_mm_unmap_kva(buf->ntw_buf_alloc);
 
 	cve_mm_destroy_buffer(dummy_context_id, buf->ntw_buf_alloc);
 
@@ -2036,7 +2114,7 @@ static int __destroy_buf(struct ice_network *ntw,
 	cve_os_log(CVE_LOGLEVEL_DEBUG, "Buffer destroyed bufferid =>%lld\n",
 		buf->buffer_id);
 
-	return ret;
+	return 0;
 }
 
 static int __process_buf_desc(struct ice_network *ntw,
@@ -2120,11 +2198,10 @@ static int __destroy_buf_list(struct ice_network *ntw,
 	struct cve_ntw_buffer *cur_buf;
 	u64 *infer_idx_list = ntw->infer_idx_list;
 	u32 sz = 0, idx = 0;
-	int ret = 0;
 
 	for (; idx < buf_count; idx++) {
 		cur_buf = &buf_list[idx];
-		ret = __destroy_buf(ntw, cur_buf);
+		__destroy_buf(ntw, cur_buf);
 	}
 
 	if (infer_idx_list) {
@@ -2135,7 +2212,7 @@ static int __destroy_buf_list(struct ice_network *ntw,
 	sz = (sizeof(*buf_list) * buf_count);
 	OS_FREE(buf_list, sz);
 
-	return ret;
+	return 0;
 }
 
 static int __process_buf_desc_list(struct ice_network *ntw,
@@ -2147,6 +2224,14 @@ static int __process_buf_desc_list(struct ice_network *ntw,
 	u32 idx = 0, inf_itr = 0;
 	size_t sz = 0;
 	int ret = 0;
+
+	if (ntw->infer_buf_count > MAX_BUFFER_COUNT) {
+		ret = -ICEDRV_KERROR_BUFFER_COUNT_MISMATCH;
+		cve_os_log_default(CVE_LOGLEVEL_ERROR,
+				"InferBufCount mismatch. Received=%d, Max_allowable=%d\n",
+				ntw->infer_buf_count, MAX_BUFFER_COUNT);
+		goto out;
+	}
 
 	sz = (sizeof(*buf_list) * ntw->num_buf);
 	ret = OS_ALLOC_ZERO(sz, (void **)&buf_list);
@@ -2183,6 +2268,15 @@ static int __process_buf_desc_list(struct ice_network *ntw,
 		}
 		if (!cur_buf_desc->fd && !cur_buf_desc->base_address) {
 
+			if (inf_itr >= ntw->infer_buf_count) {
+				ret = -ICEDRV_KERROR_BUFFER_COUNT_MISMATCH;
+				cve_os_log(CVE_LOGLEVEL_ERROR,
+					"More than expected Infer buffer (Max=%u)\n",
+					ntw->infer_buf_count);
+
+				goto error_buf_desc;
+			}
+
 			infer_idx_list[inf_itr] = idx;
 			cve_os_log(CVE_LOGLEVEL_DEBUG,
 			"NtwID:0x%lx infer_buf_count:%d infer_index:%d updated in the array\n",
@@ -2195,6 +2289,15 @@ static int __process_buf_desc_list(struct ice_network *ntw,
 			/* Not an InferBuffer so no entry in Infer list */
 			cur_buf->index_in_inf = INVALID_INDEX;
 		}
+	}
+
+	if (inf_itr != ntw->infer_buf_count) {
+		ret = -ICEDRV_KERROR_BUFFER_COUNT_MISMATCH;
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+			"Unexpected Infer buffer. Present=%u, Expecting=%u\n",
+			inf_itr, ntw->infer_buf_count);
+
+		goto error_buf_desc;
 	}
 
 	ntw->num_inf_buf = inf_itr;
@@ -2252,7 +2355,8 @@ static int __process_inf_buf_desc_list(struct ice_infer *inf,
 			retval, cur_buf_desc->index, &buf_desc_list[idx]);
 			goto invalid_index;
 		}
-
+		/* reset return value as it holds index value at this point */
+		retval = 0;
 
 		cur_buf->index_in_ntw = cur_buf_desc->index;
 		cur_buf->base_address = cur_buf_desc->base_address;
@@ -2384,7 +2488,6 @@ out:
 
 static int __destroy_network(struct ice_network *ntw)
 {
-	int ret = 0;
 	struct ice_network *head;
 
 	ice_lsch_destroy_network(ntw);
@@ -2405,13 +2508,7 @@ static int __destroy_network(struct ice_network *ntw)
 
 		dealloc_and_unmap_network_fifo(ntw);
 
-		ret = __destroy_buf_list(ntw, ntw->buf_list, ntw->num_buf);
-		if (ret < 0) {
-			cve_os_log(CVE_LOGLEVEL_ERROR,
-				"ERROR:%d NtwID:0x%llx destroy_buf_list() failed\n",
-				ret, ntw->network_id);
-			goto out;
-		}
+		__destroy_buf_list(ntw, ntw->buf_list, ntw->num_buf);
 
 		if (ntw->ice_dump != NULL)
 			__destroy_ice_dump_buffer(ntw);
@@ -2425,8 +2522,7 @@ static int __destroy_network(struct ice_network *ntw)
 		ntw = cve_dle_next(ntw, del_list);
 	} while (ntw != head);
 
-out:
-	return ret;
+	return 0;
 }
 
 static void __update_ntw_sw_id(
@@ -2507,12 +2603,14 @@ static int __process_network_desc(
 
 
 	retval = cve_os_init_wait_que(&ntw->rr_wait_queue);
+#ifdef RING3_VALIDATION
 	if (retval != 0) {
 		cve_os_log(CVE_LOGLEVEL_ERROR,
 			"NtwID:0x%llx rr_wait_queue init failed  %d\n",
 			ntw->network_id, retval);
 		goto out;
 	}
+#endif
 
 	cve_os_log(CVE_LOGLEVEL_DEBUG,
 		"Creating new Network. CtxID:%llu, NtwID:0x%llx\n",
@@ -2521,6 +2619,15 @@ static int __process_network_desc(
 	/* Allocate memory and copy buffer descriptor list
 	* from user space
 	*/
+
+	if (network_desc->num_buf_desc > MAX_BUFFER_COUNT) {
+		retval = -ICEDRV_KERROR_BUFFER_COUNT_MISMATCH;
+		cve_os_log_default(CVE_LOGLEVEL_ERROR,
+				"NumBuf mismatch. Received=%d, Max=%d\n",
+				network_desc->num_buf_desc, MAX_BUFFER_COUNT);
+		goto out;
+	}
+
 	sz = (sizeof(*k_buf_desc_list) * network_desc->num_buf_desc);
 	retval = __alloc_and_copy(network_desc->buf_desc_list,
 		sz, (void **)&k_buf_desc_list);
@@ -2533,9 +2640,17 @@ static int __process_network_desc(
 
 	ntw->num_buf = network_desc->num_buf_desc;
 	ntw->buf_desc_list = k_buf_desc_list;
-	memcpy(ntw->infer_buf_page_config, network_desc->infer_buf_page_config,
-		ICEDRV_PAGE_ALIGNMENT_MAX *
-		sizeof(ntw->infer_buf_page_config[0]));
+	retval = ice_memcpy_s(ntw->infer_buf_page_config,
+			ICEDRV_PAGE_ALIGNMENT_MAX *
+			sizeof(ntw->infer_buf_page_config[0]),
+			network_desc->infer_buf_page_config,
+			ICEDRV_PAGE_ALIGNMENT_MAX *
+			sizeof(ntw->infer_buf_page_config[0]));
+	if (retval < 0) {
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+			"Safelib memcpy Failed %d\n", retval);
+		return retval;
+	}
 
 	retval = __process_buf_desc_list(ntw, k_buf_desc_list);
 	if (retval < 0) {
@@ -2562,6 +2677,15 @@ static int __process_network_desc(
 	/* Allocate memory and copy job group descriptor list
 	 * from user space
 	*/
+
+	if (network_desc->num_jg_desc > MAX_NUM_JG_DESC) {
+		retval = -ICEDRV_KERROR_INVALID_JG_COUNT;
+		cve_os_log_default(CVE_LOGLEVEL_ERROR,
+				"NumJG more than 1. Received=%d\n",
+				network_desc->num_jg_desc);
+		goto error_jg_desc_copy;
+	}
+
 	sz = (sizeof(*jg_desc_list) * network_desc->num_jg_desc);
 	retval = __alloc_and_copy(network_desc->jg_desc_list,
 		sz, (void **)&jg_desc_list);
@@ -2588,9 +2712,6 @@ static int __process_network_desc(
 		goto error_jg_desc_process;
 	}
 /* post patch dump enable through sysfs */
-
-	if (dg->dump_conf.post_patch_surf_dump)
-		dump_patched_surf(ntw);
 
 	ntw->max_cbdt_entries = retval;
 	retval = alloc_and_map_network_fifo(ntw);
@@ -2660,7 +2781,7 @@ static int __process_infer_desc(
 	struct cve_infer_surface_descriptor *k_buf_desc_list;
 	size_t sz;
 	int retval = 0;
-	struct ice_pp_value *pp_arr;
+	struct ice_pp_value *pp_arr = NULL;
 
 	if (inf_desc->num_buf_desc != inf->ntw->num_inf_buf) {
 		retval = -ICEDRV_KERROR_BUFFER_COUNT_MISMATCH;
@@ -2670,7 +2791,7 @@ static int __process_infer_desc(
 		goto out;
 	}
 
-	if (inf->ntw->ntw_surf_pp_count != 0) {
+	if (inf->ntw->num_inf_buf != 0) {
 		sz = (sizeof(*k_buf_desc_list) * inf_desc->num_buf_desc);
 		retval = __alloc_and_copy(inf_desc->buf_desc_list,
 				sz, (void **)&k_buf_desc_list);
@@ -2687,22 +2808,23 @@ static int __process_infer_desc(
 
 	inf->user_data = inf_desc->user_data;
 
-	/* If infer patch points are 0 , then bypass PT processing and
-	 * patching
-	 */
-	if (inf->ntw->ntw_surf_pp_count != 0) {
+	if (inf->ntw->num_inf_buf != 0) {
 		/* Configure number of infer buffer only if we process it */
 		inf->num_buf = inf_desc->num_buf_desc;
 
-		retval = OS_ALLOC_ZERO(
-				sizeof(*pp_arr) * inf->ntw->ntw_surf_pp_count,
-				(void **)&pp_arr);
-		if (retval < 0) {
-			cve_os_log(CVE_LOGLEVEL_ERROR,
-					"os_alloc_zero failed %d\n", retval);
-			goto free_mem_1;
-		}
+		if (inf->ntw->ntw_surf_pp_count != 0) {
+			retval = OS_ALLOC_ZERO(
+					sizeof(*pp_arr) *
+					inf->ntw->ntw_surf_pp_count,
+					(void **)&pp_arr);
+			if (retval < 0) {
+				cve_os_log(CVE_LOGLEVEL_ERROR,
+						"os_alloc_zero failed %d\n",
+						retval);
+				goto free_mem_1;
+			}
 
+		}
 		inf->inf_pp_arr = pp_arr;
 
 		retval = __process_inf_buf_desc_list(inf, k_buf_desc_list);
@@ -2713,14 +2835,15 @@ static int __process_infer_desc(
 			goto free_mem_2;
 		}
 
-		retval = ice_mm_process_inf_pp_arr(inf);
-		if (retval < 0) {
-			cve_os_log_default(CVE_LOGLEVEL_ERROR,
-					"ice_mm_process_inf_pp_arr failed %d\n",
-					retval);
-			goto destroy_infer;
+		if (inf->ntw->ntw_surf_pp_count != 0) {
+			retval = ice_mm_process_inf_pp_arr(inf);
+			if (retval < 0) {
+				cve_os_log_default(CVE_LOGLEVEL_ERROR,
+						"ice_mm_process_inf_pp_arr failed %d\n",
+						retval);
+				goto destroy_infer;
+			}
 		}
-
 		/* Flush the inference surfaces */
 		__flush_inf_buffers(inf);
 	}
@@ -2729,7 +2852,7 @@ static int __process_infer_desc(
 			"Inference processing completed. InfID=%llx, BufferCount=%d\n",
 			inf->infer_id, inf->num_buf);
 
-	if (inf->ntw->ntw_surf_pp_count != 0) {
+	if (inf->ntw->num_inf_buf != 0) {
 		sz = (sizeof(*k_buf_desc_list) * inf_desc->num_buf_desc);
 		OS_FREE(k_buf_desc_list, sz);
 	}
@@ -2990,11 +3113,13 @@ int cve_ds_handle_create_infer(
 	__update_infer_sw_id(inf_desc, inf);
 
 	retval = cve_os_init_wait_que(&inf->events_wait_queue);
+#ifdef RING3_VALIDATION
 	if (retval != 0) {
 		cve_os_log(CVE_LOGLEVEL_ERROR,
 				"events_wait_queue init failed  %d\n", retval);
 		goto free_mem;
 	}
+#endif
 
 	cve_os_log(CVE_LOGLEVEL_DEBUG,
 		"Processing CreateInfer. NtwID=0x%llx, InfID=%lx, numPP=%d, numBuf=%d\n",
@@ -3120,14 +3245,6 @@ static int __process_shared_surfaces(struct ice_ss_descriptor *ss_desc,
 
 		ntw_buf->is_shared_surf = true;
 
-		if (!ntw_buf->is_shared_surf) {
-
-			cve_os_log(CVE_LOGLEVEL_DEBUG,
-				"Not a SharedSurface. Use extended ICEVA\n");
-			ice_mm_use_extended_iceva(ntw_buf);
-			continue;
-		}
-
 		/* This will prevent DestroyInfer from destroying SSurfaces */
 		ice_mm_transfer_shared_surface(ntw_buf, inf_buf);
 
@@ -3234,6 +3351,14 @@ int cve_ds_handle_shared_surfaces(
 		goto out;
 	}
 
+	if (ss_desc->num_index > MAX_BUFFER_COUNT) {
+		retval = -ICEDRV_KERROR_BUFFER_COUNT_MISMATCH;
+		cve_os_log_default(CVE_LOGLEVEL_ERROR,
+				"NumIndex mismatch. Received=%d, Max_allowable=%d\n",
+				ss_desc->num_index, MAX_BUFFER_COUNT);
+		goto out;
+	}
+
 	sz = (ss_desc->num_index * sizeof(*ss_desc->index_list));
 
 	k_ss_desc.num_index = ss_desc->num_index;
@@ -3318,13 +3443,20 @@ out:
 	return retval;
 }
 
-static void __get_resource_availability(struct resource_info *res)
+static int __get_resource_availability(struct resource_info *res)
 {
 	u32 i;
 	struct cve_device_group *dg = cve_dg_get();
 	u64 *pool_context_map = dg->pool_context_map;
+	int retval = 0;
 
-	memset(res, 0, sizeof(struct resource_info));
+	retval = ice_memset_s(res, sizeof(struct resource_info),
+			0, sizeof(struct resource_info));
+	if (retval < 0) {
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+				"Safelib memset failed %d\n", retval);
+		return retval;
+	}
 
 	res->num_ice = (2 * dg->total_pbo) + dg->total_dice;
 
@@ -3336,6 +3468,8 @@ static void __get_resource_availability(struct resource_info *res)
 
 	for (i = 0; i < ICE_CLOS_MAX; i++)
 		res->clos[i] = dg->dg_clos_manager.clos_size[i];
+
+	return retval;
 }
 
 int cve_ds_handle_manage_resource(
@@ -3349,6 +3483,7 @@ int cve_ds_handle_manage_resource(
 	bool is_success;
 	int status;
 	int retval = cve_os_lock(&g_cve_driver_biglock, CVE_INTERRUPTIBLE);
+	int ret = 0;
 
 	if (retval != 0) {
 		retval = -ERESTARTSYS;
@@ -3439,13 +3574,32 @@ int cve_ds_handle_manage_resource(
 			ntw->last_request_type = NODE_TYPE_RELEASE;
 
 			retval = -ICEDRV_KERROR_RESERVATION_FAIL;
-			__get_resource_availability(&res);
+			ret = __get_resource_availability(&res);
+			/*
+			 * This failure case should return retval which is
+			 * '-ICEDRV_KERROR_RESERVATION_FAIL',
+			 * So not overwriting the any other error
+			 */
+			if (ret < 0)
+				cve_os_log(CVE_LOGLEVEL_ERROR,
+					"resource availability failed %d\n",
+					ret);
 
 			rreq->num_ice = res.num_ice;
 			rreq->num_cntr = res.num_cntr;
 			rreq->num_pool = res.num_pool;
-			memcpy(rreq->clos, res.clos,
+
+			/*
+			 * This failure case should return retval which is
+			 * '-ICEDRV_KERROR_RESERVATION_FAIL',
+			 * So not overwriting the any other error
+			 */
+			ret = ice_memcpy_s(rreq->clos,
+				ICE_CLOS_MAX * sizeof(res.clos[0]), res.clos,
 				ICE_CLOS_MAX * sizeof(res.clos[0]));
+			if (ret < 0)
+				cve_os_log(CVE_LOGLEVEL_ERROR,
+					"Safelib failed memcpy %d\n", ret);
 
 			cve_os_log(CVE_LOGLEVEL_DEBUG,
 				"Ntw numICE: %d\n", rreq->num_ice);
@@ -3529,7 +3683,8 @@ int cve_ds_handle_execute_infer(cve_context_process_id_t context_pid,
 				ntw->swc_node.parent_sw_id,
 				ntw->swc_node.sw_id, ntw->network_id,
 				inf->swc_node.sw_id,
-				SPH_TRACE_OP_STATUS_PRIORITY, inf->inf_pr));
+				SPH_TRACE_OP_STATUS_PRIORITY,
+				data->priority));
 
 	if (!ice_lsch_add_inf_to_queue(inf, data->priority, data->enable_bp)) {
 
@@ -3601,12 +3756,7 @@ int cve_ds_handle_destroy_network(cve_context_process_id_t context_pid,
 	cve_os_log(CVE_LOGLEVEL_DEBUG,
 		"Deleting NtwID:0x%llx\n", ntw->network_id);
 
-	retval = __destroy_network(ntw);
-	if (retval < 0) {
-		cve_os_log_default(CVE_LOGLEVEL_ERROR,
-			"__destroy_network failed %d\n", retval);
-		goto out;
-	}
+	__destroy_network(ntw);
 
 	OS_FREE(ntw, sizeof(*ntw));
 
@@ -3758,7 +3908,13 @@ void cve_ds_handle_job_completion(struct cve_device *dev,
 					SPH_TRACE_OP_STATUS_ICE,
 					ntw->ntw_icemask));
 
+		ice_swc_counter_add(ntw->hswc,
+			ICEDRV_SWC_SUB_NETWORK_NETBUSYTIME,
+			nsec_to_usec(trace_clock_local()
+				- ntw->busy_start_time));
+
 		dg->num_running_ntw--;
+		ntw->wq->num_ntw_running--;
 
 		if (jobgroup->aborted_jobs_nr)
 			jg_status = CVE_JOBSGROUPSTATUS_ABORTED;
@@ -3821,6 +3977,14 @@ int cve_ds_handle_fw_loading(
 	 * map operation should be performed multiple times
 	 * according to number of CVEs in the system
 	 */
+
+	if (fw_binmap_size_bytes > MAX_FW_SIZE_BYTES) {
+		retval = -ICEDRV_KERROR_FW_PERM;
+		cve_os_log_default(CVE_LOGLEVEL_ERROR,
+				"FW_BINMAP_SIZE is more than allowable. Received=%d, Max_allowable=%d\n",
+				fw_binmap_size_bytes, MAX_FW_SIZE_BYTES);
+		goto out;
+	}
 	retval = cve_dev_fw_load_and_map(network->dev_hctx_list,
 			fw_image,
 			fw_binmap,
@@ -3888,11 +4052,13 @@ int cve_ds_open_context(cve_context_process_id_t context_pid,
 
 
 	retval = cve_os_init_wait_que(&new_context->destroy_wqs_que);
+#ifdef RING3_VALIDATION
 	if (retval != 0) {
 		cve_os_log(CVE_LOGLEVEL_ERROR,
 				"os_init_wait_que failed %d\n", retval);
 		goto out;
 	}
+#endif
 
 	/* get context id */
 	new_context->context_id = get_contex_id();
@@ -4078,6 +4244,7 @@ out:
 static int __handle_infer_completion_via_ctx(
 		cve_context_process_id_t context_pid,
 		struct cve_context_process *context_process,
+		struct ds_context *context,
 		struct cve_get_event *event)
 {
 	u8 continue_wait = 0;
@@ -4113,6 +4280,21 @@ static int __handle_infer_completion_via_ctx(
 	if (retval == 0) {
 		cve_os_log_default(CVE_LOGLEVEL_ERROR, "Timeout\n");
 		*wait_status = CVE_WAIT_EVENT_TIMEOUT;
+
+		/* Raise CARD_RESET if there was atleast one Infer scheduled
+		 * against this Context.
+		 */
+		if (context->wq_list->num_ntw_running) {
+
+			struct cve_device_group *dg = cve_dg_get();
+
+			cve_os_log(CVE_LOGLEVEL_ERROR,
+				"Raising CARD_RESET. UMD timed out while Inf is running\n");
+
+			dg->icedc_state = ICEDC_STATE_CARD_RESET_REQUIRED;
+			event->err_severity = ERROR_SEVERITY_CARD_RESET;
+		}
+
 		goto out;
 	} else if (retval == -ERESTARTSYS) {
 		*wait_status = CVE_WAIT_EVENT_ERROR;
@@ -4187,7 +4369,6 @@ out:
 int cve_ds_wait_for_event(cve_context_process_id_t context_pid,
 		struct cve_get_event *event)
 {
-	u32 __maybe_unused timeout_msec = event->timeout_msec;
 	struct cve_context_process *context_process = NULL;
 	struct ds_context *context = NULL;
 	struct ice_infer *inf = NULL;
@@ -4203,17 +4384,20 @@ int cve_ds_wait_for_event(cve_context_process_id_t context_pid,
 
 	/* get the process based on the id */
 	retval = cve_context_process_get(context_pid, &context_process);
-	if (retval != 0)
+	if (retval != 0) {
+		cve_os_log(CVE_LOGLEVEL_ERROR, "Invalid Context process\n");
 		goto unlock;
+	}
 
 	/* Get the context from the process */
 	context = get_context_from_process(context_process, event->contextid);
-	if (context)
-		ctx_sw_id = context->swc_node.sw_id;
+	if (!context) {
+		retval = -ICEDRV_KERROR_CTX_INVAL_ID;
+		cve_os_log(CVE_LOGLEVEL_ERROR, "Invalid Context\n");
+		goto unlock;
+	}
 
-	/*in case debug enabled don't timeout (~1000hours)*/
-	if (unlikely(cve_debug_get(DEBUG_TENS_EN)))
-		timeout_msec = 0xFFFFFFFF;
+	ctx_sw_id = context->swc_node.sw_id;
 
 	if (!event->infer_id) {
 		DO_TRACE(trace_icedrvEventGeneration(SPH_TRACE_OP_STATE_START,
@@ -4224,7 +4408,7 @@ int cve_ds_wait_for_event(cve_context_process_id_t context_pid,
 		cve_os_unlock(&g_cve_driver_biglock);
 
 		retval = __handle_infer_completion_via_ctx(context_pid,
-				context_process, event);
+				context_process, context, event);
 		goto out;
 
 	} else {
@@ -5089,8 +5273,7 @@ static void __power_off_ntw_devices(struct ice_network *ntw)
 	wakeup_po_thread = (dg->poweroff_dev_list == NULL);
 
 	do {
-		if (next->power_state == ICE_POWER_ON &&
-			next->dso.dso_config_status == TRACE_STATUS_DEFAULT) {
+		if (next->power_state == ICE_POWER_ON) {
 
 			/* Write current timestamp to Device */
 			next->poff_jiffy = cur_jiffy;
@@ -5316,236 +5499,6 @@ static void __flush_inf_cbs(struct ice_infer *inf)
 	}
 }
 #endif
-
-static int __ice_dev_configure_dump(void *user_data)
-{
-	int retval = 0, status = 0, i;
-	struct ice_debug_control_ice_dump *dump;
-	struct cve_device *dev = NULL;
-	u32 index = 0, ice_bitmap;
-	size_t sz = 0;
-	void **k_list, *cur_addr;
-	uint64_t tmp_addr;
-	u32 pe_mask, value;
-
-	sz = sizeof(struct ice_debug_control_ice_dump);
-	retval = __alloc_and_copy(user_data, sz, (void **)&dump);
-	if (retval < 0) {
-		cve_os_log(CVE_LOGLEVEL_ERROR,
-		"debug control  param alloc failed :%d\n", retval);
-		goto exit;
-	}
-
-	if (dump->num_of_ice_dump > MAX_ICE_DUMP_COUNT) {
-		retval = -1;
-		cve_os_log(CVE_LOGLEVEL_ERROR,
-		"[ERROR_LOG] invalid num_of_ice_dump:%d\n",
-		dump->num_of_ice_dump);
-		goto err_alloc_dump;
-	}
-
-	sz = (sizeof(void *) * dump->num_of_ice_dump);
-	retval = __alloc_and_copy((void *)dump->base_addr, sz,
-				(void **)&k_list);
-	if (retval < 0) {
-		cve_os_log(CVE_LOGLEVEL_ERROR,
-		"debug control param alloc failed :%d\n", retval);
-		goto err_alloc_dump;
-	}
-
-	if (dump->ice_mask & ~ICEDRV_VALID_ICE_MASK) {
-		retval = -1;
-		cve_os_log(CVE_LOGLEVEL_ERROR,
-		"[ERROR_LOG] invalid iceMask:%d\n",
-		dump->ice_mask);
-		goto err_alloc_addr;
-	}
-
-	ice_bitmap = dump->ice_mask;
-	while (ice_bitmap) {
-		retval = cve_os_lock(&g_cve_driver_biglock, CVE_INTERRUPTIBLE);
-		if (retval != 0) {
-			retval = -ERESTARTSYS;
-			goto err_alloc_addr;
-		}
-
-		if (index > dump->num_of_ice_dump) {
-			status |= ICE_DEBUG_ICE_DUMP_ERROR;
-			retval = -1;
-			cve_os_log(CVE_LOGLEVEL_ERROR,
-			"[ERROR_LOG] ICE bit set but buffer not allocated\n");
-			goto unlock;
-		}
-
-		i = __builtin_ctz(ice_bitmap);
-		ice_bitmap &= ~(1 << i);
-		dev = cve_device_get(i);
-		if (!dev) {
-			cve_os_log(CVE_LOGLEVEL_ERROR,
-			"CVE device return NULL\n");
-			retval = -ENODEV;
-			goto unlock;
-		}
-
-		pe_mask = 1 << (i + 4);
-		value = cve_os_read_idc_mmio(dev,
-				cfg_default.bar0_mem_icepe_offset);
-
-		/* Check if Device is powered ON */
-		if ((value & pe_mask) != pe_mask) {
-			/* TODO: check whether to continue or error out */
-			cve_os_log(CVE_LOGLEVEL_INFO,
-				"ICE-%d is not powered on, skipping\n", i);
-			cve_os_unlock(&g_cve_driver_biglock);
-			continue;
-		}
-
-		cve_di_reset_cve_dump(dev, cfg_default.ice_dump_now,
-					&dev->debug_control_buf);
-		dev->debug_control_buf.is_dump_now = 1;
-
-		cve_os_unlock(&g_cve_driver_biglock);
-
-		retval = cve_os_block_interruptible_timeout(
-			&dev->debug_control_buf.dump_wqs_que,
-			dev->debug_control_buf.is_cve_dump_on_error, 240000);
-		if (retval == 0) {
-			cve_os_log(CVE_LOGLEVEL_ERROR, "ICE DUMP Timeout\n");
-			status |= ICE_DEBUG_ICE_DUMP_TIMEOUT;
-			retval = -1;
-			goto err_alloc_addr;
-		} else if (retval == -ERESTARTSYS) {
-			cve_os_log(CVE_LOGLEVEL_ERROR, "ICE DUMP Error\n");
-			status |= ICE_DEBUG_ICE_DUMP_ERROR;
-			retval = -1;
-			goto err_alloc_addr;
-		} else {
-			cve_os_log(CVE_LOGLEVEL_ERROR, "ICE DUMP Complete\n");
-			status |= ICE_DEBUG_ICE_DUMP_COMPLETE;
-			retval = 0;
-		}
-
-		retval = cve_os_lock(&g_cve_driver_biglock, CVE_INTERRUPTIBLE);
-		if (retval != 0) {
-			retval = -ERESTARTSYS;
-			goto err_alloc_addr;
-		}
-		cur_addr = &k_list[index];
-
-		tmp_addr = *((uint64_t *)cur_addr);
-		retval = cve_os_write_user_memory((void *)tmp_addr,
-		ice_di_get_core_blob_sz(),
-		dev->debug_control_buf.cve_dump_buffer);
-		index += 1;
-		cve_os_unlock(&g_cve_driver_biglock);
-	}
-
-	dump->ice_dump_status = status;
-	sz = sizeof(struct ice_debug_control_ice_dump);
-	cve_os_write_user_memory(user_data, sz, dump);
-
-err_alloc_addr:
-	sz = (sizeof(uint64_t) * dump->num_of_ice_dump);
-	OS_FREE(k_list, sz);
-err_alloc_dump:
-	sz = sizeof(struct ice_debug_control_ice_dump);
-	OS_FREE(dump, sz);
-exit:
-	return retval;
-unlock:
-	sz = (sizeof(uint64_t) * dump->num_of_ice_dump);
-	OS_FREE(k_list, sz);
-	sz = sizeof(struct ice_debug_control_ice_dump);
-	OS_FREE(dump, sz);
-	cve_os_unlock(&g_cve_driver_biglock);
-	return retval;
-}
-
-static int __set_powered_on_icemask(void *user_data)
-{
-	struct ice_debug_control_ice_mask *im;
-	int retval = 0;
-	struct cve_device *ice_dev = get_first_device();
-	size_t sz;
-	idc_regs_icepe_t reg;
-
-	sz = sizeof(struct ice_debug_control_ice_mask);
-	retval = __alloc_and_copy(user_data, sz, (void **)&im);
-	if (retval < 0) {
-		cve_os_log(CVE_LOGLEVEL_ERROR,
-		"debug control  param alloc failed :%d\n", retval);
-		goto out;
-	}
-
-	retval = cve_os_lock(&g_cve_driver_biglock, CVE_INTERRUPTIBLE);
-	if (retval != 0) {
-		retval = -ERESTARTSYS;
-		goto err_alloc_im;
-	}
-
-	reg.val = cve_os_read_idc_mmio(ice_dev,
-				cfg_default.bar0_mem_icepe_offset);
-	im->powered_on_ice_mask = reg.field.ICEPE;
-
-	cve_os_write_user_memory(user_data, sz, im);
-
-	cve_os_unlock(&g_cve_driver_biglock);
-
-err_alloc_im:
-	sz = sizeof(struct ice_debug_control_ice_mask);
-	OS_FREE(im, sz);
-out:
-	return retval;
-}
-
-int ice_ds_debug_control(struct ice_debug_control_params *dc)
-{
-	int retval = 0;
-
-	switch (dc->type) {
-	case ICE_DEBUG_CONTROL_GET_POWERED_ON_ICEMASK:
-		retval = __set_powered_on_icemask((void *)dc->user_data);
-		break;
-	case ICE_DEBUG_CONTROL_GET_ICE_DUMP:
-		retval = __ice_dev_configure_dump((void *)dc->user_data);
-		break;
-	default:
-		retval = CVE_DEFAULT_ERROR_CODE;
-		cve_os_log(CVE_LOGLEVEL_ERROR,
-				"Invalid option\n");
-		break;
-	}
-
-	return retval;
-}
-
-int ice_set_hw_config(struct ice_set_hw_config_params *set_hw_config)
-{
-	int retval = 0;
-
-	retval = cve_os_lock(&g_cve_driver_biglock, CVE_INTERRUPTIBLE);
-	if (retval != 0) {
-		retval = -ERESTARTSYS;
-		goto out;
-	}
-
-	switch (set_hw_config->config_type) {
-	case ICE_FREQ:
-		retval = set_ice_freq((void *)&set_hw_config->ice_freq_config);
-		break;
-	case LLC_FREQ:
-		retval = set_llc_freq((void *)&set_hw_config->llc_freq_config);
-		break;
-	default:
-		retval = CVE_DEFAULT_ERROR_CODE;
-		cve_os_log(CVE_LOGLEVEL_ERROR,
-				"Invalid option\n");
-		break;
-	}
-out:
-	cve_os_unlock(&g_cve_driver_biglock);
-	return retval;
-}
 
 u64 __get_sw_id_from_context_pid(cve_context_process_id_t context_pid,
 			cve_context_id_t context_id)

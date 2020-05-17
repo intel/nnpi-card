@@ -16,6 +16,7 @@
 #include "doubly_linked_list.h"
 #include "cve_fw_structs.h"
 #include "project_settings.h"
+#include "ice_safe_func.h"
 
 #define INVALID_INDEX -1
 #define INVALID_ENTRY 255
@@ -231,8 +232,6 @@ struct cve_device {
 	enum ICE_POWER_STATE power_state;
 	/* last network id that ran on this device */
 	cve_network_id_t dev_ntw_id;
-	/* are hw counters enabled */
-	u32 is_hw_counters_enabled;
 	/* ice freq value */
 	u32 frequency;
 	/* copy of DTF registers to maintain during device reset */
@@ -267,8 +266,8 @@ struct cve_device {
 #endif
 	/* in Jiffies */
 	unsigned long db_jiffy;
-	struct timespec idle_start_time;
-	struct timespec busy_start_time;
+	u64 idle_start_time;
+	u64 busy_start_time;
 	/* Is ICE in free pool */
 	bool in_free_pool;
 	struct ice_pmon_config mmu_pmon[ICE_MAX_MMU_PMON];
@@ -378,13 +377,9 @@ struct ice_sphpb {
 /* For sysfs enabled debug dump  */
 
 struct debug_dump_conf {
-	u8 cb_dump;
 	u8 pt_dump;
-	u8 post_patch_surf_dump;
-	u8 ice_reset;
-	u8 llc_config;
-	u8 page_size_config;
 };
+
 struct hwtrace_job {
 	u8 job_id;
 	struct ice_dso_regs_data dso;
@@ -563,6 +558,8 @@ struct cve_workqueue {
 	u32 num_ntw_using_pool;
 	/* count of network requested for pool reservation */
 	u32 num_ntw_reserving_pool;
+	/* count of networks that are running on ICE */
+	u32 num_ntw_running;
 };
 
 /* hold information about a job
@@ -929,6 +926,11 @@ struct ice_network {
 	u64 infer_buf_page_config[ICEDRV_PAGE_ALIGNMENT_MAX];
 	/* Number of buffers every CreateInfer desc must send */
 	u32 num_inf_buf;
+
+	/* Stores time stamp post network is scheduled on ICE
+	 * Will be used to calculate network busy time
+	 */
+	u64 busy_start_time;
 };
 
 struct ice_infer {

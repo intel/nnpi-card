@@ -13,15 +13,8 @@
 int __init_icedrv_trace(struct cve_device *ice_dev);
 void __term_icedrv_trace(struct cve_device *ice_dev);
 int ice_restore_trace_hw_regs(struct cve_device *ice_dev);
-int ice_trace_config(struct ice_hw_trace_config *cfg);
 
 /* Device specific internal functions */
-int ice_trace_set_ice_observers(struct ice_observer_config *dso_config,
-							u32 dev_index);
-int ice_trace_set_perf_counter_setup(struct ice_perf_counter_setup *perf_ctr);
-int ice_trace_set_reg_reader_daemon(struct ice_register_reader_daemon *daemon,
-							u32 dev_index);
-
 int ice_trace_register_uncore_callbacks(struct cve_device *ice_dev);
 int ice_trace_dso_register_uncore_callbacks(struct ice_dso_regs_data *dso);
 void ice_trace_unregister_uncore_callbacks(struct cve_device *ice_dev);
@@ -38,7 +31,7 @@ int ice_trace_restore_daemon_config(struct cve_device *ice_dev,
 int ice_trace_sysfs_init(struct cve_device *ice_dev);
 void ice_trace_sysfs_term(struct cve_device *ice_dev);
 int ice_trace_init_dso(struct cve_device *ice_dev);
-void ice_trace_set_default_dso(struct cve_device *ice_dev);
+int ice_trace_set_default_dso(struct cve_device *ice_dev);
 int __ice_trace_dso_config_port_regsoffset(struct cve_device *ice_dev);
 #if ICEDRV_ENABLE_HSLE_FLOW
 #define init_icedrv_trace(x) __no_op_stub

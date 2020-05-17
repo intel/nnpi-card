@@ -40,24 +40,8 @@
 
 #define INTEL_TH_PCI_DEVICE_ID 0x45c5
 
-/*
- * the following hack is to be removed asap
- * it is just for the edge between moving from kernel 5.1 to kernel 5.1
- * as a result of an api change in the new kernel
- */
-#include <linux/version.h>
-
-#define  SPH_IGNORE_STYLE_CHECK
-
-#if defined( SPH_IGNORE_STYLE_CHECK ) && ( KERNEL_VERSION(5, 4, 0) > LINUX_VERSION_CODE )
-/* required patches for intel_th for support */
-struct msu_buffer_driver g_msu = {
-	"sph_hwtrace",
-	NULL,
-#else
 struct msu_buffer g_msu = {
 	"sph_hwtrace",
-#endif
 	intel_th_assign_mode,
 	intel_th_unassign,
 	intel_th_alloc_window,
@@ -174,17 +158,7 @@ int sphcs_init_th_driver(void)
 	}
 
 	//driver will register to trace service from intel_th driver.
-/*
- * the following hack is to be removed asap
- * it is just for the edge between moving from kernel 5.1 to kernel 5.1
- * as a result of an api change in the new kernel
- */
-#if defined( SPH_IGNORE_STYLE_CHECK ) && ( KERNEL_VERSION(5, 4, 0) > LINUX_VERSION_CODE )
-	g_msu.owner = THIS_MODULE;
-	ret = intel_th_msu_buffer_register(&g_msu);
-#else
 	ret = intel_th_msu_buffer_register(&g_msu, THIS_MODULE);
-#endif
 
 	if (ret) {
 		sph_log_err(HWTRACE_LOG, "unable to register intel_th service - err %d", ret);

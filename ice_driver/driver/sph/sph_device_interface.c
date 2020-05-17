@@ -66,6 +66,8 @@ static struct kobject *llcfreq_kobj;
 
 /* kobject for sw_debug  */
 static struct kobject *swdebug_kobj;
+/* kobject for sw_config  */
+static struct kobject *swconfig_kobj;
 
 
 struct llcpmoninfo_details {
@@ -128,14 +130,6 @@ static ssize_t store_llcpmon(struct kobject *kobj,
 
 /* show and store function for debug_dump */
 
-static ssize_t show_cbdump(struct kobject *kobj,
-		struct kobj_attribute *attr,
-		char *buf);
-
-static ssize_t store_cbdump(struct kobject *kobj,
-		struct kobj_attribute *attr,
-		const char *buf, size_t count);
-
 static ssize_t show_ptdump(struct kobject *kobj,
 		struct kobj_attribute *attr,
 		char *buf);
@@ -144,35 +138,11 @@ static ssize_t store_ptdump(struct kobject *kobj,
 		struct kobj_attribute *attr,
 		const char *buf, size_t count);
 
-static ssize_t show_postpatchsurfdump(struct kobject *kobj,
+static ssize_t show_ice_idle_time(struct kobject *kobj,
 		struct kobj_attribute *attr,
 		char *buf);
 
-static ssize_t store_postpatchsurfdump(struct kobject *kobj,
-		struct kobj_attribute *attr,
-		const char *buf, size_t count);
-
-static ssize_t show_icereset(struct kobject *kobj,
-		struct kobj_attribute *attr,
-		char *buf);
-
-static ssize_t store_icereset(struct kobject *kobj,
-		struct kobj_attribute *attr,
-		const char *buf, size_t count);
-
-static ssize_t show_llcconfig(struct kobject *kobj,
-		struct kobj_attribute *attr,
-		char *buf);
-
-static ssize_t store_llcconfig(struct kobject *kobj,
-		struct kobj_attribute *attr,
-		const char *buf, size_t count);
-
-static ssize_t show_pagesizeconfig(struct kobject *kobj,
-		struct kobj_attribute *attr,
-		char *buf);
-
-static ssize_t store_pagesizeconfig(struct kobject *kobj,
+static ssize_t store_ice_idle_time(struct kobject *kobj,
 		struct kobj_attribute *attr,
 		const char *buf, size_t count);
 
@@ -203,39 +173,20 @@ __ATTR(llcpmon_counters, 0444, show_llcpmon, NULL);
 
 /* attribute registration for debug_dump*/
 
-static struct kobj_attribute cb_dump_attr =
-__ATTR(cb_dump, 0664, show_cbdump, store_cbdump);
-
 static struct kobj_attribute pt_dump_attr =
 __ATTR(pt_dump, 0664, show_ptdump, store_ptdump);
 
-static struct kobj_attribute post_patch_surf_dump_attr =
-__ATTR(pp_surf_dump, 0664, show_postpatchsurfdump, store_postpatchsurfdump);
-
-static struct kobj_attribute ice_reset_attr =
-__ATTR(ice_reset, 0664, show_icereset, store_icereset);
-
-static struct kobj_attribute llc_config_attr =
-__ATTR(llc_config, 0664, show_llcconfig, store_llcconfig);
-
-static struct kobj_attribute page_size_config_attr =
-__ATTR(page_size_config, 0664, show_pagesizeconfig, store_pagesizeconfig);
+static struct kobj_attribute poweroff_attr =
+__ATTR(ice_idle_time_ms, 0664, show_ice_idle_time, store_ice_idle_time);
 
 static struct attribute *debug_attrs[] = {
-	&cb_dump_attr.attr,
 	&pt_dump_attr.attr,
-	&post_patch_surf_dump_attr.attr,
-	&ice_reset_attr.attr,
-	&llc_config_attr.attr,
-	&page_size_config_attr.attr,
 	NULL,	/* need to NULL terminate the list of attributes */
 };
 
 static struct attribute_group debug_attr_group = {
 		.attrs = debug_attrs,
 };
-
-
 
 static struct attribute *ice_freq_attrs[] = {
 	&icefreqinfo_attr.attr,
@@ -398,7 +349,6 @@ static void configure_llc(struct cve_device *cve_dev)
 	/* changing the AXI default bits (20-23) in page table entry
 	 * to be 24-27, value should be 0x6DA658
 	 */
-	struct cve_device_group *dg = cve_dg_get();
 	union ice_mmu_inner_mem_axi_table_pt_index_bits_t axi_pt_bits;
 	u32 llc_bit = CVE_LLC_BIT_SHIFT;
 
@@ -415,14 +365,6 @@ static void configure_llc(struct cve_device *cve_dev)
 		cfg_default.mmu_base +
 		cfg_default.mmu_axi_tbl_pt_idx_bits_offset,
 		axi_pt_bits.val);
-
-	if (dg->dump_conf.llc_config)
-		cve_os_dev_log_default(CVE_LOGLEVEL_INFO,
-			cve_dev->dev_index,
-			"AXI_TABLE_PT_INDEX_REG  Offset=0x%x, Value=0x%x\n",
-			(cfg_default.mmu_base +
-			 cfg_default.mmu_axi_tbl_pt_idx_bits_offset),
-			 axi_pt_bits.val);
 
 	/* Disabling because during HSLE bringup it was recommended
 	 * to let these registers have default value
@@ -459,23 +401,6 @@ static void configure_llc(struct cve_device *cve_dev)
 		cfg_default.mmu_base +
 		cfg_default.mmu_page_walk_axi_attri_offset,
 		CVE_PAGE_WALK_AXI_ATTRIBUTES);
-
-	if (dg->dump_conf.llc_config == 1)
-		cve_os_dev_log_default(CVE_LOGLEVEL_INFO,
-			cve_dev->dev_index,
-			"TLC_LLC_CONFIG  Offset=0x%x,Value=0x%x\n ASIP_LLC_CONFIG Offset=0x%x,Value=0x%x\n DSP_LLC_CONFIG  Offset=0x%x,Value=0x%x\n ICE_PAGE_WALK_AXI_ATTRIBUTES  Offset=0x%x,Value=0x%x\n",
-			(cfg_default.mmu_base +
-				cfg_default.mmu_tlc_axi_attri_offset),
-			CVE_TLC_LLC_CONFIG,
-			(cfg_default.mmu_base +
-				cfg_default.mmu_asip_axi_attri_offset),
-			CVE_ASIP_LLC_CONFIG,
-			(cfg_default.mmu_base +
-			    cfg_default.mmu_dsp_axi_attri_offset),
-			CVE_DSP_LLC_CONFIG,
-			(cfg_default.mmu_base +
-				cfg_default.mmu_page_walk_axi_attri_offset),
-			CVE_PAGE_WALK_AXI_ATTRIBUTES);
 }
 
 int configure_ice_frequency(struct cve_device *dev)
@@ -626,7 +551,7 @@ int do_reset_device(struct cve_device *cve_dev, uint8_t idc_reset)
 	u32 err;
 	int retval = 0;
 	uint64_t value, mask, notify_ice_mask;
-	struct cve_device_group *dg = cve_dg_get();
+	struct cve_device_group *dg = g_cve_dev_group_list;
 
 	err = ice_di_is_shared_read_error(cve_dev);
 	if (err) {
@@ -652,6 +577,15 @@ int do_reset_device(struct cve_device *cve_dev, uint8_t idc_reset)
 		/* SW WA for STEP A */
 		ice_di_configure_clk_squashing(cve_dev, true);
 
+		retval = cve_os_lock(&dg->poweroff_dev_list_lock,
+				CVE_INTERRUPTIBLE);
+		if (retval != 0) {
+			cve_os_log_default(CVE_LOGLEVEL_ERROR,
+					"Error:%d PowerOff Lock not acquired\n",
+					retval);
+			return retval;
+		}
+
 		cve_os_write_idc_mmio(cve_dev,
 			cfg_default.bar0_mem_icerst_offset, value);
 
@@ -665,6 +599,9 @@ int do_reset_device(struct cve_device *cve_dev, uint8_t idc_reset)
 				cve_dev->dev_index);
 			return -1;
 		}
+
+		cve_os_unlock(&dg->poweroff_dev_list_lock);
+
 		/* SW WA for STEP A */
 		ice_di_configure_clk_squashing(cve_dev, false);
 
@@ -714,11 +651,6 @@ int do_reset_device(struct cve_device *cve_dev, uint8_t idc_reset)
 	configure_axi_max_inflight(cve_dev);
 
 	configure_dtf(cve_dev);
-
-	if (dg->dump_conf.ice_reset)
-		cve_os_dev_log_default(CVE_LOGLEVEL_INFO,
-			cve_dev->dev_index,
-			"ICE_RESET is done\n");
 
 	/* configure the LLC after reset */
 	configure_llc(cve_dev);
@@ -1040,10 +972,6 @@ void project_hook_dispatch_new_job(struct cve_device *cve_dev,
 	/* Configure CVE HW watchdog: */
 	enable_wdt_debugfs = cve_debug_get(DEBUG_WD_EN);
 
-	/* Disable WD if debugger is used*/
-	if (unlikely(cve_debug_get(DEBUG_TENS_EN)))
-		enable_wdt_debugfs = 0;
-
 	/* Disable WD if ice debugger is used*/
 	if (unlikely(ntw->ntw_enable_bp))
 		enable_wdt_debugfs = 0;
@@ -1094,8 +1022,7 @@ void ice_di_update_page_sz(struct cve_device *cve_dev, u32 *page_sz_array)
 				(cfg_default.mmu_base +
 				 cfg_default.mmu_page_sizes_offset + (i * 4)),
 				page_sz_array[i]);
-		cve_os_dev_log(dg->dump_conf.page_size_config ?
-			    CVE_LOGLEVEL_INFO : CVE_LOGLEVEL_DEBUG,
+		cve_os_dev_log(CVE_LOGLEVEL_DEBUG,
 				cve_dev->dev_index,
 				"PAGE_SZ_CONFIG_REG Index=%d, offset=0x%x, Value=0x%x\n",
 				i, (cfg_default.mmu_base +
@@ -1147,10 +1074,7 @@ void cve_di_set_cve_dump_control_register(struct cve_device *cve_dev,
 		ASSERT(((offset_bytes >> 2) << 2) == offset_bytes);
 
 		reg.val = 0;
-		if (ice_dump_buf->is_allowed_tlc_dump)
-			reg.field.dumpTrigger = dumpTrigger;
-		else
-			reg.field.dumpTrigger = cfg_default.ice_dump_never;
+		reg.field.dumpTrigger = dumpTrigger;
 
 		cve_os_write_mmio_32(cve_dev, offset_bytes, reg.val);
 	}
@@ -1212,19 +1136,26 @@ int project_hook_init_cve_dump_buffer(struct cve_device *dev)
 
 	}
 
-	memset(dev->debug_control_buf.cve_dump_buffer,
-				0, dump_size_aligned);
+	retval = ice_memset_s(dev->debug_control_buf.cve_dump_buffer,
+			dump_size_aligned, 0, dump_size_aligned);
+	if (retval < 0) {
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+				"Safelib memset failed %d\n", retval);
+		goto release_alloc;
+	}
 
 	dev->debug_control_buf.is_allowed_tlc_dump = 1;
 	dev->debug_control_buf.size_bytes = dump_size_aligned;
 	dev->debug_control_buf.is_cve_dump_on_error  = 0;
 
 	retval = cve_os_init_wait_que(&dev->debug_control_buf.dump_wqs_que);
+#ifdef RING3_VALIDATION
 	if (retval != 0) {
 		cve_os_log(CVE_LOGLEVEL_ERROR,
 			"os_init_wait_que failed %d\n", retval);
 		goto release_alloc;
 	}
+#endif
 
 	return retval;
 
@@ -1236,6 +1167,8 @@ out:
 
 void project_hook_free_cve_dump_buffer(struct cve_device *dev)
 {
+	int ret = 0;
+
 	if (dev == NULL)
 		return;
 
@@ -1245,8 +1178,13 @@ void project_hook_free_cve_dump_buffer(struct cve_device *dev)
 		dev->debug_control_buf.cve_dump_buffer,
 		&dev->debug_control_buf.dump_dma_handle, 1);
 
-	memset(&dev->debug_control_buf,
-				0, sizeof(dev->debug_control_buf));
+	ret = ice_memset_s(&dev->debug_control_buf,
+			sizeof(dev->debug_control_buf),
+			0, sizeof(dev->debug_control_buf));
+	/* Safelib error logging */
+	if (ret < 0)
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+			"Safelib memset failed %d\n", ret);
 }
 
 int ice_di_get_core_blob_sz(void)
@@ -1307,9 +1245,12 @@ static ssize_t show_ice_freqinfo(struct kobject *kobj,
 {
 	int ret = 0;
 
-	ret = sprintf((buf + ret),
-		"freq value has to be in the range of %d-%d MHz, multiple of 25\n",
+	ret = ice_snprintf_s_uu((buf + ret), PAGE_SIZE,
+		"freq value has to be in the range of %u-%u MHz, multiple of 25\n",
 		MIN_ICE_FREQ_PARAM, get_ice_max_freq());
+	if (ret < 0)
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+			"Safelib failed snprintf %d\n", ret);
 	return ret;
 }
 
@@ -1321,41 +1262,6 @@ static ssize_t show_ice_freq(struct kobject *kobj,
 	cve_os_log_default(CVE_LOGLEVEL_INFO, "Not Implemented");
 
 	return 0;
-}
-
-static ssize_t store_cbdump(struct kobject *kobj,
-		struct kobj_attribute *attr,
-		const char *buf, size_t count)
-{
-	int ret = 0, val;
-	struct cve_device_group *dg = cve_dg_get();
-
-	if (!dg) {
-		cve_os_log(CVE_LOGLEVEL_ERROR,
-			"null dg pointer (%d) !!\n", -EINVAL);
-		return -EINVAL;
-	}
-
-	ret = kstrtoint(buf, 10, &val);
-	if (ret < 0)
-		return ret;
-
-	dg->dump_conf.cb_dump = (u8)val;
-
-	return count;
-}
-
-static ssize_t show_cbdump(struct kobject *kobj,
-				struct kobj_attribute *attr, char *buf)
-{
-	struct cve_device_group *dg = cve_dg_get();
-
-	if (!dg) {
-		cve_os_log(CVE_LOGLEVEL_ERROR,
-			"null dg pointer (%d) !!\n", -EINVAL);
-		return -EINVAL;
-	}
-	return sprintf(buf, "%d\n", dg->dump_conf.cb_dump);
 }
 
 static ssize_t store_ptdump(struct kobject *kobj,
@@ -1384,156 +1290,19 @@ static ssize_t show_ptdump(struct kobject *kobj,
 				struct kobj_attribute *attr, char *buf)
 {
 	struct cve_device_group *dg = cve_dg_get();
+	int ret = 0;
 
 	if (!dg) {
 		cve_os_log(CVE_LOGLEVEL_ERROR,
 			"null dg pointer (%d) !!\n", -EINVAL);
 		return -EINVAL;
 	}
-	return sprintf(buf, "%d\n", dg->dump_conf.pt_dump);
-}
-
-static ssize_t store_postpatchsurfdump(struct kobject *kobj,
-		struct kobj_attribute *attr,
-		const char *buf, size_t count)
-{
-	int ret = 0, val;
-
-	struct cve_device_group *dg = cve_dg_get();
-
-	if (!dg) {
-		cve_os_log(CVE_LOGLEVEL_ERROR,
-			"null dg pointer (%d) !!\n", -EINVAL);
-		return -EINVAL;
-	}
-
-	ret = kstrtoint(buf, 10, &val);
+	ret = ice_snprintf_s_u(buf, PAGE_SIZE, "%u\n", dg->dump_conf.pt_dump);
 	if (ret < 0)
-		return ret;
-
-	dg->dump_conf.post_patch_surf_dump = (u8) val;
-
-	return count;
-}
-
-static ssize_t show_postpatchsurfdump(struct kobject *kobj,
-				struct kobj_attribute *attr, char *buf)
-{
-	struct cve_device_group *dg = cve_dg_get();
-
-	if (!dg) {
 		cve_os_log(CVE_LOGLEVEL_ERROR,
-			"null dg pointer (%d) !!\n", -EINVAL);
-		return -EINVAL;
-	}
-	return sprintf(buf, "%d\n", dg->dump_conf.post_patch_surf_dump);
-}
+			"Safelib failed snprintf %d\n", ret);
+	return ret;
 
-static ssize_t store_icereset(struct kobject *kobj,
-		struct kobj_attribute *attr,
-		const char *buf, size_t count)
-{
-	int ret = 0, val;
-
-	struct cve_device_group *dg = cve_dg_get();
-
-	if (!dg) {
-		cve_os_log(CVE_LOGLEVEL_ERROR,
-			"null dg pointer (%d) !!\n", -EINVAL);
-		return -EINVAL;
-	}
-
-	ret = kstrtoint(buf, 10, &val);
-	if (ret < 0)
-		return ret;
-
-	dg->dump_conf.ice_reset = (u8) val;
-
-	return count;
-}
-
-static ssize_t show_icereset(struct kobject *kobj,
-				struct kobj_attribute *attr, char *buf)
-{
-	struct cve_device_group *dg = cve_dg_get();
-
-	if (!dg) {
-		cve_os_log(CVE_LOGLEVEL_ERROR,
-			"null dg pointer (%d) !!\n", -EINVAL);
-		return -EINVAL;
-	}
-	return sprintf(buf, "%d\n", dg->dump_conf.ice_reset);
-}
-
-static ssize_t store_llcconfig(struct kobject *kobj,
-		struct kobj_attribute *attr,
-		const char *buf, size_t count)
-{
-	int ret = 0, val;
-	struct cve_device_group *dg = cve_dg_get();
-
-	if (!dg) {
-		cve_os_log(CVE_LOGLEVEL_ERROR,
-			"null dg pointer (%d) !!\n", -EINVAL);
-		return -EINVAL;
-	}
-
-	ret = kstrtoint(buf, 10, &val);
-	if (ret < 0)
-		return ret;
-
-	dg->dump_conf.llc_config = (u8)val;
-
-	return count;
-}
-
-static ssize_t show_llcconfig(struct kobject *kobj,
-				struct kobj_attribute *attr, char *buf)
-{
-	struct cve_device_group *dg = cve_dg_get();
-
-	if (!dg) {
-		cve_os_log(CVE_LOGLEVEL_ERROR,
-			"null dg pointer (%d) !!\n", -EINVAL);
-		return -EINVAL;
-	}
-	return sprintf(buf, "%d\n", dg->dump_conf.llc_config);
-}
-
-static ssize_t store_pagesizeconfig(struct kobject *kobj,
-		struct kobj_attribute *attr,
-		const char *buf, size_t count)
-{
-	int ret = 0, val;
-	struct cve_device_group *dg = cve_dg_get();
-
-	if (!dg) {
-		cve_os_log(CVE_LOGLEVEL_ERROR,
-			"null dg pointer (%d) !!\n", -EINVAL);
-		return -EINVAL;
-	}
-
-	ret = kstrtoint(buf, 10, &val);
-	if (ret < 0)
-		return ret;
-
-	dg->dump_conf.page_size_config = (u8) val;
-
-	return count;
-}
-
-static ssize_t show_pagesizeconfig(struct kobject *kobj,
-		struct kobj_attribute *attr,
-		char *buf)
-{
-	struct cve_device_group *dg = cve_dg_get();
-
-	if (!dg) {
-		cve_os_log(CVE_LOGLEVEL_ERROR,
-			"null dg pointer (%d) !!\n", -EINVAL);
-		return -EINVAL;
-	}
-	return sprintf(buf, "%d\n", dg->dump_conf.page_size_config);
 }
 
 static ssize_t store_ice_freq(struct kobject *kobj,
@@ -1546,11 +1315,11 @@ static ssize_t store_ice_freq(struct kobject *kobj,
 	struct ice_hw_config_ice_freq freq_conf;
 	int ret = 0;
 
-	ret = sscanf(kobj->name, "ice%u", &dev_index);
+	ret = ice_sscanf_s_u32(kobj->name, "ice%u", &dev_index);
 	if (ret < 1) {
 		cve_os_log(CVE_LOGLEVEL_ERROR, "failed getting ice id %s\n",
 						kobj->name);
-		return -EFAULT;
+		return ((ret == 0) ? -EFAULT : ret);
 	}
 	if (dev_index >= NUM_ICE_UNIT) {
 		cve_os_log(CVE_LOGLEVEL_ERROR, "wrong ice id %d\n", dev_index);
@@ -1583,9 +1352,12 @@ static ssize_t show_llc_freqinfo(struct kobject *kobj,
 {
 	int ret = 0;
 
-	ret = sprintf((buf + ret),
-		"freq value has to be in the range of %d-%d MHz, multiple of 100\n",
+	ret = ice_snprintf_s_uu((buf + ret), PAGE_SIZE,
+		"freq value has to be in the range of %u-%u MHz, multiple of 100\n",
 		MIN_LLC_FREQ_PARAM, get_llc_max_freq());
+	if (ret < 0)
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+			"Safelib failed snprintf %d\n", ret);
 	return ret;
 }
 
@@ -1608,10 +1380,13 @@ static ssize_t show_llc_freq(struct kobject *kobj,
 	freq_high = max_llc_ratio(val_low);
 	freq_low = min_llc_ratio(val_low);
 
-	ret += sprintf((buf + ret), "LLC Freq Min: %u MHz, Max: %u MHz\n",
+	ret = ice_snprintf_s_uu((buf + ret), PAGE_SIZE,
+			"LLC Freq Min: %u MHz, Max: %u MHz\n",
 		(freq_low * 100),
 		(freq_high * 100));
-
+	if (ret < 0)
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+			"Safelib failed snprintf %d\n", ret);
 	return ret;
 }
 
@@ -1786,6 +1561,58 @@ static int debug_dump_init(void)
 	return ret;
 }
 
+int ice_poweroff_sysfs_init(void)
+{
+	int ret = 0;
+
+	FUNC_ENTER();
+
+	if (!icedrv_kobj) {
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+			"icedrv kobj doesn't exist\n");
+		ret = -ENOMEM;
+		goto out;
+	}
+
+	swconfig_kobj = kobject_create_and_add("swconfig", icedrv_kobj);
+	if (!swconfig_kobj) {
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+					"swconfig kobj creation failed\n");
+		ret = -ENOMEM;
+		goto out;
+	}
+
+	ret = sysfs_create_file(swconfig_kobj, &poweroff_attr.attr);
+	if (ret < 0) {
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+					"poweroff_attr sysfs creation failed\n");
+
+		kobject_put(swconfig_kobj);
+		swconfig_kobj = NULL;
+
+		goto out;
+	}
+out:
+	FUNC_LEAVE();
+	return ret;
+}
+
+void ice_poweroff_sysfs_term(void)
+{
+	FUNC_ENTER();
+
+	if (swconfig_kobj) {
+
+		sysfs_remove_file(swconfig_kobj, &poweroff_attr.attr);
+
+		kobject_put(swconfig_kobj);
+		swconfig_kobj = NULL;
+		cve_os_log(CVE_LOGLEVEL_DEBUG,
+			"swconfig kobj deleted\n");
+	}
+	FUNC_LEAVE();
+}
+
 /*  function for debug print    */
 
 int sw_debug_sysfs_init(void)
@@ -1876,7 +1703,12 @@ int hw_config_sysfs_init(struct cve_device *ice_dev)
 icebo_sysfs:
 	if (bo->icebo_kobj)
 		goto ice_sysfs;
-	snprintf(name, sizeof(name), "icebo%d", bo->bo_id);
+	ret = ice_snprintf_s_u(name, sizeof(name), "icebo%u", bo->bo_id);
+	if (ret < 0) {
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+			"Safelib failed snprintf %d\n", ret);
+		goto hwconfig_kobj_free;
+	}
 	bo->icebo_kobj = kobject_create_and_add(name, hwconfig_kobj);
 	if (!bo->icebo_kobj) {
 		cve_os_log(CVE_LOGLEVEL_ERROR,
@@ -1896,7 +1728,12 @@ icebo_sysfs:
 	}
 ice_sysfs:
 	ice_dev->ice_config_kobj = NULL;
-	snprintf(name, sizeof(name), "ice%d", ice_dev->dev_index);
+	ret = ice_snprintf_s_u(name, sizeof(name), "ice%u", ice_dev->dev_index);
+	if (ret < 0) {
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+			"Safelib failed snprintf %d\n", ret);
+		goto icebo_kobj_free;
+	}
 	ice_dev->ice_config_kobj = kobject_create_and_add(name, hwconfig_kobj);
 	if (!ice_dev->ice_config_kobj) {
 		cve_os_dev_log(CVE_LOGLEVEL_ERROR, ice_dev->dev_index,
@@ -2005,7 +1842,7 @@ void hw_config_sysfs_term(struct cve_device *ice_dev)
 static ssize_t show_llcpmoninfo(struct kobject *kobj,
 			struct kobj_attribute *attr, char *buf)
 {
-	int ret = 0;
+	int ret = 0, len = 0;
 	u32 i;
 	u32 size;
 	struct llcpmoninfo_details llcpmon_arr[] = {
@@ -2025,21 +1862,31 @@ static ssize_t show_llcpmoninfo(struct kobject *kobj,
 
 	size = sizeof(llcpmon_arr) / sizeof(struct llcpmoninfo_details);
 
-	ret = sprintf((buf + ret),
+	ret = snprintf((buf + ret), PAGE_SIZE,
 		"-1, LLC_PMON_DISABLE_CONFIG, \"Disable LLC PMON configuration\"\n");
+
 	for (i = 0; i < size; i++) {
-		ret += sprintf((buf + ret), "%d, 0x%x, 0x%x, %s, \"%s\"\n",
+		len = ice_snprintf_s_uuuss((buf + ret), PAGE_SIZE,
+		"%u, 0x%x, 0x%x, %s, \"%s\"\n",
 		llcpmon_arr[i].index,
 		llcpmon_arr[i].config_val0,
 		llcpmon_arr[i].config_val1,
 		llcpmon_arr[i].name,
 		llcpmon_arr[i].desc);
+		if (len < 0) {
+			cve_os_log(CVE_LOGLEVEL_ERROR,
+				"Safelib failed snprintf %d\n", len);
+			ret = -EFAULT;
+			goto out;
+		}
+		ret += len;
 	}
-	ret += sprintf((buf + ret),
+	ret += snprintf((buf + ret), PAGE_SIZE,
 		"4, PMON_0_USER_CONFIG, PMON_1_USER_CONFIG, USER_DEFINED_CONFIG, \"User defined configiuration values of PMON 0,1\"\n");
-	ret += sprintf((buf + ret),
+	ret += snprintf((buf + ret), PAGE_SIZE,
 		"5, PMON_2_USER_CONFIG, PMON_3_USER_CONFIG, USER_DEFINED_CONFIG, \"User defined configiuration values of PMON 2,3\"\n");
 
+out:
 	return ret;
 }
 
@@ -2052,11 +1899,11 @@ static ssize_t show_llcpmonconfig(struct kobject *kobj,
 	struct icebo_desc *bo;
 	struct cve_device *dev;
 
-	ret = sscanf(kobj->name, "icebo%hhd", &bo_id);
+	ret = ice_sscanf_s_u8(kobj->name, "icebo%hhu", &bo_id);
 	if (ret < 1) {
 		cve_os_log(CVE_LOGLEVEL_ERROR, "failed getting ice bo id %s\n",
 				kobj->name);
-		return -EFAULT;
+		return ((ret == 0) ? -EFAULT : ret);
 	}
 
 	if (bo_id > MAX_NUM_ICEBO) {
@@ -2079,13 +1926,16 @@ static ssize_t show_llcpmonconfig(struct kobject *kobj,
 		return -EFAULT;
 	}
 
-	ret += sprintf((buf + ret),
-		"BO:%hhd LLC PMON Config\nPMON0:0x%llx PMON1:0x%llx PMON2:0x%llx PMON3:0x%llx\n",
+	ret = ice_snprintf_s_uuuuu((buf + ret), PAGE_SIZE,
+		"BO:%hhu LLC PMON Config\nPMON0:0x%llx PMON1:0x%llx PMON2:0x%llx PMON3:0x%llx\n",
 		bo_id,
 		bo->llc_pmon_cfg.pmon0_cfg,
 		bo->llc_pmon_cfg.pmon1_cfg,
 		bo->llc_pmon_cfg.pmon2_cfg,
 		bo->llc_pmon_cfg.pmon3_cfg);
+	if (ret < 0)
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+				"Safelib failed snprintf %d\n", ret);
 
 	return ret;
 }
@@ -2101,11 +1951,11 @@ static ssize_t show_llcpmon(struct kobject *kobj,
 	struct icebo_desc *bo;
 	struct cve_device *dev;
 
-	ret = sscanf(kobj->name, "icebo%hhd", &bo_id);
+	ret = ice_sscanf_s_u8(kobj->name, "icebo%hhu", &bo_id);
 	if (ret < 1) {
 		cve_os_log(CVE_LOGLEVEL_ERROR, "failed getting ice bo id %s\n",
 				kobj->name);
-		return -EFAULT;
+		return ((ret == 0) ? -EFAULT : ret);
 	}
 
 	if (bo_id > MAX_NUM_ICEBO) {
@@ -2144,13 +1994,16 @@ static ssize_t show_llcpmon(struct kobject *kobj,
 		cfg_default.a2i_icebo_pmon_counter_3_offset;
 	cntr_value[3] = cve_os_read_idc_mmio(dev, offset);
 
-	ret += sprintf((buf + ret),
-		"BO:%hhd LLC PMON Counters\nCOUNTER0:0x%llx COUNTER1:0x%llx COUNTER2:0x%llx COUNTER3:0x%llx\n",
+	ret = ice_snprintf_s_uuuuu((buf + ret), PAGE_SIZE,
+		"BO:%hhu LLC PMON Counters\nCOUNTER0:0x%llx COUNTER1:0x%llx COUNTER2:0x%llx COUNTER3:0x%llx\n",
 		bo_id,
 		cntr_value[0],
 		cntr_value[1],
 		cntr_value[2],
 		cntr_value[3]);
+	if (ret < 0)
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+				"Safelib failed snprintf %d\n", ret);
 
 	return ret;
 }
@@ -2174,11 +2027,11 @@ static ssize_t store_llcpmon(struct kobject *kobj,
 	bool pmon_0_1 = true;
 
 	FUNC_ENTER();
-	ret = sscanf(kobj->name, "icebo%hhd", &bo_id);
+	ret = ice_sscanf_s_u8(kobj->name, "icebo%hhu", &bo_id);
 	if (ret < 1) {
 		cve_os_log(CVE_LOGLEVEL_ERROR, "failed getting ice bo id %s\n",
 				kobj->name);
-		return -EFAULT;
+		return ((ret == 0) ? -EFAULT : ret);
 	}
 
 	if (bo_id > MAX_NUM_ICEBO) {
@@ -2296,6 +2149,53 @@ static ssize_t store_llcpmon(struct kobject *kobj,
 
 	FUNC_LEAVE();
 	return count;
+}
+
+static ssize_t show_ice_idle_time(struct kobject *kobj,
+		struct kobj_attribute *attr,
+		char *buf)
+{
+	int ret = 0;
+
+	ret = ice_snprintf_s_i(buf, PAGE_SIZE, "%d msec\n",
+			ice_get_power_off_delay_param());
+	if (ret < 0)
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+			"Safelib failed snprintf %d\n", ret);
+	return ret;
+}
+
+static ssize_t store_ice_idle_time(struct kobject *kobj,
+		struct kobj_attribute *attr,
+		const char *buf, size_t count)
+{
+	int val, ret;
+	bool start_thread = false;
+
+	ret = kstrtoint(buf, 10, &val);
+	if (ret == -ERANGE) {
+		cve_os_log_default(CVE_LOGLEVEL_ERROR,
+			"Value out of valid range\n");
+		goto out;
+	} else if (ret < 0) {
+		cve_os_log_default(CVE_LOGLEVEL_ERROR, "Invalid input\n");
+		goto out;
+	} else if ((val <= 0) && ice_get_power_off_delay_param()) {
+		cve_dg_stop_poweroff_thread();
+	} else if (val && !ice_get_power_off_delay_param()) {
+		/* Should start power-off thread */
+		start_thread = true;
+	}
+
+	ice_set_power_off_delay_param(val);
+
+	if (start_thread)
+		cve_dg_start_poweroff_thread();
+
+	ret = count;
+
+out:
+	return ret;
 }
 
 static int llc_pmon_config_sysfs(u32 pmonindex, struct icebo_desc *bo,

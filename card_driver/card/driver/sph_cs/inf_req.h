@@ -51,6 +51,7 @@ struct inf_req {
 	u64                max_block_time;
 	u64                min_exec_time;
 	u64                max_exec_time;
+	unsigned int       ptr2id;
 };
 
 int inf_req_create(uint16_t            protocolID,
@@ -78,5 +79,11 @@ void infreq_req_init(struct inf_exec_req *req,
 		     uint16_t batchSize,
 		     uint8_t debugOn,
 		     uint8_t collectInfo);
+
+int infreq_req_sched(struct inf_exec_req *req);
+void inf_req_complete(struct inf_exec_req *req,
+		      int                  err,
+		      const void          *error_msg,
+		      int32_t              error_msg_size);
 
 #endif

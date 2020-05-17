@@ -18,7 +18,6 @@
 #include "nnp_error.h"
 #include "sphcs_trace.h"
 
-static int inf_copy_req_sched(struct inf_exec_req *req);
 static enum EXEC_REQ_READINESS inf_copy_req_ready(struct inf_exec_req *req);
 static int inf_copy_req_execute(struct inf_exec_req *req);
 static void inf_copy_req_complete(struct inf_exec_req *req,
@@ -51,6 +50,22 @@ struct func_table const s_copy_funcs = {
 	/* This function should not be called directly, use inf_exec_req_put instead */
 	.release = inf_copy_req_release
 };
+
+
+
+/*    safec  functions  */
+int safe_c_memcpy(void *dst, size_t dst_size, const void *src, size_t num_bytes)
+{
+	if (num_bytes == 0)
+		return 0;
+	if (dst == NULL || src == NULL || dst_size == 0)
+		return -1;
+	if (num_bytes > dst_size)
+		return -1;
+	memcpy(dst, src, num_bytes); // banned api, but we did all the checks...
+	return 0;
+}
+
 
 static void inf_copy_update_counters(struct inf_copy *copy, u32 xferTimeUS)
 {
@@ -91,7 +106,7 @@ static int copy_complete_cb(struct sphcs *sphcs, void *ctx, const void *user_dat
 	else
 		err = -NNPER_DMA_ERROR;
 
-	req->f->complete(req, err, NULL, 0);
+	inf_copy_req_complete(req, err, NULL, 0);
 
 	return 0;
 }
@@ -121,7 +136,7 @@ static int d2d_copy_complete_cb(struct sphcs *sphcs, void *ctx, const void *user
 
 	/* If DMA failed or failed to start credit forwarding */
 	if (unlikely(err))
-		req->f->complete(req, err, NULL, 0);
+		inf_copy_req_complete(req, err, NULL, 0);
 
 	return 0;
 }
@@ -461,7 +476,7 @@ void inf_copy_req_init(struct inf_exec_req *req,
 	req->f = &s_copy_funcs;
 	req->copy = copy;
 	req->cmd = cmd;
-	req->size = size ? size : copy->devres->size;
+	req->size = size <= copy->devres->size ? size : copy->devres->size;
 	req->time = 0;
 	req->priority = priority;
 	req->depend_devres = NULL;
@@ -490,7 +505,7 @@ int inf_copy_req_init_subres_copy(struct inf_exec_req *req,
 	return 0;
 }
 
-static int inf_copy_req_sched(struct inf_exec_req *req)
+int inf_copy_req_sched(struct inf_exec_req *req)
 {
 	struct inf_copy *copy;
 	int err;
@@ -684,6 +699,11 @@ static int inf_copy_req_execute(struct inf_exec_req *req)
 	if (inf_context_get_state(copy->context) != CONTEXT_OK)
 		return -NNPER_CONTEXT_BROKEN;
 
+	if (req->size == 0) {
+		inf_copy_req_complete(req, 0, NULL, 0);
+
+		return 0;
+	}
 	g_the_sphcs->hw_ops->dma.edit_lli(g_the_sphcs->hw_handle, &copy->lli, req->size);
 
 	return sphcs_dma_sched_start_xfer_multi(g_the_sphcs->dmaSched,
@@ -706,6 +726,9 @@ static void treat_copy_failure(struct inf_exec_req *req,
 
 	NNP_ASSERT(req->cmd_type == CMDLIST_CMD_COPY);
 
+	if (error_msg == NULL)
+		error_msg_size = 0;
+
 	copy = req->copy;
 
 	rc = inf_exec_error_details_alloc(CMDLIST_CMD_COPY,
@@ -716,7 +739,7 @@ static void treat_copy_failure(struct inf_exec_req *req,
 					  &err_details);
 	if (likely(rc == 0)) {
 		if (error_msg_size > 0)
-			memcpy(err_details->error_msg, error_msg, error_msg_size);
+			safe_c_memcpy(err_details->error_msg, error_msg_size, error_msg, error_msg_size);
 
 		inf_exec_error_list_add(req->cmd != NULL ? &req->cmd->error_list :
 							   &copy->context->error_list,

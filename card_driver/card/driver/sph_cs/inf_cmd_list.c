@@ -12,6 +12,7 @@
 #include "inf_req.h"
 #include "inf_cpylst.h"
 #include "sphcs_trace.h"
+#include "inf_ptr2id.h"
 
 //#define OPT_EXTRA_DEBUG
 
@@ -38,6 +39,11 @@ int inf_cmd_create(uint16_t              protocolID,
 	cmd->edits = NULL;
 	cmd->edits_idx = 0;
 	cmd->sched_failed = NNP_IPC_NO_ERROR;
+	cmd->ptr2id = add_ptr2id(cmd);
+	if (unlikely(cmd->ptr2id == 0)) {
+		kfree(cmd);
+		return -ENOMEM;
+	}
 
 	/* make sure context will not be destroyed during cmd life */
 	inf_context_get(context);
@@ -171,7 +177,7 @@ static void release_cmd(struct kref *kref)
 					cmd->protocolID);
 
 	ret = inf_context_put(cmd->context);
-
+	del_ptr2id(cmd);
 	kfree(cmd);
 }
 

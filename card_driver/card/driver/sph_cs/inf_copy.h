@@ -85,4 +85,6 @@ int inf_copy_req_init_subres_copy(struct inf_exec_req *req,
 struct sg_table *inf_copy_src_sgt(struct inf_copy *copy);
 struct sg_table *inf_copy_dst_sgt(struct inf_copy *copy);
 
+int inf_copy_req_sched(struct inf_exec_req *req);
+
 #endif

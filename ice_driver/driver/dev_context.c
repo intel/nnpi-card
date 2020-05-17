@@ -104,7 +104,8 @@ int ice_map_bar1(struct cve_device *cve_dev,
 	mapped_dma_handles.mem_handle.dma_address =
 			(u64)PAGE_ALIGN(bar1 + offset);
 
-	memset(&surf, 0, sizeof(struct cve_surface_descriptor));
+	ice_memset_s(&surf, sizeof(surf), 0,
+			sizeof(struct cve_surface_descriptor));
 	surf.llc_policy = ICE_BAR1_LLC_CONFIG;
 	surf.map_in_hw_region = 1;
 	va = cve_addr;
@@ -560,12 +561,19 @@ int cve_dev_alloc_and_map_cbdt(cve_dev_context_handle_t dev_ctx,
 	}
 
 	size_bytes = max_cbdt_entries * sizeof(union CVE_SHARED_CB_DESCRIPTOR);
-	memset(vaddr, 0, size_bytes);
+	retval = ice_memset_s(vaddr, size_bytes, 0, size_bytes);
+	if (retval < 0) {
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+				"Safelib memset failed %d\n", retval);
+		goto failed_map_fifo;
+	}
+
 	fifo_desc->fifo.cb_desc_vaddr = vaddr;
 	fifo_desc->fifo.size_bytes = size_bytes;
 	fifo_desc->fifo.entries = max_cbdt_entries;
 
-	memset(&surf, 0, sizeof(struct cve_surface_descriptor));
+	ice_memset_s(&surf, sizeof(surf), 0,
+			sizeof(struct cve_surface_descriptor));
 	surf.llc_policy = CVE_FIFO_LLC_CONFIG;
 
 	cve_os_log(CVE_LOGLEVEL_DEBUG,

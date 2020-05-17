@@ -1,0 +1,734 @@
+From 384b0aa06b8e1f10fd88a8fa392ed983dfd6b0ed Mon Sep 17 00:00:00 2001
+From: Guy Zadicario <guy.zadicario@intel.com>
+Date: Wed, 1 Apr 2020 08:21:47 +0300
+Subject: [PATCH 09/19] misc: nnpi: Mapping host resources to device channel
+
+This patch add IOCTLs to /dev/nnpi%d device to map and unmap host
+resource to the channel. The mapping gets a uniqueue ID and the
+page table of the host resource is transferred to the device, later
+commands to the device can reference the resource by the channel ID
+and map ID.
+
+There is special interface to map host resources which serve as
+host-to-card and card-to-host ring buffers. That results in the same
+host resource mapping except that the mapping is referenced by the
+ring-buffer direction and index (up to two for each direction) instead
+of by map ID.
+
+Signed-off-by: Guy Zadicario <guy.zadicario@intel.com>
+---
+ drivers/misc/intel-nnpi/cmd_chan.c       | 103 +++++-
+ drivers/misc/intel-nnpi/cmd_chan.h       |  22 ++
+ drivers/misc/intel-nnpi/device.c         |  39 +++
+ drivers/misc/intel-nnpi/device.h         |   2 +
+ drivers/misc/intel-nnpi/device_chardev.c | 402 +++++++++++++++++++++++
+ 5 files changed, 567 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/misc/intel-nnpi/cmd_chan.c b/drivers/misc/intel-nnpi/cmd_chan.c
+index 2975a4efdfbf..9f48969000d4 100644
+--- a/drivers/misc/intel-nnpi/cmd_chan.c
++++ b/drivers/misc/intel-nnpi/cmd_chan.c
+@@ -274,6 +274,8 @@ int nnpdrv_cmd_chan_create(struct nnp_device       *nnpdev,
+ 	INIT_LIST_HEAD(&cmd_chan->respq_list);
+ 
+ 	spin_lock_init(&cmd_chan->lock);
++	ida_init(&cmd_chan->hostres_map_ida);
++	hash_init(cmd_chan->hostres_hash);
+ 
+ 	INIT_LIST_HEAD(&cmd_chan->curr_respq->node);
+ 	nnp_ringbuf_init(&cmd_chan->curr_respq->rb,
+@@ -304,6 +306,7 @@ static void cmd_chan_release(struct kref *kref)
+ {
+ 	struct nnpdrv_cmd_chan *cmd_chan;
+ 	struct nnp_device *nnpdev;
++	int i;
+ 
+ 	cmd_chan = container_of(kref, struct nnpdrv_cmd_chan, ref);
+ 	nnpdev = cmd_chan->nnpdev;
+@@ -322,6 +325,14 @@ static void cmd_chan_release(struct kref *kref)
+ 	ida_simple_remove(&cmd_chan->nnpdev->cmd_chan_ida,
+ 			  cmd_chan->protocolID);
+ 
++	nnpdrv_chan_unmap_hostres_all(cmd_chan);
++	ida_destroy(&cmd_chan->hostres_map_ida);
++
++	for (i = 0; i < NNP_IPC_MAX_CHANNEL_RINGBUFS; i++) {
++		nnpdrv_cmd_chan_set_ringbuf(cmd_chan, true, i, NULL);
++		nnpdrv_cmd_chan_set_ringbuf(cmd_chan, false, i, NULL);
++	}
++
+ 	if (unlikely(cmd_chan->fd < 0))
+ 		fput(cmd_chan->host_file);
+ 
+@@ -413,7 +424,6 @@ int nnpdrv_cmd_chan_send_destroy(struct nnpdrv_cmd_chan *chan)
+ 						  &msg.value,
+ 						  1);
+ }
+-
+ int nnpdrv_cmd_chan_add_response(struct nnpdrv_cmd_chan *cmd_chan,
+ 				 u64                    *hw_msg,
+ 				 u32                     byte_size)
+@@ -449,3 +459,94 @@ int nnpdrv_cmd_chan_add_response(struct nnpdrv_cmd_chan *cmd_chan,
+ 	return 0;
+ }
+ 
++int nnpdrv_cmd_chan_set_ringbuf(struct nnpdrv_cmd_chan *chan,
++				bool                    h2c,
++				uint8_t                 id,
++				struct nnpdrv_host_resource *hostres)
++{
++	if (id >= NNP_IPC_MAX_CHANNEL_RINGBUFS)
++		return -EINVAL;
++
++	if (h2c) {
++		if (chan->h2c_rb_hostres[id])
++			nnpdrv_hostres_unmap_device(chan->h2c_rb_hostres[id],
++						    chan->nnpdev);
++		chan->h2c_rb_hostres[id] = hostres;
++	} else {
++		if (chan->c2h_rb_hostres[id])
++			nnpdrv_hostres_unmap_device(chan->c2h_rb_hostres[id],
++						    chan->nnpdev);
++		chan->c2h_rb_hostres[id] = hostres;
++	}
++
++	return 0;
++}
++
++struct chan_hostres_map *nnpdrv_cmd_chan_find_hostres(struct nnpdrv_cmd_chan *chan, uint16_t protocolID)
++{
++	struct chan_hostres_map *hostres_map;
++
++	spin_lock(&chan->lock);
++	hash_for_each_possible(chan->hostres_hash,
++			       hostres_map,
++			       hash_node,
++			       protocolID)
++		if (hostres_map->protocolID == protocolID) {
++			spin_unlock(&chan->lock);
++			return hostres_map;
++		}
++	spin_unlock(&chan->lock);
++
++	return NULL;
++}
++
++int nnpdrv_chan_unmap_hostres(struct nnpdrv_cmd_chan *chan, uint16_t protocolID)
++{
++	struct chan_hostres_map *hostres_map;
++	bool found = false;
++
++	spin_lock(&chan->lock);
++	hash_for_each_possible(chan->hostres_hash,
++			       hostres_map,
++			       hash_node,
++			       protocolID)
++		if (hostres_map->protocolID == protocolID) {
++			found = true;
++			hash_del(&hostres_map->hash_node);
++			break;
++		}
++	spin_unlock(&chan->lock);
++
++	if (!found)
++		return -ENXIO;
++
++	ida_simple_remove(&chan->hostres_map_ida,
++			  hostres_map->protocolID);
++	nnpdrv_hostres_unmap_device(hostres_map->hostres, chan->nnpdev);
++	kfree(hostres_map);
++
++	return 0;
++}
++
++void nnpdrv_chan_unmap_hostres_all(struct nnpdrv_cmd_chan *chan)
++{
++	struct chan_hostres_map *hostres_map;
++	bool found = true;
++	int i;
++
++	do {
++		found = false;
++		spin_lock(&chan->lock);
++		hash_for_each(chan->hostres_hash, i, hostres_map, hash_node) {
++			hash_del(&hostres_map->hash_node);
++			spin_unlock(&chan->lock);
++			ida_simple_remove(&chan->hostres_map_ida,
++					  hostres_map->protocolID);
++			nnpdrv_hostres_unmap_device(hostres_map->hostres, chan->nnpdev);
++			kfree(hostres_map);
++			found = true;
++			break;
++		}
++	} while (found);
++	spin_unlock(&chan->lock);
++}
+diff --git a/drivers/misc/intel-nnpi/cmd_chan.h b/drivers/misc/intel-nnpi/cmd_chan.h
+index ec116911115a..0199a900b89a 100644
+--- a/drivers/misc/intel-nnpi/cmd_chan.h
++++ b/drivers/misc/intel-nnpi/cmd_chan.h
+@@ -15,11 +15,19 @@
+ #include <linux/atomic.h>
+ #include <linux/fs.h>
+ #include "device.h"
++#include "hostres.h"
+ #include "inf_proc.h"
+ #include "ipc_protocol.h"
+ 
+ struct respq_elem;
+ 
++struct chan_hostres_map {
++	uint16_t protocolID;
++	struct hlist_node hash_node;
++	struct nnpdrv_host_resource *hostres;
++	union c2h_EventReport event_msg;
++};
++
+ struct nnpdrv_cmd_chan {
+ 	void             *magic;
+ 	struct kref       ref;
+@@ -38,11 +46,16 @@ struct nnpdrv_cmd_chan {
+ 	int    closing;
+ 
+ 	spinlock_t        lock;
++	struct ida        hostres_map_ida;
++	DECLARE_HASHTABLE(hostres_hash, 6);
+ 
+ 	spinlock_t        resp_lock_bh;
+ 	wait_queue_head_t resp_waitq;
+ 	struct list_head  respq_list;
+ 	struct respq_elem *curr_respq;
++
++	struct nnpdrv_host_resource *h2c_rb_hostres[NNP_IPC_MAX_CHANNEL_RINGBUFS];
++	struct nnpdrv_host_resource *c2h_rb_hostres[NNP_IPC_MAX_CHANNEL_RINGBUFS];
+ };
+ 
+ int nnpdrv_cmd_chan_create(struct nnp_device       *nnpdev,
+@@ -66,4 +79,13 @@ int nnpdrv_cmd_chan_add_response(struct nnpdrv_cmd_chan *cmd_chan,
+ 				 u64                    *hw_msg,
+ 				 u32                     byte_size);
+ 
++int nnpdrv_cmd_chan_set_ringbuf(struct nnpdrv_cmd_chan *chan,
++				bool                    h2c,
++				uint8_t                 id,
++				struct nnpdrv_host_resource *hostres);
++
++struct chan_hostres_map *nnpdrv_cmd_chan_find_hostres(struct nnpdrv_cmd_chan *chan, uint16_t protocolID);
++int nnpdrv_chan_unmap_hostres(struct nnpdrv_cmd_chan *chan, uint16_t protocolID);
++void nnpdrv_chan_unmap_hostres_all(struct nnpdrv_cmd_chan *chan);
++
+ #endif
+diff --git a/drivers/misc/intel-nnpi/device.c b/drivers/misc/intel-nnpi/device.c
+index bbf313ab6630..43452ff65981 100644
+--- a/drivers/misc/intel-nnpi/device.c
++++ b/drivers/misc/intel-nnpi/device.c
+@@ -338,6 +338,7 @@ static void nnpdrv_device_process_events(struct nnp_device *nnpdev,
+ 				union c2h_EventReport *event_msg)
+ {
+ 	struct nnpdrv_cmd_chan *cmd_chan;
++	struct chan_hostres_map *hostres_map;
+ 
+ 	if (is_card_fatal_event(event_msg->eventCode)) {
+ 		nnpdrv_submit_device_event_to_channels(nnpdev, event_msg, true);
+@@ -345,6 +346,8 @@ static void nnpdrv_device_process_events(struct nnp_device *nnpdev,
+ 		switch (event_msg->eventCode) {
+ 		case NNP_IPC_CREATE_CHANNEL_SUCCESS:
+ 		case NNP_IPC_CREATE_CHANNEL_FAILED:
++		case NNP_IPC_CHANNEL_SET_RB_SUCCESS:
++		case NNP_IPC_CHANNEL_SET_RB_FAILED:
+ 			cmd_chan = nnpdrv_device_find_channel(nnpdev, event_msg->objID);
+ 			if (unlikely(cmd_chan == NULL)) {
+ 				nnp_log_err(GENERAL_LOG,
+@@ -356,6 +359,25 @@ static void nnpdrv_device_process_events(struct nnp_device *nnpdev,
+ 				wake_up_all(&nnpdev->waitq);
+ 			}
+ 			break;
++		case NNP_IPC_CHANNEL_MAP_HOSTRES_SUCCESS:
++		case NNP_IPC_CHANNEL_MAP_HOSTRES_FAILED:
++			cmd_chan = nnpdrv_device_find_channel(nnpdev, event_msg->objID);
++			if (unlikely(cmd_chan == NULL)) {
++				nnp_log_err(GENERAL_LOG,
++					    "Got channel create reply for not existing channel %d\n",
++					    event_msg->objID);
++			} else {
++				hostres_map = nnpdrv_cmd_chan_find_hostres(cmd_chan, event_msg->objID_2);
++				if (!hostres_map) {
++					nnp_log_err(GENERAL_LOG, "Got channel(%d) hostres reply for not existing hostres %d\n",
++						    event_msg->objID, event_msg->objID_2);
++				} else {
++					hostres_map->event_msg.value = event_msg->value;
++					wake_up_all(&nnpdev->waitq);
++				}
++				nnpdrv_cmd_chan_put(cmd_chan);
++			}
++			break;
+ 		case NNP_IPC_DESTROY_CHANNEL_FAILED:
+ 			nnp_log_err(GENERAL_LOG,
+ 				    "Channel destroyed Failed channel %d val %d\n",
+@@ -377,6 +399,23 @@ static void nnpdrv_device_process_events(struct nnp_device *nnpdev,
+ 				nnpdrv_cmd_chan_put(cmd_chan);
+ 			}
+ 			break;
++		case NNP_IPC_CHANNEL_UNMAP_HOSTRES_FAILED:
++			nnp_log_err(GENERAL_LOG, "Channel hostres unmap Failed on device channel %d map %d val %d\n",
++				    event_msg->objID, event_msg->objID_2, event_msg->eventVal);
++			/* fall through */
++		case NNP_IPC_CHANNEL_UNMAP_HOSTRES_SUCCESS:
++			cmd_chan = nnpdrv_device_find_channel(nnpdev, event_msg->objID);
++			if (unlikely(cmd_chan == NULL))
++				nnp_log_err(GENERAL_LOG,
++					    "Got channel unmap hostres reply for not existing channel %d\n",
++					    event_msg->objID);
++			else {
++				if (nnpdrv_chan_unmap_hostres(cmd_chan, event_msg->objID_2) != 0)
++					nnp_log_err(GENERAL_LOG, "channel hostres unmap failed for chan %d map %d\n",
++						    event_msg->objID, event_msg->objID_2);
++				nnpdrv_cmd_chan_put(cmd_chan);
++			}
++			break;
+ 		default:
+ 			nnp_log_err(GENERAL_LOG, "Unknown event received - %u\n", event_msg->eventCode);
+ 			return;
+diff --git a/drivers/misc/intel-nnpi/device.h b/drivers/misc/intel-nnpi/device.h
+index b6348d5ed073..e2060832484f 100644
+--- a/drivers/misc/intel-nnpi/device.h
++++ b/drivers/misc/intel-nnpi/device.h
+@@ -139,6 +139,8 @@ int nnpdrv_device_process_messages(struct nnp_device *nnpdev,
+ 
+ int nnpdrv_device_list_get(uint32_t nnpDevNum, struct nnp_device **outNNPDev);
+ 
++struct nnpdrv_cmd_chan *nnpdrv_device_find_channel(struct nnp_device *nnpdev, uint16_t protocolID);
++
+ /* global objects defined in nnpdrv_main.c */
+ extern struct ida g_nnp_dev_ida;
+ extern struct dentry *g_nnp_debugfs_dir;
+diff --git a/drivers/misc/intel-nnpi/device_chardev.c b/drivers/misc/intel-nnpi/device_chardev.c
+index 76c063b8bd94..08596ae10c20 100644
+--- a/drivers/misc/intel-nnpi/device_chardev.c
++++ b/drivers/misc/intel-nnpi/device_chardev.c
+@@ -11,6 +11,7 @@
+ #include <linux/device.h>
+ #include <linux/slab.h>
+ #include <uapi/misc/intel_nnpi.h>
++#include <linux/dma-noncoherent.h>
+ #include "device_chardev.h"
+ #include "nnp_log.h"
+ #include "cmd_chan.h"
+@@ -199,6 +200,399 @@ long create_channel(struct device_client_info *cinfo, void __user *arg)
+ 	return ret;
+ }
+ 
++long create_channel_data_ringbuf(struct device_client_info *cinfo, void __user *arg)
++{
++	struct nnp_device *nnpdev = cinfo->nnpdev;
++	struct ioctl_nnpi_create_channel_data_ringbuf req;
++	struct nnpdrv_cmd_chan *chan = NULL;
++	struct inf_hostres *hostres_entry = NULL;
++	struct nnpdrv_host_resource *hostres;
++	union h2c_ChannelDataRingbufOp msg;
++	struct inf_process_info *procInfo = NULL;
++	dma_addr_t page_list;
++	uint32_t total_chunks;
++	int ret;
++
++	ret = copy_from_user(&req, arg, sizeof(req));
++	if (unlikely(ret != 0))
++		return -EIO;
++
++	req.o_errno = 0;
++
++	chan = nnpdrv_device_find_channel(nnpdev, req.i_channel_id);
++	if (unlikely(chan == NULL)) {
++		nnp_log_err(CREATE_COMMAND_LOG, "channel not found\n");
++		req.o_errno = NNPER_NO_SUCH_CHANNEL;
++		ret = -EFAULT;
++		goto Exit;
++	}
++
++	NNP_ASSERT(req.i_hostres_handle < INT_MAX);
++	procInfo = chan->procInfo;
++	hostres_entry = nnp_idr_get_object(&procInfo->objects_idr,
++					   (int)req.i_hostres_handle,
++					   inf_hostres_check_and_get);
++	if (unlikely(hostres_entry == NULL)) {
++		nnp_log_err(CREATE_COMMAND_LOG, "host resource not found\n");
++		req.o_errno = NNPER_NO_SUCH_RESOURCE;
++		ret = -EFAULT;
++		goto Exit;
++	}
++
++	hostres = hostres_entry->hostres;
++
++	if (!req.i_h2c) {
++		// check host resource is output resource
++		if (unlikely(!nnpdrv_hostres_is_output(hostres))) {
++			nnp_log_err(CREATE_COMMAND_LOG, "Wrong direction\n");
++			req.o_errno = NNPER_INCOMPATIBLE_RESOURCES;
++			ret = -EINVAL;
++			goto Exit;
++		}
++	} else {
++		// check host resource is input resource
++		if (unlikely(!nnpdrv_hostres_is_input(hostres))) {
++			nnp_log_err(CREATE_COMMAND_LOG, "Wrong direction\n");
++			req.o_errno = NNPER_INCOMPATIBLE_RESOURCES;
++			ret = -EINVAL;
++			goto Exit;
++		}
++	}
++
++	ret = nnpdrv_hostres_map_device(hostres,
++					nnpdev,
++					false,
++					&page_list,
++					&total_chunks);
++	if (unlikely(ret != 0)) {
++		nnp_log_err(CREATE_COMMAND_LOG, "hostresource map failed\n");
++		ret = -EFAULT;
++		goto Exit;
++	}
++
++	msg.opcode = NNP_IPC_H2C_OP_CHANNEL_RB_OP;
++	msg.chanID = chan->protocolID;
++	msg.h2c = req.i_h2c ? 1 : 0;
++	msg.rbID = req.i_id;
++	msg.destroy = 0;
++	msg.hostPtr = NNP_IPC_DMA_ADDR_TO_PFN(page_list);
++
++	chan->event_msg.value = 0;
++
++	ret = -EPIPE;
++	if (!is_card_fatal_drv_event(chan->card_critical_error.eventCode))
++		ret = nnpdrv_msg_scheduler_queue_add_msg(nnpdev->public_cmdq,
++							 &msg.value,
++							 1);
++	if (unlikely(ret < 0))
++		goto Fail;
++
++	ret = wait_event_interruptible(nnpdev->waitq,
++				       chan->event_msg.value != 0 ||
++				       is_card_fatal_drv_event(chan->card_critical_error.eventCode));
++	if (unlikely(chan->event_msg.value == 0)) {
++		if (ret < 0) {
++			ret = -EINTR;
++		} else {
++			req.o_errno = NNPER_DEVICE_ERROR;
++			ret = -EFAULT;
++		}
++	} else if (unlikely(chan->event_msg.eventCode == NNP_IPC_CHANNEL_SET_RB_FAILED)) {
++		req.o_errno = eventValToNNPErrno(chan->event_msg.eventVal);
++	}
++
++	if (likely(ret == 0 && req.o_errno == 0)) {
++		ret = nnpdrv_cmd_chan_set_ringbuf(chan,
++						  req.i_h2c,
++						  req.i_id,
++						  hostres);
++	}
++
++	if (likely(ret == 0))
++		goto Exit;
++
++Fail:
++	nnpdrv_hostres_unmap_device(hostres, chan->nnpdev);
++
++Exit:
++	if (hostres_entry)
++		inf_hostres_put(hostres_entry);
++	if (chan)
++		nnpdrv_cmd_chan_put(chan);
++	if (unlikely(copy_to_user(arg, &req, sizeof(req)) != 0))
++		return -EIO;
++
++	return ret;
++}
++
++long destroy_channel_data_ringbuf(struct device_client_info *cinfo, void __user *arg)
++{
++	struct nnp_device *nnpdev = cinfo->nnpdev;
++	struct ioctl_nnpi_destroy_channel_data_ringbuf req;
++	struct nnpdrv_cmd_chan *chan;
++	union h2c_ChannelDataRingbufOp msg;
++	int ret;
++
++	ret = copy_from_user(&req, arg, sizeof(req));
++	if (unlikely(ret != 0))
++		return -EIO;
++
++	req.o_errno = 0;
++
++	chan = nnpdrv_device_find_channel(nnpdev, req.i_channel_id);
++	if (unlikely(chan == NULL)) {
++		nnp_log_err(CREATE_COMMAND_LOG, "channel not found\n");
++		req.o_errno = NNPER_NO_SUCH_CHANNEL;
++		ret = -EFAULT;
++		goto done;
++	}
++
++	msg.opcode = NNP_IPC_H2C_OP_CHANNEL_RB_OP;
++	msg.chanID = chan->protocolID;
++	msg.h2c = req.i_h2c ? 1 : 0;
++	msg.rbID = req.i_id;
++	msg.destroy = 1;
++	msg.hostPtr = 0;
++
++	chan->event_msg.value = 0;
++
++	ret = -EPIPE;
++	if (!is_card_fatal_drv_event(chan->card_critical_error.eventCode))
++		ret = nnpdrv_msg_scheduler_queue_add_msg(nnpdev->public_cmdq,
++							 &msg.value,
++							 1);
++	if (unlikely(ret < 0))
++		goto put_chan;
++
++	ret = wait_event_interruptible(nnpdev->waitq,
++				       chan->event_msg.value != 0 ||
++				       is_card_fatal_drv_event(chan->card_critical_error.eventCode));
++	if (unlikely(chan->event_msg.value == 0)) {
++		if (ret < 0) {
++			ret = -EINTR;
++		} else {
++			req.o_errno = NNPER_DEVICE_ERROR;
++			ret = -EFAULT;
++		}
++	} else if (unlikely(chan->event_msg.eventCode == NNP_IPC_CHANNEL_SET_RB_FAILED)) {
++		req.o_errno = eventValToNNPErrno(chan->event_msg.eventVal);
++	}
++
++	if (likely(ret == 0 && req.o_errno == 0)) {
++		ret = nnpdrv_cmd_chan_set_ringbuf(chan,
++						  req.i_h2c,
++						  req.i_id,
++						  NULL);
++	}
++
++put_chan:
++	nnpdrv_cmd_chan_put(chan);
++done:
++	if (unlikely(copy_to_user(arg, &req, sizeof(req)) != 0))
++		return -EIO;
++
++	return ret;
++}
++
++static long map_hostres(struct device_client_info *cinfo, void __user *arg)
++{
++	struct nnp_device *nnpdev = cinfo->nnpdev;
++	struct ioctl_nnpi_channel_map_hostres req;
++	struct nnpdrv_cmd_chan *chan = NULL;
++	struct inf_hostres *hostres_entry = NULL;
++	struct nnpdrv_host_resource *hostres;
++	union h2c_ChannelHostresOp msg;
++	struct inf_process_info *procInfo = NULL;
++	struct chan_hostres_map *hostres_map = NULL;
++	dma_addr_t page_list;
++	uint32_t total_chunks;
++	int map_protocolID;
++	long ret;
++	unsigned long rc;
++
++	rc = copy_from_user(&req, arg, sizeof(req));
++	if (unlikely(rc != 0))
++		return -EIO;
++
++	req.o_errno = 0;
++
++	chan = nnpdrv_device_find_channel(nnpdev, req.i_channel_id);
++	if (unlikely(chan == NULL)) {
++		nnp_log_err(CREATE_COMMAND_LOG, "channel not found\n");
++		req.o_errno = NNPER_NO_SUCH_CHANNEL;
++		ret = -EFAULT;
++		goto Exit;
++	}
++
++	hostres_map = kzalloc(sizeof(*hostres_map), GFP_KERNEL);
++	if (unlikely(hostres_map == NULL)) {
++		nnp_log_err(CREATE_COMMAND_LOG, "no memory for hostres_map\n");
++		req.o_errno = ENOMEM;
++		ret = -EFAULT;
++		goto Exit;
++	}
++
++	map_protocolID = -1;
++	ret = ida_simple_get(&chan->hostres_map_ida,
++			     0,
++			     0xffff,
++			     GFP_KERNEL);
++	if (unlikely(ret < 0)) {
++		req.o_errno = ENOMEM;
++		ret = -EFAULT;
++		goto Fail;
++	}
++	map_protocolID = (int)ret;
++
++	NNP_ASSERT(req.i_hostres_handle < INT_MAX);
++	procInfo = chan->procInfo;
++	hostres_entry = nnp_idr_get_object(&procInfo->objects_idr,
++					   (int)req.i_hostres_handle,
++					   inf_hostres_check_and_get);
++	if (unlikely(hostres_entry == NULL)) {
++		nnp_log_err(CREATE_COMMAND_LOG, "host resource not found\n");
++		req.o_errno = NNPER_NO_SUCH_RESOURCE;
++		ret = -EFAULT;
++		goto Fail;
++	}
++
++	hostres = hostres_entry->hostres;
++
++	ret = nnpdrv_hostres_map_device(hostres,
++					nnpdev,
++					false,
++					&page_list,
++					&total_chunks);
++	if (unlikely(ret != 0)) {
++		nnp_log_err(CREATE_COMMAND_LOG, "hostresource map failed\n");
++		ret = -EFAULT;
++		goto Fail;
++	}
++
++	msg.opcode = NNP_IPC_H2C_OP_CHANNEL_HOSTRES_OP;
++	msg.chanID = chan->protocolID;
++	msg.hostresID = (uint16_t) map_protocolID;
++	msg.unmap = 0;
++	msg.hostPtr = NNP_IPC_DMA_ADDR_TO_PFN(page_list);
++
++	hostres_map->event_msg.value = 0;
++	hostres_map->protocolID = (uint16_t) map_protocolID;
++	hostres_map->hostres = hostres;
++
++	spin_lock(&chan->lock);
++	hash_add(chan->hostres_hash,
++		 &hostres_map->hash_node,
++		 hostres_map->protocolID);
++	spin_unlock(&chan->lock);
++
++	ret = -EPIPE;
++	if (unlikely(!is_card_fatal_drv_event(chan->card_critical_error.eventCode)))
++		ret = msg_scheduler_queue_add_msg(chan->cmdq,
++						  msg.value,
++						  2);
++	if (unlikely(ret < 0)) {
++		req.o_errno = NNPER_DEVICE_ERROR;
++		ret = -EFAULT;
++	} else {
++		ret = wait_event_interruptible(nnpdev->waitq,
++					       hostres_map->event_msg.value != 0 ||
++					       is_card_fatal_drv_event(chan->card_critical_error.eventCode));
++		if (unlikely(hostres_map->event_msg.value == 0)) {
++			if (ret < 0) {
++				ret = -EINTR;
++			} else {
++				req.o_errno = NNPER_DEVICE_ERROR;
++				ret = -EFAULT;
++			}
++		} else if (unlikely(hostres_map->event_msg.eventCode == NNP_IPC_CHANNEL_MAP_HOSTRES_FAILED)) {
++			req.o_errno = eventValToNNPErrno(hostres_map->event_msg.eventVal);
++		}
++	}
++
++	inf_hostres_put(hostres_entry);
++
++	if (likely(ret == 0 && req.o_errno == 0)) {
++		const struct dma_map_ops *ops = get_dma_ops(nnpdev->hw_device_info->hw_device);
++
++		if (dma_is_direct(ops))
++			req.o_sync_needed = !dev_is_dma_coherent(nnpdev->hw_device_info->hw_device);
++		else
++			req.o_sync_needed = (ops->sync_sg_for_cpu != NULL);
++
++		req.o_map_id = (uint16_t) map_protocolID;
++	} else {
++		nnpdrv_chan_unmap_hostres(chan, (uint16_t) map_protocolID);
++	}
++
++	goto Exit;
++
++Fail:
++	if (hostres_entry)
++		inf_hostres_put(hostres_entry);
++	if (-1 != map_protocolID)
++		ida_simple_remove(&chan->hostres_map_ida, map_protocolID);
++	kfree(hostres_map);
++
++Exit:
++	if (chan)
++		nnpdrv_cmd_chan_put(chan);
++	rc = copy_to_user(arg, &req, sizeof(req));
++	if (rc != 0 && ret == 0)
++		ret = -EIO;
++
++	return ret;
++}
++
++static long unmap_hostres(struct device_client_info *cinfo, void __user *arg)
++{
++	struct nnp_device *nnpdev = cinfo->nnpdev;
++	struct ioctl_nnpi_channel_unmap_hostres req;
++	struct nnpdrv_cmd_chan *chan = NULL;
++	struct chan_hostres_map *hostres_map;
++	union h2c_ChannelHostresOp msg;
++	long ret;
++
++	ret = copy_from_user(&req, arg, sizeof(req));
++	if (unlikely(ret != 0))
++		return -EIO;
++
++	req.o_errno = 0;
++
++	chan = nnpdrv_device_find_channel(nnpdev, req.i_channel_id);
++	if (unlikely(chan == NULL)) {
++		nnp_log_err(CREATE_COMMAND_LOG, "channel not found\n");
++		req.o_errno = NNPER_NO_SUCH_CHANNEL;
++		ret = -EFAULT;
++		goto done;
++	}
++
++	hostres_map = nnpdrv_cmd_chan_find_hostres(chan, req.i_map_id);
++	if (unlikely(hostres_map == NULL)) {
++		nnp_log_err(CREATE_COMMAND_LOG, "host resource mapping not found\n");
++		req.o_errno = NNPER_NO_SUCH_HOSTRES_MAP;
++		ret = -EFAULT;
++		goto done;
++	}
++
++	msg.opcode = NNP_IPC_H2C_OP_CHANNEL_HOSTRES_OP;
++	msg.chanID = chan->protocolID;
++	msg.hostresID = req.i_map_id;
++	msg.unmap = 1;
++
++	ret = msg_scheduler_queue_add_msg(chan->cmdq,
++					  msg.value,
++					  2);
++
++done:
++	if (chan)
++		nnpdrv_cmd_chan_put(chan);
++
++	if (unlikely(copy_to_user(arg, &req, sizeof(req)) != 0))
++		return -EIO;
++
++	return ret;
++}
++
+ static long nnpdrv_device_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
+ {
+ 	struct device_client_info *client = (struct device_client_info *)f->private_data;
+@@ -209,6 +603,14 @@ static long nnpdrv_device_ioctl(struct file *f, unsigned int cmd, unsigned long
+ 	switch (cmd) {
+ 	case IOCTl_NNPI_DEVICE_CREATE_CHANNEL:
+ 		return create_channel(client, (void __user *)arg);
++	case IOCTl_NNPI_DEVICE_CREATE_CHANNEL_RB:
++		return create_channel_data_ringbuf(client, (void __user *)arg);
++	case IOCTl_NNPI_DEVICE_DESTROY_CHANNEL_RB:
++		return destroy_channel_data_ringbuf(client, (void __user *)arg);
++	case IOCTl_NNPI_DEVICE_CHANNEL_MAP_HOSTRES:
++		return map_hostres(client, (void __user *)arg);
++	case IOCTl_NNPI_DEVICE_CHANNEL_UNMAP_HOSTRES:
++		return unmap_hostres(client, (void __user *)arg);
+ 	default:
+ 		nnp_log_err(GENERAL_LOG, "Unsupported device IOCTL 0x%x\n", cmd);
+ 	}
+-- 
+2.22.0
+

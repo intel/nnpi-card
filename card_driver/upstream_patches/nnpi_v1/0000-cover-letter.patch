@@ -1,0 +1,260 @@
+From b5848d568acd9485c2fcb71b4704026ba05291ac Mon Sep 17 00:00:00 2001
+From: Guy Zadicario <guy.zadicario@intel.com>
+Date: Tue, 21 Apr 2020 14:28:08 +0300
+Subject: [PATCH 00/19] misc: nnpi: New PCIe driver for Intel's NNP-I pcie device
+
+Hi,
+
+The following patchset is a driver for a new PCIe device from Intel
+named NNP-I.
+
+This is a processor device targeted for AI deep learning inference
+applications. The device equipped with 16 GB of LPDDR4, DMA engine,
+2 IA cpu cores and up to 12 Inference Compute Engines (ICE). These ICE
+compute engines are designed for efficient and low power inference related
+computations.
+
+The device DRAM as well as the ICEs and other h/w components of the device
+are not accessible from host CPU, they are programmed and controlled by
+software components running on the device's IA cores. The host interface
+to the device is though a small sized "command queue" and "response queue"
+through which commands and responses can be sent and received to/from
+the device and two doorbell registers through which the host and device
+can communicate state.
+
+The device has DMA engine which can copy data between host memory and
+device DRAM, an inference application flow running on the host is the
+following:
+  1) Allocate space on device DRAM for the network,input and output data
+     (device DRAM space allocation is handled by the device's software
+      stack and not by the host driver)
+  2) Load AI network onto the device DRAM
+  3) Allocate memory on host to hold the input and output data
+  4) Load host memory with input data
+  5) Schedule commands to the device to copy the input data to the device
+     DRAM, execute the inference work and copy the output data back to
+     host memory.
+
+The "device's software stack" consist from a BIOS image which is flashed on
+device and a full embedded linux image which is loaded to the device during
+device boot/reset process. The device BIOS and host driver communicate through
+the doorbell registers and the "command queue", the host driver loads the
+device's "boot image" to host memory and communicate the location of the
+image to the device BIOS, the device's BIOS copies that boot image to device
+DRAM using the DMA engine and start booting the embedded linux running on the
+device's IA cores. This boot flow is described in more details in patch
+"[PATCH 06/19] misc: nnpi: device boot flow".
+
+Each NNP-I device can support multiple application contexts, each context has
+its own space for device and host resource IDs such that one context cannot
+access data resources of another context.
+
+There may be multiple NNP-I devices in a system, an inference application can
+hold contexts to multiple NNP-I devices and should be able to map and access
+the same host resource memory on all devices, however only if the host resource
+and all device contexts are created by the same application.
+
+ABI:
+====
+There are two character device classes created by the driver with IOCTL
+interface, (Interface for both is in include/uapi/misc/intel_nnpi.h):
+/dev/nnpi_host - Only a single instance of this character device is created
+                 by the driver, It has 4 IOCTLs for creating, destroying,
+                 lock and unlock host resources. "host resource" is a
+                 set of pinned memory pages on host which can be mapped
+                 to device pci space and access by the device's DMA engine.
+                 This char device is created on the first probed NNP-I device
+                 so it will not present on systems with no NNP-I devices.
+/dev/nnpi%d - This is a character device with instance for each NNP-I device,
+              It support 5 IOCTLs for:
+              creating channel - A "channel" gives user-space the ability to
+                   send commands and receive responses from the device.
+                   For each channel an anon file descriptor is created and
+                   returned to the user, commands and responses to the device
+                   are sent and received using write and read operations on
+                   the channel fd. The driver validate each command sent and
+                   will reject unsupported or invalid commands.
+                   commands written to a channel are added to a queue, each
+                   channel has its own command queue. The driver has kernel
+                   thread for each device (msg_scheduler) which drain the
+                   command queues to the h/w command queue.
+                   channel is destoyed by closing the returned channel fd.
+                   When creating a channel an open fd for /dev/nnpi_host
+                   needs to be provided, the channel object hold a reference
+                   to that file, the channel can only map/unmap host
+                   resources created through that fd.
+                   Each channel has a unique 10-bit ID allocated by the driver,
+                   Channel IDs 0-255 are used for inference applications,
+                   channel with ID >255 is used for non-inference related
+                   communication with the device (mainly maintenance, stats
+                   query, etc).
+              map/unmap host resource - Maps a host resource to device pci
+                   space and send to the device a pagetable of the physical
+                   addresses of the resource pages. Each map has a unique
+                   16-bit ID, commands sent to the card can include such
+                   ID in order to reference a host resource.
+                   The ID space for host resources is private for each channel.
+              create/delete "ringbuffer" - This is exactly the same as
+                   map/unmap host resource but for special host resources
+                   used as ring buffers used to transfer data along with
+                   some commands. There may be up to four ring buffers for
+                   each channel two for host-to-card ring buffers and two
+                   for card-to-host ring buffers.
+
+sysfs:
+======
+There are a bunch of sysfs attribute for NNP-I device allowing to display
+device information and status, and some for control operation like device reset.
+All is documented in Documentation/ABI/testing/sysfs-driver-intel_nnpi
+which is in patch "[PATCH 19/19] misc: nnpi: added sysfs and debugfs ABI documentation"
+
+Debugfs:
+========
+/sys/kernel/debug/intel_nnpidrv/0/msg_sched/status - gives status of the
+        message scheduler including number of commands sent/pending for
+        each queue.
+
+Device's command protocol
+=========================
+commands to the device includes 1, 2 or 3 64-bit values. The lower 6 bits in the
+command specify the command opcode. The opcode also defines the command size as
+each command has constant size. Commands which are targeted to a specific channel
+includes the channel ID in bits 6-15 of the command and must use opcode value
+above or equal to 32.
+Other bits in the command are defined specific for each command.
+Responses from the device has the same format.
+
+The structures of the command and responses protocol is defined in
+if_include/ipc_protocol.h, structures of commands are prefixed with
+h2c_ and responsed with c2h_ (a shortcut for host-to-card and card-to-host).
+
+PCI BARs
+========
+The device exposes two 64-bit BARs:
+BAR0-1: 4KB including device registers to control the command and response h/w
+        queues (FIFOs), doorbell registers and control/interrupt status registers.
+        The offsets and bitfields of those registers are defined in
+        if_include/nnpi_elbi.h
+
+BAR2-3: Device Memory region of 64MB. The host has read/write access to this region.
+        The first 16KB of this region holds device crash dump in case the device
+        s/w stack has crashed. The layout of this 16KB is defined in
+        if_include/nnp_inbound_mem.h
+        This region will be filled by the device on event of crash and can be
+        read by the host for debugging purposes.
+        The Rest of this memory region (64MB - 16KB) is used by peer-to-peer
+        applications to transfer data between two NNP-I devices.
+
+
+I would appricate any feedback, question and/or review.
+
+Thanks,
+Guy Zadicario.
+
+Guy Zadicario (19):
+  misc: nnpi: main module init and main PCI device access functions
+  misc: nnpi: Added msg_scheduler per-device kernel thread
+  misc: nnpi: host/card ipc protocol
+  misc: nnpi: host resource implementation
+  misc: nnpi: host chardev
+  misc: nnpi: device boot flow
+  misc: nnpi: Post device boot init flow
+  misc: nnpi: device chardev + command channel
+  misc: nnpi: Mapping host resources to device channel
+  misc: nnpi: Device error events inform and counting
+  misc: nnpi: sysfs interface
+  misc: nnpi: enable/disable + boot image name
+  misc: nnpi: ipc statistics counters
+  misc: nnpi: pcie reset and error handling.
+  misc: nnpi: handle cold reset
+  misc: nnpi: Detect device self-reset or hang
+  misc: nnpi: PCIe error injection
+  misc: nnpi: tracing
+  misc: nnpi: added sysfs and debugfs ABI documentation
+
+ .../ABI/testing/debugfs-driver-intel_nnpi     |    6 +
+ .../ABI/testing/sysfs-driver-intel_nnpi       |  225 +++
+ MAINTAINERS                                   |    6 +
+ drivers/misc/Kconfig                          |    1 +
+ drivers/misc/Makefile                         |    1 +
+ drivers/misc/intel-nnpi/Kconfig               |   16 +
+ drivers/misc/intel-nnpi/Makefile              |   13 +
+ drivers/misc/intel-nnpi/bootimage.c           |  504 ++++++
+ drivers/misc/intel-nnpi/bootimage.h           |   21 +
+ drivers/misc/intel-nnpi/cmd_chan.c            |  552 ++++++
+ drivers/misc/intel-nnpi/cmd_chan.h            |   91 +
+ drivers/misc/intel-nnpi/device.c              | 1596 +++++++++++++++++
+ drivers/misc/intel-nnpi/device.h              |  206 +++
+ drivers/misc/intel-nnpi/device_chardev.c      |  707 ++++++++
+ drivers/misc/intel-nnpi/device_chardev.h      |   31 +
+ drivers/misc/intel-nnpi/device_sysfs.c        | 1162 ++++++++++++
+ drivers/misc/intel-nnpi/device_sysfs.h        |   15 +
+ drivers/misc/intel-nnpi/host_chardev.c        |  481 +++++
+ drivers/misc/intel-nnpi/host_chardev.h        |   18 +
+ drivers/misc/intel-nnpi/hostres.c             | 1113 ++++++++++++
+ drivers/misc/intel-nnpi/hostres.h             |  259 +++
+ drivers/misc/intel-nnpi/idr_allocator.h       |   72 +
+ .../intel-nnpi/if_include/ipc_c2h_events.h    |  196 ++
+ .../misc/intel-nnpi/if_include/ipc_protocol.h |  503 ++++++
+ .../intel-nnpi/if_include/nnp_boot_defs.h     |   71 +
+ .../misc/intel-nnpi/if_include/nnp_debug.h    |   27 +
+ drivers/misc/intel-nnpi/if_include/nnp_elbi.h |  146 ++
+ .../intel-nnpi/if_include/nnp_inbound_mem.h   |   38 +
+ drivers/misc/intel-nnpi/inf_proc.c            |  150 ++
+ drivers/misc/intel-nnpi/inf_proc.h            |   56 +
+ drivers/misc/intel-nnpi/msg_scheduler.c       |  516 ++++++
+ drivers/misc/intel-nnpi/msg_scheduler.h       |  141 ++
+ drivers/misc/intel-nnpi/nnp_log.h             |   24 +
+ drivers/misc/intel-nnpi/nnp_ringbuf.h         |   84 +
+ drivers/misc/intel-nnpi/nnp_time.h            |   25 +
+ drivers/misc/intel-nnpi/nnpdrv_main.c         |   74 +
+ drivers/misc/intel-nnpi/pcie.c                | 1554 ++++++++++++++++
+ drivers/misc/intel-nnpi/pcie.h                |   89 +
+ drivers/misc/intel-nnpi/trace.c               |    8 +
+ drivers/misc/intel-nnpi/trace.h               |  158 ++
+ drivers/misc/intel-nnpi/trace_defs.h          |   22 +
+ include/uapi/misc/intel_nnpi.h                |  124 ++
+ 42 files changed, 11102 insertions(+)
+ create mode 100644 Documentation/ABI/testing/debugfs-driver-intel_nnpi
+ create mode 100644 Documentation/ABI/testing/sysfs-driver-intel_nnpi
+ create mode 100644 drivers/misc/intel-nnpi/Kconfig
+ create mode 100644 drivers/misc/intel-nnpi/Makefile
+ create mode 100644 drivers/misc/intel-nnpi/bootimage.c
+ create mode 100644 drivers/misc/intel-nnpi/bootimage.h
+ create mode 100644 drivers/misc/intel-nnpi/cmd_chan.c
+ create mode 100644 drivers/misc/intel-nnpi/cmd_chan.h
+ create mode 100644 drivers/misc/intel-nnpi/device.c
+ create mode 100644 drivers/misc/intel-nnpi/device.h
+ create mode 100644 drivers/misc/intel-nnpi/device_chardev.c
+ create mode 100644 drivers/misc/intel-nnpi/device_chardev.h
+ create mode 100644 drivers/misc/intel-nnpi/device_sysfs.c
+ create mode 100644 drivers/misc/intel-nnpi/device_sysfs.h
+ create mode 100644 drivers/misc/intel-nnpi/host_chardev.c
+ create mode 100644 drivers/misc/intel-nnpi/host_chardev.h
+ create mode 100644 drivers/misc/intel-nnpi/hostres.c
+ create mode 100644 drivers/misc/intel-nnpi/hostres.h
+ create mode 100644 drivers/misc/intel-nnpi/idr_allocator.h
+ create mode 100644 drivers/misc/intel-nnpi/if_include/ipc_c2h_events.h
+ create mode 100644 drivers/misc/intel-nnpi/if_include/ipc_protocol.h
+ create mode 100644 drivers/misc/intel-nnpi/if_include/nnp_boot_defs.h
+ create mode 100644 drivers/misc/intel-nnpi/if_include/nnp_debug.h
+ create mode 100644 drivers/misc/intel-nnpi/if_include/nnp_elbi.h
+ create mode 100644 drivers/misc/intel-nnpi/if_include/nnp_inbound_mem.h
+ create mode 100644 drivers/misc/intel-nnpi/inf_proc.c
+ create mode 100644 drivers/misc/intel-nnpi/inf_proc.h
+ create mode 100644 drivers/misc/intel-nnpi/msg_scheduler.c
+ create mode 100644 drivers/misc/intel-nnpi/msg_scheduler.h
+ create mode 100644 drivers/misc/intel-nnpi/nnp_log.h
+ create mode 100644 drivers/misc/intel-nnpi/nnp_ringbuf.h
+ create mode 100644 drivers/misc/intel-nnpi/nnp_time.h
+ create mode 100644 drivers/misc/intel-nnpi/nnpdrv_main.c
+ create mode 100644 drivers/misc/intel-nnpi/pcie.c
+ create mode 100644 drivers/misc/intel-nnpi/pcie.h
+ create mode 100644 drivers/misc/intel-nnpi/trace.c
+ create mode 100644 drivers/misc/intel-nnpi/trace.h
+ create mode 100644 drivers/misc/intel-nnpi/trace_defs.h
+ create mode 100644 include/uapi/misc/intel_nnpi.h
+
+-- 
+2.22.0
+

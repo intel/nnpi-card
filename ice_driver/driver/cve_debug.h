@@ -20,15 +20,10 @@
  * It will be updated only before dispatching a new workload
  */
 extern u32 enable_wdt_debugfs;
-extern int mem_detect_en;
 
 enum cve_debug_config {
 	/*tensilica configuration enable*/
-	DEBUG_TENS_EN,		/* 0:disable , 1:enable */
 	DEBUG_WD_EN,		/* 0:disable , 1:enable */
-	DEBUG_DTF_SRC_EN,
-	DEBUG_DTF_DST_EN,
-	DEBUG_RECOVERY_EN,	/* 0:disable , 1:enable */
 	DEBUG_CONF_NUM
 };
 

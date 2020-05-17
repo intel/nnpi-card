@@ -16,7 +16,6 @@
 
 #include "ice_sw_counters.h"
 #include "icedrv_internal_sw_counter_funcs.h"
-#include "ice_debug_event.h"
 
 
 int cve_device_init(struct cve_device *dev, int index, u64 pe_value)
@@ -45,9 +44,6 @@ int cve_device_init(struct cve_device *dev, int index, u64 pe_value)
 	dev->interrupts_status = 0;
 
 	dev->di_cve_needs_reset = 0;
-
-	/* on power up the counters are disabled */
-	dev->is_hw_counters_enabled = 0;
 
 	/*Init CVE major and minor version*/
 	dev->version_info.format = "Revision = %x.%x\n";
@@ -84,12 +80,7 @@ int cve_device_init(struct cve_device *dev, int index, u64 pe_value)
 	}
 
 	/* Init platform specific data*/
-	retval = init_platform_data(dev);
-	if (retval != 0) {
-		cve_os_log(CVE_LOGLEVEL_ERROR,
-				"init_platform_data failed %d\n", retval);
-		goto init_platform_data_failed;
-	}
+	init_platform_data(dev);
 
 	/*initialize icedrv specific fops*/
 	retval = init_icedrv_sysfs();
@@ -103,13 +94,6 @@ int cve_device_init(struct cve_device *dev, int index, u64 pe_value)
 	if (retval != 0) {
 		cve_os_log(CVE_LOGLEVEL_WARNING,
 				"failed in init_icedrv_trace() %d\n", retval);
-	}
-
-	/* initialize ice debug event flow*/
-	retval = init_icedrv_debug_event();
-	if (retval != 0) {
-		cve_os_log(CVE_LOGLEVEL_WARNING,
-				"init_icedrv_debug_event failed %d\n", retval);
 	}
 
 	/* initialize hw_config specific fops*/
@@ -129,14 +113,13 @@ int cve_device_init(struct cve_device *dev, int index, u64 pe_value)
 	ice_swc_counter_set(dev->hswc, ICEDRV_SWC_DEVICE_COUNTER_POWER_STATE,
 		ice_dev_get_power_state(dev));
 
-	getnstimeofday(&dev->idle_start_time);
+	dev->idle_start_time = trace_clock_local();
 	ice_swc_counter_set(dev->hswc,
 		ICEDRV_SWC_DEVICE_COUNTER_IDLE_START_TIME,
-		(dev->idle_start_time.tv_sec * USEC_PER_SEC) +
-		(dev->idle_start_time.tv_nsec / NSEC_PER_USEC));
+		(nsec_to_usec(dev->idle_start_time)));
 	cve_os_log(CVE_LOGLEVEL_DEBUG,
-		"idle_start_time.tv_sec=%ld idle_start_time.tv_nsec=%ld\n",
-		dev->idle_start_time.tv_sec, dev->idle_start_time.tv_nsec);
+		"idle_start_time(usec)=%llu\n",
+		nsec_to_usec(dev->idle_start_time));
 
 	retval = init_ice_iccp(dev);
 	if (retval) {
@@ -148,9 +131,6 @@ int cve_device_init(struct cve_device *dev, int index, u64 pe_value)
 	/* success */
 	return 0;
 
-init_platform_data_failed:
-	/* cleanup fw binaries */
-	cve_fw_unload(dev, dev->fw_loaded_list);
 out:
 	return retval;
 }
@@ -165,9 +145,6 @@ void cve_device_clean(struct cve_device *dev)
 	cve_dg_remove_device(dev);
 
 	ice_swc_destroy_dev_node(dev);
-
-	/* Remove ice debug event flow*/
-	term_icedrv_debug_event();
 
 	/* remove trace specific fops*/
 	term_icedrv_trace(dev);
@@ -196,7 +173,7 @@ void ice_dev_set_power_state(struct cve_device *dev,
 	enum ICE_POWER_STATE pstate)
 {
 	if ((pstate == ICE_POWER_OFF_INITIATED) &&
-		(ice_get_power_off_delay_param() < 0)) {
+		!ice_get_power_off_delay_param()) {
 
 		/* Donot initiate Power-off because it is disabled. Device
 		 * will continue to be in POWER_ON state.

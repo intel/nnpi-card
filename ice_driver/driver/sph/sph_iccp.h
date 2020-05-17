@@ -14,16 +14,6 @@
 
 #define __no_op_ret_success ((0 == 0) > 0 : 1)
 
-#ifdef RING3_VALIDATION
-#define init_iccp_sysfs() __no_op_return_success
-#define term_iccp_sysfs() __no_op_stub
-#else
-#define init_iccp_sysfs() iccp_sysfs_init()
-#define term_iccp_sysfs() iccp_sysfs_term()
-#endif
-
-int iccp_sysfs_init(void);
-void iccp_sysfs_term(void);
 int set_iccp_cdyn(struct ice_sphmbox *sphmb, uint32_t level,
 						uint32_t value);
 int get_iccp_cdyn(struct ice_sphmbox *sphmb, uint32_t level,
