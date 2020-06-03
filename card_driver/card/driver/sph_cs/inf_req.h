@@ -23,7 +23,7 @@ struct inf_exec_req;
 struct inf_req {
 	void              *magic;
 	struct kref        ref;
-	uint16_t           protocolID;
+	uint16_t           protocol_id;
 	uint64_t           user_handle;
 	struct inf_devnet *devnet;
 	struct hlist_node  hash_node;
@@ -54,7 +54,7 @@ struct inf_req {
 	unsigned int       ptr2id;
 };
 
-int inf_req_create(uint16_t            protocolID,
+int inf_req_create(uint16_t            protocol_id,
 		   struct inf_devnet  *devnet,
 		   struct inf_req    **out_infreq);
 int inf_req_add_resources(struct inf_req     *infreq,

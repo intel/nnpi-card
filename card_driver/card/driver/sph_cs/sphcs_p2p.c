@@ -284,7 +284,7 @@ void IPC_OPCODE_HANDLER(CHAN_P2P_GET_CR_FIFO)(struct sphcs *sphcs, union h2c_Cha
 				NNP_IPC_GET_CR_FIFO_REPLY,
 				0,
 				NULL,
-				cmd->chanID,
+				cmd->chan_id,
 				cmd->p2p_tr_id,
 				(sg_dma_address(fifo->sgt->sgl) - sphcs->inbound_mem_dma_addr) >> PAGE_SHIFT);
 }
@@ -299,7 +299,7 @@ void IPC_OPCODE_HANDLER(CHAN_P2P_CONNECT_PEERS)(struct sphcs *sphcs, union h2c_C
 	buf->peer_buf_id = cmd->peer_buf_id;
 	buf->peer_dev = (cmd->is_src_buf) ? &p2p_consumers[cmd->peer_dev_id] : &p2p_producers[cmd->peer_dev_id];
 
-	sphcs_send_event_report(sphcs, NNP_IPC_P2P_PEERS_CONNECTED, 0, NULL, cmd->chanID, cmd->p2p_tr_id);
+	sphcs_send_event_report(sphcs, NNP_IPC_P2P_PEERS_CONNECTED, 0, NULL, cmd->chan_id, cmd->p2p_tr_id);
 }
 
 static void _sphcs_p2p_remove_lli_templates(struct sphcs *sphcs,
@@ -469,7 +469,7 @@ void IPC_OPCODE_HANDLER(CHAN_P2P_UPDATE_PEER_DEV)(struct sphcs *sphcs, union h2c
 		g_the_sphcs->hw_ops->dma.edit_lli_elem(lli, 1, src, dst);
 	}
 
-	sphcs_send_event_report(sphcs, NNP_IPC_P2P_PEER_DEV_UPDATED, 0, NULL, cmd->chanID, cmd->p2p_tr_id);
+	sphcs_send_event_report(sphcs, NNP_IPC_P2P_PEER_DEV_UPDATED, 0, NULL, cmd->chan_id, cmd->p2p_tr_id);
 }
 
 

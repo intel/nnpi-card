@@ -4294,16 +4294,14 @@ static int __handle_infer_completion_via_ctx(
 			dg->icedc_state = ICEDC_STATE_CARD_RESET_REQUIRED;
 			event->err_severity = ERROR_SEVERITY_CARD_RESET;
 		}
-
-		goto out;
 	} else if (retval == -ERESTARTSYS) {
 		*wait_status = CVE_WAIT_EVENT_ERROR;
-		goto out;
 	} else {
 		*wait_status = CVE_WAIT_EVENT_COMPLETE;
 		retval = 0;
 	}
 
+out:
 	if (retval < 0)
 		DO_TRACE(trace_icedrvEventGeneration(
 					SPH_TRACE_OP_STATE_COMPLETE,
@@ -4311,7 +4309,6 @@ static int __handle_infer_completion_via_ctx(
 					event->networkid,
 					event->infer_id,
 					SPH_TRACE_OP_STATUS_FAIL, retval));
-out:
 	return retval;
 }
 

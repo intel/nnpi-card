@@ -56,7 +56,7 @@ int sphcs_crash_dump_dma_complete_callback(struct sphcs *sphcs,
 		int status,
 		u32 xferTimeUS)
 {
-	union c2h_EventReport event;
+	union c2h_event_report event;
 
 	if (status == SPHCS_DMA_STATUS_FAILED) {
 		/* dma failed */
@@ -65,12 +65,12 @@ int sphcs_crash_dump_dma_complete_callback(struct sphcs *sphcs,
 		/* Notify Host */
 		event.value = 0;
 		event.opcode = NNP_IPC_C2H_OP_EVENT_REPORT;
-		event.eventCode = NNP_IPC_ERROR_OS_CRASHED;
-		event.eventVal = 0;
-		event.objID = (crash_dump_desc.actually_copied & 0xffff);
-		event.objID_2 = (crash_dump_desc.actually_copied >> 16) & 0xffff;
-		event.objValid = 1;
-		event.objValid_2 = 1;
+		event.event_code = NNP_IPC_ERROR_OS_CRASHED;
+		event.event_val = 0;
+		event.obj_id = (crash_dump_desc.actually_copied & 0xffff);
+		event.obj_id_2 = (crash_dump_desc.actually_copied >> 16) & 0xffff;
+		event.obj_valid = 1;
+		event.obj_valid_2 = 1;
 		sphcs->hw_ops->write_mesg(sphcs->hw_handle,
 					  &event.value,
 					  1);
@@ -83,7 +83,7 @@ static void dump(struct kmsg_dumper *dumper, enum kmsg_dump_reason reason)
 {
 	bool rc;
 	dma_addr_t host_dma_addr;
-	union c2h_EventReport event;
+	union c2h_event_report event;
 	unsigned long flags;
 
 	sph_log_debug(GENERAL_LOG, "dump %s\n", get_reason_str(reason));
@@ -109,8 +109,8 @@ static void dump(struct kmsg_dumper *dumper, enum kmsg_dump_reason reason)
 		 */
 		event.value = 0;
 		event.opcode = NNP_IPC_C2H_OP_EVENT_REPORT;
-		event.eventCode = NNP_IPC_ERROR_OS_CRASHED;
-		event.eventVal = 0;
+		event.event_code = NNP_IPC_ERROR_OS_CRASHED;
+		event.event_val = 0;
 		if (g_the_sphcs->host_doorbell_val != 0)
 			g_the_sphcs->hw_ops->write_mesg(g_the_sphcs->hw_handle,
 							&event.value,

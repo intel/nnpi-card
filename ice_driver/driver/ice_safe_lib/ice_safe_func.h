@@ -18,6 +18,7 @@
 
 #define errno_t int
 #define MAX_STR_LENGTH 1024
+#define MAX_FMT_ID 10
 
 /*sprintf */
 #define CHAR_ID 'c'

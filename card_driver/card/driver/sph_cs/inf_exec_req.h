@@ -29,7 +29,7 @@ struct func_table {
 	enum EXEC_REQ_READINESS (*is_ready)(struct inf_exec_req *req);
 	int (*execute)(struct inf_exec_req *req);
 	void (*send_report)(struct inf_exec_req *req,
-			    enum event_val       eventVal);
+			    enum event_val       event_val);
 	void (*complete)(struct inf_exec_req *req,
 			 int                  err,
 			 const void          *error_msg,
@@ -37,7 +37,7 @@ struct func_table {
 	int (*obj_put)(struct inf_exec_req *req);
 	int (*migrate_priority)(struct inf_exec_req *req, uint8_t priority);
 	void (*treat_req_failure)(struct inf_exec_req *req,
-				  enum event_val       eventVal,
+				  enum event_val       event_val,
 				  const void          *error_msg,
 				  int32_t              error_msg_size);
 
@@ -113,7 +113,7 @@ void inf_exec_error_list_add(struct inf_exec_error_list    *error_list,
 int inf_exec_error_details_alloc(enum CmdListCommandType cmd_type,
 				 uint16_t                obj_id,
 				 uint16_t                devnet_id,
-				 uint16_t                eventVal,
+				 uint16_t                event_val,
 				 int32_t                 error_msg_size,
 				 struct inf_exec_error_details **out_err);
 

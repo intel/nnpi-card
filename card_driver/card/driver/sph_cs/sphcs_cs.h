@@ -73,19 +73,19 @@ typedef int (*sphcs_command_handler)(struct sphcs *sphcs, u64 *msg, u32 size);
 typedef int (*sphcs_chan_command_handler)(struct sphcs *sphcs, struct sphcs_cmd_chan *chan, u64 *msg, u32 size);
 
 void sphcs_send_event_report(struct sphcs			*sphcs,
-			      uint16_t				eventCode,
-			      uint16_t				eventVal,
+			      uint16_t				event_code,
+			      uint16_t				event_val,
 			      struct msg_scheduler_queue	*respq,
-			      int				contextID,
-			      int				objID);
+			      int				context_id,
+			      int				obj_id);
 
 void sphcs_send_event_report_ext(struct sphcs			*sphcs,
-				 uint16_t			eventCode,
-				 uint16_t			eventVal,
+				 uint16_t			event_code,
+				 uint16_t			event_val,
 				 struct msg_scheduler_queue	*respq,
-				 int				contextID,
-				 int				objID_1,
-				 int				objID_2);
+				 int				context_id,
+				 int				obj_id_1,
+				 int				obj_id_2);
 
 struct msg_scheduler_queue *sphcs_create_response_queue(struct sphcs *sphcs,
 							       u32 weight);
@@ -124,5 +124,5 @@ int sphcs_retrieve_hostres_pagetable(uint64_t             hostDmaAddr,
 				     hostres_pagetable_cb completion_cb,
 				     void                *cb_ctx);
 
-struct sphcs_cmd_chan *sphcs_find_channel(struct sphcs *sphcs, uint16_t protocolID);
+struct sphcs_cmd_chan *sphcs_find_channel(struct sphcs *sphcs, uint16_t protocol_id);
 #endif

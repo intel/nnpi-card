@@ -41,7 +41,7 @@ int msg_scheduler_thread_func(void *data)
 {
 	struct msg_scheduler *dev_sched = (struct msg_scheduler *)data;
 	struct msg_scheduler_queue *queue_node;
-	struct msg_entry *msgList_node;
+	struct msg_entry *msg_list_node;
 	int ret;
 	int i;
 	int is_empty;
@@ -85,14 +85,14 @@ int msg_scheduler_thread_func(void *data)
 			if (queue_node->msgs_num == 0)
 				goto skip_queue;
 
-			for (i = 0; i < queue_node->handleCont; i++) {
+			for (i = 0; i < queue_node->handle_cont; i++) {
 				NNP_SPIN_LOCK_IRQSAVE(&queue_node->list_lock_irq, flags);
 #ifdef ULT
 				queue_node->sched_count++;
 #endif
 				is_empty = list_empty(&queue_node->msgs_list_head);
 				if (!is_empty) {
-					msgList_node = list_first_entry(&queue_node->msgs_list_head, struct msg_entry, node);
+					msg_list_node = list_first_entry(&queue_node->msgs_list_head, struct msg_entry, node);
 #ifdef ULT
 					queue_node->pre_send_count++;
 #endif
@@ -102,7 +102,7 @@ int msg_scheduler_thread_func(void *data)
 				if (is_empty)
 					break;
 
-				ret = queue_node->msg_handle(msgList_node->msg, msgList_node->size, queue_node->device_hw_data);
+				ret = queue_node->msg_handle(msg_list_node->msg, msg_list_node->size, queue_node->device_hw_data);
 				if (ret) {
 #ifdef ULT
 					queue_node->send_failed_count++;
@@ -114,10 +114,10 @@ int msg_scheduler_thread_func(void *data)
 #ifdef ULT
 				queue_node->post_send_count++;
 #endif
-				list_del(&msgList_node->node);
+				list_del(&msg_list_node->node);
 				queue_node->msgs_num--;
 				NNP_SPIN_UNLOCK_IRQRESTORE(&queue_node->list_lock_irq, flags);
-				kmem_cache_free(dev_sched->slab_cache_ptr, msgList_node);
+				kmem_cache_free(dev_sched->slab_cache_ptr, msg_list_node);
 
 				if (!queue_node->msgs_num)
 					wake_up_all(&queue_node->flush_waitq);
@@ -143,9 +143,9 @@ skip_queue:
  *
  * [in] scheduler
  * [in] msg_handle
- * [in] contiMsgs
+ * [in] conti_msgs
  */
-struct msg_scheduler_queue *msg_scheduler_queue_create(struct msg_scheduler *scheduler, void *device_hw_data, hw_handle_msg msg_handle, u32 contiMsgs)
+struct msg_scheduler_queue *msg_scheduler_queue_create(struct msg_scheduler *scheduler, void *device_hw_data, hw_handle_msg msg_handle, u32 conti_msgs)
 {
 	struct msg_scheduler_queue *queue;
 	unsigned long flags;
@@ -165,10 +165,10 @@ struct msg_scheduler_queue *msg_scheduler_queue_create(struct msg_scheduler *sch
 	spin_lock_init(&queue->list_lock_irq);
 	queue->msgs_num = 0;
 
-	if (!contiMsgs)
-		queue->handleCont = 1;
+	if (!conti_msgs)
+		queue->handle_cont = 1;
 	else
-		queue->handleCont = contiMsgs;
+		queue->handle_cont = conti_msgs;
 
 	queue->device_hw_data = device_hw_data;
 	queue->msg_handle = msg_handle;
@@ -191,7 +191,7 @@ struct msg_scheduler_queue *msg_scheduler_queue_create(struct msg_scheduler *sch
  */
 int msg_scheduler_queue_destroy(struct msg_scheduler *scheduler, struct msg_scheduler_queue *queue)
 {
-	struct msg_entry *msgList_node;
+	struct msg_entry *msg_list_node;
 	unsigned long flags;
 
 	if (!queue || queue->scheduler != scheduler) {
@@ -204,9 +204,9 @@ int msg_scheduler_queue_destroy(struct msg_scheduler *scheduler, struct msg_sche
 	/* destroy all the messages of the queue */
 	NNP_SPIN_LOCK_IRQSAVE(&queue->list_lock_irq, flags);
 	while (!list_empty(&queue->msgs_list_head)) {
-		msgList_node = list_first_entry(&queue->msgs_list_head, struct msg_entry, node);
-		list_del(&msgList_node->node);
-		kmem_cache_free(scheduler->slab_cache_ptr, msgList_node);
+		msg_list_node = list_first_entry(&queue->msgs_list_head, struct msg_entry, node);
+		list_del(&msg_list_node->node);
+		kmem_cache_free(scheduler->slab_cache_ptr, msg_list_node);
 	}
 	NNP_SPIN_UNLOCK_IRQRESTORE(&queue->list_lock_irq, flags);
 
@@ -360,7 +360,7 @@ out:
 int msg_scheduler_destroy(struct msg_scheduler *scheduler)
 {
 	struct msg_scheduler_queue *queue_node;
-	struct msg_entry *msgList_node;
+	struct msg_entry *msg_list_node;
 	int rc;
 
 	if (scheduler->scheduler_thread) {
@@ -375,9 +375,9 @@ int msg_scheduler_destroy(struct msg_scheduler *scheduler)
 		queue_node = list_first_entry(&scheduler->queues_list_head, struct msg_scheduler_queue, queues_list_node);
 
 		while (!list_empty(&queue_node->msgs_list_head)) {
-			msgList_node = list_first_entry(&queue_node->msgs_list_head, struct msg_entry, node);
-			list_del(&msgList_node->node);
-			kmem_cache_free(scheduler->slab_cache_ptr, msgList_node);
+			msg_list_node = list_first_entry(&queue_node->msgs_list_head, struct msg_entry, node);
+			list_del(&msg_list_node->node);
+			kmem_cache_free(scheduler->slab_cache_ptr, msg_list_node);
 		}
 		/* destroy the queue */
 		list_del(&queue_node->queues_list_node);
@@ -397,7 +397,7 @@ int msg_scheduler_destroy(struct msg_scheduler *scheduler)
 int msg_scheduler_invalidate_all(struct msg_scheduler *scheduler)
 {
 	struct msg_scheduler_queue *queue_node;
-	struct msg_entry *msgList_node;
+	struct msg_entry *msg_list_node;
 	unsigned long flags;
 	unsigned long flags2;
 	u32 nq = 0, nmsg = 0;
@@ -416,9 +416,9 @@ int msg_scheduler_invalidate_all(struct msg_scheduler *scheduler)
 		NNP_SPIN_LOCK_IRQSAVE(&queue_node->list_lock_irq, flags2);
 		queue_node->invalid = 1;
 		while (!list_empty(&queue_node->msgs_list_head)) {
-			msgList_node = list_first_entry(&queue_node->msgs_list_head, struct msg_entry, node);
-			list_del(&msgList_node->node);
-			kmem_cache_free(scheduler->slab_cache_ptr, msgList_node);
+			msg_list_node = list_first_entry(&queue_node->msgs_list_head, struct msg_entry, node);
+			list_del(&msg_list_node->node);
+			kmem_cache_free(scheduler->slab_cache_ptr, msg_list_node);
 			nmsg++;
 		}
 		queue_node->msgs_num = 0;
@@ -438,7 +438,7 @@ static int debug_status_show(struct seq_file *m, void *v)
 {
 	struct msg_scheduler *scheduler = m->private;
 	struct msg_scheduler_queue *queue_node;
-	struct msg_entry *msgList_node;
+	struct msg_entry *msg_list_node;
 	//unsigned long flags;
 	//unsigned long flags2;
 	u32 nq = 0, tmsgs = 0;
@@ -449,16 +449,16 @@ static int debug_status_show(struct seq_file *m, void *v)
 			    queues_list_node) {
 		u32 nmsg = 0;
 		//NNP_SPIN_LOCK_IRQSAVE(&queue_node->list_lock_irq, flags2);
-		list_for_each_entry(msgList_node,
+		list_for_each_entry(msg_list_node,
 				    &queue_node->msgs_list_head,
 				    node) {
 			nmsg++;
 		}
 		//NNP_SPIN_UNLOCK_IRQRESTORE(&queue_node->list_lock_irq, flags2);
 #ifdef ULT
-		seq_printf(m, "queue 0x%lx: handleCont=%u msgs_num=%u actual_msgs_num=%u scheds=%u pre=%u post=%u failed=%u\n",
+		seq_printf(m, "queue 0x%lx: handle_cont=%u msgs_num=%u actual_msgs_num=%u scheds=%u pre=%u post=%u failed=%u\n",
 			   (uintptr_t)queue_node,
-			   queue_node->handleCont,
+			   queue_node->handle_cont,
 			   queue_node->msgs_num,
 			   nmsg,
 			   queue_node->sched_count,
@@ -466,9 +466,9 @@ static int debug_status_show(struct seq_file *m, void *v)
 			   queue_node->post_send_count,
 			   queue_node->send_failed_count);
 #else
-		seq_printf(m, "queue 0x%lx: handleCont=%u msgs_num=%u actual_msgs_num=%u\n",
+		seq_printf(m, "queue 0x%lx: handle_cont=%u msgs_num=%u actual_msgs_num=%u\n",
 			   (uintptr_t)queue_node,
-			   queue_node->handleCont,
+			   queue_node->handle_cont,
 			   queue_node->msgs_num,
 			   nmsg);
 #endif

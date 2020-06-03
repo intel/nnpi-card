@@ -42,7 +42,7 @@ union ULT2DmaPingMsg {
 		__le64 opcode       :  6;
 		__le64 channelID    : NNP_IPC_CHANNEL_BITS;
 		__le64 ultOpcode    :  4;
-		__le64 rbID         :  1;
+		__le64 rb_id         :  1;
 		__le64 seq          : 16;
 		__le64 size         : 12;
 		__le64 reserved     : 15;

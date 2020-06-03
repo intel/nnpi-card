@@ -32,7 +32,7 @@ struct inf_context;
 struct inf_devres {
 	void             *magic;
 	struct kref       ref;
-	uint16_t          protocolID;
+	uint16_t          protocol_id;
 	uint64_t          user_handle;
 	struct inf_context *context;
 	struct hlist_node hash_node;
@@ -73,7 +73,7 @@ static inline bool inf_devres_is_p2p(struct inf_devres *devres)
 	return (devres->is_p2p_src || devres->is_p2p_dst);
 }
 
-int inf_devres_create(uint16_t            protocolID,
+int inf_devres_create(uint16_t            protocol_id,
 		      struct inf_context *context,
 		      uint64_t            size,
 		      uint8_t             depth,

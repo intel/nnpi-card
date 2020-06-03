@@ -289,7 +289,7 @@ static int update_ring_divisor(struct sphpb_pb *sphpb,
 	sphpb->icebo[icebo_number].ice[ice_in_icebo].ring_divisor = ring_divisor;
 
 	for (i = 0; i < SPHPB_MAX_ICEBO_COUNT; i++) {
-		struct sphpb_icebo_info *icebo = &(sphpb->icebo[icebo_number]);
+		struct sphpb_icebo_info *icebo = &(sphpb->icebo[i]);
 		uint32_t tmp_ring_ratio_value = SPHPB_MIN_RING_POSSIBLE_VALUE;
 
 		if (!icebo->enabled_ices_mask) {
@@ -316,7 +316,7 @@ static int update_ring_divisor(struct sphpb_pb *sphpb,
 
 		if (sphpb->max_icebo_ratio)
 			icebo->ring_divisor = (uint16_t) mul_u64_u32_div((uint64_t)tmp_ring_ratio_value,
-					((uint32_t)sphpb->icebo[icebo_number].ratio * sphpb->icebo[icebo_number].ratio),
+					((uint32_t)sphpb->icebo[i].ratio * sphpb->icebo[i].ratio),
 					((uint32_t)sphpb->max_icebo_ratio * sphpb->max_icebo_ratio));
 		else
 			icebo->ring_divisor = tmp_ring_ratio_value;
@@ -342,7 +342,7 @@ static int update_ring_divisor(struct sphpb_pb *sphpb,
 			sphpb->icebo_ring_divisor = max_ring_ratio_value;
 			if (g_the_sphpb->debug_log)
 				sph_log_info(POWER_BALANCER_LOG,
-					     "set icebo to ring ratio to 0x%x - fixed_point(U1.15)\n", ring_divisor);
+					     "set icebo to ring ratio to 0x%x - fixed_point(U1.15)\n", max_ring_ratio_value);
 
 			if (sphpb->throttle_data.curr_state != SPHPB_NO_THROTTLE) {
 				DO_TRACE(trace__power_set(SPH_TRACE_OP_STATUS_STOP,
@@ -409,12 +409,15 @@ static int update_icebo_ratio(struct sphpb_pb *sphpb,
 				if (sphpb->icebo[icebo_number].enabled_ices_mask & other_ice_busy_mask)
 					sphpb->icebo[icebo_number].ratio = sphpb->icebo[icebo_number].ice[other_ice_in_icebo].requested_ratio;
 			} else {
-				if (ratio_fx > sphpb->icebo[icebo_number].ratio)
-					sphpb->icebo[icebo_number].ratio = ratio_fx;
+				uint8_t first_ice_ratio = sphpb->icebo[icebo_number].ice[ice_in_icebo].requested_ratio;
+				uint8_t second_ice_ratio = sphpb->icebo[icebo_number].ice[other_ice_in_icebo].requested_ratio;
+
+				sphpb->icebo[icebo_number].ratio = max(first_ice_ratio, second_ice_ratio);
 			}
 
 			if (sphpb->debug_log)
-				sph_log_info(POWER_BALANCER_LOG, " update core ratio value = 0x%x, current max = 0x%x\n", ratio_fx, sphpb->max_icebo_ratio);
+				sph_log_info(POWER_BALANCER_LOG, "received ice ratio value = 0x%x, icebo ratio= 0x%x, current max = 0x%x\n",
+									ratio_fx, sphpb->icebo[icebo_number].ratio, sphpb->max_icebo_ratio);
 
 			if (off && ratio_fx == sphpb->max_icebo_ratio) {
 				mutex_lock(&sphpb->mutex_lock);
@@ -426,12 +429,6 @@ static int update_icebo_ratio(struct sphpb_pb *sphpb,
 						sphpb->max_icebo_ratio = sphpb->icebo[i].ratio;
 				}
 
-				if (sphpb->current_cores_ratios.freqRatio.ia0 > sphpb->max_icebo_ratio)
-					sphpb->max_icebo_ratio = sphpb->current_cores_ratios.freqRatio.ia0;
-
-				if (sphpb->current_cores_ratios.freqRatio.ia1 > sphpb->max_icebo_ratio)
-					sphpb->max_icebo_ratio = sphpb->current_cores_ratios.freqRatio.ia1;
-
 				mutex_unlock(&sphpb->mutex_lock);
 			} else if (sphpb->icebo[icebo_number].ratio > sphpb->max_icebo_ratio) {
 				sphpb->max_icebo_ratio = sphpb->icebo[icebo_number].ratio;
@@ -441,8 +438,13 @@ static int update_icebo_ratio(struct sphpb_pb *sphpb,
 				/* Update IA cores ratio value according to the new max in the system */
 				sphpb->current_cores_ratios.freqRatio.ia0 = sphpb->max_icebo_ratio / 2;
 				sphpb->current_cores_ratios.freqRatio.ia1 = sphpb->max_icebo_ratio / 2;
-			}
+			} else if (sphpb->ia_changed_by_user) {
+				if ((sphpb->current_cores_ratios.freqRatio.ia0 >> 2) > sphpb->max_icebo_ratio)
+					sphpb->max_icebo_ratio = sphpb->current_cores_ratios.freqRatio.ia0 >> 2;
 
+				if ((sphpb->current_cores_ratios.freqRatio.ia1 >> 2) > sphpb->max_icebo_ratio)
+					sphpb->max_icebo_ratio = sphpb->current_cores_ratios.freqRatio.ia1 >> 2;
+			}
 			if (sphpb->debug_log)
 				sph_log_info(POWER_BALANCER_LOG, "lets update core ratio value = 0x%x, new max = 0x%x\n",
 						ratio_fx, sphpb->max_icebo_ratio);
@@ -463,6 +465,9 @@ static int update_icebo_ratio(struct sphpb_pb *sphpb,
 		sphpb->current_cores_ratios.freqRatio.icebo3 = sphpb->icebo[3].ratio ? sphpb->icebo[3].ratio : sphpb->max_icebo_ratio;
 		sphpb->current_cores_ratios.freqRatio.icebo4 = sphpb->icebo[4].ratio ? sphpb->icebo[4].ratio : sphpb->max_icebo_ratio;
 		sphpb->current_cores_ratios.freqRatio.icebo5 = sphpb->icebo[5].ratio ? sphpb->icebo[5].ratio : sphpb->max_icebo_ratio;
+
+		if (sphpb->debug_log)
+			sph_log_info(POWER_BALANCER_LOG, "lets update IA and cores ratio value: 0x%llX\n", sphpb->current_cores_ratios.val);
 
 		ret = sphpb->icedrv_cb->set_icebo_to_icebo_ratio(sphpb->current_cores_ratios);
 		if (ret)

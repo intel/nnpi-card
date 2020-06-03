@@ -35,8 +35,6 @@ struct inf_cpylst {
 	struct lli_desc cur_lli;
 	struct sphcs_dma_multi_xfer_handle multi_xfer_handle;
 
-	struct nnp_sw_counters *sw_counters;
-
 	int destroyed;
 	u64 min_block_time;
 	u64 max_block_time;
@@ -57,9 +55,6 @@ int inf_cpylst_add_copy(struct inf_cpylst  *cpylst,
 			uint8_t priority);
 
 int inf_cpylst_build_cur_lli(struct inf_cpylst *cpylst);
-
-void inf_cpylst_get(struct inf_cpylst *cpylst);
-int inf_cpylst_put(struct inf_cpylst *cpylst);
 
 void inf_cpylst_req_init(struct inf_exec_req *req,
 			 struct inf_cpylst *cpylst,

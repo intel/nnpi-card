@@ -66,7 +66,7 @@ ssize_t ia_ratio_store(struct kobject *kobj,
 		return -EINVAL;
 
 	if (val > 255) {
-		sph_log_err(POWER_BALANCER_LOG, "invalid value for IA ratio 0x%lx (values range [0-255])", val);
+		sph_log_info(POWER_BALANCER_LOG, "invalid value for IA ratio 0x%lx (values range [0-255])", val);
 		return -EINVAL;
 	}
 
@@ -86,7 +86,7 @@ ssize_t ia_ratio_store(struct kobject *kobj,
 	mutex_unlock(&sphpb->mutex_lock);
 
 	if (sphpb->debug_log)
-		sph_log_err(POWER_BALANCER_LOG, "IA cores ratio updated: ia0= %u, ia1=%u",
+		sph_log_info(POWER_BALANCER_LOG, "IA cores ratio updated: ia0= %u, ia1=%u",
 						sphpb->current_cores_ratios.freqRatio.ia0, sphpb->current_cores_ratios.freqRatio.ia1);
 
 	return count;

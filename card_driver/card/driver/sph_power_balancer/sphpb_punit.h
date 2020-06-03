@@ -20,7 +20,7 @@
 #include "nnp_debug.h"
 
 
-#define CHECK_MSR_SIZE(t, nQW) NNP_STATIC_ASSERT(sizeof(t) == 8*(nQW), "Size of " #t " Does not match!!")
+#define CHECK_MSR_SIZE(t, n_qw) NNP_STATIC_ASSERT(sizeof(t) == 8*(n_qw), "Size of " #t " Does not match!!")
 
 #define SPHPB_ICCP_ENTRIES_COUNT 15
 #define ICCP_ICEBO_MAX_PICOFARAD 5600

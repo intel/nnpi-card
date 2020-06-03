@@ -13,7 +13,8 @@
 #define SPH_TRACE_CMDLIST		 cmdlist
 #define SPH_TRACE_CPYLIST_CREATE cpylist_create
 #define SPH_TRACE_DMA			 dma
-#define SPH_TRACE_INF_CREATE	 infer_create
+#define SPH_TRACE_INF_CREATE		 infer_create
+#define SPH_TRACE_COPY_CREATE		 copy_create
 #define NNP_TRACE_IPC			 _ipc
 #define NNP_TRACE_MMIO			 pep_mmio
 #define SPH_TRACE_USER_DATA		 user_data
@@ -33,8 +34,10 @@
 #define SPH_TRACE_STR_CONTEXT			"context"
 #define SPH_TRACE_STR_DEVRES			"device_resource"
 #define SPH_TRACE_STR_COPY			"copy"
+#define SPH_TRACE_STR_HOSTRES			"host_resourse"
 #define SPH_TRACE_STR_H2C_COPY_HANDLE		"h2c_copy_handle"
 #define SPH_TRACE_STR_C2H_COPY_HANDLE		"c2h_copy_handle"
+#define SPH_TRACE_STR_P2P_COPY_HANDLE		"p2p_copy_handle"
 #define SPH_TRACE_STR_NETWORK			"network"
 #define SPH_TRACE_STR_INF_REQ			"inf_req"
 #define SPH_TRACE_STR_SUBRES_CREATE_SESSION	"subres_remote_session"

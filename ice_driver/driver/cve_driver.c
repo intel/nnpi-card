@@ -119,6 +119,8 @@ void cve_driver_cleanup(void)
 			"Got interrupted while trying to get a lock. Ignoring it.");
 	}
 
+	ice_di_deactivate_driver();
+
 	cve_di_cleanup();
 
 	cve_debug_destroy();

@@ -28,7 +28,7 @@ struct devres_node {
 struct inf_devnet {
 	void               *magic;
 	struct kref         ref;
-	uint16_t            protocolID;
+	uint16_t            protocol_id;
 	uint64_t            user_handle;
 	struct inf_context *context;
 	struct list_head    devres_list;
@@ -51,7 +51,7 @@ struct inf_devnet {
 	unsigned int ptr2id;
 };
 
-int inf_devnet_create(uint16_t protocolID,
+int inf_devnet_create(uint16_t protocol_id,
 		      struct inf_context *context,
 		      struct inf_devnet **out_devnet);
 void inf_devnet_on_create_or_add_res_failed(struct inf_devnet *devnet);
@@ -68,13 +68,13 @@ int inf_devnet_get(struct inf_devnet *devnet);
 int inf_devnet_put(struct inf_devnet *devnet);
 
 int inf_devnet_create_infreq(struct inf_devnet *devnet,
-			     uint16_t           protocolID,
+			     uint16_t           protocol_id,
 			     dma_addr_t         host_dma_addr,
 			     uint16_t           dma_size);
 struct inf_req *inf_devnet_find_infreq(struct inf_devnet *devnet,
-				       uint16_t           protocolID);
+				       uint16_t           protocol_id);
 struct inf_req *inf_devnet_find_and_get_infreq(struct inf_devnet *devnet,
-					       uint16_t           protocolID);
+					       uint16_t           protocol_id);
 int inf_devnet_find_and_destroy_infreq(struct inf_devnet *devnet,
 				       uint16_t           infreqID);
 int inf_devnet_destroy_all_infreq(struct inf_devnet *devnet);

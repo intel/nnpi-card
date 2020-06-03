@@ -12,7 +12,7 @@
  * debug function to log c2h event report - implemented in
  * common/ipc_c2h_events.c
  */
-void log_c2h_event(const char *msg, const union c2h_EventReport *ev);
+void log_c2h_event(const char *msg, const union c2h_event_report *ev);
 #else
 #define log_c2h_event(x, y)
 #endif

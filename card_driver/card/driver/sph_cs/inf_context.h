@@ -39,7 +39,7 @@ enum context_state {
 struct inf_context {
 	void              *magic;
 	struct kref        ref;
-	uint16_t           protocolID;
+	uint16_t           protocol_id;
 	uint64_t           user_handle;
 	struct hlist_node  hash_node;
 	struct sphcs_cmd_chan *chan;
@@ -82,7 +82,7 @@ struct inf_sync_point {
 	u16              host_sync_id;
 };
 
-int inf_context_create(uint16_t             protocolID,
+int inf_context_create(uint16_t             protocol_id,
 		       struct sphcs_cmd_chan *chan,
 		       struct inf_context **out_context);
 
@@ -113,7 +113,7 @@ void inf_context_add_sync_point(struct inf_context *context,
 				u16                 host_sync_id);
 
 int inf_context_create_devres(struct inf_context *context,
-			      uint16_t            protocolID,
+			      uint16_t            protocol_id,
 			      uint64_t            byte_size,
 			      uint8_t             depth,
 			      uint64_t            align,
@@ -123,29 +123,29 @@ int inf_context_create_devres(struct inf_context *context,
 int inf_context_find_and_destroy_devres(struct inf_context *context,
 					uint16_t            devresID);
 struct inf_devres *inf_context_find_devres(struct inf_context *context,
-					   uint16_t            protocolID);
+					   uint16_t            protocol_id);
 struct inf_devres *inf_context_find_and_get_devres(struct inf_context *context,
-						   uint16_t            protocolID);
+						   uint16_t            protocol_id);
 int inf_context_create_cmd(struct inf_context   *context,
-			   uint16_t              protocolID,
+			   uint16_t              protocol_id,
 			   struct inf_cmd_list **out_devres);
 
 int inf_context_find_and_destroy_cmd(struct inf_context *context,
 				     uint16_t            cmdID);
 struct inf_cmd_list *inf_context_find_cmd(struct inf_context *context,
-					  uint16_t            protocolID);
+					  uint16_t            protocol_id);
 
 int inf_context_find_and_destroy_devnet(struct inf_context *context,
 					uint16_t            devnetID);
 struct inf_devnet *inf_context_find_devnet(struct inf_context *context,
-					   uint16_t            protocolID);
+					   uint16_t            protocol_id);
 struct inf_devnet *inf_context_find_and_get_devnet(struct inf_context *context,
-						   uint16_t            protocolID,
+						   uint16_t            protocol_id,
 						   bool                alive,
 						   bool                created);
 
-struct inf_copy *inf_context_find_copy(struct inf_context *context, uint16_t protocolID);
-struct inf_copy *inf_context_find_and_get_copy(struct inf_context *context, uint16_t protocolID);
+struct inf_copy *inf_context_find_copy(struct inf_context *context, uint16_t protocol_id);
+struct inf_copy *inf_context_find_and_get_copy(struct inf_context *context, uint16_t protocol_id);
 
 void destroy_copy_on_create_failed(struct inf_copy *copy);
 int inf_context_find_and_destroy_copy(struct inf_context *context,

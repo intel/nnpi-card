@@ -15,7 +15,7 @@
 #include "ioctl_inf.h"
 #include "inf_ptr2id.h"
 
-static void treat_credit_release_failure(struct inf_exec_req *req, enum event_val eventVal)
+static void treat_credit_release_failure(struct inf_exec_req *req, enum event_val event_val)
 {
 	struct inf_exec_error_details *err_details;
 	int rc;
@@ -40,10 +40,10 @@ static void treat_credit_release_failure(struct inf_exec_req *req, enum event_va
 		 */
 		sphcs_send_event_report(g_the_sphcs,
 					NNP_IPC_EC_FAILED_TO_RELEASE_CREDIT,
-					eventVal,
+					event_val,
 					req->context->chan->respq,
-					req->context->protocolID,
-					req->cmd->protocolID);
+					req->context->protocol_id,
+					req->cmd->protocol_id);
 }
 
 static int credit_released_cb(struct sphcs *sphcs, void *ctx, const void *user_data, int status, u32 xferTimeUS)
@@ -60,15 +60,15 @@ static int credit_released_cb(struct sphcs *sphcs, void *ctx, const void *user_d
 		treat_credit_release_failure(req, NNP_IPC_DMA_ERROR);
 	}
 
+	inf_exec_req_put(req);
+
 	/* If the command list is completed and all credits are sent */
 	send_cmd_list_completed_event(cmd);
-
-	inf_exec_req_put(req);
 
 	return 0;
 }
 
-int inf_devres_create(uint16_t            protocolID,
+int inf_devres_create(uint16_t            protocol_id,
 		      struct inf_context *context,
 		      uint64_t            size,
 		      uint8_t             depth,
@@ -88,7 +88,7 @@ int inf_devres_create(uint16_t            protocolID,
 
 	kref_init(&devres->ref);
 	devres->magic = inf_devres_create;
-	devres->protocolID = protocolID;
+	devres->protocol_id = protocol_id;
 	INIT_LIST_HEAD(&devres->exec_queue);
 	devres->queue_version = 0;
 	atomic_set(&devres->pivot_usecount, 0);
@@ -99,7 +99,7 @@ int inf_devres_create(uint16_t            protocolID,
 	devres->context = context;
 
 	spin_lock_init(&devres->lock_irq);
-	devres->is_dirty = true;
+	devres->is_dirty = false;
 	devres->size = size;
 	devres->align = align;
 	devres->depth = depth;
@@ -171,8 +171,8 @@ int inf_devres_attach_buf(struct inf_devres *devres,
 
 	devres->status = CREATED;
 
-	sph_log_debug(CREATE_COMMAND_LOG, "mapped device resource protocolID=%u nents=%u\n",
-		      devres->protocolID,
+	sph_log_debug(CREATE_COMMAND_LOG, "mapped device resource protocol_id=%u nents=%u\n",
+		      devres->protocol_id,
 		      devres->dma_map->nents);
 
 	return 0;
@@ -280,8 +280,8 @@ static void release_devres(struct kref *kref)
 					NNP_IPC_DEVRES_DESTROYED,
 					0,
 					devres->context->chan->respq,
-					devres->context->protocolID,
-					devres->protocolID);
+					devres->context->protocol_id,
+					devres->protocol_id);
 
 	ret = inf_context_put(devres->context);
 	del_ptr2id(devres);
@@ -440,7 +440,7 @@ enum DEV_RES_READINESS inf_devres_req_ready(struct inf_devres *devres, struct in
 
 	if ((res == DEV_RES_READINESS_READY) && inf_devres_is_p2p(devres) && for_read) {
 		if (devres->p2p_buf.ready)
-			sph_log_debug(GENERAL_LOG, "p2p buffer ready\n");
+			sph_log_debug(EXECUTE_COMMAND_LOG, "p2p buffer ready\n");
 		else
 			res = DEV_RES_READINESS_NOT_READY;
 	}
@@ -460,11 +460,12 @@ int inf_devres_set_depend_pivot(struct inf_devres *devres,
 {
 	int ret = 0;
 
-	if (atomic_inc_return(&devres->pivot_usecount) == 1) {
+	if (devres->pivot == pivot)
+		return 0;
+
+	if (atomic_inc_return(&devres->pivot_usecount) == 1)
 		devres->pivot = pivot;
-		if (devres->is_dirty)
-			devres->pivot->group_dirty_count++;
-	} else
+	else
 		ret = -EBUSY;
 
 	atomic_dec(&devres->pivot_usecount);
@@ -474,16 +475,20 @@ int inf_devres_set_depend_pivot(struct inf_devres *devres,
 
 void inf_devres_pivot_usecount_inc(struct inf_devres *devres)
 {
-	if (devres->pivot != NULL)
-		atomic_inc(&devres->pivot_usecount);
+	if (devres->pivot != NULL) {
+		if (atomic_inc_return(&devres->pivot_usecount) == 1 && devres->is_dirty)
+			devres->pivot->group_dirty_count++;
+	}
 }
 
 void inf_devres_pivot_usecount_dec(struct inf_devres *devres)
 {
 	if (devres->pivot != NULL) {
 		if (atomic_dec_return(&devres->pivot_usecount) == 0) {
-			if (devres->is_dirty && devres->pivot->group_dirty_count > 0)
+			if (devres->is_dirty) {
+				NNP_ASSERT(devres->pivot->group_dirty_count > 0);
 				devres->pivot->group_dirty_count--;
+			}
 		}
 	}
 }
@@ -503,9 +508,11 @@ void inf_devres_set_dirty(struct inf_devres *devres, bool dirty)
 
 	devres->is_dirty = dirty;
 	if (atomic_read(&devres->pivot_usecount) > 0) {
-		if (dirty)
+		if (dirty) {
 			devres->pivot->group_dirty_count++;
-		else if (devres->pivot->group_dirty_count > 0)
+		} else {
+			NNP_ASSERT(devres->pivot->group_dirty_count > 0);
 			devres->pivot->group_dirty_count--;
+		}
 	}
 }

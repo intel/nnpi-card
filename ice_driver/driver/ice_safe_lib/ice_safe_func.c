@@ -373,11 +373,12 @@ uint32_t verify_integer_format(const char format)
 int ice_snprintf_s_ssss(char *dest, size_t dmax, const char *format,
 	       const char *s1, const char *s2, const char *s3, const char *s4)
 {
-	char format_id_list[4];
+	char format_id_list[MAX_FMT_ID];
 	int index = 0;
 	int i;
 
-	unsigned int nfo = parse_fmt_str(format, &format_id_list[0], 4);
+	unsigned int nfo = parse_fmt_str(format, &format_id_list[0],
+			MAX_FMT_ID);
 
 	if (nfo != 4) {
 		dest[0] = '\0';
@@ -397,10 +398,11 @@ int ice_snprintf_s_ssss(char *dest, size_t dmax, const char *format,
 int ice_snprintf_s_s(char *dest, size_t dmax, const char *format,
 	       const char *s)
 {
-	char format_id_list[1];
+	char format_id_list[MAX_FMT_ID];
 	int index = 0;
 
-	unsigned int nfo = parse_fmt_str(format, &format_id_list[0], 1);
+	unsigned int nfo = parse_fmt_str(format, &format_id_list[0],
+			MAX_FMT_ID);
 
 	if (nfo != 1) {
 		dest[0] = '\0';
@@ -418,10 +420,11 @@ int ice_snprintf_s_s(char *dest, size_t dmax, const char *format,
 int ice_snprintf_s_su(char *dest, size_t dmax, const char *format,
 		const char *s, uint64_t a)
 {
-	char format_id_list[2];
+	char format_id_list[MAX_FMT_ID];
 	int index = 0;
 
-	unsigned int nfo = parse_fmt_str(format, &format_id_list[0], 2);
+	unsigned int nfo = parse_fmt_str(format, &format_id_list[0],
+			MAX_FMT_ID);
 
 	if (nfo != 2) {
 		dest[0] = '\0';
@@ -447,10 +450,11 @@ int ice_snprintf_s_su(char *dest, size_t dmax, const char *format,
 int ice_snprintf_s_si(char *dest, size_t dmax, const char *format,
 		const char *s, int a)
 {
-	char format_id_list[2];
+	char format_id_list[MAX_FMT_ID];
 	int index = 0;
 
-	unsigned int nfo = parse_fmt_str(format, &format_id_list[0], 2);
+	unsigned int nfo = parse_fmt_str(format, &format_id_list[0],
+			MAX_FMT_ID);
 
 	if (nfo != 2) {
 		dest[0] = '\0';
@@ -476,11 +480,12 @@ int ice_snprintf_s_si(char *dest, size_t dmax, const char *format,
 int ice_snprintf_s_u(char *dest, size_t dest_size, const char *format,
 		uint64_t val1)
 {
-	char format_id_list[1];
+	char format_id_list[MAX_FMT_ID];
 	unsigned int index = 0;
 
 	/* Determine the number of format options in the format string */
-	unsigned int  nfo = parse_fmt_str(format, &format_id_list[0], 1);
+	unsigned int  nfo = parse_fmt_str(format, &format_id_list[0],
+			MAX_FMT_ID);
 
 	/* Check that there are not too many format options */
 	if (nfo != 1) {
@@ -500,11 +505,12 @@ int ice_snprintf_s_u(char *dest, size_t dest_size, const char *format,
 int ice_snprintf_s_uu(char *dest, size_t dest_size, const char *format,
 		uint64_t val1, uint64_t val2)
 {
-	char format_id_list[2];
+	char format_id_list[MAX_FMT_ID];
 	unsigned int index = 0;
 
 	/* Determine the number of format options in the format string */
-	unsigned int  nfo = parse_fmt_str(format, &format_id_list[0], 2);
+	unsigned int  nfo = parse_fmt_str(format, &format_id_list[0],
+			MAX_FMT_ID);
 
 	/* Check that there are not too many format options */
 	if (nfo != 2) {
@@ -529,11 +535,12 @@ int ice_snprintf_s_uu(char *dest, size_t dest_size, const char *format,
 int ice_snprintf_s_i(char *dest, size_t dest_size, const char *format,
 		int val1)
 {
-	char format_id_list[1];
+	char format_id_list[MAX_FMT_ID];
 	int index = 0;
 
 	/* Determine the number of format options in the format string */
-	unsigned int  nfo = parse_fmt_str(format, &format_id_list[0], 1);
+	unsigned int  nfo = parse_fmt_str(format, &format_id_list[0],
+			MAX_FMT_ID);
 
 	/* Check that there are not too many format options */
 	if (nfo != 1) {
@@ -554,11 +561,12 @@ int ice_snprintf_s_i(char *dest, size_t dest_size, const char *format,
 int ice_snprintf_s_ii(char *dest, size_t dest_size, const char *format,
 		int val1, int val2)
 {
-	char format_id_list[2];
+	char format_id_list[MAX_FMT_ID];
 	unsigned int index = 0;
 
 	/* Determine the number of format options in the format string */
-	unsigned int  nfo = parse_fmt_str(format, &format_id_list[0], 2);
+	unsigned int  nfo = parse_fmt_str(format, &format_id_list[0],
+			MAX_FMT_ID);
 
 	/* Check that there are not too many format options */
 	if (nfo != 2) {
@@ -587,11 +595,12 @@ int ice_snprintf_s_uuuuuuuu(char *dest, size_t dmax, const char *format,
 		uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4,
 		uint64_t a5, uint64_t a6, uint64_t a7, uint64_t a8)
 {
-	char format_id_list[8];
+	char format_id_list[MAX_FMT_ID];
 	int index = 0;
 	int i;
 
-	unsigned int nfo = parse_fmt_str(format, &format_id_list[0], 8);
+	unsigned int nfo = parse_fmt_str(format, &format_id_list[0],
+			MAX_FMT_ID);
 
 	if (nfo != 8) {
 		dest[0] = '\0';
@@ -615,11 +624,12 @@ int ice_snprintf_s_uuuuu(char *dest, size_t dmax, const char *format,
 		uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4,
 		uint64_t a5)
 {
-	char format_id_list[5];
+	char format_id_list[MAX_FMT_ID];
 	int index = 0;
 	int i;
 
-	unsigned int nfo = parse_fmt_str(format, &format_id_list[0], 5);
+	unsigned int nfo = parse_fmt_str(format, &format_id_list[0],
+			MAX_FMT_ID);
 
 	if (nfo != 5) {
 		dest[0] = '\0';
@@ -641,11 +651,12 @@ int ice_snprintf_s_uuuss(char *dest, size_t dmax, const char *format,
 		uint64_t a1, uint64_t a2, uint64_t a3,
 		const char *s1, const char *s2)
 {
-	char format_id_list[5];
+	char format_id_list[MAX_FMT_ID];
 	int index = 0;
 	int i;
 
-	unsigned int nfo = parse_fmt_str(format, &format_id_list[0], 5);
+	unsigned int nfo = parse_fmt_str(format, &format_id_list[0],
+			MAX_FMT_ID);
 
 	if (nfo != 5) {
 		dest[0] = '\0';
@@ -674,11 +685,12 @@ int ice_snprintf_s_uuuss(char *dest, size_t dmax, const char *format,
 int ice_snprintf_s_iiiss(char *dest, size_t dmax, const char *format,
 		int a1, int a2, int a3, const char *s1, const char *s2)
 {
-	char format_id_list[5];
+	char format_id_list[MAX_FMT_ID];
 	int index = 0;
 	int i;
 
-	unsigned int nfo = parse_fmt_str(format, &format_id_list[0], 5);
+	unsigned int nfo = parse_fmt_str(format, &format_id_list[0],
+			MAX_FMT_ID);
 
 	if (nfo != 5) {
 		dest[0] = '\0';
@@ -708,11 +720,12 @@ int ice_snprintf_s_iiiss(char *dest, size_t dmax, const char *format,
 int ice_snprintf_s_iisss(char *dest, size_t dmax, const char *format,
 		int a1, int a2, const char *s1, const char *s2, const char *s3)
 {
-	char format_id_list[5];
+	char format_id_list[MAX_FMT_ID];
 	int index = 0;
 	int i;
 
-	unsigned int nfo = parse_fmt_str(format, &format_id_list[0], 5);
+	unsigned int nfo = parse_fmt_str(format, &format_id_list[0],
+			MAX_FMT_ID);
 
 	if (nfo != 5) {
 		dest[0] = '\0';
@@ -740,11 +753,12 @@ int ice_snprintf_s_uusss(char *dest, size_t dmax, const char *format,
 		uint64_t a1, uint64_t a2, const char *s1, const char *s2,
 		const char *s3)
 {
-	char format_id_list[5];
+	char format_id_list[MAX_FMT_ID];
 	int index = 0;
 	int i;
 
-	unsigned int nfo = parse_fmt_str(format, &format_id_list[0], 5);
+	unsigned int nfo = parse_fmt_str(format, &format_id_list[0],
+			MAX_FMT_ID);
 
 	if (nfo != 5) {
 		dest[0] = '\0';
@@ -771,11 +785,12 @@ int ice_snprintf_s_uusss(char *dest, size_t dmax, const char *format,
 inline int ice_sscanf_s_u8(const char *src, const char *format,
 		uint8_t *dest)
 {
-	char format_id_list[1];
+	char format_id_list[MAX_FMT_ID];
 	int index = 0;
 	int ret;
 
-	unsigned int nfo = parse_fmt_str(format, &format_id_list[0], 1);
+	unsigned int nfo = parse_fmt_str(format, &format_id_list[0],
+			MAX_FMT_ID);
 
 	if (dest == NULL || src == NULL)
 		return -EINVAL;
@@ -794,11 +809,12 @@ inline int ice_sscanf_s_u8(const char *src, const char *format,
 inline int ice_sscanf_s_u32(const char *src, const char *format,
 		uint32_t *dest)
 {
-	char format_id_list[1];
+	char format_id_list[MAX_FMT_ID];
 	int index = 0;
 	int ret;
 
-	unsigned int nfo = parse_fmt_str(format, &format_id_list[0], 1);
+	unsigned int nfo = parse_fmt_str(format, &format_id_list[0],
+			MAX_FMT_ID);
 
 	if (dest == NULL || src == NULL)
 		return -EINVAL;

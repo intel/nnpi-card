@@ -1434,14 +1434,8 @@ int cve_di_interrupt_handler(struct idc_device *idc_dev)
 	struct cve_device *cve_dev = NULL;
 	u64 cur_ts;
 
-	u32 head = atomic_read(&idc_dev->status_q_head);
-	u32 tail = atomic_read(&idc_dev->status_q_tail);
+	u32 head, tail;
 	struct dev_isr_status *isr_status_node;
-
-	DO_TRACE(trace__icedrvTopHalf(
-				SPH_TRACE_OP_STATE_START,
-				0, 0, 0,
-				SPH_TRACE_OP_STATUS_Q_HEAD, head));
 
 	if (!is_driver_active) {
 		cve_os_log_default(CVE_LOGLEVEL_ERROR,
@@ -1449,6 +1443,12 @@ int cve_di_interrupt_handler(struct idc_device *idc_dev)
 		return need_dpc;
 	}
 
+	head = atomic_read(&idc_dev->status_q_head);
+	tail = atomic_read(&idc_dev->status_q_tail);
+	DO_TRACE(trace__icedrvTopHalf(
+				SPH_TRACE_OP_STATE_START,
+				0, 0, 0,
+				SPH_TRACE_OP_STATUS_Q_HEAD, head));
 
 	if (((head + 1) % IDC_ISR_BH_QUEUE_SZ) == tail) {
 		/* Q FULL*/
@@ -1624,7 +1624,7 @@ void cve_di_interrupt_handler_deferred_proc(struct idc_device *dev)
 	struct cve_device *cve_dev = NULL;
 	struct sub_job *sub_job;
 	struct di_fifo *fifo;
-	struct cve_device_group *dg = cve_dg_get();
+	struct cve_device_group *dg;
 
 	u32 head, tail;
 	struct dev_isr_status *isr_status_node;
@@ -1635,6 +1635,15 @@ void cve_di_interrupt_handler_deferred_proc(struct idc_device *dev)
 				SPH_TRACE_OP_STATUS_LOCATION, __LINE__));
 
 	cve_os_lock(&g_cve_driver_biglock, CVE_NON_INTERRUPTIBLE);
+
+	if (!is_driver_active) {
+		cve_os_log_default(CVE_LOGLEVEL_ERROR,
+			"Received Illegal Interrupt [BH]\n");
+		cve_os_unlock(&g_cve_driver_biglock);
+		return;
+	}
+
+	dg = cve_dg_get();
 
 	head = atomic_read(&dev->status_q_head);
 	tail = atomic_read(&dev->status_q_tail);
@@ -1745,6 +1754,8 @@ void cve_di_interrupt_handler_deferred_proc(struct idc_device *dev)
 		goto end;
 
 	while (1) {
+
+		struct ice_network *ntw;
 
 		index = identify_ice_and_clear(&status_hl);
 		if (index < 0) {
@@ -1873,11 +1884,11 @@ void cve_di_interrupt_handler_deferred_proc(struct idc_device *dev)
 				mmio_intr_status_dump_completed_mask;
 			}
 		}
+
+		ntw = (struct ice_network *)cve_dev->dev_ntw_id;
+
 		/*If error detected and recovery enabled*/
 		if (ice_err) {
-
-			struct ice_network *ntw =
-				(struct ice_network *)cve_dev->dev_ntw_id;
 
 			if (is_fatal_error_in_ice(status))
 				dg->icedc_state =
@@ -1925,8 +1936,9 @@ void cve_di_interrupt_handler_deferred_proc(struct idc_device *dev)
 						(void *)job->ds_hjob,
 						SPH_TRACE_OP_STATUS_FAIL,
 						status));
-		} else if (dg->icedc_state ==
-				ICEDC_STATE_CARD_RESET_REQUIRED) {
+		} else if ((dg->icedc_state ==
+				ICEDC_STATE_CARD_RESET_REQUIRED) ||
+				ntw->reset_ntw) {
 			job_status = CVE_JOBSTATUS_ABORTED;
 
 		} else {
@@ -2255,6 +2267,11 @@ void ice_di_deactivate_driver(void)
 	is_driver_active = 0;
 }
 
+u8 ice_di_is_driver_active(void)
+{
+	return is_driver_active;
+}
+
 void ice_di_set_mmu_address_mode(struct cve_device *ice)
 {
 	union ice_mmu_inner_mem_mmu_config_t reg;
@@ -2558,4 +2575,3 @@ void ice_di_config_mmu_regs(struct cve_device *ice, u32 *reg_list,
 		cve_os_write_mmio_32(ice, offset, reg_list[(2 * i) + 1]);
 	}
 }
-

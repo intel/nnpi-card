@@ -744,14 +744,9 @@ int ice_trace_configure_perf_counter(struct cve_device *ice_dev)
 	}
 	if (ice_dev->perf_counter.is_default_config) {
 		ice_dev->perf_counter.perf_counter_config_len = 0;
-		ret = ice_memset_s(ice_dev->perf_counter.conf,
+		ice_memset_s(ice_dev->perf_counter.conf,
 			sizeof(ice_dev->perf_counter.conf), 0,
-			max_len * sizeof(u32));
-		if (ret < 0) {
-			cve_os_log(CVE_LOGLEVEL_ERROR,
-				"Safelib memset failed %d\n", ret);
-			return ret;
-		}
+			max_len * sizeof(struct ice_perf_counter_setup));
 		ice_dev->perf_counter.is_default_config = false;
 		cve_os_dev_log(CVE_LOGLEVEL_DEBUG,
 			ice_dev->dev_index,
@@ -2019,7 +2014,6 @@ static ssize_t read_ice_mmu_pmon(struct kobject *kobj,
 	int i = 0;
 	u32 dev_index;
 	struct cve_device *dev;
-	struct cve_device_group *device_group = cve_dg_get();
 
 	ret = get_ice_id_from_kobj(kobj->name, &dev_index);
 	if (ret < 0)
@@ -2041,19 +2035,12 @@ static ssize_t read_ice_mmu_pmon(struct kobject *kobj,
 		return ret;
 	}
 
-	ret = cve_os_lock(&device_group->poweroff_dev_list_lock,
-			CVE_INTERRUPTIBLE);
-	if (ret != 0) {
-		cve_os_log_default(CVE_LOGLEVEL_ERROR,
-			"poweroff_dev_list_lock error\n");
-
-		return ret;
-	}
 	cve_os_log(CVE_LOGLEVEL_DEBUG, "ICE number %d\n",
 						dev_index);
 	cve_os_log(CVE_LOGLEVEL_DEBUG, "attr: %s\n",
 						attr->attr.name);
 
+	ret = 0;
 	for (i = 0; i < ICE_MAX_MMU_PMON; i++) {
 		len = ice_snprintf_s_su((buf + ret), PAGE_SIZE,
 			"%s\t:%u\n",
@@ -2067,7 +2054,6 @@ static ssize_t read_ice_mmu_pmon(struct kobject *kobj,
 		ret += len;
 	}
 
-	cve_os_unlock(&device_group->poweroff_dev_list_lock);
 	return ret;
 }
 
@@ -2079,7 +2065,6 @@ static ssize_t read_ice_delphi_pmon(struct kobject *kobj,
 	int i = 0;
 	u32 dev_index;
 	struct cve_device *dev;
-	struct cve_device_group *device_group = cve_dg_get();
 	ICE_PMON_DELPHI_GEMM_CNN_STARTUP_COUNTER startup_cnt_reg;
 	ICE_PMON_DELPHI_CFG_CREDIT_LATENCY latency_cnt_reg;
 	ICE_PMON_DELPHI_OVERFLOW_INDICATION ovr_flow_reg;
@@ -2105,19 +2090,12 @@ static ssize_t read_ice_delphi_pmon(struct kobject *kobj,
 		return ret;
 	}
 
-	ret = cve_os_lock(&device_group->poweroff_dev_list_lock,
-			CVE_INTERRUPTIBLE);
-	if (ret != 0) {
-		cve_os_log_default(CVE_LOGLEVEL_ERROR,
-			"poweroff_dev_list_lock error\n");
-
-		return ret;
-	}
 	cve_os_log(CVE_LOGLEVEL_DEBUG, "ICE number %d\n",
 						dev_index);
 	cve_os_log(CVE_LOGLEVEL_DEBUG, "attr: %s\n",
 						attr->attr.name);
 
+	ret = 0;
 	for (i = 0; i < ICE_MAX_DELPHI_PMON; i++) {
 		if (ice_get_a_step_enable_flag()) {
 			if (i >= ICE_MAX_A_STEP_DELPHI_PMON)
@@ -2216,7 +2194,6 @@ static ssize_t read_ice_delphi_pmon(struct kobject *kobj,
 		}
 	}
 
-	cve_os_unlock(&device_group->poweroff_dev_list_lock);
 	return ret;
 }
 
@@ -2408,9 +2385,7 @@ static int  ice_trace_configure_pmonregs_sysfs(u32 dev_index)
 		goto out;
 	}
 	/* config pmons */
-	ret = ice_trace_configure_perf_counter(ice_dev);
-	if (ret)
-		goto out;
+	ice_trace_configure_perf_counter(ice_dev);
 
 	ice_dev->perf_counter.perf_counter_config_status =
 				TRACE_STATUS_SYSFS_USER_CONFIG_WRITE_DONE;

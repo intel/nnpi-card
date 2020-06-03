@@ -42,7 +42,7 @@ static void update_sw_counters(void *ctx)
 	NNP_SPIN_UNLOCK_IRQRESTORE(&context->sw_counters_lock_irq, flags);
 }
 
-int inf_context_create(uint16_t             protocolID,
+int inf_context_create(uint16_t             protocol_id,
 		       struct sphcs_cmd_chan *chan,
 		       struct inf_context **out_context)
 {
@@ -55,7 +55,7 @@ int inf_context_create(uint16_t             protocolID,
 	if (unlikely(context == NULL))
 		return -ENOMEM;
 
-	snprintf(slab_name, sizeof(slab_name), "sph_ctxslab%03d", protocolID);
+	snprintf(slab_name, sizeof(slab_name), "sph_ctxslab%03d", protocol_id);
 	context->exec_req_slab_cache = kmem_cache_create(slab_name,
 							 sizeof(struct inf_exec_req),
 							 0, SLAB_HWCACHE_ALIGN, NULL);
@@ -68,7 +68,7 @@ int inf_context_create(uint16_t             protocolID,
 	kref_init(&context->ref);
 	context->chan = chan;
 	context->magic = inf_context_create;
-	context->protocolID = protocolID;
+	context->protocol_id = protocol_id;
 	context->state = CONTEXT_OK;
 	context->attached = 0;
 	context->destroyed = 0;
@@ -90,7 +90,7 @@ int inf_context_create(uint16_t             protocolID,
 	inf_exec_error_list_init(&context->error_list, context);
 
 	ret = nnp_create_sw_counters_values_node(g_hSwCountersInfo_context,
-						 (u32)protocolID,
+						 (u32)protocol_id,
 						 g_nnp_sw_counters,
 						 &context->sw_counters);
 	if (unlikely(ret < 0))
@@ -109,7 +109,7 @@ int inf_context_create(uint16_t             protocolID,
 	NNP_SPIN_LOCK_BH(&g_the_sphcs->inf_data->lock_bh);
 	hash_add(g_the_sphcs->inf_data->context_hash,
 		 &context->hash_node,
-		 context->protocolID);
+		 context->protocol_id);
 	NNP_SPIN_UNLOCK_BH(&g_the_sphcs->inf_data->lock_bh);
 
 	*out_context = context;
@@ -223,7 +223,7 @@ static void release_context(struct kref *kref)
 					NNP_IPC_CONTEXT_DESTROYED,
 					0,
 					context->chan->respq,
-					context->protocolID,
+					context->protocol_id,
 					-1);
 
 	sphcs_cmd_chan_put(context->chan);
@@ -388,7 +388,7 @@ static void evaluate_sync_points(struct inf_context *context)
 
 		msg.value = 0;
 		msg.opcode = NNP_IPC_C2H_OP_CHAN_SYNC_DONE;
-		msg.chanID = context->chan->protocolID;
+		msg.chan_id = context->chan->protocol_id;
 		msg.syncSeq = sync_point->host_sync_id;
 
 		sphcs_msg_scheduler_queue_add_msg(context->chan->respq,
@@ -612,7 +612,7 @@ void inf_context_add_sync_point(struct inf_context *context,
 					NNP_IPC_CREATE_SYNC_FAILED,
 					NNP_IPC_NO_MEMORY,
 					context->chan->respq,
-					context->protocolID,
+					context->protocol_id,
 					host_sync_id);
 		return;
 	}
@@ -626,7 +626,7 @@ void inf_context_add_sync_point(struct inf_context *context,
 }
 
 int inf_context_create_devres(struct inf_context *context,
-			      uint16_t            protocolID,
+			      uint16_t            protocol_id,
 			      uint64_t            byte_size,
 			      uint8_t             depth,
 			      uint64_t            align,
@@ -637,7 +637,7 @@ int inf_context_create_devres(struct inf_context *context,
 	struct inf_devres *devres;
 	int ret;
 
-	ret = inf_devres_create(protocolID,
+	ret = inf_devres_create(protocol_id,
 				context,
 				byte_size,
 				depth,
@@ -656,7 +656,7 @@ int inf_context_create_devres(struct inf_context *context,
 	NNP_SPIN_LOCK(&context->lock);
 	hash_add(context->devres_hash,
 		 &devres->hash_node,
-		 devres->protocolID);
+		 devres->protocol_id);
 
 	NNP_ASSERT(devres->status == CREATE_STARTED);
 	devres->status = DMA_COMPLETED; //sent to rt
@@ -688,7 +688,7 @@ int inf_context_find_and_destroy_devres(struct inf_context *context,
 
 	NNP_SPIN_LOCK(&context->lock);
 	hash_for_each_possible(context->devres_hash, iter, hash_node, devresID)
-		if (iter->protocolID == devresID) {
+		if (iter->protocol_id == devresID) {
 			devres = iter;
 			break;
 		}
@@ -716,7 +716,7 @@ int inf_context_find_and_destroy_devres(struct inf_context *context,
 }
 
 struct inf_devres *inf_context_find_devres(struct inf_context *context,
-					   uint16_t            protocolID)
+					   uint16_t            protocol_id)
 {
 	struct inf_devres *devres;
 
@@ -724,8 +724,8 @@ struct inf_devres *inf_context_find_devres(struct inf_context *context,
 	hash_for_each_possible(context->devres_hash,
 			       devres,
 			       hash_node,
-			       protocolID)
-		if (devres->protocolID == protocolID) {
+			       protocol_id)
+		if (devres->protocol_id == protocol_id) {
 			NNP_ASSERT(devres->status == CREATED);
 			NNP_SPIN_UNLOCK(&context->lock);
 			return devres;
@@ -736,7 +736,7 @@ struct inf_devres *inf_context_find_devres(struct inf_context *context,
 }
 
 struct inf_devres *inf_context_find_and_get_devres(struct inf_context *context,
-						   uint16_t            protocolID)
+						   uint16_t            protocol_id)
 {
 	struct inf_devres *devres;
 
@@ -744,8 +744,8 @@ struct inf_devres *inf_context_find_and_get_devres(struct inf_context *context,
 	hash_for_each_possible(context->devres_hash,
 			       devres,
 			       hash_node,
-			       protocolID)
-		if (devres->protocolID == protocolID) {
+			       protocol_id)
+		if (devres->protocol_id == protocol_id) {
 			NNP_ASSERT(devres->status == CREATED);
 			if (unlikely(devres->destroyed || inf_devres_get(devres) == 0))
 				break; //destroyed
@@ -758,13 +758,13 @@ struct inf_devres *inf_context_find_and_get_devres(struct inf_context *context,
 }
 
 int inf_context_create_cmd(struct inf_context   *context,
-			   uint16_t              protocolID,
+			   uint16_t              protocol_id,
 			   struct inf_cmd_list **out_cmd)
 {
 	struct inf_cmd_list *cmd;
 	int ret;
 
-	ret = inf_cmd_create(protocolID,
+	ret = inf_cmd_create(protocol_id,
 			     context,
 			     &cmd);
 	if (unlikely(ret < 0))
@@ -782,7 +782,7 @@ int inf_context_find_and_destroy_cmd(struct inf_context *context,
 
 	NNP_SPIN_LOCK(&context->lock);
 	hash_for_each_possible(context->cmd_hash, iter, hash_node, cmdID)
-		if (iter->protocolID == cmdID) {
+		if (iter->protocol_id == cmdID) {
 			cmd = iter;
 			break;
 		}
@@ -810,13 +810,13 @@ int inf_context_find_and_destroy_cmd(struct inf_context *context,
 }
 
 struct inf_cmd_list *inf_context_find_cmd(struct inf_context *context,
-					  uint16_t            protocolID)
+					  uint16_t            protocol_id)
 {
 	struct inf_cmd_list *cmd;
 
 	NNP_SPIN_LOCK(&context->lock);
-	hash_for_each_possible(context->cmd_hash, cmd, hash_node, protocolID)
-		if (cmd->protocolID == protocolID) {
+	hash_for_each_possible(context->cmd_hash, cmd, hash_node, protocol_id)
+		if (cmd->protocol_id == protocol_id) {
 			if (cmd->destroyed)
 				break; //destroyed
 			NNP_SPIN_UNLOCK(&context->lock);
@@ -834,7 +834,7 @@ int inf_context_find_and_destroy_devnet(struct inf_context *context,
 
 	NNP_SPIN_LOCK(&context->lock);
 	hash_for_each_possible(context->devnet_hash, iter, hash_node, devnetID)
-		if (iter->protocolID == devnetID) {
+		if (iter->protocol_id == devnetID) {
 			devnet = iter;
 			break;
 		}
@@ -861,13 +861,13 @@ int inf_context_find_and_destroy_devnet(struct inf_context *context,
 	return 0;
 }
 
-struct inf_devnet *inf_context_find_devnet(struct inf_context *context, uint16_t protocolID)
+struct inf_devnet *inf_context_find_devnet(struct inf_context *context, uint16_t protocol_id)
 {
 	struct inf_devnet *devnet;
 
 	NNP_SPIN_LOCK(&context->lock);
-	hash_for_each_possible(context->devnet_hash, devnet, hash_node, protocolID)
-		if (devnet->protocolID == protocolID) {
+	hash_for_each_possible(context->devnet_hash, devnet, hash_node, protocol_id)
+		if (devnet->protocol_id == protocol_id) {
 			NNP_SPIN_UNLOCK(&context->lock);
 			return devnet;
 		}
@@ -876,13 +876,13 @@ struct inf_devnet *inf_context_find_devnet(struct inf_context *context, uint16_t
 	return NULL;
 }
 
-struct inf_devnet *inf_context_find_and_get_devnet(struct inf_context *context, uint16_t protocolID, bool alive, bool created)
+struct inf_devnet *inf_context_find_and_get_devnet(struct inf_context *context, uint16_t protocol_id, bool alive, bool created)
 {
 	struct inf_devnet *devnet;
 
 	NNP_SPIN_LOCK(&context->lock);
-	hash_for_each_possible(context->devnet_hash, devnet, hash_node, protocolID)
-		if (devnet->protocolID == protocolID) {
+	hash_for_each_possible(context->devnet_hash, devnet, hash_node, protocol_id)
+		if (devnet->protocol_id == protocol_id) {
 			if (created && !devnet->created)
 				break;
 			if (alive && devnet->destroyed)
@@ -897,13 +897,13 @@ struct inf_devnet *inf_context_find_and_get_devnet(struct inf_context *context, 
 	return NULL;
 }
 
-struct inf_copy *inf_context_find_copy(struct inf_context *context, uint16_t protocolID)
+struct inf_copy *inf_context_find_copy(struct inf_context *context, uint16_t protocol_id)
 {
 	struct inf_copy *copy;
 
 	NNP_SPIN_LOCK(&context->lock);
-	hash_for_each_possible(context->copy_hash, copy, hash_node, protocolID) {
-		if (copy->protocolID == protocolID) {
+	hash_for_each_possible(context->copy_hash, copy, hash_node, protocol_id) {
+		if (copy->protocol_id == protocol_id) {
 			NNP_SPIN_UNLOCK(&context->lock);
 			return copy;
 		}
@@ -913,13 +913,13 @@ struct inf_copy *inf_context_find_copy(struct inf_context *context, uint16_t pro
 	return NULL;
 }
 
-struct inf_copy *inf_context_find_and_get_copy(struct inf_context *context, uint16_t protocolID)
+struct inf_copy *inf_context_find_and_get_copy(struct inf_context *context, uint16_t protocol_id)
 {
 	struct inf_copy *copy;
 
 	NNP_SPIN_LOCK(&context->lock);
-	hash_for_each_possible(context->copy_hash, copy, hash_node, protocolID) {
-		if (copy->protocolID == protocolID) {
+	hash_for_each_possible(context->copy_hash, copy, hash_node, protocol_id) {
+		if (copy->protocol_id == protocol_id) {
 			if (unlikely(copy->destroyed || inf_copy_get(copy) == 0))
 				break;
 			NNP_SPIN_UNLOCK(&context->lock);
@@ -953,7 +953,7 @@ int inf_context_find_and_destroy_copy(struct inf_context *context,
 
 	NNP_SPIN_LOCK(&context->lock);
 	hash_for_each_possible(context->copy_hash, iter, hash_node, copyID) {
-		if (iter->protocolID == copyID) {
+		if (iter->protocol_id == copyID) {
 			copy = iter;
 			break;
 		}
