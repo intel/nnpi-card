@@ -28,11 +28,11 @@ static void inf_cpylst_req_complete(struct inf_exec_req *req,
 				    const void          *error_msg,
 				    int32_t              error_msg_size);
 static void send_cpylst_report(struct inf_exec_req *req,
-			       enum event_val       eventVal);
+			       enum event_val       event_val);
 static int inf_req_cpylst_put(struct inf_exec_req *req);
 static int inf_cpylst_migrate_priority(struct inf_exec_req *req, uint8_t priority);
 static void treat_cpylst_failure(struct inf_exec_req *req,
-				 enum event_val       eventVal,
+				 enum event_val       event_val,
 				 const void          *error_msg,
 				 int32_t              error_msg_size);
 
@@ -57,7 +57,6 @@ static int cpylst_complete_cb(struct sphcs *sphcs, void *ctx, const void *user_d
 {
 	int err;
 	struct inf_exec_req *req = (struct inf_exec_req *)ctx;
-//	struct inf_cpylst *cpylst;
 
 	NNP_ASSERT(req != NULL);
 
@@ -68,31 +67,6 @@ static int cpylst_complete_cb(struct sphcs *sphcs, void *ctx, const void *user_d
 		NNP_ASSERT(status == SPHCS_DMA_STATUS_DONE);
 		err = 0;
 	}
-
-#if 0
-	cpylst = req->cpylst;
-	if (xferTimeUS > 0 &&
-	    NNP_SW_GROUP_IS_ENABLE(cpylst->sw_counters,
-				   COPY_SPHCS_SW_COUNTERS_GROUP)) {
-		NNP_SW_COUNTER_ADD(cpylst->sw_counters,
-					COPY_SPHCS_SW_COUNTERS_HWEXEC_TOTAL_TIME,
-					xferTimeUS);
-
-		if (xferTimeUS < cpylst->min_hw_exec_time) {
-			SPH_SW_COUNTER_SET(cpylst->sw_counters,
-						COPY_SPHCS_SW_COUNTERS_HWEXEC_MIN_TIME,
-						xferTimeUS);
-			cpylst->min_hw_exec_time = xferTimeUS;
-		}
-
-		if (xferTimeUS > cpylst->max_hw_exec_time) {
-			SPH_SW_COUNTER_SET(cpylst->sw_counters,
-						COPY_SPHCS_SW_COUNTERS_HWEXEC_MAX_TIME,
-						xferTimeUS);
-			copy->max_hw_exec_time = xferTimeUS;
-		}
-	}
-#endif
 
 	inf_cpylst_req_complete(req, err, NULL, 0);
 
@@ -105,9 +79,6 @@ int inf_cpylst_create(struct inf_cmd_list *cmd,
 		      struct inf_cpylst  **out_cpylst)
 {
 	struct inf_cpylst *cpylst;
-#if 0
-	int res;
-#endif
 
 	if (unlikely(num_copies == 0))
 		return -EINVAL;
@@ -164,18 +135,6 @@ int inf_cpylst_create(struct inf_cmd_list *cmd,
 	cpylst->max_hw_exec_time = 0;
 
 	sphcs_dma_multi_xfer_handle_init(&cpylst->multi_xfer_handle);
-
-#if 0
-	res = nnp_create_sw_counters_values_node(g_hSwCountersInfo_copy,
-						 (u32)protocolCopyID,
-						 context->sw_counters,
-						 &copy->sw_counters);
-	if (unlikely(res < 0)) {
-		inf_devres_put(devres);
-		kfree(copy);
-		return res;
-	}
-#endif
 
 	*out_cpylst = cpylst;
 
@@ -388,11 +347,6 @@ static void release_cpylst(struct inf_cpylst *cpylst)
 				  cpylst->cur_lli.size,
 				  cpylst->cur_lli.vptr,
 				  cpylst->cur_lli.dma_addr);
-#if 0
-	//TODO CPYLST counters
-	if (copy->sw_counters)
-		nnp_remove_sw_counters_values_node(copy->sw_counters);
-#endif
 
 	for (i = 0; i < cpylst->n_copies; ++i) {
 		if (unlikely(cpylst->copies[i] == NULL))
@@ -448,7 +402,6 @@ void inf_cpylst_req_init(struct inf_exec_req *req,
 	req->cmd = cmd;
 	req->size = 0;
 	req->priority = 0;
-	req->time = 0;
 	req->num_opt_depend_devres = req->cpylst->n_copies;
 	req->opt_depend_devres = req->cpylst->devreses;
 	req->lli = &cpylst->lli;
@@ -470,9 +423,9 @@ static int inf_cpylst_req_sched(struct inf_exec_req *req)
 	inf_context_seq_id_init(req->context, &req->seq);
 
 	DO_TRACE(trace_copy(SPH_TRACE_OP_STATUS_QUEUED,
-		 req->context->protocolID,
+		 req->context->protocol_id,
 		 cpylst->idx_in_cmd,
-		 req->cmd->protocolID,
+		 req->cmd->protocol_id,
 		 cpylst->copies[0]->card2Host,
 		 cpylst->copies[0]->d2d ? sphcs_p2p_get_peer_dev_id(&(cpylst->copies[0]->devres->p2p_buf)) : -1,
 		 req->size,
@@ -480,12 +433,11 @@ static int inf_cpylst_req_sched(struct inf_exec_req *req)
 		 req->lli->num_lists,
 		 req->lli->num_elements));
 
-#if 0
-	if (NNP_SW_GROUP_IS_ENABLE(copy->sw_counters,
-				   COPY_SPHCS_SW_COUNTERS_GROUP)) {
+	if (NNP_SW_GROUP_IS_ENABLE(cpylst->copies[0]->sw_counters,
+				   COPY_SPHCS_SW_COUNTERS_GROUP))
 		req->time = nnp_time_us();
-	}
-#endif
+	else
+		req->time = 0;
 
 	inf_exec_req_get(req);
 
@@ -495,12 +447,6 @@ static int inf_cpylst_req_sched(struct inf_exec_req *req)
 		if (unlikely(err < 0))
 			goto fail;
 	}
-
-#if 0
-	// Request scheduled
-	NNP_SW_COUNTER_INC(infreq->devnet->context->sw_counters,
-			   CTX_SPHCS_SW_COUNTERS_INFERENCE_SUBMITTED_INF_REQ);
-#endif
 
 	// First try to execute
 	req->last_sched_tick = 0;
@@ -552,16 +498,21 @@ static int inf_cpylst_req_execute(struct inf_exec_req *req)
 {
 	struct sphcs_dma_desc const *desc;
 	struct inf_cpylst *cpylst;
+	struct inf_cmd_list *cmd;
+	u64 now, dt;
+	uint16_t i;
+	int ret = 0;
 
 	NNP_ASSERT(req->cmd_type == CMDLIST_CMD_COPYLIST);
 	NNP_ASSERT(req->in_progress);
 
 	cpylst = req->cpylst;
+	cmd = req->cmd;
 
 	DO_TRACE(trace_copy(SPH_TRACE_OP_STATUS_START,
-		 req->cmd->context->protocolID,
+		 cmd->context->protocol_id,
 		 cpylst->idx_in_cmd,
-		 req->cmd->protocolID,
+		 cmd->protocol_id,
 		 cpylst->copies[0]->card2Host,
 		 cpylst->copies[0]->d2d ? sphcs_p2p_get_peer_dev_id(&(cpylst->copies[0]->devres->p2p_buf)) : -1,
 		 req->size,
@@ -569,43 +520,18 @@ static int inf_cpylst_req_execute(struct inf_exec_req *req)
 		 req->lli->num_lists,
 		 req->lli->num_elements));
 
-#if 0
-
-	TODO CPYLST counters
-	if (NNP_SW_GROUP_IS_ENABLE(copy->sw_counters,
+	if (req->time > 0 &&
+	    NNP_SW_GROUP_IS_ENABLE(cpylst->copies[0]->sw_counters,
 				   COPY_SPHCS_SW_COUNTERS_GROUP)) {
-		u64 now;
-
 		now = nnp_time_us();
-		if (req->time) {
-			u64 dt;
-
-			dt = now - req->time;
-			NNP_SW_COUNTER_ADD(copy->sw_counters,
-					   COPY_SPHCS_SW_COUNTERS_BLOCK_TOTAL_TIME,
-					   dt);
-
-			NNP_SW_COUNTER_INC(copy->sw_counters,
-					   COPY_SPHCS_SW_COUNTERS_BLOCK_COUNT);
-
-			if (dt < copy->min_block_time) {
-				SPH_SW_COUNTER_SET(copy->sw_counters,
-						   COPY_SPHCS_SW_COUNTERS_BLOCK_MIN_TIME,
-						   dt);
-				copy->min_block_time = dt;
-			}
-
-			if (dt > copy->max_block_time) {
-				SPH_SW_COUNTER_SET(copy->sw_counters,
-						   COPY_SPHCS_SW_COUNTERS_BLOCK_MAX_TIME,
-						   dt);
-				copy->max_block_time = dt;
-			}
-		}
-		req->time = now;
-	} else
+		dt = now - req->time;
+		// make sure cpylst is alive for counters update
+		inf_cmd_get(cmd);
+	} else {
+		now = 0;
+		dt = 0;
 		req->time = 0;
-#endif
+	}
 
 	if (cpylst->copies[0]->card2Host) {
 		switch (req->priority) {
@@ -631,25 +557,67 @@ static int inf_cpylst_req_execute(struct inf_exec_req *req)
 
 	cpylst->active = true;
 
-	if (inf_context_get_state(req->context) != CONTEXT_OK)
-		return -NNPER_CONTEXT_BROKEN;
+	if (inf_context_get_state(req->context) != CONTEXT_OK) {
+		ret = -NNPER_CONTEXT_BROKEN;
+		goto finish;
+	}
 
 	if (req->size == 0) {
 		inf_cpylst_req_complete(req, 0, NULL, 0);
 
-		return 0;
+		goto finish;
 	}
-	return sphcs_dma_sched_start_xfer_multi(g_the_sphcs->dmaSched,
+	ret = sphcs_dma_sched_start_xfer_multi(g_the_sphcs->dmaSched,
 						&req->cpylst->multi_xfer_handle,
 						desc,
 						req->lli,
 						req->size,
 						cpylst_complete_cb,
 						req);
+finish:
+	if (dt > 0) {
+		struct inf_copy *copy;
+
+		i = 0;
+		for (copy = cpylst->copies[i]; i < cpylst->n_copies; copy = cpylst->copies[++i]) {
+			if (NNP_SW_GROUP_IS_ENABLE(copy->sw_counters,
+						   COPY_SPHCS_SW_COUNTERS_GROUP)) {
+				NNP_SW_COUNTER_INC(copy->sw_counters,
+						   COPY_SPHCS_SW_COUNTERS_BLOCK_COUNT);
+
+				NNP_SW_COUNTER_ADD(copy->sw_counters,
+						   COPY_SPHCS_SW_COUNTERS_BLOCK_TOTAL_TIME,
+						   dt);
+
+				if (dt < copy->min_block_time) {
+					SPH_SW_COUNTER_SET(copy->sw_counters,
+							   COPY_SPHCS_SW_COUNTERS_BLOCK_MIN_TIME,
+							   dt);
+					copy->min_block_time = dt;
+				}
+
+				if (dt > copy->max_block_time) {
+					SPH_SW_COUNTER_SET(copy->sw_counters,
+							   COPY_SPHCS_SW_COUNTERS_BLOCK_MAX_TIME,
+							   dt);
+					copy->max_block_time = dt;
+				}
+			}
+		}
+		req->time = now;
+
+		// release kref for counters update
+		inf_cmd_put(cmd);
+	} else if (now > 0) {
+		// release kref for counters update
+		inf_cmd_put(cmd);
+	}
+
+	return ret;
 }
 
 static void treat_cpylst_failure(struct inf_exec_req *req,
-				 enum event_val       eventVal,
+				 enum event_val       event_val,
 				 const void          *error_msg,
 				 int32_t              error_msg_size)
 {
@@ -667,8 +635,8 @@ static void treat_cpylst_failure(struct inf_exec_req *req,
 
 	rc = inf_exec_error_details_alloc(CMDLIST_CMD_COPYLIST,
 					  cpylst->idx_in_cmd,
-					  req->cmd->protocolID,
-					  eventVal,
+					  req->cmd->protocol_id,
+					  event_val,
 					  error_msg_size > 0 ? error_msg_size : 0,
 					  &err_details);
 	if (likely(rc == 0)) {
@@ -689,12 +657,13 @@ static void inf_cpylst_req_complete(struct inf_exec_req *req,
 				    const void          *error_msg,
 				    int32_t              error_msg_size)
 {
-	enum event_val eventVal;
+	enum event_val event_val;
 	struct inf_cpylst *cpylst;
 	struct inf_cmd_list *cmd;
 	bool send_cmdlist_event_report = false;
-	uint32_t i;
 	bool has_dirty_outputs = false;
+	uint16_t i;
+	u64 dt;
 
 	NNP_ASSERT(req->cmd_type == CMDLIST_CMD_COPYLIST);
 	NNP_ASSERT(req->cmd != NULL);
@@ -704,9 +673,9 @@ static void inf_cpylst_req_complete(struct inf_exec_req *req,
 	cmd = req->cmd;
 
 	DO_TRACE(trace_copy(SPH_TRACE_OP_STATUS_COMPLETE,
-		 req->cmd->context->protocolID,
+		 req->cmd->context->protocol_id,
 		 cpylst->idx_in_cmd,
-		 req->cmd->protocolID,
+		 req->cmd->protocol_id,
 		 cpylst->copies[0]->card2Host,
 		 cpylst->copies[0]->d2d ? sphcs_p2p_get_peer_dev_id(&(cpylst->copies[0]->devres->p2p_buf)) : -1,
 		 req->size,
@@ -714,61 +683,32 @@ static void inf_cpylst_req_complete(struct inf_exec_req *req,
 		 req->lli->num_lists,
 		 req->lli->num_elements));
 
-#if 0
-	//TODO CPYLST counters
-	if (NNP_SW_GROUP_IS_ENABLE(copy->sw_counters,
-				   COPY_SPHCS_SW_COUNTERS_GROUP)) {
-		u64 now;
-
-		now = nnp_time_us();
-		if (req->time) {
-			u64 dt;
-
-			dt = now - req->time;
-			NNP_SW_COUNTER_ADD(copy->sw_counters,
-					   COPY_SPHCS_SW_COUNTERS_EXEC_TOTAL_TIME,
-					   dt);
-
-			NNP_SW_COUNTER_INC(copy->sw_counters,
-					   COPY_SPHCS_SW_COUNTERS_EXEC_COUNT);
-
-			if (dt < copy->min_exec_time) {
-				SPH_SW_COUNTER_SET(copy->sw_counters,
-						   COPY_SPHCS_SW_COUNTERS_EXEC_MIN_TIME,
-						   dt);
-				copy->min_exec_time = dt;
-			}
-
-			if (dt > copy->max_exec_time) {
-				SPH_SW_COUNTER_SET(copy->sw_counters,
-						   COPY_SPHCS_SW_COUNTERS_EXEC_MAX_TIME,
-						   dt);
-				copy->max_exec_time = dt;
-			}
-		}
-	}
-	req->time = 0;
-#endif
+	if (req->time > 0 &&
+	    NNP_SW_GROUP_IS_ENABLE(cpylst->copies[0]->sw_counters,
+				   COPY_SPHCS_SW_COUNTERS_GROUP))
+		dt = nnp_time_us() - req->time;
+	else
+		dt = 0;
 
 	if (unlikely(err < 0)) {
 		sph_log_err(EXECUTE_COMMAND_LOG, "Execute coylst failed with err=%d\n", err);
 		switch (err) {
 		case -ENOMEM:
-			eventVal = NNP_IPC_NO_MEMORY;
+			event_val = NNP_IPC_NO_MEMORY;
 			break;
 		case -NNPER_CONTEXT_BROKEN:
-			eventVal = NNP_IPC_CONTEXT_BROKEN;
+			event_val = NNP_IPC_CONTEXT_BROKEN;
 			break;
 		case -NNPER_INPUT_IS_DIRTY:
-			eventVal = NNP_IPC_INPUT_IS_DIRTY;
+			event_val = NNP_IPC_INPUT_IS_DIRTY;
 			break;
 		default:
-			eventVal = NNP_IPC_DMA_ERROR;
+			event_val = NNP_IPC_DMA_ERROR;
 		}
 
-		treat_cpylst_failure(req, eventVal, error_msg, error_msg_size);
+		treat_cpylst_failure(req, event_val, error_msg, error_msg_size);
 	} else {
-		eventVal = 0;
+		event_val = 0;
 		if (!cpylst->copies[0]->card2Host) {
 			for (i = 0; i < req->num_opt_depend_devres; ++i) {
 				has_dirty_outputs = req->opt_depend_devres[i]->is_dirty ||
@@ -784,38 +724,31 @@ static void inf_cpylst_req_complete(struct inf_exec_req *req,
 		}
 
 	}
-	if (cmd != NULL)
-		send_cmdlist_event_report = atomic_dec_and_test(&cmd->num_left);
+	NNP_ASSERT(cmd != NULL);
+	send_cmdlist_event_report = atomic_dec_and_test(&cmd->num_left);
 
-	if (eventVal == 0 && send_cmdlist_event_report) {
+	if (event_val == 0 && send_cmdlist_event_report) {
 		// if success and should send both cmd and copy reports,
 		// send one merged report
 		sphcs_send_event_report_ext(g_the_sphcs,
 					    NNP_IPC_EXECUTE_CPYLST_SUCCESS,
-					    //eventVal isn't 0 to differentiate
+					    //event_val isn't 0 to differentiate
 					    //between CMD and cpylst
 					    NNP_IPC_CMDLIST_FINISHED,
 					    cmd->context->chan->respq,
-					    cmd->context->protocolID,
-					    cmd->protocolID,
+					    cmd->context->protocol_id,
+					    cmd->protocol_id,
 					    cpylst->idx_in_cmd);
 	} else {
-		send_cpylst_report(req, eventVal);
+		send_cpylst_report(req, event_val);
 
 		if (send_cmdlist_event_report)
 			sphcs_send_event_report(g_the_sphcs,
 						NNP_IPC_EXECUTE_CMD_COMPLETE,
 						0,
 						cmd->context->chan->respq,
-						cmd->context->protocolID,
-						cmd->protocolID);
-	}
-
-	if (send_cmdlist_event_report) {
-		DO_TRACE(trace_cmdlist(SPH_TRACE_OP_STATUS_COMPLETE,
-			 cmd->context->protocolID, cmd->protocolID));
-		// for schedule
-		inf_cmd_put(cmd);
+						cmd->context->protocol_id,
+						cmd->protocol_id);
 	}
 
 	memcpy(cpylst->cur_sizes, cpylst->sizes, cpylst->n_copies * sizeof(cpylst->sizes[0]));
@@ -823,24 +756,71 @@ static void inf_cpylst_req_complete(struct inf_exec_req *req,
 	cpylst->active = false;
 
 	inf_exec_req_put(req);
+
+	if (dt > 0) {
+		struct inf_copy *copy;
+
+		NNP_ASSERT(req->size > 0);
+
+		i = 0;
+		for (copy = cpylst->copies[i]; i < cpylst->n_copies; copy = cpylst->copies[++i]) {
+			if (NNP_SW_GROUP_IS_ENABLE(copy->sw_counters,
+						   COPY_SPHCS_SW_COUNTERS_GROUP)) {
+				NNP_SW_COUNTER_INC(copy->sw_counters,
+						   COPY_SPHCS_SW_COUNTERS_EXEC_COUNT);
+
+				if (cpylst->cur_sizes[i] > 0) {
+					u64 cur_dt = dt * cpylst->cur_sizes[i] / req->size;
+
+					if (cur_dt == 0)
+						continue;
+
+					NNP_SW_COUNTER_ADD(copy->sw_counters,
+							   COPY_SPHCS_SW_COUNTERS_EXEC_TOTAL_TIME,
+							   cur_dt);
+
+					if (cur_dt < copy->min_exec_time) {
+						SPH_SW_COUNTER_SET(copy->sw_counters,
+								   COPY_SPHCS_SW_COUNTERS_EXEC_MIN_TIME,
+								   cur_dt);
+						copy->min_exec_time = cur_dt;
+					}
+
+					if (cur_dt > copy->max_exec_time) {
+						SPH_SW_COUNTER_SET(copy->sw_counters,
+								   COPY_SPHCS_SW_COUNTERS_EXEC_MAX_TIME,
+								   cur_dt);
+						copy->max_exec_time = cur_dt;
+					}
+				}
+			}
+		}
+	}
+
+	if (send_cmdlist_event_report) {
+		DO_TRACE(trace_cmdlist(SPH_TRACE_OP_STATUS_COMPLETE,
+			 cmd->context->protocol_id, cmd->protocol_id));
+		// for schedule
+		inf_cmd_put(cmd);
+	}
 }
 
 static void send_cpylst_report(struct inf_exec_req *req,
-			       enum event_val       eventVal)
+			       enum event_val       event_val)
 {
 	struct inf_cpylst *cpylst;
-	uint16_t eventCode = eventVal == 0 ? NNP_IPC_EXECUTE_CPYLST_SUCCESS : NNP_IPC_EXECUTE_CPYLST_FAILED;
+	uint16_t event_code = event_val == 0 ? NNP_IPC_EXECUTE_CPYLST_SUCCESS : NNP_IPC_EXECUTE_CPYLST_FAILED;
 
 	NNP_ASSERT(req->cmd_type == CMDLIST_CMD_COPYLIST);
 	NNP_ASSERT(req->cmd != NULL);
 
 	cpylst = req->cpylst;
 	sphcs_send_event_report_ext(g_the_sphcs,
-				    eventCode,
-				    eventVal,
+				    event_code,
+				    event_val,
 				    req->context->chan->respq,
-				    req->context->protocolID,
-				    req->cmd->protocolID,
+				    req->context->protocol_id,
+				    req->cmd->protocol_id,
 				    cpylst->idx_in_cmd);
 }
 

@@ -123,7 +123,7 @@ static int ibecc_error_cb(struct notifier_block *nb, unsigned long action, void 
 	union sph_mem_protected_buff_attr buff_attr;
 
 	int context_id = -1;
-	uint16_t eventCode;
+	uint16_t event_code;
 	int ret;
 	bool corrected = (err_info->type == HW_EVENT_ERR_CORRECTED);
 
@@ -135,26 +135,26 @@ static int ibecc_error_cb(struct notifier_block *nb, unsigned long action, void 
 	if (ret == 0) {
 		/* This is an ion buffer */
 		if (corrected)
-			eventCode = NNP_IPC_ERROR_DRAM_ECC_CORRECTABLE;
+			event_code = NNP_IPC_ERROR_DRAM_ECC_CORRECTABLE;
 		else {
 			context_id = buff_attr.context_id;
 			/* If either context or severity is not set */
 			if ((buff_attr.context_id_valid != 1) || (buff_attr.uc_ecc_severity == 0))
-				eventCode = NNP_IPC_ERROR_DRAM_ECC_UNCORRECTABLE_FATAL;
+				event_code = NNP_IPC_ERROR_DRAM_ECC_UNCORRECTABLE_FATAL;
 			else if (buff_attr.uc_ecc_severity == 2)
-				eventCode = NNP_IPC_ERROR_DRAM_ECC_UNCORRECTABLE_FATAL;
+				event_code = NNP_IPC_ERROR_DRAM_ECC_UNCORRECTABLE_FATAL;
 			else
-				eventCode = NNP_IPC_CTX_DRAM_ECC_UNCORRECTABLE;
+				event_code = NNP_IPC_CTX_DRAM_ECC_UNCORRECTABLE;
 		}
 	} else {
 		/* This is an OS managed buffer*/
-		eventCode = corrected ?
+		event_code = corrected ?
 				NNP_IPC_ERROR_DRAM_ECC_CORRECTABLE :
 				NNP_IPC_ERROR_DRAM_ECC_UNCORRECTABLE_FATAL;
 	}
 
-	/* context_id is passed as objID in purpose! */
-	sphcs_send_event_report(g_the_sphcs, eventCode, 0, NULL, -1, context_id);
+	/* context_id is passed as obj_id in purpose! */
+	sphcs_send_event_report(g_the_sphcs, event_code, 0, NULL, -1, context_id);
 
 	return NOTIFY_OK;
 }

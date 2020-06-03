@@ -9,7 +9,7 @@
 #include <linux/types.h>
 #include "ipc_protocol.h"
 
-#define NNP_IPC_CHAN_PROTOCOL_VERSION NNP_MAKE_VERSION(1, 2, 0)
+#define NNP_IPC_CHAN_PROTOCOL_VERSION NNP_MAKE_VERSION(1, 3, 0)
 
 #define NNP_IPC_GENMSG_BAD_CLIENT_ID   0xFFF
 
@@ -19,6 +19,7 @@
 #define NNP_IPC_INF_COPY_BITS 16    /* number of bits in protocol for copy handler */
 #define NNP_IPC_INF_REQ_BITS 16     /* number of bits in protocol for inf req */
 #define NNP_NET_SKB_HANDLE_BITS  8   /* number of bits for skb handle in eth protocol */
+#define NNP_IPC_MAX_CHANNEL_RINGBUFS 2 /* maximum number of data ring buffers for each channel (per-direction) */
 
 //
 // Command type codes used in command list elements
@@ -48,20 +49,20 @@ struct ipc_exec_error_desc {
 	__u8                 cmd_type;
 	__le16               obj_id;
 	__le16               devnet_id;
-	__le16               eventVal;
+	__le16               event_val;
 	__le32               error_msg_size;
 };
 
 /***************************************************************************
  * IPC messages layout definition
- *    All messages must start with opcode and chanID as defined by:
- *    union h2c_ChanMsgHeader / union c2h_ChanMsgHeader
+ *    All messages must start with opcode and chan_id as defined by:
+ *    union h2c_chan_msg_header / union c2h_chan_msg_header
  ***************************************************************************/
 union h2c_ChanRingBufUpdate {
 	struct {
 		__le64 opcode		: 6; /* NNP_IPC_H2C_OP_CHANNEL_RB_UPDATE */
-		__le64 chanID              : NNP_IPC_CHANNEL_BITS;
-		__le64 rbID                :  1;
+		__le64 chan_id              : NNP_IPC_CHANNEL_BITS;
+		__le64 rb_id                :  1;
 		__le64 reserved            : 15;
 		__le32 size                : 32;
 	};
@@ -73,8 +74,8 @@ CHECK_MESSAGE_SIZE(union h2c_ChanRingBufUpdate, 1);
 union h2c_ChanGenericMessaging {
 	struct {
 		__le64 opcode          :  6;   /* NNP_IPC_H2C_OP_CHAN_GENERIC_MSG_PACKET */
-		__le64 chanID          : NNP_IPC_CHANNEL_BITS;
-		__le64 rbID            :  1;
+		__le64 chan_id          : NNP_IPC_CHANNEL_BITS;
+		__le64 rb_id            :  1;
 		__le64 connect         :  1;
 		__le64 hangup          :  1;
 		__le64 service_list_req:  1;
@@ -90,8 +91,8 @@ CHECK_MESSAGE_SIZE(union h2c_ChanGenericMessaging, 1);
 union h2c_ChanInferenceContextOp {
 	struct {
 		__le64 opcode     : 6;  /* NNP_IPC_H2C_OP_CHAN_INF_CONTEXT */
-		__le64 chanID     : NNP_IPC_CHANNEL_BITS;
-		__le64 rbID       : 1;
+		__le64 chan_id     : NNP_IPC_CHANNEL_BITS;
+		__le64 rb_id       : 1;
 		__le64 destroy    : 1;
 		__le64 recover    : 1;
 		__le64 cflags     : 8;
@@ -105,8 +106,8 @@ CHECK_MESSAGE_SIZE(union h2c_ChanInferenceContextOp, 1);
 union h2c_ChanInferenceResourceOp {
 	struct {
 		__le64 opcode      : 6;  /* NNP_IPC_H2C_OP_CHAN_INF_RESOURCE */
-		__le64 chanID      : NNP_IPC_CHANNEL_BITS;
-		__le64 rbID        : 1;
+		__le64 chan_id      : NNP_IPC_CHANNEL_BITS;
+		__le64 rb_id        : 1;
 		__le64 resID       : NNP_IPC_INF_DEVRES_BITS;
 		__le64 destroy     : 1;
 		__le64 is_input    : 1;
@@ -130,7 +131,7 @@ CHECK_MESSAGE_SIZE(union h2c_ChanInferenceResourceOp, 2);
 union h2c_ChanMarkInferenceResource {
 	struct {
 		__le64 opcode      : 6;  /* NNP_IPC_H2C_OP_CHAN_MARK_INF_RESOURCE */
-		__le64 chanID      : NNP_IPC_CHANNEL_BITS;
+		__le64 chan_id      : NNP_IPC_CHANNEL_BITS;
 		__le64 resID       : NNP_IPC_INF_DEVRES_BITS;
 		__le64 reserved    : 32;
 	};
@@ -142,15 +143,18 @@ CHECK_MESSAGE_SIZE(union h2c_ChanMarkInferenceResource, 1);
 union h2c_ChanInferenceCopyOp {
 	struct {
 		__le64 opcode     :  6;  /* NNP_IPC_H2C_OP_CHAN_COPY_OP */
-		__le64 chanID     : NNP_IPC_CHANNEL_BITS;
+		__le64 chan_id     : NNP_IPC_CHANNEL_BITS;
 		__le64 protResID  : 16;
 		__le64 protCopyID : 16;
 		__le64 d2d        :  1;
 		__le64 c2h        :  1; /* if d2d = 0, c2h defines the copy direction */
 		__le64 destroy    :  1;
 		__le64 hostres    : NNP_IPC_DMA_PFN_BITS;
-		__le64 subres_copy : 1;
-		__le64 reserved2  : 18;
+		__le32 subres_copy   : 1;
+		/* data for peer to peer operation: */
+		__le32 peerChanID    : NNP_IPC_CHANNEL_BITS; /* if d2d=1, contextID of the destination resource */
+		__le32 peerProtResID : 16; /* if d2d=1, destination device resource ID */
+		__le32 peerDevID     : 5; /* if d2d=1, destication device ID */
 	};
 
 	__le64 value[2];
@@ -160,7 +164,7 @@ CHECK_MESSAGE_SIZE(union h2c_ChanInferenceCopyOp, 2);
 union h2c_ChanInferenceSchedCopy {
 	struct {
 		__le64 opcode     : 6;  /* NNP_IPC_H2C_OP_CHAN_SCHEDULE_COPY */
-		__le64 chanID     : NNP_IPC_CHANNEL_BITS;
+		__le64 chan_id     : NNP_IPC_CHANNEL_BITS;
 		__le64 protCopyID : 16;
 		__le64 copySize   : 30;
 		__le64 priority   : 2;  /* TBD: change back to 3 in new proto */
@@ -173,7 +177,7 @@ CHECK_MESSAGE_SIZE(union h2c_ChanInferenceSchedCopy, 1);
 union h2c_ChanInferenceSchedCopyLarge {
 	struct {
 		__le64 opcode     : 6;  /* NNP_IPC_H2C_OP_CHAN_SCHEDULE_COPY_LARGE */
-		__le64 chanID     : NNP_IPC_CHANNEL_BITS;
+		__le64 chan_id     : NNP_IPC_CHANNEL_BITS;
 		__le64 protCopyID : 16;
 		__le64 priority   : 8;  /* TBD: change back to 3 in new proto */
 		__le64 reserved   : 24;
@@ -188,9 +192,9 @@ CHECK_MESSAGE_SIZE(union h2c_ChanInferenceSchedCopyLarge, 2);
 union h2c_ChanInferenceSchedCopySubres {
 	struct {
 		__le64 opcode     : 6;  /* NNP_IPC_H2C_OP_CHAN_SCHEDULE_COPY_SUBRES */
-		__le64 chanID     : NNP_IPC_CHANNEL_BITS;
+		__le64 chan_id     : NNP_IPC_CHANNEL_BITS;
 		__le64 protCopyID : 16;
-		__le64 hostresID  : 16;
+		__le64 hostres_id  : 16;
 		__le64 copySize   : 16;
 		__le64 dstOffset  : 64;
 	};
@@ -202,9 +206,9 @@ CHECK_MESSAGE_SIZE(union h2c_ChanInferenceSchedCopySubres, 2);
 union h2c_ChanInferenceNetworkOp {
 	struct {
 		__le64 opcode        : 6; /* NNP_IPC_H2C_OP_CHAN_INF_NETWORK */
-		__le64 chanID        : NNP_IPC_CHANNEL_BITS;
+		__le64 chan_id        : NNP_IPC_CHANNEL_BITS;
 		__le64 netID         : NNP_IPC_INF_DEVNET_BITS;
-		__le64 rbID          : 1;
+		__le64 rb_id          : 1;
 		__le64 destroy       : 1;
 		__le64 create        : 1;
 		__le64 num_res       :24;
@@ -223,11 +227,11 @@ CHECK_MESSAGE_SIZE(union h2c_ChanInferenceNetworkOp, 2);
 union h2c_ChanInferenceReqOp {
 	struct {
 		__le64 opcode            :  6; /* NNP_IPC_H2C_OP_CHAN_INF_REQ_OP */
-		__le64 chanID            : NNP_IPC_CHANNEL_BITS;
+		__le64 chan_id            : NNP_IPC_CHANNEL_BITS;
 		__le64 netID             : NNP_IPC_INF_DEVNET_BITS;
 		__le64 infreqID          : NNP_IPC_INF_REQ_BITS;
 		__le64 size              : 12;
-		__le64 rbID              :  1;
+		__le64 rb_id              :  1;
 		__le64 destroy           :  1;
 		__le64 reserved1         :  2;
 	};
@@ -239,7 +243,7 @@ CHECK_MESSAGE_SIZE(union h2c_ChanInferenceReqOp, 1);
 union h2c_ChanInferenceReqSchedule {
 	struct {
 		__le64 opcode            :  6; /* NNP_IPC_H2C_OP_CHAN_SCHEDULE_INF_REQ */
-		__le64 chanID            : NNP_IPC_CHANNEL_BITS;
+		__le64 chan_id            : NNP_IPC_CHANNEL_BITS;
 		__le64 netID             : NNP_IPC_INF_DEVNET_BITS;
 		__le64 infreqID          : NNP_IPC_INF_REQ_BITS;
 		__le64 reserved          : 16;
@@ -260,7 +264,7 @@ CHECK_MESSAGE_SIZE(union h2c_ChanInferenceReqSchedule, 2);
 union h2c_ChanSync {
 	struct {
 		__le64 opcode      : 6; /* NNP_IPC_H2C_OP_CHAN_SYNC */
-		__le64 chanID      : NNP_IPC_CHANNEL_BITS;
+		__le64 chan_id      : NNP_IPC_CHANNEL_BITS;
 		__le32 syncSeq     : 16;
 		__le64 reserved    : 32;
 	};
@@ -272,7 +276,7 @@ CHECK_MESSAGE_SIZE(union h2c_ChanSync, 1);
 union h2c_ChanInferenceNetworkSetProperty {
 	struct {
 		__le64 opcode        : 6; /* NNP_IPC_H2C_OP_CHAN_NETWORK_PROPERTY */
-		__le64 chanID        : NNP_IPC_CHANNEL_BITS;
+		__le64 chan_id        : NNP_IPC_CHANNEL_BITS;
 		__le64 netID         : NNP_IPC_INF_DEVNET_BITS;
 		__le64 timeout       : 32;
 		__le64 property	  : 32;
@@ -288,7 +292,7 @@ union h2c_ChanInferenceCmdListOp {
 		__le64 opcode      :  6;  /* NNP_IPC_H2C_OP_CHAN_INF_CMDLIST or
 					* NNP_IPC_H2C_OP_CHAN_SCHEDULE_CMDLIST
 					*/
-		__le64 chanID      : NNP_IPC_CHANNEL_BITS;
+		__le64 chan_id      : NNP_IPC_CHANNEL_BITS;
 		__le64 cmdID       : NNP_IPC_INF_CMDS_BITS;
 		__le64 destroy     :  1;
 		__le64 is_first    :  1;
@@ -305,7 +309,7 @@ CHECK_MESSAGE_SIZE(union h2c_ChanInferenceCmdListOp, 1);
 union h2c_ExecErrorList {
 	struct {
 		__le64 opcode      : 6; /* NNP_IPC_H2C_OP_CHAN_EXEC_ERROR_LIST */
-		__le64 chanID      : NNP_IPC_CHANNEL_BITS;
+		__le64 chan_id      : NNP_IPC_CHANNEL_BITS;
 		__le64 cmdID       : NNP_IPC_INF_CMDS_BITS;
 		__le64 cmdID_valid : 1;
 		__le64 clear       : 1;
@@ -319,7 +323,7 @@ CHECK_MESSAGE_SIZE(union h2c_ExecErrorList, 1);
 union h2c_ChanEthernetConfig {
 	struct {
 		__le64 opcode      :  6; /* NNP_IPC_H2C_OP_CHAN_ETH_CONFIG */
-		__le64 chanID      : NNP_IPC_CHANNEL_BITS;
+		__le64 chan_id      : NNP_IPC_CHANNEL_BITS;
 		__le64 reserved    : 16;
 		__le64 card_ip     : 32;
 
@@ -334,7 +338,7 @@ CHECK_MESSAGE_SIZE(union h2c_ChanEthernetConfig, 2);
 union h2c_ChanEthernetMsgDscr {
 	struct {
 		__le64 opcode      :  6; /* NNP_IPC_H2C_OP_CHAN_ETH_MSG_DSCR */
-		__le64 chanID      : NNP_IPC_CHANNEL_BITS;
+		__le64 chan_id      : NNP_IPC_CHANNEL_BITS;
 		__le64 size        : 12;
 		__le64 skb_handle : NNP_NET_SKB_HANDLE_BITS;
 		__le64 is_ack      :  1;
@@ -349,8 +353,8 @@ CHECK_MESSAGE_SIZE(union h2c_ChanEthernetMsgDscr, 1);
 union c2h_ChanRingBufUpdate {
 	struct {
 		__le64 opcode		: 6; /* NNP_IPC_C2H_OP_CHANNEL_RB_UPDATE */
-		__le64 chanID              : NNP_IPC_CHANNEL_BITS;
-		__le64 rbID                :  1;
+		__le64 chan_id              : NNP_IPC_CHANNEL_BITS;
+		__le64 rb_id                :  1;
 		__le64 reserved            : 15;
 		__le32 size                : 32;
 	};
@@ -362,8 +366,8 @@ CHECK_MESSAGE_SIZE(union c2h_ChanRingBufUpdate, 1);
 union c2h_ChanGenericMessaging {
 	struct {
 		__le64 opcode          :  6; /* NNP_IPC_C2H_OP_CHAN_GENERIC_MSG_PACKET */
-		__le64 chanID          : NNP_IPC_CHANNEL_BITS;
-		__le64 rbID            :  1;
+		__le64 chan_id          : NNP_IPC_CHANNEL_BITS;
+		__le64 rb_id            :  1;
 		__le64 size            : 12;
 		__le64 connect         :  1;
 		__le64 no_such_service :  1;
@@ -379,8 +383,8 @@ CHECK_MESSAGE_SIZE(union c2h_ChanGenericMessaging, 1);
 union c2h_ChanServiceListMsg {
 	struct {
 		__le64 opcode           :  6;   /* NNP_IPC_C2H_OP_CHAN_SERVICE_LIST */
-		__le64 chanID           : NNP_IPC_CHANNEL_BITS;
-		__le64 rbID             :  1;
+		__le64 chan_id           : NNP_IPC_CHANNEL_BITS;
+		__le64 rb_id             :  1;
 		__le64 failure          :  3;   /* 0=Valid 1=DmaFailed 2=PullFull 3=TooBig */
 		__le64 size             : 12;
 		__le64 num_services     : 32;
@@ -393,7 +397,7 @@ CHECK_MESSAGE_SIZE(union c2h_ChanServiceListMsg, 1);
 union c2h_ChanSyncDone {
 	struct {
 		__le64 opcode      : 6; /* NNP_IPC_C2H_OP_CHAN_SYNC_DONE */
-		__le64 chanID      : NNP_IPC_CHANNEL_BITS;
+		__le64 chan_id      : NNP_IPC_CHANNEL_BITS;
 		__le32 syncSeq     : 16;
 		__le64 reserved    : 32;
 	};
@@ -405,7 +409,7 @@ CHECK_MESSAGE_SIZE(union c2h_ChanSyncDone, 1);
 union c2h_ChanInfReqFailed {
 	struct {
 		__le64 opcode      : 6; /* NNP_IPC_C2H_OP_CHAN_INFREQ_FAILED */
-		__le64 chanID      : NNP_IPC_CHANNEL_BITS;
+		__le64 chan_id      : NNP_IPC_CHANNEL_BITS;
 		__le64 netID       : NNP_IPC_INF_DEVNET_BITS;
 		__le64 infreqID    : NNP_IPC_INF_REQ_BITS;
 		__le64 cmdID       : NNP_IPC_INF_CMDS_BITS;
@@ -421,12 +425,12 @@ CHECK_MESSAGE_SIZE(union c2h_ChanInfReqFailed, 2);
 union c2h_ExecErrorList {
 	struct {
 		__le64 opcode      : 6; /* NNP_IPC_C2H_OP_CHAN_EXEC_ERROR_LIST */
-		__le64 chanID      : NNP_IPC_CHANNEL_BITS;
+		__le64 chan_id      : NNP_IPC_CHANNEL_BITS;
 		__le64 cmdID       : NNP_IPC_INF_CMDS_BITS;
 		__le64 cmdID_valid : 1;
 		__le64 clear_status: 2;
 		__le64 pkt_size    : 12;
-		__le64 total_size  : 16;  /* total buffer size of error eventVal if is_error */
+		__le64 total_size  : 16;  /* total buffer size of error event_val if is_error */
 		__le64 is_error    : 1;
 	};
 
@@ -437,7 +441,7 @@ CHECK_MESSAGE_SIZE(union c2h_ExecErrorList, 1);
 union c2h_ChanEthernetConfig {
 	struct {
 		__le64 opcode      :  6; /* NNP_IPC_C2H_OP_CHAN_ETH_CONFIG */
-		__le64 chanID      : NNP_IPC_CHANNEL_BITS;
+		__le64 chan_id      : NNP_IPC_CHANNEL_BITS;
 		__le64 reserved    : 16;
 		__le64 card_ip	: 32;
 	};
@@ -449,7 +453,7 @@ CHECK_MESSAGE_SIZE(union c2h_ChanEthernetConfig, 1);
 union c2h_ChanEthernetMsgDscr {
 	struct {
 		__le64 opcode      :  6; /* NNP_IPC_C2H_OP_CHAN_ETH_MSG_DSCR */
-		__le64 chanID      : NNP_IPC_CHANNEL_BITS;
+		__le64 chan_id      : NNP_IPC_CHANNEL_BITS;
 		__le64 size        : 12;
 		__le64 skb_handle	: NNP_NET_SKB_HANDLE_BITS;
 		__le64 is_ack      :  1;
@@ -463,7 +467,7 @@ CHECK_MESSAGE_SIZE(union c2h_ChanEthernetMsgDscr, 1);
 union h2c_ChanHwTraceAddResource {
 	struct {
 		__le64 opcode          : 6;  /* NNP_IPC_H2C_OP_CHAN_HWTRACE_ADD_RESOURCE */
-		__le64 chanID          : NNP_IPC_CHANNEL_BITS;
+		__le64 chan_id          : NNP_IPC_CHANNEL_BITS;
 		__le64 mapID           : 16;
 		__le64 resourceIndex   : 8;  /* resource index */
 		__le64 resource_size   : 32;
@@ -477,7 +481,7 @@ CHECK_MESSAGE_SIZE(union h2c_ChanHwTraceAddResource, 2);
 union c2h_ChanHwTraceState {
 	struct {
 		__le64 opcode		: 6;  /* NNP_IPC_C2H_OP_CHAN_HWTRACE_STATE */
-		__le64 chanID              : NNP_IPC_CHANNEL_BITS;
+		__le64 chan_id              : NNP_IPC_CHANNEL_BITS;
 		__le64 subOpcode		: 5;
 		__le64 val1		: 32;
 		__le64 val2		: 8;
@@ -493,7 +497,7 @@ CHECK_MESSAGE_SIZE(union c2h_ChanHwTraceState, 2);
 union h2c_ChanHwTraceState {
 	struct {
 		__le64 opcode		: 6;  /* NNP_IPC_H2C_OP_CHAN_HWTRACE_STATE */
-		__le64 chanID              : NNP_IPC_CHANNEL_BITS;
+		__le64 chan_id              : NNP_IPC_CHANNEL_BITS;
 		__le64 reserved		: 11;
 		__le64 subOpcode		: 5;
 		__le64 val			: 32;
@@ -506,7 +510,7 @@ CHECK_MESSAGE_SIZE(union h2c_ChanHwTraceState, 1);
 union h2c_ChanGetCrFIFO {
 	struct {
 		__le64 opcode      : 6;  /* NNP_IPC_H2C_OP_CHAN_GET_CR_FIFO */
-		__le64 chanID      : NNP_IPC_CHANNEL_BITS;
+		__le64 chan_id      : NNP_IPC_CHANNEL_BITS;
 		__le64 p2p_tr_id   : 16;
 		__le64 peer_id     : 5;
 		__le64 fw_fifo     : 1;/* fw fifo or relase fifo */
@@ -520,7 +524,7 @@ CHECK_MESSAGE_SIZE(union h2c_ChanGetCrFIFO, 1);
 union h2c_ChanConnectPeers {
 	struct {
 		__le64 opcode      : 6;  /* NNP_IPC_H2C_OP_CHAN_P2P_CONNECT_PEERS */
-		__le64 chanID      : NNP_IPC_CHANNEL_BITS;
+		__le64 chan_id      : NNP_IPC_CHANNEL_BITS;
 		__le64 p2p_tr_id   : 16;
 		__le64 buf_id      : 8;
 		__le64 is_src_buf  : 1;
@@ -536,7 +540,7 @@ CHECK_MESSAGE_SIZE(union h2c_ChanGetCrFIFO, 1);
 union h2c_ChanUpdatePeerDev {
 	struct {
 		__le64 opcode		: 6;  /* NNP_IPC_H2C_OP_CHAN_P2P_UPDATE_PEER_DEV */
-		__le64 chanID		: NNP_IPC_CHANNEL_BITS;
+		__le64 chan_id		: NNP_IPC_CHANNEL_BITS;
 		__le64 p2p_tr_id		: 16;
 		__le64 dev_id		: 5;
 		__le64 is_producer		: 1;
@@ -552,7 +556,7 @@ CHECK_MESSAGE_SIZE(union h2c_ChanUpdatePeerDev, 3);
 union h2c_ChanTraceUserData {
 	struct {
 		__le64 opcode		: 6;  /* NNP_IPC_H2C_OP_CHAN_TRACE_USER_DATA */
-		__le64 chanID		: NNP_IPC_CHANNEL_BITS;
+		__le64 chan_id		: NNP_IPC_CHANNEL_BITS;
 		__le64 key			: USER_DATA_MAX_KEY_SIZE * 8;
 
 		__le64 user_data;
@@ -572,10 +576,15 @@ enum InfContextObjType {
 	INF_OBJ_TYPE_INVALID_OBJ_TYPE = 99
 };
 
+enum CopyCmdUserHandleMsgType {
+	COPY_USER_HANDLE_TYPE_COPY = 0,
+	COPY_USER_HANDLE_TYPE_HOSTRES = 1
+};
+
 union h2c_ChanIdsMap {
 	struct {
 		__le64 opcode		: 6;  /* NNP_IPC_H2C_OP_CHAN_IDS_MAP */
-		__le64 chanID		: NNP_IPC_CHANNEL_BITS;
+		__le64 chan_id		: NNP_IPC_CHANNEL_BITS;
 		__le64 objType		: 16; //InfContextObjType
 		__le64 val1		: NNP_IPC_INF_DEVNET_BITS;
 		__le64 val2		: NNP_IPC_INF_DEVNET_BITS;

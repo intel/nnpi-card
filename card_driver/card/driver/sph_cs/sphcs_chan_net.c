@@ -5,8 +5,35 @@
  ********************************************/
 
 #include "sphcs_chan_net.h"
-#include "dma_page_pool.h"
+#include "sphcs_cmd_chan.h"
 
+#if NNPI_DISABLE_SSH
+void IPC_OPCODE_HANDLER(CHAN_ETH_CONFIG)(struct sphcs                 *sphcs,
+					 union h2c_ChanEthernetConfig *cmd)
+{
+	struct sphcs_cmd_chan *chan;
+	union c2h_ChanEthernetConfig msg;
+
+	chan = sphcs_find_channel(sphcs, cmd->chan_id);
+	if (!chan)
+		return;
+
+	msg.value = 0;
+	msg.opcode = NNP_IPC_C2H_OP_CHAN_ETH_CONFIG;
+	msg.chan_id = chan->protocol_id;
+	sphcs_msg_scheduler_queue_add_msg(chan->respq,
+					  &msg.value,
+					  sizeof(msg) / sizeof(u64));
+	sphcs_cmd_chan_put(chan);
+}
+
+void IPC_OPCODE_HANDLER(CHAN_ETH_MSG_DSCR)(struct sphcs              *sphcs,
+					   union h2c_ChanEthernetMsgDscr *cmd)
+{
+}
+#else
+
+#include "dma_page_pool.h"
 #include "sphcs_cs.h"
 #include "nnp_debug.h"
 #include "sph_log.h"
@@ -14,7 +41,6 @@
 #include <linux/netdevice.h>
 #include <linux/version.h>
 #include <linux/kmod.h>
-#include "sphcs_cmd_chan.h"
 #include "sph_safe.h"
 
 struct net_dma_command_data {
@@ -101,7 +127,7 @@ static int sphcs_net_out_msg_dma_complete_callback(struct sphcs *sphcs,
 
 	msg.value = 0;
 	msg.opcode = NNP_IPC_C2H_OP_CHAN_ETH_MSG_DSCR;
-	msg.chanID = dma_data->chan->protocolID;
+	msg.chan_id = dma_data->chan->protocol_id;
 	msg.size = dma_data->xfer_size - 1;
 	msg.skb_handle = dma_data->host_skb_handle;
 
@@ -310,7 +336,7 @@ static void sphcs_net_dev_exit(void)
 
 /*
  * The packet has been retrieved from the transmission
- * medium. Build an skb around it, so upper layers can handle it
+ * medium. build an skb around it, so upper layers can handle it
  */
 static void sphcs_net_dev_rx(struct net_device *netdev, int data_size,
 		unsigned char *buf)
@@ -344,7 +370,7 @@ static void sphcs_net_send_ack(struct sphcs_cmd_chan *cmd_chan, int skb_handle)
 
 	msg.value = 0;
 	msg.opcode = NNP_IPC_C2H_OP_CHAN_ETH_MSG_DSCR;
-	msg.chanID = cmd_chan->protocolID;
+	msg.chan_id = cmd_chan->protocol_id;
 	msg.skb_handle = skb_handle;
 	msg.is_ack = 1;
 
@@ -463,7 +489,7 @@ void IPC_OPCODE_HANDLER(CHAN_ETH_MSG_DSCR)(struct sphcs              *sphcs,
 	struct netmsg_op_work *work;
 	struct sphcs_cmd_chan *chan;
 
-	chan = sphcs_find_channel(sphcs, cmd->chanID);
+	chan = sphcs_find_channel(sphcs, cmd->chan_id);
 	if (!chan)
 		return;
 
@@ -557,7 +583,7 @@ static void config_card_eth(struct work_struct *work)
 
 	msg.value = 0;
 	msg.opcode = NNP_IPC_C2H_OP_CHAN_ETH_CONFIG;
-	msg.chanID = op->chan->protocolID;
+	msg.chan_id = op->chan->protocol_id;
 	if (op->cmd.card_ip && ret == 0)
 		msg.card_ip = op->cmd.card_ip;
 
@@ -581,7 +607,7 @@ void IPC_OPCODE_HANDLER(CHAN_ETH_CONFIG)(struct sphcs                 *sphcs,
 	struct sphcs_cmd_chan *chan;
 	union c2h_ChanEthernetConfig msg;
 
-	chan = sphcs_find_channel(sphcs, cmd->chanID);
+	chan = sphcs_find_channel(sphcs, cmd->chan_id);
 	if (!chan)
 		return;
 
@@ -600,9 +626,11 @@ void IPC_OPCODE_HANDLER(CHAN_ETH_CONFIG)(struct sphcs                 *sphcs,
 fail:
 	msg.value = 0;
 	msg.opcode = NNP_IPC_C2H_OP_CHAN_ETH_CONFIG;
-	msg.chanID = chan->protocolID;
+	msg.chan_id = chan->protocol_id;
 	sphcs_msg_scheduler_queue_add_msg(chan->respq,
 					  &msg.value,
 					  sizeof(msg) / sizeof(u64));
 	sphcs_cmd_chan_put(chan);
 }
+
+#endif // of if NNPI_DISABLE_SSH

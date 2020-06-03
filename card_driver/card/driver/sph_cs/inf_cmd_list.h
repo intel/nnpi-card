@@ -18,7 +18,7 @@ struct inf_context;
 struct inf_cmd_list {
 	void                *magic;
 	struct kref          ref;
-	uint16_t             protocolID;
+	uint16_t             protocol_id;
 	uint64_t             user_handle;
 	struct inf_context  *context;
 	struct hlist_node    hash_node;
@@ -43,7 +43,7 @@ struct inf_cmd_list {
 	struct list_head     devres_id_ranges;
 };
 
-int inf_cmd_create(uint16_t              protocolID,
+int inf_cmd_create(uint16_t              protocol_id,
 		   struct inf_context   *context,
 		   struct inf_cmd_list **out_cmd);
 void destroy_cmd_on_create_failed(struct inf_cmd_list *cmd);

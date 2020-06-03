@@ -254,12 +254,12 @@ TRACE_EVENT(SPH_TRACE_DMA,
 );
 
 TRACE_EVENT(SPH_TRACE_INF_CREATE,
-	TP_PROTO(u32 command, u32 ctxId, u32 id, u8 state, int obj1, int obj2),
+	TP_PROTO(u8 command, u16 ctxId, u16 id, u8 state, int obj1, int obj2),
 	TP_ARGS(command, ctxId, id, state, obj1, obj2),
 	NNP_TP_STRUCT__entry(
-			__field(u32, command)
-			__field(u32, ctxId)
-			__field(u32, id)
+			__field(u8, command)
+			__field(u16, ctxId)
+			__field(u16, id)
 			__field(int, obj1)
 			__field(int, obj2)
 			__field(u8, state)
@@ -279,6 +279,44 @@ TRACE_EVENT(SPH_TRACE_INF_CREATE,
 		  __entry->obj1,
 		  __entry->obj2,
 		  sph_trace_op_to_str[__entry->state])
+);
+
+TRACE_EVENT(SPH_TRACE_COPY_CREATE,
+	TP_PROTO(bool c2h, bool p2p, u16 ctxId, u16 copyID, u8 state, u16 devresID, u16 hostresMapID, u16 p2pDevresID, u16 p2pCtxID, u8 p2pDevID),
+	TP_ARGS(c2h, p2p, ctxId, copyID, state, devresID, hostresMapID, p2pDevresID, p2pCtxID, p2pDevID),
+	NNP_TP_STRUCT__entry(
+			__field(bool, c2h)
+			__field(bool, p2p)
+			__field(u16, ctxId)
+			__field(u16, copyID)
+			__field(u16, devresID)
+			__field(u16, hostresMapID)
+			__field(u16, p2pDevresID)
+			__field(u16, p2pCtxID)
+			__field(u8, p2pDevID)
+			__field(u8, state)
+	),
+	NNP_TP_fast_assign(
+			__entry->c2h = c2h;
+			__entry->p2p = p2p;
+			__entry->ctxId = ctxId;
+			__entry->copyID = copyID;
+			__entry->state = state;
+			__entry->devresID = devresID;
+			__entry->hostresMapID = hostresMapID;
+			__entry->p2pDevresID = p2pDevresID;
+			__entry->p2pCtxID = p2pCtxID;
+			__entry->p2pDevID = p2pDevID;
+	),
+	NNP_TP_printk("command=create_%s state=%s ctxID=%u copyID=%u devresID=%u res2ID=%u p2pCtxID=%d p2pDevID=%d",
+		  (__entry->p2p ? SPH_TRACE_STR_P2P_COPY_HANDLE : (__entry->c2h ? SPH_TRACE_STR_C2H_COPY_HANDLE : SPH_TRACE_STR_H2C_COPY_HANDLE)),
+		  sph_trace_op_to_str[__entry->state],
+		  __entry->ctxId,
+		  __entry->copyID,
+		  __entry->devresID,
+		  (__entry->p2p ? __entry->p2pDevresID : __entry->hostresMapID),
+		  (__entry->p2p ? __entry->p2pCtxID    : -1),
+		  (__entry->p2p ? __entry->p2pDevID    : -1))
 );
 
 TRACE_EVENT(SPH_TRACE_USER_DATA,

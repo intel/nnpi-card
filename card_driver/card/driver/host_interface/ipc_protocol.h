@@ -14,10 +14,13 @@
 #include "ipc_c2h_events.h"
 #include "nnp_inbound_mem.h"
 
-#define CHECK_MESSAGE_SIZE(t, nQW) NNP_STATIC_ASSERT(sizeof(t) == sizeof(__le64)*(nQW), "Size of " #t " Does not match!!")
+#define CHECK_MESSAGE_SIZE(t, n_qw) \
+	NNP_STATIC_ASSERT(sizeof(t) == sizeof(__le64) * (n_qw), \
+			  "Size of " #t " Does not match!!")
 #else
-#define CHECK_MESSAGE_SIZE(t, nQW)
+#define CHECK_MESSAGE_SIZE(t, n_qw)
 #define NNP_STATIC_ASSERT(cond, msg)
+#define BIT(x) (1u << (x))
 #endif
 
 #define IPC_OP_MAX 64
@@ -32,9 +35,10 @@
 #ifndef NNP_PAGE_SHIFT
 #define NNP_PAGE_SHIFT 12
 #endif
-#define NNP_PAGE_SIZE (1<<NNP_PAGE_SHIFT)
+#define NNP_PAGE_SIZE BIT(NNP_PAGE_SHIFT)
 
-NNP_STATIC_ASSERT(NNP_PAGE_SHIFT <= PAGE_SHIFT, "NNP_PAGE_SIZE is bigger than PAGE_SIZE");
+NNP_STATIC_ASSERT(NNP_PAGE_SHIFT <= PAGE_SHIFT,
+		  "NNP_PAGE_SIZE is bigger than PAGE_SIZE");
 
 #define NNP_VERSION_MAJOR(ver) (((ver) >> 10) & 0x1f)
 #define NNP_VERSION_MINOR(ver) (((ver) >> 5) & 0x1f)
@@ -45,21 +49,24 @@ NNP_STATIC_ASSERT(NNP_PAGE_SHIFT <= PAGE_SHIFT, "NNP_PAGE_SIZE is bigger than PA
 
 #define NNP_IPC_PROTOCOL_VERSION NNP_MAKE_VERSION(4, 0, 0)
 
-#define NNP_IPC_DMA_PFN_BITS    45   /* number of bits for dma physical address in the protocol */
-#define NNP_DMA_ADDR_ALIGN_BITS NNP_PAGE_SHIFT  /* number of zero LSBs in dma physical address */
-#define NNP_IPC_DMA_PFN_MASK              (((1ULL) << NNP_IPC_DMA_PFN_BITS) - 1)
-#define NNP_IPC_DMA_ADDR_ALIGN_MASK       (((1ULL) << NNP_DMA_ADDR_ALIGN_BITS) - 1)
-#define NNP_IPC_DMA_ADDR_TO_PFN(dma_adr)  (((dma_adr) >> NNP_DMA_ADDR_ALIGN_BITS) & NNP_IPC_DMA_PFN_MASK)
-#define NNP_IPC_DMA_PFN_TO_ADDR(dma_pfn)  (((__le64)(dma_pfn)) << NNP_DMA_ADDR_ALIGN_BITS)
+#define NNP_IPC_DMA_PFN_BITS    45   /* size of physical address in protocol */
+#define NNP_DMA_ADDR_ALIGN_BITS NNP_PAGE_SHIFT
+#define NNP_IPC_DMA_PFN_MASK         (((1ULL) << NNP_IPC_DMA_PFN_BITS) - 1)
+#define NNP_IPC_DMA_ADDR_ALIGN_MASK    \
+	(((1ULL) << NNP_DMA_ADDR_ALIGN_BITS) - 1)
+#define NNP_IPC_DMA_ADDR_TO_PFN(dma_adr)  \
+	(((dma_adr) >> NNP_DMA_ADDR_ALIGN_BITS) & NNP_IPC_DMA_PFN_MASK)
+#define NNP_IPC_DMA_PFN_TO_ADDR(dma_pfn)  \
+	(((__le64)(dma_pfn)) << NNP_DMA_ADDR_ALIGN_BITS)
 
-#define NNP_IPC_INF_CONTEXT_BITS 8  /* number of bits in protocol for inference context ID */
-#define NNP_IPC_CHANNEL_BITS  10     /* number of bits in protocol for channel ID */
-#define NNP_IPC_MAX_CHANNEL_RINGBUFS 2 /* maximum number of data ring buffers for each channel (per-direction) */
+#define NNP_IPC_INF_CONTEXT_BITS 8
+#define NNP_IPC_CHANNEL_BITS     10
+#define NNP_IPC_MAX_CHANNEL_RB   2
 
 #pragma pack(push, 1)
 
 /***************************************************************************
- * Structures used inside data packets transfered in the protocol
+ * Structures used inside data packets transferred in the protocol
  ***************************************************************************/
 struct dma_chain_header {
 	__le64 dma_next;
@@ -68,103 +75,133 @@ struct dma_chain_header {
 	__le64 size;
 };
 
-#define DMA_CHAIN_ENTRY_NPAGES_BITS (sizeof(__le64) * __CHAR_BIT__ - NNP_IPC_DMA_PFN_BITS)
-#define NNP_MAX_CHUNK_SIZE (((1lu << DMA_CHAIN_ENTRY_NPAGES_BITS) - 1) << NNP_PAGE_SHIFT)
+#define DMA_CHAIN_ENTRY_NPAGES_BITS \
+	(sizeof(__le64) * __CHAR_BIT__ - NNP_IPC_DMA_PFN_BITS)
+#define NNP_MAX_CHUNK_SIZE \
+	(((1lu << DMA_CHAIN_ENTRY_NPAGES_BITS) - 1) << NNP_PAGE_SHIFT)
+
 struct dma_chain_entry {
 	__le64 dma_chunk_pfn  : NNP_IPC_DMA_PFN_BITS;
 	__le64 n_pages        : DMA_CHAIN_ENTRY_NPAGES_BITS;
 };
 
-#define NENTS_PER_PAGE ((NNP_PAGE_SIZE - sizeof(struct dma_chain_header)) / sizeof(struct dma_chain_entry))
+#define NENTS_PER_PAGE ((NNP_PAGE_SIZE - sizeof(struct dma_chain_header)) / \
+			sizeof(struct dma_chain_entry))
 
 /***************************************************************************
  * IPC messages layout definition
  ***************************************************************************/
-union c2h_QueryVersionReplyMsg {
+/* NNP_IPC_C2H_OP_QUERY_VERSION_REPLY */
+union c2h_query_version_reply_msg {
 	struct {
-		__le64 opcode          :  6;  /* NNP_IPC_C2H_OP_QUERY_VERSION_REPLY */
-		__le64 protocolVersion : 16;
-		__le64 fwVersion       : 16;
-		__le64 chanProtocolVer : 16;
+		__le64 opcode          :  6;
+		__le64 protocolversion : 16;
+		__le64 fw_version       : 16;
+		__le64 chan_protocol_ver : 16;
 		__le64 reserved        : 10;
 	};
 
 	__le64 value;
 };
-CHECK_MESSAGE_SIZE(union c2h_QueryVersionReplyMsg, 1);
 
-union c2h_QueryVersionReply2Msg {
+CHECK_MESSAGE_SIZE(union c2h_query_version_reply_msg, 1);
+
+/* NNP_IPC_C2H_OP_QUERY_VERSION_REPLY2 */
+union c2h_query_version_reply2_msg {
 	struct {
-		__le64 opcode          :  6;  /* NNP_IPC_C2H_OP_QUERY_VERSION_REPLY2 */
-		__le64 protocolVersion : 16;
-		__le64 fwVersion       : 16;
-		__le64 chanProtocolVer : 16;
+		__le64 opcode          :  6;
+		__le64 protocolversion : 16;
+		__le64 fw_version       : 16;
+		__le64 chan_protocol_ver : 16;
 		__le64 reserved        : 10;
 
-		__le64 chanRespOpSize  : 64; /* two bits for each possible response opcode specifying its size */
+		/*
+		 * two bits for each possible response opcode
+		 * specifying its size
+		 */
+		__le64 chan_resp_op_size  : 64;
 	};
 
 	__le64 value[2];
 };
-CHECK_MESSAGE_SIZE(union c2h_QueryVersionReply2Msg, 2);
 
-union c2h_QueryVersionReply3Msg {
+CHECK_MESSAGE_SIZE(union c2h_query_version_reply2_msg, 2);
+
+/* NNP_IPC_C2H_OP_QUERY_VERSION_REPLY3 */
+union c2h_query_version_reply3_msg {
 	struct {
-		__le64 opcode          :  6;  /* NNP_IPC_C2H_OP_QUERY_VERSION_REPLY3 */
-		__le64 protocolVersion : 16;
-		__le64 fwVersion       : 16;
-		__le64 chanProtocolVer : 16;
+		__le64 opcode          :  6;
+		__le64 protocolversion : 16;
+		__le64 fw_version       : 16;
+		__le64 chan_protocol_ver : 16;
 		__le64 reserved        : 10;
 
-		__le64 chanRespOpSize  : 64; /* two bits for each possible response opcode specifying its size */
-		__le64 chanCmdOpSize   : 64; /* two bits for each possible command opcode specifying its size */
+		/*
+		 * two bits for each possible response opcode
+		 * specifying its size
+		 */
+		__le64 chan_resp_op_size  : 64;
+
+		/*
+		 * two bits for each possible command opcode
+		 * specifying its size
+		 */
+		__le64 chan_cmd_op_size   : 64;
 	};
 
 	__le64 value[3];
 };
-CHECK_MESSAGE_SIZE(union c2h_QueryVersionReply3Msg, 3);
 
-union c2h_EventReport {
+CHECK_MESSAGE_SIZE(union c2h_query_version_reply3_msg, 3);
+
+/* NNP_IPC_C2H_OP_EVENT_REPORT */
+union c2h_event_report {
 	struct {
-		__le32 opcode     :  6;  /* NNP_IPC_C2H_OP_EVENT_REPORT */
-		__le32 eventCode  :  7;
-		__le32 contextID  : NNP_IPC_INF_CONTEXT_BITS;
-		__le32 objID      : 16;//devres, infreq, copy
-		__le32 objID_2    : 16;//devnet, cmdlist
-		__le32 eventVal   :  8;
-		__le32 ctxValid   :  1;
-		__le32 objValid   :  1;
-		__le32 objValid_2 :  1;
+		__le32 opcode     :  6;
+		__le32 event_code  :  7;
+		__le32 context_id  : NNP_IPC_INF_CONTEXT_BITS;
+		__le32 obj_id      : 16;/* devres, infreq, copy */
+		__le32 obj_id_2    : 16;/* devnet, cmdlist */
+		__le32 event_val   :  8;
+		__le32 ctx_valid   :  1;
+		__le32 obj_valid   :  1;
+		__le32 obj_valid_2 :  1;
 	};
 	__le64 value;
 };
-CHECK_MESSAGE_SIZE(union c2h_EventReport, 1);
 
-union c2h_SysInfo {
+CHECK_MESSAGE_SIZE(union c2h_event_report, 1);
+
+/* NNP_IPC_C2H_OP_SYS_INFO */
+union c2h_sys_info {
 	struct {
-		__le64 opcode          :  6; /* NNP_IPC_C2H_OP_SYS_INFO */
+		__le64 opcode          :  6;
 		__le64 reserved        :  58;
 	};
 
 	__le64 value;
 };
-CHECK_MESSAGE_SIZE(union c2h_SysInfo, 1);
 
-union h2c_QueryVersionMsg {
+CHECK_MESSAGE_SIZE(union c2h_sys_info, 1);
+
+/* NNP_IPC_H2C_OP_QUERY_VERSION */
+union h2c_query_version_msg {
 	struct {
-		__le64 opcode     :  6;   /* NNP_IPC_H2C_OP_QUERY_VERSION */
+		__le64 opcode     :  6;
 		__le64 reserved   : 58;
 	};
 
 	__le64 value;
 };
-CHECK_MESSAGE_SIZE(union h2c_QueryVersionMsg, 1);
+
+CHECK_MESSAGE_SIZE(union h2c_query_version_msg, 1);
 
 #define NNP_NET_RESPONSE_POOL_INDEX 0
 
+/* NNP_IPC_H2C_OP_SETUP_CRASH_DUMP */
 union h2c_setup_crash_dump_msg {
 	struct {
-		__le64 opcode    :  6;   /* NNP_IPC_H2C_OP_SETUP_CRASH_DUMP */
+		__le64 opcode    :  6;
 		__le64 reserved  :  13;
 		/*dma_addr of the first page*/
 		__le64 dma_addr  : NNP_IPC_DMA_PFN_BITS;
@@ -173,23 +210,27 @@ union h2c_setup_crash_dump_msg {
 
 	__le64 value[2];
 };
+
 CHECK_MESSAGE_SIZE(union h2c_setup_crash_dump_msg, 2);
 
+/* NNP_IPC_H2C_OP_SETUP_SYS_INFO_PAGE */
 union h2c_setup_sys_info_page {
 	struct {
-		__le64 opcode    :  6;   /* NNP_IPC_H2C_OP_SETUP_SYS_INFO_PAGE */
+		__le64 opcode    :  6;
 		__le64 reserved  :  13;
 		__le64 dma_addr  : NNP_IPC_DMA_PFN_BITS;
 	};
 
 	__le64 value;
 };
+
 CHECK_MESSAGE_SIZE(union h2c_setup_sys_info_page, 1);
 
-union h2c_ChannelOp {
+/* NNP_IPC_H2C_OP_CHANNEL_OP */
+union h2c_channel_op {
 	struct {
-		__le64 opcode         :  6;  /* NNP_IPC_H2C_OP_CHANNEL_OP */
-		__le64 protocolID     : NNP_IPC_CHANNEL_BITS;
+		__le64 opcode         :  6;
+		__le64 protocol_id     : NNP_IPC_CHANNEL_BITS;
 		__le64 destroy        :  1;
 		__le64 reserved       : 14;
 		__le64 privileged     :  1;
@@ -198,55 +239,63 @@ union h2c_ChannelOp {
 
 	__le64 value;
 };
-CHECK_MESSAGE_SIZE(union h2c_ChannelOp, 1);
 
-union h2c_ChannelDataRingbufOp {
+CHECK_MESSAGE_SIZE(union h2c_channel_op, 1);
+
+/* NNP_IPC_H2C_OP_CHANNEL_RB_OP */
+union h2c_channel_data_ringbuf_op {
 	struct {
-		__le64 opcode         :  6;  /* NNP_IPC_H2C_OP_CHANNEL_RB_OP */
-		__le64 chanID         : NNP_IPC_CHANNEL_BITS;
+		__le64 opcode         :  6;
+		__le64 chan_id         : NNP_IPC_CHANNEL_BITS;
 		__le64 h2c            :  1;
-		__le64 rbID           :  1;
+		__le64 rb_id           :  1;
 		__le64 destroy        :  1;
-		__le64 hostPtr        : NNP_IPC_DMA_PFN_BITS;
+		__le64 host_ptr        : NNP_IPC_DMA_PFN_BITS;
 	};
 
 	__le64 value;
 };
-CHECK_MESSAGE_SIZE(union h2c_ChannelDataRingbufOp, 1);
 
-union h2c_ChannelHostresOp {
+CHECK_MESSAGE_SIZE(union h2c_channel_data_ringbuf_op, 1);
+
+/* NNP_IPC_H2C_OP_CHANNEL_HOSTRES_OP */
+union h2c_channel_hostres_op {
 	struct {
-		__le64 opcode         :  6;  /* NNP_IPC_H2C_OP_CHANNEL_HOSTRES_OP */
-		__le64 chanID         : NNP_IPC_CHANNEL_BITS;
-		__le64 hostresID      : 16;
+		__le64 opcode         :  6;
+		__le64 chan_id         : NNP_IPC_CHANNEL_BITS;
+		__le64 hostres_id      : 16;
 		__le64 unmap          :  1;
 		__le64 reserved       : 31;
 
-		__le64 hostPtr        : NNP_IPC_DMA_PFN_BITS;
+		__le64 host_ptr        : NNP_IPC_DMA_PFN_BITS;
 		__le64 reserved2      : 19;
 	};
 
 	__le64 value[2];
 };
-CHECK_MESSAGE_SIZE(union h2c_ChannelHostresOp, 2);
 
-union h2c_P2PDev {
+CHECK_MESSAGE_SIZE(union h2c_channel_hostres_op, 2);
+
+/* NNP_IPC_H2C_OP_P2P_DEV */
+union h2c_p2_pdev {
 	struct {
-		__le64 opcode		: 6;  /* NNP_IPC_H2C_OP_P2P_DEV */
+		__le64 opcode		: 6;
 		__le64 destroy		: 1;
 		__le64 dev_id		: 5;
-		__le64 is_producer		: 1;
+		__le64 is_producer	: 1;
 		__le64 db_addr		: 57;
 		__le64 cr_fifo_addr	: NNP_IPC_DMA_PFN_BITS;
 		__le64 reserved		: 13;
 	};
 	__le64 value[2];
 };
-CHECK_MESSAGE_SIZE(union h2c_P2PDev, 2);
 
-union h2c_PeerBuf {
+CHECK_MESSAGE_SIZE(union h2c_p2_pdev, 2);
+
+/* NNP_IPC_H2C_OP_PEER_BUF */
+union h2c_peer_buf {
 	struct {
-		__le64 opcode     :  6;  /* NNP_IPC_H2C_OP_PEER_BUF */
+		__le64 opcode     :  6;
 		__le64 buf_id     :  5;
 		__le64 is_src_buf :  1;
 		__le64 dev_id     :  5;
@@ -257,11 +306,13 @@ union h2c_PeerBuf {
 
 	__le64 value;
 };
-CHECK_MESSAGE_SIZE(union h2c_PeerBuf, 1);
 
-union h2c_GetCrFIFO {
+CHECK_MESSAGE_SIZE(union h2c_peer_buf, 1);
+
+/* SPH_IPC_H2C_GET_CR_FIFO */
+union h2c_get_cr_fifo {
 	struct {
-		__le64 opcode      : 6;  /* SPH_IPC_H2C_GET_CR_FIFO */
+		__le64 opcode      : 6;
 		__le64 tr_id       : 8;
 		__le64 peer_id     : 5;
 		__le64 fw_fifo     : 1;/* fw fifo or relase fifo */
@@ -270,11 +321,13 @@ union h2c_GetCrFIFO {
 
 	__le64 value;
 };
-CHECK_MESSAGE_SIZE(union h2c_GetCrFIFO, 1);
 
-union ClockStampMsg { //QUERY TIME
+CHECK_MESSAGE_SIZE(union h2c_get_cr_fifo, 1);
+
+/* NNP_IPC_H2C_OP_CLOCK_STAMP */
+union clock_stamp_msg {
 	struct {
-		__u8 opcode : 6; /* NNP_IPC_H2C_OP_CLOCK_STAMP */
+		__u8 opcode : 6;
 		__u8 unused : 2;
 		__u8 i_type[7];
 		__le64 i_clock;
@@ -282,7 +335,8 @@ union ClockStampMsg { //QUERY TIME
 
 	__le64 value[2];
 };
-CHECK_MESSAGE_SIZE(union ClockStampMsg, 2);
+
+CHECK_MESSAGE_SIZE(union clock_stamp_msg, 2);
 
 /***************************************************************************
  * IPC messages opcodes and related utility macros
@@ -339,19 +393,22 @@ enum nnp_bios_h2c_msg_types {
 	NNP_IPC_H2C_TYPE_SYSTEM_INFO_REQ   = 0x11
 };
 
+/* NNP_IPC_C2H_OP_BIOS_PROTOCOL */
 union nnp_bios_ipc_header {
 	struct {
-		__le64 opcode       :  6;  // NNP_IPC_C2H_OP_BIOS_PROTOCOL
+		__le64 opcode       :  6;
 		__le64 reserved1    :  2;
-		__le64 msgType      :  8;  // bios message type
-		__le64 size         : 16;  // message size in bytes
+		__le64 msg_type      :  8;  /* bios message type */
+		__le64 size         : 16;  /* message size in bytes */
 		__le64 reserved2    : 32;
 	};
 
 	__le64 value;
 };
+
 CHECK_MESSAGE_SIZE(union nnp_bios_ipc_header, 1);
 
+/* BIOS Revision Identification Specification, Rev. 2.0, 01/30/2015 */
 struct nnp_c2h_bios_version {
 	__le16 board_id[7];
 	__le16 board_rev;
@@ -368,66 +425,68 @@ struct nnp_c2h_bios_version {
 };
 
 struct nnp_c2h_bios_fw_ver_ack_data {
-	__le32  CodeMinor   : 16;
-	__le32  CodeMajor   : 16;
-	__le32  CodeBuildNo : 16;
-	__le32  CodeHotFix  : 16;
-	__le32  RcvyMinor   : 16;
-	__le32  RcvyMajor   : 16;
-	__le32  RcvyBuildNo : 16;
-	__le32  RcvyHotFix  : 16;
-	__le32  FitcMinor   : 16;
-	__le32  FitcMajor   : 16;
-	__le32  FitcBuildNo : 16;
-	__le32  FitcHotFix  : 16;
+	__le32  code_minor   : 16;
+	__le32  code_major   : 16;
+	__le32  code_build_no : 16;
+	__le32  code_hot_fix  : 16;
+	__le32  rcvyminor   : 16;
+	__le32  rcvymajor   : 16;
+	__le32  rcvybuildno : 16;
+	__le32  rcvy_hot_fix  : 16;
+	__le32  fitc_minor   : 16;
+	__le32  fitc_major   : 16;
+	__le32  fitcbuildno : 16;
+	__le32  fitc_hot_fix  : 16;
 };
 
 struct nnp_c2h_fw_version {
-	__le16  Major;
-	__le16  Minor;
-	__le16  Hotfix;
-	__le16  Build;
+	__le16  major;
+	__le16  minor;
+	__le16  hotfix;
+	__le16  build;
 };
 
 struct nnp_c2h_cpu_info {
-	__le32 CpuFamily;      // for SPH = LceLake AIPG = 0x000906D0
-	__u8  CpuStepping;    // CPU Stepping
-	__u8  CpuSku;         // CPU SKU
-	__le16 CpuDid;         // for SPH range 0x4580-0x45FF (depends on CPU SKU)
-	__le16 CpuCoreCount;   // Number of enabled cores
-	__le16 CpuThreadCount; // Number of threads
+	__le32 cpu_family;      /* for SPH = LceLake AIPG = 0x000906D0 */
+	__u8  cpu_stepping;    /* CPU Stepping */
+	__u8  cpu_sku;         /* CPU SKU */
+	__le16 cpu_did;         /* for SPH range 0x4580-0x45FF */
+	__le16 cpu_core_count;   /* Number of enabled cores */
+	__le16 cpu_thread_count; /* Number of threads */
 };
 
 struct nnp_c2h_ice_info {
-	__le16 IceCount;
-	__le32 IceAvaliableMask;
+	__le16 ice_count;
+	__le32 ice_available_mask;
 };
 
 struct nnp_c2h_system_info {
-	__u8  Version; // SPH_SYSTEM_INFO structure version
-	__le16 BoardID; // Board identification- for SPH RVP = 0x25
-	__u8  FabID;   // Board Revision identification
-	__u8  BomID;   // Board Bill Of Material identification
-	__u8  PlatformType;   // For SPH RVP= 0x2, SPH M.2 = 0x3
-	__u8  PlatformFlavor; // For SPH = 0x5- Embedded
-	struct nnp_c2h_cpu_info CpuInfo; // CPU Information
-	struct nnp_c2h_ice_info IceInfo; // ICE Information
-	struct nnp_c2h_bios_version BiosVer; // BIOS version string - BIOS Revision Identification Specification", Rev. 2.0, 01/30/2015
-	//PcodeRevision; // Pcode revision information
-	struct nnp_c2h_bios_fw_ver_ack_data CsmeVersion;
-	struct nnp_c2h_fw_version PmcVersion;
+	__u8  version; /* SPH_SYSTEM_INFO structure version */
+	__le16 board_id; /* Board identification- for SPH RVP = 0x25 */
+	__u8  fab_id;   /* Board Revision identification */
+	__u8  bom_id;   /* Board Bill Of Material identification */
+	__u8  platform_type;   /* For SPH RVP= 0x2, SPH M.2 = 0x3 */
+	__u8  platform_flavor; /* For SPH = 0x5- Embedded */
+	struct nnp_c2h_cpu_info cpu_info; /* CPU Information */
+	struct nnp_c2h_ice_info ice_info; /* ICE Information */
+	struct nnp_c2h_bios_version bios_ver; /* BIOS version string */
+	struct nnp_c2h_bios_fw_ver_ack_data csme_version;
+	struct nnp_c2h_fw_version pmc_version;
 };
 
 /*
  * this is the structure needed to be sent to the command h/w q when
  * a boot or bios image is loaded and ready in memory
  */
-union h2c_BootImageReady {
+union h2c_boot_image_ready {
 	struct {
-		__le64 opcode          :  6;  // NNP_IPC_C2H_OP_BIOS_PROTOCOL
+		/* NNP_IPC_C2H_OP_BIOS_PROTOCOL */
+		__le64 opcode          :  6;
 		__le64 reserved1       :  2;
-		__le64 msgType         :  8;  // NNP_IPC_H2C_TYPE_BOOT_IMAGE_READY
-		__le64 size            : 16;  // message size in bytes
+		/* NNP_IPC_H2C_TYPE_BOOT_IMAGE_READY */
+		__le64 msg_type         :  8;
+		/* message size in bytes */
+		__le64 size            : 16;
 		__le64 reserved2       : 32;
 		__le64 descriptor_addr : 64;
 		__le32 descriptor_size : 32;
@@ -436,14 +495,18 @@ union h2c_BootImageReady {
 
 	__le64 value[3];
 };
-CHECK_MESSAGE_SIZE(union h2c_BootImageReady, 3);
 
-union h2c_BiosSystemInfoReq {
+CHECK_MESSAGE_SIZE(union h2c_boot_image_ready, 3);
+
+union h2c_bios_system_info_req {
 	struct {
-		__le64 opcode          :  6;  // NNP_IPC_C2H_OP_BIOS_PROTOCOL
+		/* NNP_IPC_C2H_OP_BIOS_PROTOCOL */
+		__le64 opcode          :  6;
 		__le64 reserved1       :  2;
-		__le64 msgType         :  8;  // NNP_IPC_H2C_TYPE_SYSTEM_INFO_REQ
-		__le64 size            : 16;  // message size in bytes
+		/* NNP_IPC_H2C_TYPE_SYSTEM_INFO_REQ */
+		__le64 msg_type         :  8;
+		/* message size in bytes */
+		__le64 size            : 16;
 		__le64 reserved2       : 32;
 		__le64 sysinfo_addr    : 64;
 		__le32 sysinfo_size    : 32;
@@ -452,9 +515,11 @@ union h2c_BiosSystemInfoReq {
 
 	__le64 value[3];
 };
-CHECK_MESSAGE_SIZE(union h2c_BiosSystemInfoReq, 3);
 
-#define NNP_BIOS_VERSION_LEN    (sizeof(struct nnp_c2h_bios_version) / sizeof(__le16))
+CHECK_MESSAGE_SIZE(union h2c_bios_system_info_req, 3);
+
+#define NNP_BIOS_VERSION_LEN    (sizeof(struct nnp_c2h_bios_version) / \
+				 sizeof(__le16))
 #define NNP_BOARD_NAME_LEN      72
 #define NNP_IMAGE_VERSION_LEN   128
 #define NNP_PRD_SERIAL_LEN      16
@@ -468,8 +533,8 @@ struct nnp_sys_info {
 	char prd_serial[NNP_PRD_SERIAL_LEN];
 	char brd_part_no[NNP_PART_NUM_LEN];
 	__le16  fpga_rev;
-	__le64 totalUnprotectedMemory;
-	__le64 totalEccMemory;
+	__le64 total_unprotected_memory;
+	__le64 total_ecc_memory;
 	__u8 stepping;
 };
 
@@ -477,21 +542,21 @@ struct nnp_sys_info {
  * Define header structure for all "channel" message protocols.
  * This protocol defines communication between host UMD and card.
  **************************************************/
-union h2c_ChanMsgHeader {
+union h2c_chan_msg_header {
 	struct {
 		__le64 opcode		: 6;
-		__le64 chanID              : NNP_IPC_CHANNEL_BITS;
-		__le64 reserved            : 48;
+		__le64 chan_id           : NNP_IPC_CHANNEL_BITS;
+		__le64 reserved         : 48;
 	};
 
 	__le64 value;
 };
 
-union c2h_ChanMsgHeader {
+union c2h_chan_msg_header {
 	struct {
 		__le64 opcode		: 6;
-		__le64 chanID              : NNP_IPC_CHANNEL_BITS;
-		__le64 reserved            : 48;
+		__le64 chan_id           : NNP_IPC_CHANNEL_BITS;
+		__le64 reserved         : 48;
 	};
 
 	__le64 value;

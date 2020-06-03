@@ -69,46 +69,46 @@ static void *p2p_heap_handle;
 #endif
 
 void sphcs_send_event_report(struct sphcs *sphcs,
-			     uint16_t eventCode,
-			     uint16_t eventVal,
+			     uint16_t event_code,
+			     uint16_t event_val,
 			     struct msg_scheduler_queue *respq,
-			     int contextID,
-			     int objID)
+			     int context_id,
+			     int obj_id)
 {
 	sphcs_send_event_report_ext(sphcs,
-				    eventCode,
-				    eventVal,
+				    event_code,
+				    event_val,
 				    respq,
-				    contextID,
-				    objID,
+				    context_id,
+				    obj_id,
 				    -1);
 }
 
 void sphcs_send_event_report_ext(struct sphcs *sphcs,
-				 uint16_t eventCode,
-				 uint16_t eventVal,
+				 uint16_t event_code,
+				 uint16_t event_val,
 				 struct msg_scheduler_queue *respq,
-				 int contextID,
-				 int objID_1,
-				 int objID_2)
+				 int context_id,
+				 int obj_id_1,
+				 int obj_id_2)
 {
-	union c2h_EventReport event;
+	union c2h_event_report event;
 
 	event.value = 0;
 	event.opcode = NNP_IPC_C2H_OP_EVENT_REPORT;
-	event.eventCode = eventCode;
-	event.eventVal = eventVal;
-	if (contextID >= 0) {
-		event.contextID = contextID;
-		event.ctxValid = 1;
+	event.event_code = event_code;
+	event.event_val = event_val;
+	if (context_id >= 0) {
+		event.context_id = context_id;
+		event.ctx_valid = 1;
 	}
-	if (objID_1 >= 0) {
-		event.objID = objID_1;
-		event.objValid = 1;
+	if (obj_id_1 >= 0) {
+		event.obj_id = obj_id_1;
+		event.obj_valid = 1;
 	}
-	if (objID_2 >= 0) {
-		event.objID_2 = objID_2;
-		event.objValid_2 = 1;
+	if (obj_id_2 >= 0) {
+		event.obj_id_2 = obj_id_2;
+		event.obj_valid_2 = 1;
 	}
 
 	log_c2h_event("Sending event", &event);
@@ -121,9 +121,9 @@ void sphcs_send_event_report_ext(struct sphcs *sphcs,
 
 static void IPC_OPCODE_HANDLER(QUERY_VERSION)(
 				struct sphcs *sphcs,
-				union h2c_QueryVersionMsg *msg)
+				union h2c_query_version_msg *msg)
 {
-	union c2h_QueryVersionReply3Msg replyMsg;
+	union c2h_query_version_reply3_msg replyMsg;
 	u64 msg_size;
 
 	replyMsg.value[0] = 0;
@@ -131,21 +131,21 @@ static void IPC_OPCODE_HANDLER(QUERY_VERSION)(
 	replyMsg.value[2] = 0;
 	// respond with the driver and protocol versions
 	replyMsg.opcode = NNP_IPC_C2H_OP_QUERY_VERSION_REPLY3;
-	replyMsg.protocolVersion = NNP_IPC_PROTOCOL_VERSION;
-	replyMsg.chanProtocolVer = NNP_IPC_CHAN_PROTOCOL_VERSION;
+	replyMsg.protocolversion = NNP_IPC_PROTOCOL_VERSION;
+	replyMsg.chan_protocol_ver = NNP_IPC_CHAN_PROTOCOL_VERSION;
 
-	/* Build the channel protocol opcode sizes vec */
+	/* build the channel protocol opcode sizes vec */
 	#define C2H_OPCODE(name, val, type)   /*SPH_IGNORE_STYLE_CHECK*/      \
 		msg_size = sizeof(type)/sizeof(u64);                          \
-		replyMsg.chanRespOpSize |= (msg_size << 2*(val-32));
+		replyMsg.chan_resp_op_size |= (msg_size << 2*(val-32));
 
 	#include "ipc_chan_c2h_opcodes.h"
 	#undef C2H_OPCODE
 
-	/* Build the channel protocol opcode sizes vec */
+	/* build the channel protocol opcode sizes vec */
 	#define H2C_OPCODE(name, val, type)   /*SPH_IGNORE_STYLE_CHECK*/      \
 		msg_size = sizeof(type)/sizeof(u64);                          \
-		replyMsg.chanCmdOpSize |= (msg_size << 2*(val-32));
+		replyMsg.chan_cmd_op_size |= (msg_size << 2*(val-32));
 
 	#include "ipc_chan_h2c_opcodes.h"
 	#undef H2C_OPCODE
@@ -181,7 +181,7 @@ static void IPC_OPCODE_HANDLER(SETUP_SYS_INFO_PAGE)(
 
 #define CLOCK_STAMP_TYPE_STR_SIZE 7
 static void IPC_OPCODE_HANDLER(CLOCK_STAMP)(struct sphcs *sphcs,
-					    union ClockStampMsg *cmd)
+					    union clock_stamp_msg *cmd)
 {
 	char type_str[CLOCK_STAMP_TYPE_STR_SIZE+1];
 	int i;
@@ -193,7 +193,7 @@ static void IPC_OPCODE_HANDLER(CLOCK_STAMP)(struct sphcs *sphcs,
 	DO_TRACE(trace_clock_stamp(type_str, cmd->i_clock));
 }
 
-struct sphcs_cmd_chan *sphcs_find_channel(struct sphcs *sphcs, uint16_t protocolID)
+struct sphcs_cmd_chan *sphcs_find_channel(struct sphcs *sphcs, uint16_t protocol_id)
 {
 	struct sphcs_cmd_chan *chan;
 
@@ -201,8 +201,8 @@ struct sphcs_cmd_chan *sphcs_find_channel(struct sphcs *sphcs, uint16_t protocol
 	hash_for_each_possible(sphcs->cmd_chan_hash,
 			       chan,
 			       hash_node,
-			       protocolID)
-		if (chan->protocolID == protocolID) {
+			       protocol_id)
+		if (chan->protocol_id == protocol_id) {
 			sphcs_cmd_chan_get(chan);
 			NNP_SPIN_UNLOCK_BH(&sphcs->lock_bh);
 			return chan;
@@ -212,7 +212,7 @@ struct sphcs_cmd_chan *sphcs_find_channel(struct sphcs *sphcs, uint16_t protocol
 	return NULL;
 }
 
-int find_and_destroy_channel(struct sphcs *sphcs, uint16_t protocolID)
+int find_and_destroy_channel(struct sphcs *sphcs, uint16_t protocol_id)
 {
 	struct sphcs_cmd_chan *iter, *chan = NULL;
 	int i;
@@ -221,8 +221,8 @@ int find_and_destroy_channel(struct sphcs *sphcs, uint16_t protocolID)
 	hash_for_each_possible(sphcs->cmd_chan_hash,
 			       iter,
 			       hash_node,
-			       protocolID)
-		if (iter->protocolID == protocolID) {
+			       protocol_id)
+		if (iter->protocol_id == protocol_id) {
 			chan = iter;
 			break;
 		}
@@ -268,7 +268,7 @@ static void destroy_all_channels(struct sphcs *sphcs)
 			      hash_node) {
 			if (!chan->destroyed) {
 				NNP_SPIN_UNLOCK_BH(&sphcs->lock_bh);
-				find_and_destroy_channel(sphcs, chan->protocolID);
+				find_and_destroy_channel(sphcs, chan->protocol_id);
 				found = true;
 				break;
 			}
@@ -279,7 +279,7 @@ static void destroy_all_channels(struct sphcs *sphcs)
 
 struct channel_op_work {
 	struct work_struct  work;
-	union h2c_ChannelOp cmd;
+	union h2c_channel_op cmd;
 };
 
 static void channel_op_work_handler(struct work_struct *work)
@@ -294,14 +294,14 @@ static void channel_op_work_handler(struct work_struct *work)
 	int ret;
 
 	if (op->cmd.destroy) {
-		ret = find_and_destroy_channel(sphcs, op->cmd.protocolID);
+		ret = find_and_destroy_channel(sphcs, op->cmd.protocol_id);
 		if (unlikely(ret < 0)) {
 			event = NNP_IPC_DESTROY_CHANNEL_FAILED;
 			val = NNP_IPC_NO_SUCH_CHANNEL;
 			goto send_error;
 		}
 	} else {
-		chan = sphcs_find_channel(sphcs, op->cmd.protocolID);
+		chan = sphcs_find_channel(sphcs, op->cmd.protocol_id);
 		if (unlikely(chan != NULL)) {
 			sphcs_cmd_chan_put(chan);
 			event = NNP_IPC_CREATE_CHANNEL_FAILED;
@@ -309,7 +309,7 @@ static void channel_op_work_handler(struct work_struct *work)
 			goto send_error;
 		}
 
-		val = sphcs_cmd_chan_create(op->cmd.protocolID,
+		val = sphcs_cmd_chan_create(op->cmd.protocol_id,
 					    op->cmd.uid,
 					    op->cmd.privileged ? true : false,
 					    &chan);
@@ -323,20 +323,20 @@ static void channel_op_work_handler(struct work_struct *work)
 					0,
 					NULL,
 					-1,
-					op->cmd.protocolID);
+					op->cmd.protocol_id);
 	}
 
 	goto done;
 
 send_error:
-	sphcs_send_event_report(sphcs, event, val, NULL, -1, op->cmd.protocolID);
+	sphcs_send_event_report(sphcs, event, val, NULL, -1, op->cmd.protocol_id);
 done:
 	kfree(op);
 }
 
 static void IPC_OPCODE_HANDLER(CHANNEL_OP)(
 			struct sphcs        *sphcs,
-			union h2c_ChannelOp *cmd)
+			union h2c_channel_op *cmd)
 {
 	struct channel_op_work *work;
 	uint8_t event;
@@ -352,7 +352,7 @@ static void IPC_OPCODE_HANDLER(CHANNEL_OP)(
 					NNP_IPC_NO_MEMORY,
 					NULL,
 					-1,
-					cmd->protocolID);
+					cmd->protocol_id);
 		return;
 	}
 
@@ -408,7 +408,7 @@ static int sphcs_process_messages(struct sphcs *sphcs, u64 *hw_msg, u32 hw_size)
 	 * loop for each message
 	 */
 	do {
-		int opCode = ((union h2c_QueryVersionMsg *)&msg[j])->opcode;
+		int op_code = ((union h2c_query_version_msg *)&msg[j])->opcode;
 		u32 msg_size = 0;
 		int partial_msg = 0;
 
@@ -429,13 +429,13 @@ static int sphcs_process_messages(struct sphcs *sphcs, u64 *hw_msg, u32 hw_size)
 			HANDLE_COMMAND(name, type);                                  \
 			break;
 
-		switch(opCode) {
+		switch (op_code) {
 		#include "ipc_chan_h2c_opcodes.h"
 		case H2C_OPCODE_NAME(QUERY_VERSION):
-			HANDLE_COMMAND(QUERY_VERSION, union h2c_QueryVersionMsg);
+			HANDLE_COMMAND(QUERY_VERSION, union h2c_query_version_msg);
 			break;
 		case H2C_OPCODE_NAME(CLOCK_STAMP):
-			HANDLE_COMMAND(CLOCK_STAMP, union ClockStampMsg);
+			HANDLE_COMMAND(CLOCK_STAMP, union clock_stamp_msg);
 			break;
 		case H2C_OPCODE_NAME(SETUP_CRASH_DUMP):
 			HANDLE_COMMAND(SETUP_CRASH_DUMP, union h2c_setup_crash_dump_msg);
@@ -444,13 +444,13 @@ static int sphcs_process_messages(struct sphcs *sphcs, u64 *hw_msg, u32 hw_size)
 			HANDLE_COMMAND(SETUP_SYS_INFO_PAGE, union h2c_setup_sys_info_page);
 			break;
 		case H2C_OPCODE_NAME(CHANNEL_OP):
-			HANDLE_COMMAND(CHANNEL_OP, union h2c_ChannelOp);
+			HANDLE_COMMAND(CHANNEL_OP, union h2c_channel_op);
 			break;
 		case H2C_OPCODE_NAME(CHANNEL_RB_OP):
-			HANDLE_COMMAND(CHANNEL_RB_OP, union h2c_ChannelDataRingbufOp);
+			HANDLE_COMMAND(CHANNEL_RB_OP, union h2c_channel_data_ringbuf_op);
 			break;
 		case H2C_OPCODE_NAME(CHANNEL_HOSTRES_OP):
-			HANDLE_COMMAND(CHANNEL_HOSTRES_OP, union h2c_ChannelHostresOp);
+			HANDLE_COMMAND(CHANNEL_HOSTRES_OP, union h2c_channel_hostres_op);
 			break;
 		default:
 			/* Should not happen! */
@@ -531,9 +531,9 @@ static void sphcs_delayed_reset(struct work_struct *work)
 static int handle_mce_event(struct notifier_block *nb, unsigned long val, void *data)
 {
 	struct mce *mce = (struct mce *)data;
-	union c2h_EventReport event;
-	uint16_t eventVal;
-	uint16_t eventCode = 0;
+	union c2h_event_report event;
+	uint16_t event_val;
+	uint16_t event_code = 0;
 	int is_ecc_err;
 
 	/*
@@ -544,11 +544,11 @@ static int handle_mce_event(struct notifier_block *nb, unsigned long val, void *
 		     ((mce->status & 0xeff0) == 0x0010) ||
 		     ((mce->status & 0xef00) == 0x0100);
 
-	eventVal = is_ecc_err;
+	event_val = is_ecc_err;
 
 	/* Uncorrected Error */
 	if (mce->status & MCI_STATUS_UC) {
-		eventCode = NNP_IPC_ERROR_MCE_UNCORRECTABLE;
+		event_code = NNP_IPC_ERROR_MCE_UNCORRECTABLE;
 
 		/* check if error in kernel space then report fatal ECC event and reset the device
 		 * if error in userspace and processor context is not corrupted,
@@ -563,13 +563,13 @@ static int handle_mce_event(struct notifier_block *nb, unsigned long val, void *
 				     mce->status,
 				     mce->addr,
 				     mce->misc);
-			eventCode = NNP_IPC_ERROR_MCE_UNCORRECTABLE_FATAL;
+			event_code = NNP_IPC_ERROR_MCE_UNCORRECTABLE_FATAL;
 
 			/* report event to host */
 			event.value = 0;
 			event.opcode = NNP_IPC_C2H_OP_EVENT_REPORT;
-			event.eventCode = eventCode;
-			event.eventVal = eventVal;
+			event.event_code = event_code;
+			event.event_val = event_val;
 			if (g_the_sphcs->host_doorbell_val != 0)
 				g_the_sphcs->hw_ops->write_mesg(g_the_sphcs->hw_handle,
 								&event.value,
@@ -597,8 +597,8 @@ static int handle_mce_event(struct notifier_block *nb, unsigned long val, void *
 		/* report event to host */
 		event.value = 0;
 		event.opcode = NNP_IPC_C2H_OP_EVENT_REPORT;
-		event.eventCode = eventCode;
-		event.eventVal = eventVal;
+		event.event_code = event_code;
+		event.event_val = event_val;
 		if (g_the_sphcs->host_doorbell_val != 0)
 			g_the_sphcs->hw_ops->write_mesg(g_the_sphcs->hw_handle,
 							&event.value,
@@ -613,10 +613,10 @@ static int handle_mce_event(struct notifier_block *nb, unsigned long val, void *
 
 		SPH_SW_COUNTER_ATOMIC_INC(g_nnp_sw_counters,
 					  SPHCS_SW_COUNTERS_ECC_CORRECTABLE_ERROR);
-		eventCode = NNP_IPC_ERROR_MCE_CORRECTABLE;
+		event_code = NNP_IPC_ERROR_MCE_CORRECTABLE;
 
 		/* report event to host */
-		sphcs_send_event_report(g_the_sphcs, eventCode, eventVal, NULL, -1, -1);
+		sphcs_send_event_report(g_the_sphcs, event_code, event_val, NULL, -1, -1);
 	}
 
 	return NOTIFY_OK;
@@ -688,7 +688,7 @@ static int host_page_list_dma_completed(struct sphcs *sphcs, void *ctx, const vo
 	dma_addr_t dma_src_addr;
 	uint64_t total_entries_bytes = 0;
 	int i, res = 0;
-	enum event_val eventVal = NNP_IPC_NO_ERROR;
+	enum event_val event_val = NNP_IPC_NO_ERROR;
 	uint32_t start_offset = 0;
 
 	if (unlikely(status == SPHCS_DMA_STATUS_FAILED)) {
@@ -696,7 +696,7 @@ static int host_page_list_dma_completed(struct sphcs *sphcs, void *ctx, const vo
 		sph_log_err(CREATE_COMMAND_LOG, "FATAL: line:%u DMA of host page list number %u failed with status=%d\n",
 				__LINE__, dma_req_data->pages_count, status);
 		res = -EFAULT;
-		eventVal = NNP_IPC_DMA_ERROR;
+		event_val = NNP_IPC_DMA_ERROR;
 		goto done;
 	}
 
@@ -710,7 +710,7 @@ static int host_page_list_dma_completed(struct sphcs *sphcs, void *ctx, const vo
 		res = sg_alloc_table(host_sgt, chain_header->total_nents, GFP_KERNEL);
 		if (unlikely(res < 0)) {
 			sph_log_err(CREATE_COMMAND_LOG, "FATAL: line:%u err=%d failed to allocate sg_table\n",  __LINE__, res);
-			eventVal = NNP_IPC_NO_MEMORY;
+			event_val = NNP_IPC_NO_MEMORY;
 			goto done;
 		}
 		dma_req_data->sgl_curr = &(host_sgt->sgl[0]);
@@ -787,7 +787,7 @@ static int host_page_list_dma_completed(struct sphcs *sphcs, void *ctx, const vo
 							sizeof(dma_req_data));
 		if (unlikely(res < 0)) {
 			sph_log_err(CREATE_COMMAND_LOG, "FATAL: line: %u err=%d failed to sched dma\n", __LINE__, res);
-			eventVal = NNP_IPC_NO_MEMORY;
+			event_val = NNP_IPC_NO_MEMORY;
 			goto done;
 		}
 	} else {
@@ -799,13 +799,13 @@ static int host_page_list_dma_completed(struct sphcs *sphcs, void *ctx, const vo
 	return res;
 
 done:
-	if (eventVal != 0) {
+	if (event_val != 0) {
 		if (dma_req_data->pages_count != 0)
 			sg_free_table(host_sgt);
 	}
 
 	dma_req_data->completion_cb(dma_req_data->cb_ctx,
-				    eventVal,
+				    event_val,
 				    host_sgt,
 				    dma_req_data->total_size);
 

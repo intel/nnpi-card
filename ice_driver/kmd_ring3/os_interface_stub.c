@@ -308,17 +308,21 @@ void release_firmware(const struct firmware *fw) {
 */
 static int cve_interrupt_handler(int irq)
 {
-	//u32 id = *((u32*)dev_id);
-	int do_call_dpc;
-	//struct cve_device *dev = cve_device_get(id);
+	int do_call_dpc = 0;
+	struct idc_device *idc_dev;
 
 	//cve_os_log(CVE_LOGLEVEL_ERROR, "Got interrupt from cve_id: %d\n", id);
 	cve_os_lock(&g_cve_driver_biglock, CVE_NON_INTERRUPTIBLE);
-	do_call_dpc = cve_di_interrupt_handler(&idc_os_device->idc_dev);
+	if (idc_os_device) {
+		idc_dev = &idc_os_device->idc_dev;
+		do_call_dpc = cve_di_interrupt_handler(idc_dev);
+	} else {
+		assert(!ice_di_is_driver_active());
+	}
 	cve_os_unlock(&g_cve_driver_biglock);
 
 	if (do_call_dpc) {
-		cve_di_interrupt_handler_deferred_proc(&idc_os_device->idc_dev);
+		cve_di_interrupt_handler_deferred_proc(idc_dev);
 	}
 	return 0;
 }
@@ -549,8 +553,6 @@ void cve_os_interface_cleanup(void)
 {
 	u32 i, active_ice;
 
-	ice_di_deactivate_driver();
-
 	cve_dg_stop_poweroff_thread();
 
 	active_ice = (~icemask) & VALID_ICE_MASK;
@@ -559,10 +561,14 @@ void cve_os_interface_cleanup(void)
 		CVE_CLEAR_BIT(active_ice, i);
 
 		struct cve_device *dev = &idc_os_device->idc_dev.cve_dev[i];
+
 		cve_device_clean(dev);
 	}
 
+	cve_os_lock(&g_cve_driver_biglock, CVE_NON_INTERRUPTIBLE);
 	OS_FREE(idc_os_device, sizeof(struct cve_os_device));
+	idc_os_device = NULL;
+	cve_os_unlock(&g_cve_driver_biglock);
 
 	cve_os_timer_remove(m_timer_desc);
 }

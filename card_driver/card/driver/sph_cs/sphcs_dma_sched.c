@@ -329,12 +329,20 @@ static inline int convert_dma_sched_prio_to_hw(u32 prio)
 	}
 }
 
+static int sphcs_dma_sched_xfer_complete_int(struct sphcs_dma_sched *dmaSched,
+					     int channel,
+					     enum sphcs_dma_direction dma_direction,
+					     int status,
+					     int recovery_action,
+					     u32 xferTimeUS);
+
 /* submit dma request to hw layer */
 
-static void start_request(struct sphcs_dma_sched *dmaSched,
-			  struct sphcs_dma_req *req,
-			  u32 hw_channel)
+static int start_request(struct sphcs_dma_sched *dmaSched,
+			 struct sphcs_dma_req *req,
+			 u32 hw_channel)
 {
+	int ret = 0;
 
 	req->status = 0;
 
@@ -344,35 +352,37 @@ static void start_request(struct sphcs_dma_sched *dmaSched,
 	switch (req->direction) {
 	case SPHCS_DMA_DIRECTION_CARD_TO_HOST:
 		if (req->size) {
-			dmaSched->hw_ops->start_xfer_c2h_single(dmaSched->hw_handle,
-								hw_channel,
-								convert_dma_sched_prio_to_hw(req->priority),
-								req->src,
-								req->dst,
-								req->size);
+			ret = dmaSched->hw_ops->start_xfer_c2h_single(dmaSched->hw_handle,
+								      hw_channel,
+								      convert_dma_sched_prio_to_hw(req->priority),
+								      req->src,
+								      req->dst,
+								      req->size);
 		} else {
-			dmaSched->hw_ops->start_xfer_c2h(dmaSched->hw_handle,
-							 hw_channel,
-							 convert_dma_sched_prio_to_hw(req->priority),
-							 req->src);
+			ret = dmaSched->hw_ops->start_xfer_c2h(dmaSched->hw_handle,
+							       hw_channel,
+							       convert_dma_sched_prio_to_hw(req->priority),
+							       req->src);
 		}
 		break;
 	case SPHCS_DMA_DIRECTION_HOST_TO_CARD:
 		if (req->size) {
-			dmaSched->hw_ops->start_xfer_h2c_single(dmaSched->hw_handle,
-								hw_channel,
-								convert_dma_sched_prio_to_hw(req->priority),
-								req->src,
-								req->dst,
-								req->size);
+			ret = dmaSched->hw_ops->start_xfer_h2c_single(dmaSched->hw_handle,
+								      hw_channel,
+								      convert_dma_sched_prio_to_hw(req->priority),
+								      req->src,
+								      req->dst,
+								      req->size);
 		} else {
-			dmaSched->hw_ops->start_xfer_h2c(dmaSched->hw_handle,
-							 hw_channel,
-							 convert_dma_sched_prio_to_hw(req->priority),
-							 req->src);
+			ret = dmaSched->hw_ops->start_xfer_h2c(dmaSched->hw_handle,
+							       hw_channel,
+							       convert_dma_sched_prio_to_hw(req->priority),
+							       req->src);
 		}
 		break;
 	}
+
+	return ret;
 }
 
 
@@ -385,6 +395,7 @@ static void do_schedule(struct sphcs_dma_sched *dmaSched,
 	struct sphcs_dma_sched_priority_queue *low_q = DMA_QUEUE_INFO_PTR(dmaSched, direction, SPHCS_DMA_PRIORITY_LOW);
 	u32 n = 0;
 	u32 priority_queue = 0;
+	u32 fail_mask = 0;
 
 	/* lock current request type schedualer */
 	NNP_SPIN_LOCK_IRQSAVE(&DMA_DIRECTION_INFO(dmaSched, direction).lock_irq, flags);
@@ -465,7 +476,8 @@ static void do_schedule(struct sphcs_dma_sched *dmaSched,
 				list_del(&req->node);
 				if (priority_queue == SPHCS_DMA_PRIORITY_HIGH)
 					atomic_inc(&DMA_DIRECTION_INFO(dmaSched, direction).active_high_priority_transactions);
-				start_request(dmaSched, req, hw_channel);
+				if (start_request(dmaSched, req, hw_channel) != 0)
+					fail_mask |= (1u << hw_channel);
 				q->reqList_size--;
 				q->wait_ticks = 0;
 			}
@@ -478,6 +490,18 @@ static void do_schedule(struct sphcs_dma_sched *dmaSched,
 	}
 
 	NNP_SPIN_UNLOCK_IRQRESTORE(&DMA_DIRECTION_INFO(dmaSched, direction).lock_irq, flags);
+
+	/* Complete with failure requests that failed to start */
+	while (fail_mask) {
+		n = ffs(fail_mask) - 1;
+		sphcs_dma_sched_xfer_complete_int(dmaSched,
+						  n,
+						  direction,
+						  SPHCS_DMA_STATUS_FAILED,
+						  SPHCS_RA_NONE,
+						  0);
+		fail_mask &= ~(1u << n);
+	}
 }
 
 static bool is_dma_engine_idle(struct sphcs_dma_sched *dmaSched,

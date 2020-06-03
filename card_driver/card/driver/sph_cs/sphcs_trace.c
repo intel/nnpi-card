@@ -26,8 +26,10 @@ void sphcs_trace_init(void)
 	sph_trace_inf_to_str[SPH_TRACE_INF_CONTEXT]		= SPH_TRACE_STR_CONTEXT;
 	sph_trace_inf_to_str[SPH_TRACE_INF_DEVRES]		= SPH_TRACE_STR_DEVRES;
 	sph_trace_inf_to_str[SPH_TRACE_INF_COPY]		= SPH_TRACE_STR_COPY;
+	sph_trace_inf_to_str[SPH_TRACE_INF_HOSTRES]		= SPH_TRACE_STR_HOSTRES;
 	sph_trace_inf_to_str[SPH_TRACE_INF_H2C_COPY_HANDLE]	= SPH_TRACE_STR_H2C_COPY_HANDLE;
 	sph_trace_inf_to_str[SPH_TRACE_INF_C2H_COPY_HANDLE]	= SPH_TRACE_STR_C2H_COPY_HANDLE;
+	sph_trace_inf_to_str[SPH_TRACE_INF_P2P_COPY_HANDLE]	= SPH_TRACE_STR_P2P_COPY_HANDLE;
 	sph_trace_inf_to_str[SPH_TRACE_INF_NETWORK]		= SPH_TRACE_STR_NETWORK;
 	sph_trace_inf_to_str[SPH_TRACE_INF_INF_REQ]		= SPH_TRACE_STR_INF_REQ;
 	sph_trace_inf_to_str[SPH_TRACE_INF_INF_SYNC]		= SPH_TRACE_STR_INF_SYNC;

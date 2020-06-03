@@ -90,21 +90,21 @@ int cve_context_process_destroy(
 {
 	struct cve_context_process *context_process = NULL;
 	int retval = cve_os_lock(&g_cve_driver_biglock, CVE_NON_INTERRUPTIBLE);
-
+#ifdef RING3_VALIDATION
 	if (retval != 0) {
 		retval = -ERESTARTSYS;
 		goto out;
 	}
-
+#endif
 	cve_os_log(CVE_LOGLEVEL_DEBUG,
 			"Destroy context_pid START\n");
 
 	context_process = context_process_get(context_pid);
 	if (!context_process) {
+		retval = -ICEDRV_KERROR_INVALID_DRV_HANDLE;
 		cve_os_log(CVE_LOGLEVEL_ERROR,
 				"failed to get context_pid %d\n",
 				retval);
-		retval = -ICEDRV_KERROR_INVALID_DRV_HANDLE;
 		goto out;
 	}
 

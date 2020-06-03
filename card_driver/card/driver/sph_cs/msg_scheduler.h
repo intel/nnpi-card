@@ -41,7 +41,7 @@ struct msg_scheduler_queue {
 	u32 invalid;
 	uint32_t msgs_num;
 	spinlock_t list_lock_irq;
-	u32 handleCont;
+	u32 handle_cont;
 	void *device_hw_data;
 	hw_handle_msg msg_handle;
 #ifdef ULT
@@ -92,11 +92,11 @@ int msg_scheduler_invalidate_all(struct msg_scheduler *scheduler);
  *  [in] scheduler: scheduler data  returned by "msg_scheduler_create".
  *  [in] device_hw_data: device specific hw data (e.g: struct nnp_device).
  *  [in] hw_handle_msg: function pointer to HW message handler.
- *  [in] contiMsgs: number of messages scheduler may handle contineously before
+ *  [in] conti_msgs: number of messages scheduler may handle contineously before
  *       moving to next queue.
  *  [return] : queue - success, NULL-failed.
  ********************************************************************/
-struct msg_scheduler_queue *msg_scheduler_queue_create(struct msg_scheduler *scheduler, void *device_hw_data, hw_handle_msg msg_handle, u32 contiMsgs);
+struct msg_scheduler_queue *msg_scheduler_queue_create(struct msg_scheduler *scheduler, void *device_hw_data, hw_handle_msg msg_handle, u32 conti_msgs);
 
 /*********************************************************************
  *  [Brief]: destroy messages queue created by "msg_scheduler_queue_create".

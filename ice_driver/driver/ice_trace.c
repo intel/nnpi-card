@@ -131,17 +131,10 @@ int ice_restore_trace_hw_regs(struct cve_device *ice_dev)
 	case TRACE_STATUS_USER_CONFIG_WRITE_DONE:
 	case TRACE_STATUS_SYSFS_USER_CONFIG_WRITE_PENDING:
 	case TRACE_STATUS_SYSFS_USER_CONFIG_WRITE_DONE:
-		ret = ice_trace_configure_perf_counter(ice_dev);
-		if (ret) {
-			cve_os_dev_log(CVE_LOGLEVEL_ERROR,
-			  ice_dev->dev_index,
-			  "Problem in Perf counter setup registers\n");
-			goto out;
-		} else {
-			cve_os_dev_log(CVE_LOGLEVEL_INFO,
-			  ice_dev->dev_index,
-			  "Perf counter setup registers restored\n");
-		}
+		ice_trace_configure_perf_counter(ice_dev);
+		cve_os_dev_log(CVE_LOGLEVEL_INFO,
+			ice_dev->dev_index,
+			"Perf counter setup registers restored\n");
 		break;
 	default:
 		cve_os_dev_log(CVE_LOGLEVEL_DEBUG, ice_dev->dev_index,

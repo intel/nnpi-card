@@ -75,13 +75,13 @@ static int ult2_dma_ping_complete_callback(struct sphcs *sphcs, void *ctx, const
 	if (!chan)
 		return -EINVAL;
 
-	resp_data_rb = &chan->c2h_rb[dma_data->cmd.rbID];
-	cmd_data_rb = &chan->h2c_rb[dma_data->cmd.rbID];
+	resp_data_rb = &chan->c2h_rb[dma_data->cmd.rb_id];
+	cmd_data_rb = &chan->h2c_rb[dma_data->cmd.rb_id];
 
 	if (dma_data->state == 0) {
 
 		if (dma_data->is_last)
-			sphcs_cmd_chan_update_cmd_head(chan, dma_data->cmd.rbID, dma_data->cmd.size + 1);
+			sphcs_cmd_chan_update_cmd_head(chan, dma_data->cmd.rb_id, dma_data->cmd.size + 1);
 
 		nchunks = host_rb_wait_free_space(resp_data_rb,
 						  dma_data->size,
@@ -127,7 +127,7 @@ static int ult2_dma_ping_complete_callback(struct sphcs *sphcs, void *ctx, const
 static int ult2_process_dma_ping(struct sphcs *sphcs, struct sphcs_cmd_chan *chan, u64 *msg, u32 size)
 {
 	union ULT2DmaPingMsg *cmd = (union ULT2DmaPingMsg *)msg;
-	struct sphcs_host_rb *cmd_data_rb = &chan->h2c_rb[cmd->rbID];
+	struct sphcs_host_rb *cmd_data_rb = &chan->h2c_rb[cmd->rb_id];
 	dma_addr_t chunk_addr[2];
 	uint32_t   chunk_size[2];
 	int   nchunks, i, rc;
@@ -206,7 +206,7 @@ static int sphcs_ult_process_command(struct sphcs *sphcs, u64 *msg, u32 size)
 
 	if (opcode == H2C_OPCODE_NAME(ULT2_OP)) {
 		int ultOp = ((union ult2_message *)msg)->ultOpcode;
-		int chanID = ((union ult2_message *)msg)->channelID;
+		int chan_id = ((union ult2_message *)msg)->channelID;
 		struct sphcs_cmd_chan *chan;
 		int ret;
 
@@ -215,9 +215,9 @@ static int sphcs_ult_process_command(struct sphcs *sphcs, u64 *msg, u32 size)
 			return 0;
 		}
 
-		chan = sphcs_find_channel(sphcs, chanID);
+		chan = sphcs_find_channel(sphcs, chan_id);
 		if (!chan) {
-			sph_log_err(GENERAL_LOG, "Channel not found opcode=%d chanID=%d\n", ultOp, chanID);
+			sph_log_err(GENERAL_LOG, "Channel not found opcode=%d chan_id=%d\n", ultOp, chan_id);
 			return 0;
 		}
 

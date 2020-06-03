@@ -573,7 +573,7 @@ static int sphcs_hwtrace_dma_stream_complete_cb(struct sphcs *sphcs, void *ctx, 
 	//send notification to host that resource is ready for read.
 	memset(chan_response_msg.value, 0x0, sizeof(chan_response_msg.value));
 
-	chan_response_msg.chanID	= chan->protocolID;
+	chan_response_msg.chan_id	= chan->protocol_id;
 	chan_response_msg.opcode	= NNP_IPC_C2H_OP_CHAN_HWTRACE_STATE;
 
 	//in case of last resource, set appropriate sub_opcode
@@ -896,7 +896,7 @@ void sphcs_hwtrace_cleanup_resources_request(struct sphcs *sphcs)
 
 	memset(chan_response_msg.value, 0x0, sizeof(chan_response_msg));
 
-	chan_response_msg.chanID	= chan->protocolID;
+	chan_response_msg.chan_id	= chan->protocol_id;
 	chan_response_msg.opcode	= NNP_IPC_C2H_OP_CHAN_HWTRACE_STATE;
 	chan_response_msg.subOpcode	= HWTRACE_RESOURCE_CLEANUP;
 	chan_response_msg.err		= NNP_HWTRACE_ERR_NO_ERR;
@@ -944,7 +944,7 @@ int sphcs_hwtrace_init(struct sphcs *sphcs, struct sphcs_cmd_chan *chan)
 reply_message:
 	memset(chan_response_msg.value, 0x0, sizeof(chan_response_msg.value));
 
-	chan_response_msg.chanID	= chan->protocolID;
+	chan_response_msg.chan_id	= chan->protocol_id;
 	chan_response_msg.opcode	= NNP_IPC_C2H_OP_CHAN_HWTRACE_STATE;
 	chan_response_msg.subOpcode	= HWTRACE_INIT;
 	chan_response_msg.err	= hwtrace_err;
@@ -990,7 +990,7 @@ reply_message:
 
 	memset(chan_response_msg.value, 0x0, sizeof(chan_response_msg.value));
 
-	chan_response_msg.chanID	= chan->protocolID;
+	chan_response_msg.chan_id	= chan->protocol_id;
 	chan_response_msg.opcode	= NNP_IPC_C2H_OP_CHAN_HWTRACE_STATE;
 	chan_response_msg.subOpcode	= HWTRACE_DEINIT;
 	chan_response_msg.err	= hwtrace_err;
@@ -1043,7 +1043,7 @@ void sphcs_hwtrace_unlock_host_res(struct sphcs *sphcs,
 reply_message:
 	memset(chan_response_msg.value, 0x0, sizeof(chan_response_msg.value));
 
-	chan_response_msg.chanID	= chan->protocolID;
+	chan_response_msg.chan_id	= chan->protocol_id;
 	chan_response_msg.opcode	= NNP_IPC_C2H_OP_CHAN_HWTRACE_STATE;
 	chan_response_msg.subOpcode	= HWTRACE_UNLOCK_RESOURCE;
 	chan_response_msg.val1		= resource_index;
@@ -1059,7 +1059,7 @@ void sphcs_hwtrace_query_state(struct sphcs *sphcs, struct sphcs_cmd_chan *chan)
 
 	memset(chan_response_msg.value, 0x0, sizeof(chan_response_msg.value));
 
-	chan_response_msg.chanID	= chan->protocolID;
+	chan_response_msg.chan_id	= chan->protocol_id;
 	chan_response_msg.opcode	= NNP_IPC_C2H_OP_CHAN_HWTRACE_STATE;
 	chan_response_msg.subOpcode	= HWTRACE_QUERY_STATE;
 	chan_response_msg.val1	= hw_tracing->hwtrace_status;
@@ -1076,7 +1076,7 @@ void sphcs_hwtrace_query_mem_pool_info(struct sphcs *sphcs, struct sphcs_cmd_cha
 
 	memset(chan_response_msg.value, 0x0, sizeof(chan_response_msg.value));
 
-	chan_response_msg.chanID	= chan->protocolID;
+	chan_response_msg.chan_id	= chan->protocol_id;
 	chan_response_msg.opcode	= NNP_IPC_C2H_OP_CHAN_HWTRACE_STATE;
 	chan_response_msg.subOpcode	= HWTRACE_GET_MEM_POOL_INFO;
 	chan_response_msg.val1		= hw_tracing->nr_pool_pages;
@@ -1100,7 +1100,7 @@ void sphcs_hwtrace_add_resource_2(struct sphcs *sphcs,
 
 	hostres_map = sphcs_cmd_chan_find_hostres(chan, res_data->mapID);
 	if (!hostres_map) {
-		sph_log_err(HWTRACE_LOG, "Fail to find host res map channel (%u) res map id (%u)\n", chan->protocolID, res_data->mapID);
+		sph_log_err(HWTRACE_LOG, "Fail to find host res map channel (%u) res map id (%u)\n", chan->protocol_id, res_data->mapID);
 		hwtrace_err = NNP_HWTRACE_ERR_ADD_RESOURCE_FAIL;
 		goto reply_message;
 	}
@@ -1171,7 +1171,7 @@ reply_message:
 
 	memset(response_msg.value, 0x0, sizeof(response_msg.value));
 
-	response_msg.chanID     = chan->protocolID;
+	response_msg.chan_id     = chan->protocol_id;
 	response_msg.opcode	= NNP_IPC_C2H_OP_CHAN_HWTRACE_STATE;
 	response_msg.subOpcode	= HWTRACE_ADD_RESOURCE;
 	response_msg.err	= hwtrace_err;
@@ -1212,7 +1212,7 @@ void sphcs_hwtrace_state(struct sphcs *sphcs,
 		break;
 	case HWTRACE_DEINIT:
 		if (chan) {
-			if (!hw_tracing->chan || (chan->protocolID !=  hw_tracing->chan->protocolID)) {
+			if (!hw_tracing->chan || (chan->protocol_id !=  hw_tracing->chan->protocol_id)) {
 				sph_log_err(HWTRACE_LOG, "Err: Deinit Invalid channel\n");
 				hwtrace_err = NNP_HWTRACE_ERR_INVALID_VALUE;
 				goto reply_message;
@@ -1222,7 +1222,7 @@ void sphcs_hwtrace_state(struct sphcs *sphcs,
 		break;
 	case HWTRACE_RESOURCE_CLEANUP:
 		if (chan) {
-			if (!hw_tracing->chan || (chan->protocolID !=  hw_tracing->chan->protocolID)) {
+			if (!hw_tracing->chan || (chan->protocol_id !=  hw_tracing->chan->protocol_id)) {
 				sph_log_err(HWTRACE_LOG, "Err: Deinit Invalid channel\n");
 				hwtrace_err = NNP_HWTRACE_ERR_INVALID_VALUE;
 				goto reply_message;
@@ -1242,7 +1242,7 @@ void sphcs_hwtrace_state(struct sphcs *sphcs,
 		break;
 	case HWTRACE_UNLOCK_RESOURCE:
 		if (chan) {
-			if (!hw_tracing->chan || (chan->protocolID !=  hw_tracing->chan->protocolID)) {
+			if (!hw_tracing->chan || (chan->protocol_id !=  hw_tracing->chan->protocol_id)) {
 				sph_log_err(HWTRACE_LOG, "Err: Deinit Invalid channel\n");
 				hwtrace_err = NNP_HWTRACE_ERR_INVALID_VALUE;
 				goto reply_message;
@@ -1259,7 +1259,7 @@ void sphcs_hwtrace_state(struct sphcs *sphcs,
 reply_message:
 	memset(chan_response_msg.value, 0x0, sizeof(chan_response_msg.value));
 
-	chan_response_msg.chanID	= chan->protocolID;
+	chan_response_msg.chan_id	= chan->protocol_id;
 	chan_response_msg.opcode	= NNP_IPC_C2H_OP_CHAN_HWTRACE_STATE;
 	chan_response_msg.subOpcode	= state_cmd->subOpcode;
 	chan_response_msg.err	= hwtrace_err;
@@ -1296,13 +1296,13 @@ void IPC_OPCODE_HANDLER(CHAN_HWTRACE_ADD_RESOURCE)(struct sphcs *sphcs,
 	struct sphcs_cmd_chan *chan;
 	int hwtrace_err = NNP_HWTRACE_ERR_NO_ERR;
 
-	chan = sphcs_find_channel(sphcs, msg->chanID);
+	chan = sphcs_find_channel(sphcs, msg->chan_id);
 	if (!chan) {
-		sph_log_err(HWTRACE_LOG, "Channel not found opcode=%d chanID=%d\n", msg->opcode, msg->chanID);
+		sph_log_err(HWTRACE_LOG, "Channel not found opcode=%d chan_id=%d\n", msg->opcode, msg->chan_id);
 		return;
 	}
 
-	if ((!hw_tracing->chan) || (chan->protocolID != hw_tracing->chan->protocolID)) {
+	if ((!hw_tracing->chan) || (chan->protocol_id != hw_tracing->chan->protocol_id)) {
 		sph_log_err(HWTRACE_LOG, "Err: add resource Invalid channel\n");
 		hwtrace_err = NNP_HWTRACE_ERR_INVALID_VALUE;
 		goto reply_err;
@@ -1327,7 +1327,7 @@ void IPC_OPCODE_HANDLER(CHAN_HWTRACE_ADD_RESOURCE)(struct sphcs *sphcs,
 reply_err:
 	memset(response_msg.value, 0x0, sizeof(response_msg.value));
 
-	response_msg.chanID	= msg->chanID;
+	response_msg.chan_id	= msg->chan_id;
 	response_msg.opcode	= NNP_IPC_C2H_OP_CHAN_HWTRACE_STATE;
 	response_msg.subOpcode	= HWTRACE_ADD_RESOURCE;
 	response_msg.err	= hwtrace_err;
@@ -1343,9 +1343,9 @@ void IPC_OPCODE_HANDLER(CHAN_HWTRACE_STATE)(struct sphcs *sphcs,
 	union c2h_ChanHwTraceState response_msg;
 	struct sphcs_cmd_chan *chan;
 
-	chan = sphcs_find_channel(sphcs, msg->chanID);
+	chan = sphcs_find_channel(sphcs, msg->chan_id);
 	if (!chan) {
-		sph_log_err(HWTRACE_LOG, "Channel not found opcode=%d chanID=%d\n", msg->opcode, msg->chanID);
+		sph_log_err(HWTRACE_LOG, "Channel not found opcode=%d chan_id=%d\n", msg->opcode, msg->chan_id);
 		return;
 	}
 
@@ -1367,7 +1367,7 @@ void IPC_OPCODE_HANDLER(CHAN_HWTRACE_STATE)(struct sphcs *sphcs,
 reply_err:
 	memset(response_msg.value, 0x0, sizeof(response_msg.value));
 
-	response_msg.chanID	= msg->chanID;
+	response_msg.chan_id	= msg->chan_id;
 	response_msg.opcode	= NNP_IPC_C2H_OP_CHAN_HWTRACE_STATE;
 	response_msg.subOpcode	= msg->subOpcode;
 	response_msg.err	= NNP_HWTRACE_ERR_NO_MEMORY;

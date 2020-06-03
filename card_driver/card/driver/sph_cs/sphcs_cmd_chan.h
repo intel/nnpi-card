@@ -32,7 +32,8 @@ struct sphcs_host_rb {
 
 struct sphcs_hostres_map {
 	struct sg_table host_sgt;
-	uint16_t protocolID;
+	uint16_t protocol_id;
+	uint64_t user_handle; //host resource user handle
 	uint32_t size;
 	struct hlist_node hash_node;
 };
@@ -40,7 +41,7 @@ struct sphcs_hostres_map {
 struct sphcs_cmd_chan {
 	void             *magic;
 	struct kref       ref;
-	uint16_t          protocolID;
+	uint16_t          protocol_id;
 	uint32_t          uid;
 	bool              privileged;
 	struct hlist_node hash_node;
@@ -62,7 +63,7 @@ struct sphcs_cmd_chan {
 	struct sphcs_host_rb     c2h_rb[NNP_IPC_MAX_CHANNEL_RINGBUFS];
 };
 
-int sphcs_cmd_chan_create(uint16_t            protocolID,
+int sphcs_cmd_chan_create(uint16_t            protocol_id,
 			  uint32_t            uid,
 			  bool                privileged,
 			  struct sphcs_cmd_chan **out_cmd_chan);
@@ -74,7 +75,7 @@ int sphcs_cmd_chan_put(struct sphcs_cmd_chan *cmd_chan);
 
 void IPC_OPCODE_HANDLER(CHANNEL_RB_OP)(
 			struct sphcs        *sphcs,
-			union h2c_ChannelDataRingbufOp *cmd);
+			union h2c_channel_data_ringbuf_op *cmd);
 
 void IPC_OPCODE_HANDLER(CHANNEL_RB_UPDATE)(
 			struct sphcs        *sphcs,
@@ -82,9 +83,9 @@ void IPC_OPCODE_HANDLER(CHANNEL_RB_UPDATE)(
 
 void IPC_OPCODE_HANDLER(CHANNEL_HOSTRES_OP)(
 			struct sphcs               *sphcs,
-			union h2c_ChannelHostresOp *cmd);
+			union h2c_channel_hostres_op *cmd);
 
-void sphcs_cmd_chan_update_cmd_head(struct sphcs_cmd_chan *chan, uint16_t rbID, uint32_t size);
+void sphcs_cmd_chan_update_cmd_head(struct sphcs_cmd_chan *chan, uint16_t rb_id, uint32_t size);
 
 dma_addr_t host_rb_get_addr(struct    sphcs_host_rb *rb,
 			    uint32_t  offset,
@@ -148,5 +149,5 @@ int host_rb_get_avail_space(struct sphcs_host_rb *rb,
 void host_rb_update_avail_space(struct sphcs_host_rb *rb,
 				uint32_t              size);
 
-struct sphcs_hostres_map *sphcs_cmd_chan_find_hostres(struct sphcs_cmd_chan *chan, uint16_t protocolID);
+struct sphcs_hostres_map *sphcs_cmd_chan_find_hostres(struct sphcs_cmd_chan *chan, uint16_t protocol_id);
 #endif

@@ -177,13 +177,13 @@ static u32 s_host_status_int_mask =
 		   ELBI_IOSF_STATUS_BME_CHANGE_MASK |
 		   ELBI_IOSF_STATUS_LINE_FLR_MASK |
 		   ELBI_IOSF_STATUS_HOT_RESET_MASK |
-		   ELBI_IOSF_STATUS_PME_TURN_OFF_MASK |
-		   ELBI_IOSF_STATUS_DOORBELL_MASK;
+		   ELBI_IOSF_STATUS_PME_TURN_OFF_MASK;
 
 /* interrupt mask bits we enable and handle at threaded interrupt level */
 static u32 s_host_status_threaded_mask =
 		   ELBI_IOSF_STATUS_DMA_INT_MASK |
-		   ELBI_IOSF_STATUS_COMMAND_FIFO_NEW_COMMAND_MASK;
+		   ELBI_IOSF_STATUS_COMMAND_FIFO_NEW_COMMAND_MASK |
+		   ELBI_IOSF_STATUS_DOORBELL_MASK;
 
 static enum {
 	SPH_FLR_MODE_WARM = 0,
@@ -208,6 +208,7 @@ struct nnp_pci_device {
 	u64             command_buf[ELBI_COMMAND_FIFO_DEPTH];
 	atomic_t        new_command;
 	atomic64_t      dma_status;
+	atomic_t        doorbell_changed;
 
 	spinlock_t      respq_lock;
 	u32             respq_free_slots;
@@ -729,7 +730,7 @@ static irqreturn_t interrupt_handler(int irq, void *data)
 		}
 
 		nnp_pci->host_doorbell_val = val;
-		s_callbacks->host_doorbell_value_changed(nnp_pci->sphcs, val);
+		atomic_set(&nnp_pci->doorbell_changed, 1);
 	}
 
 	if (nnp_pci->host_status & s_host_status_threaded_mask)
@@ -754,6 +755,10 @@ static irqreturn_t threaded_interrupt_handler(int irq, void *data)
 {
 	struct nnp_pci_device *nnp_pci = (struct nnp_pci_device *)data;
 	u64 dma_status;
+
+	if (atomic_xchg(&nnp_pci->doorbell_changed, 0))
+		s_callbacks->host_doorbell_value_changed(nnp_pci->sphcs,
+							 nnp_pci->host_doorbell_val);
 
 	if (atomic_xchg(&nnp_pci->new_command, 0))
 		nnp_process_commands(nnp_pci);
@@ -1872,6 +1877,7 @@ static int nnp_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 
 	atomic64_set(&nnp_pci->dma_status, 0);
 	atomic_set(&nnp_pci->new_command, 0);
+	atomic_set(&nnp_pci->doorbell_changed, 0);
 
 	rc = nnp_setup_interrupts(nnp_pci, pdev);
 	if (rc) {

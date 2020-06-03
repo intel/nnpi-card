@@ -7,19 +7,19 @@
 #define _NNP_IPC_C2H_EVENTS_H
 
 /**
- * The following describes the possible values for a c2h_EventReport message
+ * The following describes the possible values for a c2h_event_report message
  * sent from card to host to report on some error or other events.
  *
- * The c2h_EventReport message has the following fields available to describe
+ * The c2h_event_report message has the following fields available to describe
  * the event:
- *    eventCode  - 8 bits value describing the type of event
- *    eventVal   - 8 bits value - interpetation depends on eventCode
- *    contextID  - the protocolID of the context in which the event was occurred.
- *    objID      - 16 bits, interpretation depends on eventCode, usually used
+ *    event_code  - 8 bits value describing the type of event
+ *    event_val   - 8 bits value - interpetation depends on event_code
+ *    context_id  - the protocol_id of the context in which the event was occurred.
+ *    obj_id      - 16 bits, interpretation depends on event_code, usually used
  *                 to hold an inference object (devre, network, ...) protocol ID.
- *    objID_2    - 16 bits, in case objID is not enough to describe the object
+ *    obj_id_2    - 16 bits, in case obj_id is not enough to describe the object
  * In this file we define the possible values for the above fields and document
- * each field meaning for each possible eventCode.
+ * each field meaning for each possible event_code.
  */
 
 /**
@@ -195,57 +195,57 @@ enum event_val {
 	NNP_IPC_CMDLIST_FINISHED       = 128,
 };
 
-int eventValToNNPErrno(enum event_val eventVal);
+int event_valToNNPErrno(enum event_val event_val);
 
 /**
  *
- * eventCode                        eventVal         ContextID   objID                         objID_2
+ * event_code                        event_val         ContextID   obj_id                         obj_id_2
  * ---------                        --------         ---------   ------                        ------
  * NNP_IPC_CREATE_CONTEXT_SUCCESS   0                Valid       Not-Valid                     Not-Valid
- * NNP_IPC_CREATE_DEVRES_SUCCESS    bid (for p2p     Valid       Device resource protocolID    offset (valid for p2p resource only)
- * NNP_IPC_CREATE_COPY_SUCCESS      0                Valid       Copy handle protocolID        Not-Valid
- * NNP_IPC_CREATE_DEVNET_SUCCESS    0                Valid       Device network protocolID     Not-Valid
- * NNP_IPC_CREATE_INFREQ_SUCCESS    devnetID         Valid       inf req protocolID            Not-Valid
- * NNP_IPC_EXECUTE_COPY_SUCCESS     0                Valid       Copy handle protocolID        Not-Valid or Cmd list protocolID(in case Cmd list complete)
- * NNP_IPC_EXECUTE_COPY_SUBRES_SUCCESS   0           Valid       Copy handle protocolID        Not-Valid or Cmd list protocolID(in case Cmd list complete)
- * NNP_IPC_CREATE_CHANNEL_SUCCESS   0                Not-Valid   Channel protocolID            Not-Valid
- * NNP_IPC_CHANNEL_SET_RB_SUCCESS   0                Not-Valid   Channel protocolID            rb_id
- * NNP_IPC_CHANNEL_MAP_HOSTRES_SUCCESS   0           Not-Valid   Channel protocolID            Hostres id
- * NNP_IPC_CHANNEL_UNMAP_HOSTRES_SUCCESS 0           Not-Valid   Channel protocolID            Hostres id
- * NNP_IPC_DEVRES_DESTROYED         0                Valid       Device resource protocolID    Not-Valid
- * NNP_IPC_COPY_DESTROYED           0                Valid       Copy handle protocolID        Not-Valid
+ * NNP_IPC_CREATE_DEVRES_SUCCESS    bid (for p2p     Valid       Device resource protocol_id    offset (valid for p2p resource only)
+ * NNP_IPC_CREATE_COPY_SUCCESS      0                Valid       Copy handle protocol_id        Not-Valid
+ * NNP_IPC_CREATE_DEVNET_SUCCESS    0                Valid       Device network protocol_id     Not-Valid
+ * NNP_IPC_CREATE_INFREQ_SUCCESS    devnetID         Valid       inf req protocol_id            Not-Valid
+ * NNP_IPC_EXECUTE_COPY_SUCCESS     0                Valid       Copy handle protocol_id        Not-Valid or Cmd list protocol_id(in case Cmd list complete)
+ * NNP_IPC_EXECUTE_COPY_SUBRES_SUCCESS   0           Valid       Copy handle protocol_id        Not-Valid or Cmd list protocol_id(in case Cmd list complete)
+ * NNP_IPC_CREATE_CHANNEL_SUCCESS   0                Not-Valid   Channel protocol_id            Not-Valid
+ * NNP_IPC_CHANNEL_SET_RB_SUCCESS   0                Not-Valid   Channel protocol_id            rb_id
+ * NNP_IPC_CHANNEL_MAP_HOSTRES_SUCCESS   0           Not-Valid   Channel protocol_id            Hostres id
+ * NNP_IPC_CHANNEL_UNMAP_HOSTRES_SUCCESS 0           Not-Valid   Channel protocol_id            Hostres id
+ * NNP_IPC_DEVRES_DESTROYED         0                Valid       Device resource protocol_id    Not-Valid
+ * NNP_IPC_COPY_DESTROYED           0                Valid       Copy handle protocol_id        Not-Valid
  * NNP_IPC_CONTEXT_DESTROYED        0                Valid       Not-Valid                     Not-Valid
- * NNP_IPC_DEVNET_DESTROYED         0                Valid       Device network protocolID     Not-Valid
- * NNP_IPC_INFREQ_DESTROYED         0                Valid       inf req protocolID            devnetID
- * NNP_IPC_CHANNEL_DESTROYED        0                Not-valid   channel protocolID            Not-Valid
- * NNP_IPC_CHANNEL_SET_RB_FAILED    0                Not-valid   channel protocolID            rb_id
- * NNP_IPC_CREATE_CMD_SUCCESS       0                Valid       Cmd list protocolID           Not-Valid
- * NNP_IPC_CMD_DESTROYED            0                Valid       Cmd list protocolID           Not-Valid
- * NNP_IPC_EXECUTE_CMD_COMPLETE     0                Valid       Cmd list protocolID           Not-Valid
+ * NNP_IPC_DEVNET_DESTROYED         0                Valid       Device network protocol_id     Not-Valid
+ * NNP_IPC_INFREQ_DESTROYED         0                Valid       inf req protocol_id            devnetID
+ * NNP_IPC_CHANNEL_DESTROYED        0                Not-valid   channel protocol_id            Not-Valid
+ * NNP_IPC_CHANNEL_SET_RB_FAILED    0                Not-valid   channel protocol_id            rb_id
+ * NNP_IPC_CREATE_CMD_SUCCESS       0                Valid       Cmd list protocol_id           Not-Valid
+ * NNP_IPC_CMD_DESTROYED            0                Valid       Cmd list protocol_id           Not-Valid
+ * NNP_IPC_EXECUTE_CMD_COMPLETE     0                Valid       Cmd list protocol_id           Not-Valid
  *
  * NNP_IPC_EXECUTE_CPYLST_SUCCESS   0 or
  *                                  enum event_val
  *                                 (NNP_IPC_EXECUTE_CPYLST_SUCCESS)
- *                                                   Valid  Cmd list protocolID           Copy index in Cmd list
+ *                                                   Valid  Cmd list protocol_id           Copy index in Cmd list
  *
  * NNP_IPC_CREATE_CONTEXT_FAILED    enum event_val   Valid       Not-Valid                     Not-Valid
- * NNP_IPC_CREATE_DEVRES_FAILED     enum event_val   Valid       Device resource protocolID    Not-Valid
- * NNP_IPC_CREATE_COPY_FAILED       enum event_val   Valid       Copy handle protocolID        Not-Valid
- * NNP_IPC_CREATE_DEVNET_FAILED     enum event_val   Valid       Device network protocolID     Not-Valid
- * NNP_IPC_CREATE_INFREQ_FAILED     enum event_val   Valid       inf req protocolID            devnetID
+ * NNP_IPC_CREATE_DEVRES_FAILED     enum event_val   Valid       Device resource protocol_id    Not-Valid
+ * NNP_IPC_CREATE_COPY_FAILED       enum event_val   Valid       Copy handle protocol_id        Not-Valid
+ * NNP_IPC_CREATE_DEVNET_FAILED     enum event_val   Valid       Device network protocol_id     Not-Valid
+ * NNP_IPC_CREATE_INFREQ_FAILED     enum event_val   Valid       inf req protocol_id            devnetID
  * NNP_IPC_DESTROY_CONTEXT_FAILED   enum event_val   Valid       Not-Valid                     Not-Valid
- * NNP_IPC_DESTROY_DEVRES_FAILED    enum event_val   Valid       Device resource protocolID    Not-Valid
- * NNP_IPC_DESTROY_COPY_FAILED      enum event_val   Valid       Copy handle protocolID        Not-Valid
- * NNP_IPC_DESTROY_DEVNET_FAILED    enum event_val   Valid       Device network protocolID     Not-Valid
- * NNP_IPC_DESTROY_INFREQ_FAILED    enum event_val   Valid       inf req protocolID            devnetID
- * NNP_IPC_EXECUTE_COPY_FAILED      enum event_val   Valid       Copy handle protocolID        Not-Valid or Cmd list protocolID
- * NNP_IPC_EXECUTE_COPY_SUBRES_FAILED enum event_val Valid       Copy handle protocolID        Not-Valid or Cmd list protocolID
- * NNP_IPC_SCHEDULE_INFREQ_FAILED   enum event_val   Valid       inf req protocolID            devnetID
+ * NNP_IPC_DESTROY_DEVRES_FAILED    enum event_val   Valid       Device resource protocol_id    Not-Valid
+ * NNP_IPC_DESTROY_COPY_FAILED      enum event_val   Valid       Copy handle protocol_id        Not-Valid
+ * NNP_IPC_DESTROY_DEVNET_FAILED    enum event_val   Valid       Device network protocol_id     Not-Valid
+ * NNP_IPC_DESTROY_INFREQ_FAILED    enum event_val   Valid       inf req protocol_id            devnetID
+ * NNP_IPC_EXECUTE_COPY_FAILED      enum event_val   Valid       Copy handle protocol_id        Not-Valid or Cmd list protocol_id
+ * NNP_IPC_EXECUTE_COPY_SUBRES_FAILED enum event_val Valid       Copy handle protocol_id        Not-Valid or Cmd list protocol_id
+ * NNP_IPC_SCHEDULE_INFREQ_FAILED   enum event_val   Valid       inf req protocol_id            devnetID
  * NNP_IPC_CREATE_SYNC_FAILED       enum event_val   Valid       syncSeq value                 Not-Valid
- * NNP_IPC_CREATE_CHANNEL_FAILED    enum event_val   Not-Valid   Channel protocolID            Not-Valid
- * NNP_IPC_DESTROY_CHANNEL_FAILED   enum event_val   Not-Valid   Channel protocolID            Not-Valid
- * NNP_IPC_CHANNEL_MAP_HOSTRES_FAILED   enum         Not-Valid   Channel protocolID            Hostres id
- * NNP_IPC_CHANNEL_UNMAP_HOSTRES_FAILED enum         Not-Valid   Channel protocolID            Hostres id
+ * NNP_IPC_CREATE_CHANNEL_FAILED    enum event_val   Not-Valid   Channel protocol_id            Not-Valid
+ * NNP_IPC_DESTROY_CHANNEL_FAILED   enum event_val   Not-Valid   Channel protocol_id            Not-Valid
+ * NNP_IPC_CHANNEL_MAP_HOSTRES_FAILED   enum         Not-Valid   Channel protocol_id            Hostres id
+ * NNP_IPC_CHANNEL_UNMAP_HOSTRES_FAILED enum         Not-Valid   Channel protocol_id            Hostres id
  * NNP_IPC_ERROR_RUNTIME_LAUNCH     0                Valid       Not-Valid                     Not-Valid
  * NNP_IPC_ERROR_RUNTIME_DIED       0                Valid       Not-Valid                     Not-Valid
  * NNP_IPC_ERROR_OS_CRASHED         0                Not-Valid   dump_size (low 16bits)        dump_size (high 16bits)
@@ -254,12 +254,12 @@ int eventValToNNPErrno(enum event_val eventVal);
  * NNP_IPC_THERMAL_TRIP_EVENT       trip_point_num   Not-Valid   trip temperature              event temperature
  * NNP_IPC_DEVICE_STATE_CHANGED     0 (3)            DevState[0-15] DevState[16-31]            Not-Valid
  * NNP_IPC_GET_FIFO                 tr_id            NotValid    base address offset in pages  Not-Valid
- * NNP_IPC_CREATE_CMD_FAILED        enum event_val   Valid       Cmd list protocolID           Not-Valid
- * NNP_IPC_DESTROY_CMD_FAILED       enum event_val   Valid       Cmd list protocolID           Not-Valid
- * NNP_IPC_EXECUTE_CPYLST_FAILED    enum event_val   Valid       Cmd list protocolID           Copy index in Cmd list
+ * NNP_IPC_CREATE_CMD_FAILED        enum event_val   Valid       Cmd list protocol_id           Not-Valid
+ * NNP_IPC_DESTROY_CMD_FAILED       enum event_val   Valid       Cmd list protocol_id           Not-Valid
+ * NNP_IPC_EXECUTE_CPYLST_FAILED    enum event_val   Valid       Cmd list protocol_id           Copy index in Cmd list
  * NNP_IPC_ABORT_REQUEST            0 (4)            Not-Valid   Not-Valid                     Not-Valid
- * NNP_IPC_ERROR_FATAL_ICE_ERROR    Failed contextID No-Valid    Not-Valid                     NoT-Valid
- * NNP_IPC_CONTEXT_EXEC_ERROR       Failed cmd-type  Valid       cmd obj protocolID            devnetID
+ * NNP_IPC_ERROR_FATAL_ICE_ERROR    Failed context_id No-Valid    Not-Valid                     NoT-Valid
+ * NNP_IPC_CONTEXT_EXEC_ERROR       Failed cmd-type  Valid       cmd obj protocol_id            devnetID
  * SPH_IPC_GET_CR_FIFO              0                ChanId      dev_id                        base address offset in pages
  *
  * Comments:

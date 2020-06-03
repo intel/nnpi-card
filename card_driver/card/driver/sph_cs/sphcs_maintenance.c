@@ -39,6 +39,7 @@
 #define FPGA_FRU_PRD_SERIAL_LEN         6
 #define FPGA_FRU_BRD_PART_NO_BASE_REG  20
 #define FPGA_FRU_BRD_PART_NO_LEN        5
+#define FPGA_ASIC_STEPPING_REG         28
 
 static struct cdev s_cdev;
 static dev_t       s_devnum;
@@ -115,7 +116,7 @@ static int send_sys_info_dma_completed(struct sphcs *sphcs,
 				       int status, u32 timeUS)
 {
 	struct sys_info_dma_data *dma_data = (struct sys_info_dma_data *)user_data;
-	union c2h_SysInfo msg;
+	union c2h_sys_info msg;
 
 	if (status != SPHCS_DMA_STATUS_FAILED) {
 		msg.value = 0;
@@ -191,8 +192,8 @@ static long set_sys_info(void __user *arg)
 		return -EIO;
 
 	s_sys_info_packet.ice_mask = sys_info.ice_mask;
-	s_sys_info_packet.totalUnprotectedMemory = sys_info.total_unprotected_memory;
-	s_sys_info_packet.totalEccMemory = sys_info.total_ecc_memory;
+	s_sys_info_packet.total_unprotected_memory = sys_info.total_unprotected_memory;
+	s_sys_info_packet.total_ecc_memory = sys_info.total_ecc_memory;
 	memcpy(s_sys_info_packet.bios_version,
 	       sys_info.bios_version,
 	       NNP_BIOS_VERSION_LEN);
@@ -217,11 +218,20 @@ static long set_sys_info(void __user *arg)
 	return 0;
 }
 
-static u16 milli_celcius_to_fpga_units(uint32_t mc)
+static inline u16 milli_celcius_to_fpga_units(uint32_t mc)
 {
 	u16 ret;
 
 	ret = (u16)(((mc / 1000) & 0x7f) << 8);
+
+	return ret;
+}
+
+static inline u16 celcius_to_fpga_units(uint32_t c)
+{
+	u16 ret;
+
+	ret = (u16)((c & 0x7f) << 8);
 
 	return ret;
 }
@@ -286,7 +296,7 @@ static long fpga_update(void __user *arg)
 	if (max_thermal != prev_max_thermal || s_force_update_fpga) {
 		i2c_smbus_write_word_data(s_fpga_client,
 					  FPGA_UPPER_THERMAL_REG,
-					  max_thermal);
+					  celcius_to_fpga_units(max_thermal));
 		prev_max_thermal = max_thermal;
 	}
 
@@ -415,6 +425,7 @@ static int sphcs_maint_attach_fpga(struct device *dev, void *dummy)
 	struct i2c_adapter *adap;
 	struct i2c_board_info info;
 	u16 *sptr;
+	u16 stepping;
 	int i;
 
 	// return if already attached
@@ -469,11 +480,17 @@ static int sphcs_maint_attach_fpga(struct device *dev, void *dummy)
 	if (s_brd_part_no[0] > 0xf0)
 		strcpy(s_brd_part_no, "Not-Avail");
 
-	sph_log_info(MAINTENANCE_LOG, "Found FPGA SMBus device BoardID=0x%x FabID=0x%x FPGA Revision %u\n"
+	sph_log_info(MAINTENANCE_LOG, "Found FPGA SMBus device board_id=0x%x fab_id=0x%x FPGA Revision %u\n"
 				      "\tbrd_part_no %s\n"
 				      "\tprd_serial %s\n",
 		     s_board_id, s_fab_id, s_fpga_rev, s_brd_part_no, s_prd_serial);
 
+	/* Update ASIC stepping in FPGA register */
+	stepping = cpu_data(0).x86_stepping;
+	sph_log_info(MAINTENANCE_LOG, "ASIC Stepping: %d\n", stepping);
+	i2c_smbus_write_word_data(s_fpga_client,
+				  FPGA_ASIC_STEPPING_REG,
+				  stepping);
 	return 1;
 }
 

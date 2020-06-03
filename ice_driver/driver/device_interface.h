@@ -297,6 +297,8 @@ void ice_di_activate_driver(void);
  * illegal interrupts are not being served
  */
 void ice_di_deactivate_driver(void);
+/* check if driver is active */
+u8 ice_di_is_driver_active(void);
 
 void ice_di_set_shared_read_reg(struct cve_device *dev,
 			struct ice_network *ntw, u8 enable_shared_read);

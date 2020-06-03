@@ -22,7 +22,7 @@ struct id_range {
 	uint16_t         last;
 };
 
-int inf_cmd_create(uint16_t              protocolID,
+int inf_cmd_create(uint16_t              protocol_id,
 		   struct inf_context   *context,
 		   struct inf_cmd_list **out_cmd)
 {
@@ -34,7 +34,7 @@ int inf_cmd_create(uint16_t              protocolID,
 
 	kref_init(&cmd->ref);
 	cmd->magic = inf_cmd_create;
-	cmd->protocolID = protocolID;
+	cmd->protocol_id = protocol_id;
 	cmd->req_list = NULL;
 	cmd->edits = NULL;
 	cmd->edits_idx = 0;
@@ -173,8 +173,8 @@ static void release_cmd(struct kref *kref)
 					NNP_IPC_CMD_DESTROYED,
 					0,
 					cmd->context->chan->respq,
-					cmd->context->protocolID,
-					cmd->protocolID);
+					cmd->context->protocol_id,
+					cmd->protocol_id);
 
 	ret = inf_context_put(cmd->context);
 	del_ptr2id(cmd);
@@ -510,18 +510,18 @@ static void dump_sets(struct list_head *sets)
 			if (r->req->cmd_type == CMDLIST_CMD_COPYLIST)
 				sph_log_debug(GENERAL_LOG, "\treq: cpylst %d cmdlist=%d n_copies=%d\n",
 				       r->req->cpylst->idx_in_cmd,
-				       r->req->cmd->protocolID,
+				       r->req->cmd->protocol_id,
 				       r->req->cpylst->n_copies);
 			else if (r->req->cmd_type == CMDLIST_CMD_INFREQ)
 				sph_log_debug(GENERAL_LOG, "\treq: infreq %d cmdlist=%d n=%d\n",
-					      r->req->infreq->protocolID,
-					      r->req->cmd->protocolID,
-					      curr_set->is_output ? r->req->infreq->n_outputs : r->req->infreq->n_inputs);
+					      r->req->infreq->protocol_id,
+					      r->req->cmd->protocol_id,
+					      r->idset->is_output ? r->req->infreq->n_outputs : r->req->infreq->n_inputs);
 			else
 				sph_log_debug(GENERAL_LOG, "\treq: copy %d cmdlist=%d devres=%d\n",
-					      r->req->copy->protocolID,
-					      r->req->cmd->protocolID,
-					      r->req->copy->devres->protocolID);
+					      r->req->copy->protocol_id,
+					      r->req->cmd->protocol_id,
+					      r->req->copy->devres->protocol_id);
 		}
 	}
 	sph_log_debug(GENERAL_LOG, "Dump Sets DONE\n");
@@ -572,21 +572,24 @@ static int add_devres_to_set(struct inf_devres *devres,
 			     struct list_head  *sets)
 {
 	if (inf_devres_is_p2p(devres)) {
-		/* generate new idset for p2p resources - cannpt be grouped with other resources */
+		/* generate new idset for p2p resources - cannot be grouped with other resources */
 		struct id_set *new_idset = id_set_create(idset->is_output);
 
 		if (!new_idset)
 			return -1;
-		id_set_add_req(new_idset, req, idset);
+		if (id_set_add_req(new_idset, req, idset) != 0) {
+			id_set_free(new_idset);
+			return -1;
+		}
 		if (id_range_add(&new_idset->ranges,
-				 devres->protocolID,
-				 devres->protocolID) != 0)
+				 devres->protocol_id,
+				 devres->protocol_id) != 0)
 			return -1;
 		id_set_merge(sets, new_idset);
 	} else {
 		if (id_range_add(&idset->ranges,
-				 devres->protocolID,
-				 devres->protocolID) != 0)
+				 devres->protocol_id,
+				 devres->protocol_id) != 0)
 			return -1;
 	}
 
@@ -606,21 +609,27 @@ static int build_access_group_sets(struct inf_cmd_list *cmd,
 			idset = id_set_create(!req->copy->card2Host);
 			if (!idset)
 				return -1;
-			id_set_add_req(idset, req, idset);
+			if (id_set_add_req(idset, req, idset) != 0) {
+				id_set_free(idset);
+				return -1;
+			}
 			if (id_range_add(&idset->ranges,
-					 req->copy->devres->protocolID,
-					 req->copy->devres->protocolID) != 0)
+					 req->copy->devres->protocol_id,
+					 req->copy->devres->protocol_id) != 0)
 				return -1;
 			if (id_range_add(&cmd->devres_id_ranges,
-					 req->copy->devres->protocolID,
-					 req->copy->devres->protocolID) != 0)
+					 req->copy->devres->protocol_id,
+					 req->copy->devres->protocol_id) != 0)
 				return -1;
 			id_set_merge(sets, idset);
 		} else if (req->cmd_type == CMDLIST_CMD_COPYLIST) {
 			idset = id_set_create(!req->cpylst->copies[0]->card2Host);
 			if (!idset)
 				return -1;
-			id_set_add_req(idset, req, idset);
+			if (id_set_add_req(idset, req, idset) != 0) {
+				id_set_free(idset);
+				return -1;
+			}
 			for (j = 0; j < req->cpylst->n_copies; j++) {
 				if (add_devres_to_set(req->cpylst->copies[j]->devres,
 						      idset,
@@ -628,8 +637,8 @@ static int build_access_group_sets(struct inf_cmd_list *cmd,
 						      sets) != 0)
 					return -1;
 				if (id_range_add(&cmd->devres_id_ranges,
-						 req->cpylst->copies[j]->devres->protocolID,
-						 req->cpylst->copies[j]->devres->protocolID) != 0)
+						 req->cpylst->copies[j]->devres->protocol_id,
+						 req->cpylst->copies[j]->devres->protocol_id) != 0)
 					return -1;
 			}
 			id_set_merge(sets, idset);
@@ -637,7 +646,10 @@ static int build_access_group_sets(struct inf_cmd_list *cmd,
 			idset = id_set_create(false);
 			if (!idset)
 				return -1;
-			id_set_add_req(idset, req, idset);
+			if (id_set_add_req(idset, req, idset) != 0) {
+				id_set_free(idset);
+				return -1;
+			}
 			for (j = 0; j < req->infreq->n_inputs; j++) {
 				if (add_devres_to_set(req->infreq->inputs[j],
 						      idset,
@@ -645,8 +657,8 @@ static int build_access_group_sets(struct inf_cmd_list *cmd,
 						      sets) != 0)
 					return -1;
 				if (id_range_add(&cmd->devres_id_ranges,
-						 req->infreq->inputs[j]->protocolID,
-						 req->infreq->inputs[j]->protocolID) != 0)
+						 req->infreq->inputs[j]->protocol_id,
+						 req->infreq->inputs[j]->protocol_id) != 0)
 					return -1;
 			}
 			id_set_merge(sets, idset);
@@ -654,7 +666,10 @@ static int build_access_group_sets(struct inf_cmd_list *cmd,
 			idset = id_set_create(true);
 			if (!idset)
 				return -1;
-			id_set_add_req(idset, req, idset);
+			if (id_set_add_req(idset, req, idset) != 0) {
+				id_set_free(idset);
+				return -1;
+			}
 			for (j = 0; j < req->infreq->n_outputs; j++) {
 				if (add_devres_to_set(req->infreq->outputs[j],
 						      idset,
@@ -662,8 +677,8 @@ static int build_access_group_sets(struct inf_cmd_list *cmd,
 						      sets) != 0)
 					return -1;
 				if (id_range_add(&cmd->devres_id_ranges,
-						 req->infreq->outputs[j]->protocolID,
-						 req->infreq->outputs[j]->protocolID) != 0)
+						 req->infreq->outputs[j]->protocol_id,
+						 req->infreq->outputs[j]->protocol_id) != 0)
 					return -1;
 			}
 			id_set_merge(sets, idset);
@@ -671,7 +686,7 @@ static int build_access_group_sets(struct inf_cmd_list *cmd,
 	}
 
 #ifdef OPT_EXTRA_DEBUG
-	sph_log_debug(GENERAL_LOG, "cmdlist %d total ranges:\n", cmd->protocolID);
+	sph_log_debug(GENERAL_LOG, "cmdlist %d total ranges:\n", cmd->protocol_id);
 	dump_id_range(&cmd->devres_id_ranges);
 #endif
 
@@ -690,12 +705,12 @@ void inf_cmd_optimize_group_devres(struct inf_cmd_list *cmd)
 	uint16_t id;
 	struct inf_devres_list_entry *devres_entry;
 	struct inf_cmd_list *c;
-	int success = false;
+	int err = -ENOMEM;
 
 	NNP_ASSERT(cmd != NULL);
 	NNP_ASSERT(cmd->status == CREATED);
 
-	sph_log_debug(GENERAL_LOG, "cmd_optimize %d START num_reqs=%d\n", cmd->protocolID, cmd->num_reqs);
+	sph_log_debug(CREATE_COMMAND_LOG, "cmd_optimize %d START num_reqs=%d\n", cmd->protocol_id, cmd->num_reqs);
 	if (cmd->num_reqs == 0)
 		return;
 
@@ -718,12 +733,12 @@ void inf_cmd_optimize_group_devres(struct inf_cmd_list *cmd)
 		if (c == cmd)
 			continue;
 
-		sph_log_debug(GENERAL_LOG, "intersecting total cmd %d and %d\n", cmd->protocolID, c->protocolID);
+		sph_log_debug(CREATE_COMMAND_LOG, "intersecting total cmd %d and %d\n", cmd->protocol_id, c->protocol_id);
 		if (id_range_intersect(NULL,
 				       &cmd->devres_id_ranges,
 				       &c->devres_id_ranges) > 0) {
 			NNP_SPIN_UNLOCK(&cmd->context->lock);
-			sph_log_debug(GENERAL_LOG, "clearing opts of cmdlist %d\n", c->protocolID);
+			sph_log_debug(CREATE_COMMAND_LOG, "clearing opts of cmdlist %d\n", c->protocol_id);
 			inf_cmd_clear_group_devres_optimization(c);
 			if (build_access_group_sets(c, &sets) != 0)
 				goto done;
@@ -741,8 +756,10 @@ void inf_cmd_optimize_group_devres(struct inf_cmd_list *cmd)
 		if (!list_empty(&idset->ranges)) {
 			r = list_first_entry(&idset->ranges, struct id_range, node);
 			devres = inf_context_find_devres(cmd->context, r->first);
-			if (!devres)
+			if (!devres) {
+				err = -ENXIO;
 				goto done;
+			}
 			list_for_each_entry(re, &idset->req_list, node) {
 				devres_entry = kzalloc(sizeof(*devres_entry), GFP_KERNEL);
 				if (!devres_entry)
@@ -755,14 +772,17 @@ void inf_cmd_optimize_group_devres(struct inf_cmd_list *cmd)
 			pivot = devres;
 			list_for_each_entry(r, &idset->ranges, node)
 				for (id = r->first; id <= r->last; id++) {
-					if (id == pivot->protocolID)
+					if (id == pivot->protocol_id)
 						continue;
 					devres = inf_context_find_devres(cmd->context, id);
-					if (!devres)
+					if (!devres) {
+						err = -ENXIO;
 						goto done;
+					}
 
-					if (inf_devres_set_depend_pivot(devres, pivot) != 0) {
-						sph_log_debug(GENERAL_LOG, "Failed to set pivot for optimized set!\n");
+					err = inf_devres_set_depend_pivot(devres, pivot);
+					if (err != 0) {
+						sph_log_debug(CREATE_COMMAND_LOG, "Failed to set pivot for optimized set!\n");
 						goto done;
 					}
 				}
@@ -793,9 +813,12 @@ void inf_cmd_optimize_group_devres(struct inf_cmd_list *cmd)
 			list_for_each_entry(devres_entry, &idset->devres_groups, node)
 				num_devres++;
 
-			re = list_first_entry(&idset->req_list, struct req_entry, node);
-			if (!re)
+			NNP_ASSERT(list_is_singular(&idset->req_list));
+			re = list_first_entry_or_null(&idset->req_list, struct req_entry, node);
+			if (unlikely(re == NULL)) {
+				err = -ENXIO;
 				goto done;
+			}
 
 			if (re->req->cmd_type == CMDLIST_CMD_COPYLIST)
 				orig_num_devres = re->req->cpylst->n_copies;
@@ -810,8 +833,10 @@ void inf_cmd_optimize_group_devres(struct inf_cmd_list *cmd)
 			 */
 			if (num_devres < orig_num_devres) {
 				opt_depend_devres = kmalloc_array(num_devres, sizeof(struct inf_devres *), GFP_KERNEL);
-				if (!opt_depend_devres)
+				if (!opt_depend_devres) {
+					err = -ENOMEM;
 					goto done;
+				}
 
 				num_devres = 0;
 				list_for_each_entry(devres_entry, &idset->devres_groups, node)
@@ -821,8 +846,8 @@ void inf_cmd_optimize_group_devres(struct inf_cmd_list *cmd)
 					re->req->opt_depend_devres = opt_depend_devres;
 					re->req->num_opt_depend_devres = num_devres;
 					attach_depend_pivot(re->req->cpylst->devreses, re->req->cpylst->n_copies);
-					sph_log_debug(GENERAL_LOG, "optimized dependency list for cmdlist %d cpylst %d from %d to %d\n",
-						      re->req->cmd->protocolID,
+					sph_log_debug(CREATE_COMMAND_LOG, "optimized dependency list for cmdlist %d cpylst %d from %d to %d\n",
+						      re->req->cmd->protocol_id,
 						      re->req->cpylst->idx_in_cmd,
 						      re->req->cpylst->n_copies,
 						      num_devres);
@@ -831,41 +856,41 @@ void inf_cmd_optimize_group_devres(struct inf_cmd_list *cmd)
 						re->req->o_opt_depend_devres = opt_depend_devres;
 						re->req->o_num_opt_depend_devres = num_devres;
 						attach_depend_pivot(re->req->infreq->outputs, re->req->infreq->n_outputs);
-						sph_log_debug(GENERAL_LOG, "optimized output dependency list for cmdlist %d infreq %d from %d to %d\n",
-							      re->req->cmd->protocolID,
-							      re->req->infreq->protocolID,
+						sph_log_debug(CREATE_COMMAND_LOG, "optimized output dependency list for cmdlist %d infreq %d from %d to %d\n",
+							      re->req->cmd->protocol_id,
+							      re->req->infreq->protocol_id,
 							      re->req->infreq->n_outputs,
 							      num_devres);
 					} else {
 						re->req->i_opt_depend_devres = opt_depend_devres;
 						re->req->i_num_opt_depend_devres = num_devres;
 						attach_depend_pivot(re->req->infreq->inputs, re->req->infreq->n_inputs);
-						sph_log_debug(GENERAL_LOG, "optimized inout dependency list for cmdlist %d infreq %d from %d to %d\n",
-							      re->req->cmd->protocolID,
-							      re->req->infreq->protocolID,
+						sph_log_debug(CREATE_COMMAND_LOG, "optimized input dependency list for cmdlist %d infreq %d from %d to %d\n",
+							      re->req->cmd->protocol_id,
+							      re->req->infreq->protocol_id,
 							      re->req->infreq->n_inputs,
 							      num_devres);
 					}
 				}
 			} else
-				sph_log_debug(GENERAL_LOG, "skip optimize %d->%d cmd_type=%d\n", orig_num_devres, num_devres, re->req->cmd_type);
+				sph_log_debug(CREATE_COMMAND_LOG, "skip optimize %d->%d cmd_type=%d\n", orig_num_devres, num_devres, re->req->cmd_type);
 		}
 
 		list_del(&idset->node);
 		id_set_free(idset);
 	}
 
-	success = true;
+	err = 0;
 	cmd->context->num_optimized_cmd_lists++;
 
 done:
-	if (!success)
-		sph_log_err(GENERAL_LOG, "dependency optimization for cmdlist %d has failed!!\n", cmd->protocolID);
+	if (unlikely(err != 0))
+		sph_log_err(CREATE_COMMAND_LOG, "dependency optimization for cmdlist %hu has failed with err %d!!\n", cmd->protocol_id, err);
 
-	sph_log_debug(GENERAL_LOG, "cmd_optimize %d DONE success=%d num_optimized=%d\n", cmd->protocolID, success, cmd->context->num_optimized_cmd_lists);
+	sph_log_debug(CREATE_COMMAND_LOG, "cmd_optimize %d DONE err=%d num_optimized=%d\n", cmd->protocol_id, err, cmd->context->num_optimized_cmd_lists);
 
 	list_for_each_entry_safe(idset, tmp, &sets, node) {
-		if (!success) {
+		if (unlikely(err != 0)) {
 			list_for_each_entry(re, &idset->req_list, node) {
 				if (re->req->cmd_type == CMDLIST_CMD_COPYLIST) {
 					if (re->req->num_opt_depend_devres < re->req->cpylst->n_copies) {
@@ -903,10 +928,10 @@ void send_cmd_list_completed_event(struct inf_cmd_list *cmd)
 					NNP_IPC_EXECUTE_CMD_COMPLETE,
 					0,
 					cmd->context->chan->respq,
-					cmd->context->protocolID,
-					cmd->protocolID);
+					cmd->context->protocol_id,
+					cmd->protocol_id);
 		DO_TRACE(trace_cmdlist(SPH_TRACE_OP_STATUS_COMPLETE,
-			 cmd->context->protocolID, cmd->protocolID));
+			 cmd->context->protocol_id, cmd->protocol_id));
 		// for schedule
 		inf_cmd_put(cmd);
 	}

@@ -27,7 +27,7 @@ struct inf_exec_error_details {
 	enum CmdListCommandType cmd_type;
 	uint16_t                obj_id;
 	uint16_t                devnet_id;
-	uint16_t                eventVal;
+	uint16_t                event_val;
 	uint32_t                error_msg_size;
 	void                   *error_msg;
 };

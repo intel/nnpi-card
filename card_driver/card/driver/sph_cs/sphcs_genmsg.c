@@ -283,8 +283,8 @@ static int sphcs_genmsg_chan_release(struct inode *inode, struct file *f)
 	 */
 	msg2.value = 0LL;
 	msg2.opcode = NNP_IPC_C2H_OP_CHAN_GENERIC_MSG_PACKET;
-	msg2.chanID = channel->cmd_chan->protocolID;
-	msg2.rbID = 0;
+	msg2.chan_id = channel->cmd_chan->protocol_id;
+	msg2.rb_id = 0;
 	msg2.size = 0;
 	msg2.hangup = 1;
 	msg2.card_client_id = channel->channel_id;
@@ -707,13 +707,13 @@ static void delete_service(int service_id)
 		if (!list_empty(&service_data->pending_connections)) {
 			msg.value = 0;
 			msg.opcode = NNP_IPC_C2H_OP_CHAN_GENERIC_MSG_PACKET;
-			msg.rbID = 0;
+			msg.rb_id = 0;
 			msg.connect = 1;
 			msg.card_client_id = NNP_IPC_GENMSG_BAD_CLIENT_ID;
 
 			list_for_each_entry_safe(p, n, &service_data->pending_connections, node) {
 				/* Send connect reply message back to host */
-				msg.chanID = p->dma_data.cmd_chan->protocolID;
+				msg.chan_id = p->dma_data.cmd_chan->protocol_id;
 				sphcs_msg_scheduler_queue_add_msg(p->dma_data.cmd_chan->respq, &msg.value, 1);
 
 				sphcs_cmd_chan_put(p->dma_data.cmd_chan);
@@ -807,8 +807,8 @@ static int send_service_list_dma_completed_chan(struct sphcs *sphcs, void *ctx, 
 
 	msg2.value = 0LL;
 	msg2.opcode = NNP_IPC_C2H_OP_CHAN_SERVICE_LIST;
-	msg2.chanID = cmd_chan->protocolID;
-	msg2.rbID = 0;
+	msg2.chan_id = cmd_chan->protocol_id;
+	msg2.rb_id = 0;
 
 	if (status == SPHCS_DMA_STATUS_FAILED) {
 		/* dma failed */
@@ -848,8 +848,8 @@ static int send_service_list_to_host(struct sphcs *sphcs, struct sphcs_cmd_chan 
 		/* send empty service list response message to host */
 		msg2.value = 0LL;
 		msg2.opcode = NNP_IPC_C2H_OP_CHAN_SERVICE_LIST;
-		msg2.chanID = cmd_chan->protocolID;
-		msg2.rbID = 0;
+		msg2.chan_id = cmd_chan->protocol_id;
+		msg2.rb_id = 0;
 		msg2.num_services = 0;
 
 		sphcs_msg_scheduler_queue_add_msg(cmd_chan->respq, &msg2.value, 1);
@@ -909,8 +909,8 @@ fail:
 	/* send failed services response message to host */
 	msg2.value = 0LL;
 	msg2.opcode = NNP_IPC_C2H_OP_CHAN_SERVICE_LIST;
-	msg2.chanID = cmd_chan->protocolID;
-	msg2.rbID = 0;
+	msg2.chan_id = cmd_chan->protocol_id;
+	msg2.rb_id = 0;
 	msg2.failure = fail_code;
 
 	sphcs_msg_scheduler_queue_add_msg(cmd_chan->respq, &msg2.value, 1);
@@ -1114,8 +1114,8 @@ done:
 	/* send connect reply message back to host */
 	msg2.value = 0;
 	msg2.opcode = NNP_IPC_C2H_OP_CHAN_GENERIC_MSG_PACKET;
-	msg2.chanID = pend->dma_data.cmd_chan->protocolID;
-	msg2.rbID = 0;
+	msg2.chan_id = pend->dma_data.cmd_chan->protocol_id;
+	msg2.rb_id = 0;
 	msg2.connect = 1;
 	msg2.card_client_id = channel ? channel->channel_id :
 		NNP_IPC_GENMSG_BAD_CLIENT_ID;
@@ -1222,8 +1222,8 @@ static int chan_response_dma_completed(struct sphcs *sphcs,
 		/* send the packet to host */
 		msg2.value = 0LL;
 		msg2.opcode = NNP_IPC_C2H_OP_CHAN_GENERIC_MSG_PACKET;
-		msg2.chanID = dma_req_user_data->channel->cmd_chan->protocolID;
-		msg2.rbID = 0;
+		msg2.chan_id = dma_req_user_data->channel->cmd_chan->protocol_id;
+		msg2.rb_id = 0;
 		msg2.size = dma_req_user_data->xfer_size - 1;
 		msg2.card_client_id = dma_req_user_data->channel->channel_id;
 
@@ -1248,8 +1248,8 @@ static void handle_cmd_dma_failed(struct genmsg_dma_command_data *dma_data)
 
 		msg.value = 0;
 		msg.opcode = NNP_IPC_C2H_OP_CHAN_GENERIC_MSG_PACKET;
-		msg.chanID = dma_data->cmd_chan->protocolID;
-		msg.rbID = 0;
+		msg.chan_id = dma_data->cmd_chan->protocol_id;
+		msg.rb_id = 0;
 		msg.connect = 1;
 		msg.no_such_service = 1;
 		msg.card_client_id = NNP_IPC_GENMSG_BAD_CLIENT_ID;
@@ -1576,17 +1576,17 @@ static void chan_genmsg_command_handler(struct work_struct *work)
 							    struct chan_genmsg_command_entry,
 							    work);
 	union h2c_GenericMessaging old_msg;
-	struct sphcs_host_rb *cmd_data_rb = &op->chan->h2c_rb[op->msg.rbID];
+	struct sphcs_host_rb *cmd_data_rb = &op->chan->h2c_rb[op->msg.rb_id];
 	dma_addr_t host_dma_addr;
 	u32 host_chunk_size;
 	int n;
 
 	/* ignore message if ringbuffer is not set with minimal size */
 	if ((!op->msg.service_list_req && !op->msg.hangup &&
-	     op->chan->h2c_rb[op->msg.rbID].size < NNP_PAGE_SIZE) ||
-	    op->chan->c2h_rb[op->msg.rbID].size < NNP_PAGE_SIZE) {
-		sph_log_err(GENERAL_LOG, "ringbuf size error rbID=%d h2c size %d c2h size %d\n",
-			    op->msg.rbID, op->chan->h2c_rb[op->msg.rbID].size, op->chan->c2h_rb[op->msg.rbID].size);
+	     op->chan->h2c_rb[op->msg.rb_id].size < NNP_PAGE_SIZE) ||
+	    op->chan->c2h_rb[op->msg.rb_id].size < NNP_PAGE_SIZE) {
+		sph_log_err(GENERAL_LOG, "ringbuf size error rb_id=%d h2c size %d c2h size %d\n",
+			    op->msg.rb_id, op->chan->h2c_rb[op->msg.rb_id].size, op->chan->c2h_rb[op->msg.rb_id].size);
 		sphcs_cmd_chan_put(op->chan);
 		goto done;
 	}
@@ -1595,7 +1595,7 @@ static void chan_genmsg_command_handler(struct work_struct *work)
 	old_msg.size = op->msg.size;
 	old_msg.connect = op->msg.connect;
 	old_msg.hangup = op->msg.hangup;
-	old_msg.host_client_id = op->msg.chanID;
+	old_msg.host_client_id = op->msg.chan_id;
 	old_msg.card_client_id = op->msg.card_client_id;
 	old_msg.service_list_req = op->msg.service_list_req;
 	old_msg.privileged = op->chan->privileged;
@@ -1635,7 +1635,7 @@ static void sphcs_chan_genmsg_hangup(struct sphcs_cmd_chan *cmd_chan, void *cb_c
 	memset(old_msg.value, 0, sizeof(old_msg.value));
 	old_msg.opcode = NNP_IPC_H2C_OP_CHAN_GENERIC_MSG_PACKET;
 	old_msg.hangup = 1;
-	old_msg.host_client_id = cmd_chan->protocolID;
+	old_msg.host_client_id = cmd_chan->protocol_id;
 	old_msg.card_client_id = (uint32_t)(uintptr_t)cb_ctx;
 
 	sphcs_cmd_chan_get(cmd_chan);
@@ -1653,9 +1653,9 @@ void IPC_OPCODE_HANDLER(CHAN_GENERIC_MSG_PACKET)(struct sphcs                   
 	struct chan_genmsg_command_entry *entry;
 	struct sphcs_cmd_chan *chan;
 
-	chan = sphcs_find_channel(sphcs, msg->chanID);
+	chan = sphcs_find_channel(sphcs, msg->chan_id);
 	if (!chan) {
-		sph_log_err(GENERAL_LOG, "Channel not found chanID=%d\n", msg->chanID);
+		sph_log_err(GENERAL_LOG, "Channel not found chan_id=%d\n", msg->chan_id);
 		return;
 	}
 

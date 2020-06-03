@@ -20,7 +20,7 @@
 struct inf_copy {
 	void                 *magic;
 	struct kref           ref;
-	uint16_t              protocolID;
+	uint16_t              protocol_id;
 	uint64_t              user_handle;
 	struct inf_devres    *devres;
 	struct inf_context   *context;
@@ -54,18 +54,14 @@ struct inf_copy {
 	bool d2d;
 };
 
-int inf_d2d_copy_create(uint16_t protocolCopyID,
+int inf_d2d_copy_create(union h2c_ChanInferenceCopyOp *cmd,
 			struct inf_context *context,
 			struct inf_devres *devres,
-			uint64_t hostDmaAddr,
 			struct inf_copy **out_copy);
 
-int inf_copy_create(uint16_t            protocolCopyID,
+int inf_copy_create(union h2c_ChanInferenceCopyOp *cmd,
 		    struct inf_context *context,
 		    struct inf_devres  *devres,
-		    uint16_t            hostres_map_id,
-		    bool                card2Host,
-		    bool                subres_copy,
 		    struct inf_copy   **out_copy);
 
 int inf_copy_get(struct inf_copy *copy);

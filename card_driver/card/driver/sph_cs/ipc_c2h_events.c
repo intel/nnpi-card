@@ -10,9 +10,9 @@
 #include "ipc_protocol.h"
 
 #ifdef _DEBUG
-const char *event_code_name(u32 eventCode)
+const char *event_code_name(u32 event_code)
 {
-	switch (eventCode) {
+	switch (event_code) {
 	case NNP_IPC_CREATE_CONTEXT_SUCCESS:
 		return "CREATE_CONTEXT_SUCCESS";
 	case NNP_IPC_CREATE_DEVRES_SUCCESS:
@@ -158,15 +158,15 @@ const char *event_code_name(u32 eventCode)
 	}
 }
 
-void log_c2h_event(const char *msg, const union c2h_EventReport *ev)
+void log_c2h_event(const char *msg, const union c2h_event_report *ev)
 {
-	sph_log_debug(IPC_LOG, "%s: %s(%u) val=%u ctx_id=%u (valid=%u) objID=%u (valid=%u) objID_2=%u (valid=%u)\n",
+	sph_log_debug(IPC_LOG, "%s: %s(%u) val=%u ctx_id=%u (valid=%u) obj_id=%u (valid=%u) obj_id_2=%u (valid=%u)\n",
 		      msg,
-		      event_code_name(ev->eventCode),
-		      ev->eventCode,
-		      ev->eventVal,
-		      ev->contextID, ev->ctxValid,
-		      ev->objID, ev->objValid,
-		      ev->objID_2, ev->objValid_2);
+		      event_code_name(ev->event_code),
+		      ev->event_code,
+		      ev->event_val,
+		      ev->context_id, ev->ctx_valid,
+		      ev->obj_id, ev->obj_valid,
+		      ev->obj_id_2, ev->obj_valid_2);
 }
 #endif

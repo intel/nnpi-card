@@ -101,7 +101,7 @@ void inf_devnet_delete_devres(struct inf_devnet *devnet,
 	NNP_SPIN_UNLOCK(&devnet->lock);
 }
 
-int inf_devnet_create(uint16_t protocolID,
+int inf_devnet_create(uint16_t protocol_id,
 		      struct inf_context *context,
 		      struct inf_devnet **out_devnet)
 {
@@ -114,7 +114,7 @@ int inf_devnet_create(uint16_t protocolID,
 
 	kref_init(&devnet->ref);
 	devnet->magic = inf_devnet_create;
-	devnet->protocolID = protocolID;
+	devnet->protocol_id = protocol_id;
 	devnet->context = context;
 	devnet->created = false;
 	devnet->destroyed = 0;
@@ -128,7 +128,7 @@ int inf_devnet_create(uint16_t protocolID,
 	INIT_LIST_HEAD(&devnet->devres_list);
 
 	ret = nnp_create_sw_counters_values_node(g_hSwCountersInfo_network,
-						 (u32)protocolID,
+						 (u32)protocol_id,
 						 context->sw_counters,
 						 &devnet->sw_counters);
 	if (unlikely(ret < 0))
@@ -142,7 +142,7 @@ int inf_devnet_create(uint16_t protocolID,
 	NNP_SPIN_LOCK(&context->lock);
 	hash_add(context->devnet_hash,
 		 &devnet->hash_node,
-		 protocolID);
+		 protocol_id);
 	NNP_SPIN_UNLOCK(&context->lock);
 
 	*out_devnet = devnet;
@@ -231,8 +231,8 @@ static void release_devnet(struct kref *kref)
 					NNP_IPC_DEVNET_DESTROYED,
 					0,
 					devnet->context->chan->respq,
-					devnet->context->protocolID,
-					devnet->protocolID);
+					devnet->context->protocol_id,
+					devnet->protocol_id);
 
 	ret = inf_context_put(devnet->context);
 	del_ptr2id(devnet);
@@ -284,7 +284,7 @@ static int inf_req_create_dma_complete_callback(struct sphcs *sphcs,
 	enum event_val val;
 
 	sphcs_cmd_chan_update_cmd_head(infreq->devnet->context->chan,
-				       0,  /* TODO: change to real rbID */
+				       0,  /* TODO: change to real rb_id */
 				       NNP_PAGE_SIZE);
 
 	if (unlikely(status == SPHCS_DMA_STATUS_FAILED)) {
@@ -400,7 +400,7 @@ static int inf_req_create_dma_complete_callback(struct sphcs *sphcs,
 	cmd_args->n_inputs = n_inputs;
 	cmd_args->n_outputs = n_outputs;
 	cmd_args->config_data_size = config_data_size;
-	cmd_args->infreq_id = (uint32_t)infreq->protocolID;
+	cmd_args->infreq_id = (uint32_t)infreq->protocol_id;
 	int64ptr = (uint64_t *)(cmd_args + 1);
 	for (i = 0; i < n_inputs; i++)
 		*(int64ptr++) = inputs[i]->rt_handle;
@@ -448,9 +448,9 @@ free_in:
 	kfree(inputs);
 send_error:
 	sphcs_send_event_report_ext(sphcs, NNP_IPC_CREATE_INFREQ_FAILED, val, infreq->devnet->context->chan->respq,
-				infreq->devnet->context->protocolID,
-				infreq->protocolID,
-				infreq->devnet->protocolID);
+				infreq->devnet->context->protocol_id,
+				infreq->protocol_id,
+				infreq->devnet->protocol_id);
 	destroy_infreq_on_create_failed(infreq);
 done:
 	// put kref for DMA
@@ -461,7 +461,7 @@ done:
 }
 
 int inf_devnet_create_infreq(struct inf_devnet *devnet,
-			     uint16_t           protocolID,
+			     uint16_t           protocol_id,
 			     dma_addr_t         host_dma_addr,
 			     uint16_t           dma_size)
 {
@@ -469,14 +469,14 @@ int inf_devnet_create_infreq(struct inf_devnet *devnet,
 	struct inf_req *infreq;
 	int ret;
 
-	ret = inf_req_create(protocolID,
+	ret = inf_req_create(protocol_id,
 			     devnet,
 			     &infreq);
 	if (unlikely(ret < 0))
 		return -ENOMEM;
 
 	NNP_SPIN_LOCK(&devnet->lock);
-	hash_add(devnet->infreq_hash, &infreq->hash_node, infreq->protocolID);
+	hash_add(devnet->infreq_hash, &infreq->hash_node, infreq->protocol_id);
 	// get kref for DMA
 	inf_req_get(infreq);
 	NNP_SPIN_UNLOCK(&devnet->lock);
@@ -521,7 +521,7 @@ free_infreq:
 }
 
 struct inf_req *inf_devnet_find_infreq(struct inf_devnet *devnet,
-				       uint16_t           protocolID)
+				       uint16_t           protocol_id)
 {
 	struct inf_req *infreq;
 
@@ -529,8 +529,8 @@ struct inf_req *inf_devnet_find_infreq(struct inf_devnet *devnet,
 	hash_for_each_possible(devnet->infreq_hash,
 			       infreq,
 			       hash_node,
-			       protocolID)
-		if (infreq->protocolID == protocolID) {
+			       protocol_id)
+		if (infreq->protocol_id == protocol_id) {
 			NNP_SPIN_UNLOCK(&devnet->lock);
 			return infreq;
 		}
@@ -540,7 +540,7 @@ struct inf_req *inf_devnet_find_infreq(struct inf_devnet *devnet,
 }
 
 struct inf_req *inf_devnet_find_and_get_infreq(struct inf_devnet *devnet,
-					       uint16_t           protocolID)
+					       uint16_t           protocol_id)
 {
 	struct inf_req *infreq;
 
@@ -548,8 +548,8 @@ struct inf_req *inf_devnet_find_and_get_infreq(struct inf_devnet *devnet,
 	hash_for_each_possible(devnet->infreq_hash,
 			       infreq,
 			       hash_node,
-			       protocolID)
-		if (infreq->protocolID == protocolID) {
+			       protocol_id)
+		if (infreq->protocol_id == protocol_id) {
 			if (unlikely(infreq->status != CREATED))
 				break;
 			if (unlikely(infreq->destroyed || inf_req_get(infreq) == 0))
@@ -603,7 +603,7 @@ int inf_devnet_find_and_destroy_infreq(struct inf_devnet *devnet,
 
 	NNP_SPIN_LOCK(&devnet->lock);
 	hash_for_each_possible(devnet->infreq_hash, iter, hash_node, infreqID)
-		if (iter->protocolID == infreqID) {
+		if (iter->protocol_id == infreqID) {
 			infreq = iter;
 			break;
 		}

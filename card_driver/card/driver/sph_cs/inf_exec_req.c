@@ -121,7 +121,7 @@ void inf_exec_error_list_add(struct inf_exec_error_list    *error_list,
 	NNP_SPIN_LOCK(&error_list->lock);
 	is_first = list_empty(&error_list->list) ? true : false;
 	list_add_tail(&err->node, &error_list->list);
-	if (err->eventVal == NNP_IPC_ICEDRV_INFER_EXEC_ERROR_NEED_CARD_RESET)
+	if (err->event_val == NNP_IPC_ICEDRV_INFER_EXEC_ERROR_NEED_CARD_RESET)
 		error_list->need_card_reset = true;
 	NNP_SPIN_UNLOCK(&error_list->lock);
 
@@ -134,7 +134,7 @@ void inf_exec_error_list_add(struct inf_exec_error_list    *error_list,
 					    NNP_IPC_CONTEXT_EXEC_ERROR,
 					    err->cmd_type,
 					    error_list->context->chan->respq,
-					    error_list->context->protocolID,
+					    error_list->context->protocol_id,
 					    err->obj_id,
 					    err->devnet_id);
 }
@@ -142,7 +142,7 @@ void inf_exec_error_list_add(struct inf_exec_error_list    *error_list,
 int inf_exec_error_details_alloc(enum CmdListCommandType cmd_type,
 				 uint16_t                obj_id,
 				 uint16_t                devnet_id,
-				 uint16_t                eventVal,
+				 uint16_t                event_val,
 				 int32_t                 error_msg_size,
 				 struct inf_exec_error_details **out_err)
 {
@@ -158,7 +158,7 @@ int inf_exec_error_details_alloc(enum CmdListCommandType cmd_type,
 	(*out_err)->cmd_type = cmd_type;
 	(*out_err)->obj_id = obj_id;
 	(*out_err)->devnet_id = devnet_id;
-	(*out_err)->eventVal = eventVal;
+	(*out_err)->event_val = event_val;
 	(*out_err)->error_msg_size = (uint32_t)error_msg_size;
 
 	if (error_msg_size > 0)
@@ -212,7 +212,7 @@ int inf_exec_error_list_buffer_pack(struct inf_exec_error_list *error_list,
 		desc->cmd_type = err->cmd_type;
 		desc->obj_id = err->obj_id;
 		desc->devnet_id = err->devnet_id;
-		desc->eventVal = err->eventVal;
+		desc->event_val = err->event_val;
 		desc->error_msg_size = err->error_msg_size;
 		ptr += sizeof(struct ipc_exec_error_desc);
 		if (err->error_msg_size > 0) {
@@ -243,13 +243,13 @@ void inf_exec_error_list_clear(struct inf_exec_error_list *error_list,
 
 	reply.value = 0;
 	reply.opcode = NNP_IPC_C2H_OP_CHAN_EXEC_ERROR_LIST;
-	reply.chanID = error_list->context->chan->protocolID;
+	reply.chan_id = error_list->context->chan->protocol_id;
 	if (cmdlist != NULL) {
 		cmdlist->sched_failed = NNP_IPC_NO_ERROR;
 		cmdlist->edits_idx = 0;
 		atomic_set(&cmdlist->num_left, 0);
 
-		reply.cmdID = cmdlist->protocolID;
+		reply.cmdID = cmdlist->protocol_id;
 		reply.cmdID_valid = 1;
 	}
 	reply.clear_status = 1;
@@ -267,7 +267,7 @@ void inf_exec_error_list_clear(struct inf_exec_error_list *error_list,
 	NNP_SPIN_LOCK(&error_list->lock);
 	error_list->clear_started = true;
 	list_for_each_entry_safe(err, tmp, &error_list->list, node) {
-		if (err->eventVal != NNP_IPC_ICEDRV_INFER_EXEC_ERROR_NEED_RESET) {
+		if (err->event_val != NNP_IPC_ICEDRV_INFER_EXEC_ERROR_NEED_RESET) {
 			list_del(&err->node);
 			NNP_SPIN_UNLOCK(&error_list->lock);
 			kfree(err);
@@ -284,7 +284,7 @@ void inf_exec_error_list_clear(struct inf_exec_error_list *error_list,
 	}
 
 	/*
-	 * Build list of failed networks and send reset request to runtime
+	 * build list of failed networks and send reset request to runtime
 	 */
 	error_list->failed_devnets = kcalloc(n_need_reset, sizeof(uint16_t), GFP_KERNEL);
 	if (!error_list->failed_devnets) {
@@ -353,9 +353,9 @@ void inf_exec_error_list_devnet_reset_done(struct inf_exec_error_list *error_lis
 
 	reply.value = 0;
 	reply.opcode = NNP_IPC_C2H_OP_CHAN_EXEC_ERROR_LIST;
-	reply.chanID = error_list->context->chan->protocolID;
+	reply.chan_id = error_list->context->chan->protocol_id;
 	if (cmdlist != NULL) {
-		reply.cmdID = cmdlist->protocolID;
+		reply.cmdID = cmdlist->protocol_id;
 		reply.cmdID_valid = 1;
 	}
 	reply.clear_status = 1;
