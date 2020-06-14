@@ -384,6 +384,10 @@ static void copy_event_data_and_remove(cve_context_process_id_t context_pid,
 		(inf->infer_events, infer_list, event);
 	cve_dle_add_to_list_before(process->events, main_list, event);
 
+	ice_swc_counter_add(ntw->hswc,
+			ICEDRV_SWC_SUB_NETWORK_NETBUSYTIME,
+			nsec_to_usec(trace_clock_local()
+				- inf->busy_start_time));
 	DO_TRACE(trace_icedrvEventGeneration(SPH_TRACE_OP_STATE_COMPLETE,
 					ctx->swc_node.sw_id,
 					ntw->swc_node.parent_sw_id,
@@ -1214,8 +1218,6 @@ exit:
 		ntw->swc_node.sw_id, ntw->network_id,
 		ntw->curr_exe->swc_node.sw_id,
 		SPH_TRACE_OP_STATUS_ICE, ice_mask));
-
-	ntw->busy_start_time = trace_clock_local();
 
 	if (!ice_sch_preemption())
 		os_enable_preemption();
@@ -3276,6 +3278,15 @@ static int __process_shared_surfaces(struct ice_ss_descriptor *ss_desc,
 			ASSERT(false);
 	}
 
+	/* Map all non Shared Infer buffers to use extended VA Map */
+	for (i = 0; i < ntw->num_buf; i++) {
+		ntw_buf = &ntw->buf_list[i];
+
+		if ((ntw_buf->index_in_inf != INVALID_INDEX) &&
+				(!ntw_buf->is_shared_surf))
+			ice_mm_use_extended_iceva(ntw_buf);
+	}
+
 	cve_os_log(CVE_LOGLEVEL_DEBUG,
 		"New Infer size requirement (Low, 32K, 16M, 32M) = (0x%llx, 0x%llx, 0x%llx, 0x%llx)\n",
 		page_config[IOVA_PAGE_ALIGNMENT_LOW_32K],
@@ -3907,11 +3918,6 @@ void cve_ds_handle_job_completion(struct cve_device *dev,
 					ntw->curr_exe->swc_node.sw_id,
 					SPH_TRACE_OP_STATUS_ICE,
 					ntw->ntw_icemask));
-
-		ice_swc_counter_add(ntw->hswc,
-			ICEDRV_SWC_SUB_NETWORK_NETBUSYTIME,
-			nsec_to_usec(trace_clock_local()
-				- ntw->busy_start_time));
 
 		dg->num_running_ntw--;
 		ntw->wq->num_ntw_running--;

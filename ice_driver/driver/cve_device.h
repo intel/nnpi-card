@@ -926,11 +926,6 @@ struct ice_network {
 	u64 infer_buf_page_config[ICEDRV_PAGE_ALIGNMENT_MAX];
 	/* Number of buffers every CreateInfer desc must send */
 	u32 num_inf_buf;
-
-	/* Stores time stamp post network is scheduled on ICE
-	 * Will be used to calculate network busy time
-	 */
-	u64 busy_start_time;
 };
 
 struct ice_infer {
@@ -975,6 +970,11 @@ struct ice_infer {
 	u64 process_pid;
 	/* Scheduler's Inference node */
 	struct execution_node inf_sch_node;
+
+	/* Time stamp, when inference is slected for schedule
+	 * Will be used to calculate network busy time
+	 */
+	u64 busy_start_time;
 };
 
 /* hold information about user buffer allocation (surface or cb) */

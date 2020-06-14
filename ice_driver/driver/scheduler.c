@@ -393,7 +393,8 @@ static enum sch_status __schedule_node(struct execution_node *node)
 #endif
 
 	ntw->curr_exe = inf;
-
+	/* time stamp to capture start of inference for network busy time*/
+	inf->busy_start_time = trace_clock_local();
 	cve_os_log(CVE_LOGLEVEL_INFO,
 		"Scheduling Infer Request. NtwID=0x%llx, InfID=0x%lx\n",
 		ntw->network_id, (uintptr_t)inf);
