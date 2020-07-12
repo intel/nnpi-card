@@ -496,7 +496,7 @@ int inf_devnet_create_infreq(struct inf_devnet *devnet,
 #endif
 
 	ret = sphcs_dma_sched_start_xfer_single(g_the_sphcs->dmaSched,
-						&g_dma_desc_h2c_normal,
+						&devnet->context->chan->h2c_dma_desc,
 						dma_data.host_dma_addr,
 						dma_data.card_dma_addr,
 						dma_size,

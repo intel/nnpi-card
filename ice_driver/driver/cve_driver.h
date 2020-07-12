@@ -617,6 +617,10 @@ struct cve_get_event {
 	__u32 shared_read_err_status;
 	/* Per ICE error info (Mapped by virtual ID) */
 	__u32 ice_error_status[KMD_NUM_ICE];
+	/* Virtual to Physical ICE map.
+	 * Index = Virtual ICE, value at the index = physical ICE
+	 */
+	__s32 ice_vir_phy_map[KMD_NUM_ICE];
 	/* Severity of error */
 	enum ice_error_severity err_severity;
 };

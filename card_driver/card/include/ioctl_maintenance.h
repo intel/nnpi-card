@@ -22,7 +22,6 @@
 #define IOCTL_MAINT_THERMAL_TRIP           _IOWR('i',  4, struct maint_ioctl_thermal_trip)
 #define IOCTL_MAINT_SYS_INFO               _IOWR('i',  5, struct maint_ioctl_sys_info)
 #define IOCTL_MAINT_FPGA_UPDATE            _IOWR('i',  6, struct maint_ioctl_fpga_update)
-#define IOCTL_MAINT_SET_BIOS_UPDATE_STATE  _IOW('i', 7, uint32_t)
 
 #define MAINT_BIOS_VERSION_LEN    72
 #define MAINT_BOARD_NAME_LEN      72

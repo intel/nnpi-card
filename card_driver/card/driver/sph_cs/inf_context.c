@@ -501,6 +501,8 @@ void del_all_active_create_and_inf_requests(struct inf_context *context)
 	unsigned long flags;
 	bool found;
 
+	sph_log_info(CONTEXT_STATE_LOG, "contextID: %u\n", context->protocol_id);
+
 	NNP_SPIN_LOCK(&context->lock);
 	hash_for_each(context->devnet_hash, i, devnet, hash_node) {
 		NNP_SPIN_LOCK(&devnet->lock);

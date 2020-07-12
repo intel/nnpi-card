@@ -1,0 +1,356 @@
+From 7d261feaafcdfce0b5b519d73ed87694e0e7ad4a Mon Sep 17 00:00:00 2001
+From: Guy Zadicario <guy.zadicario@intel.com>
+Date: Wed, 1 Apr 2020 20:36:16 +0300
+Subject: [PATCH v2 15/20] misc: nnpi: handle cold reset
+
+Usually, when the device is reset through pci function level reset
+the pcie link stay up however when resetting the device after device
+bios update process, the pcie link will go down and a surprise remove
+pcie error will be generated on the port device.
+
+When hot-plug driver is active on the port, the pciehp will handle the
+device removal and re-enumaration after the device is reset. However when
+hot-plug driver is not active then the surprise down will be treated as
+FATAL error.
+
+Since the driver know that a device cold reset is required this patch try to
+avoid the error and handle the surprise remove but only if hot plug driver
+is not active on the port device. The flow is as:
+
+    if (device need cold reset) {
+        need_rescan = (hot-plug driver not acting on the device)
+        if (need_rescan)
+            mask AER surprise-down error on port device
+        send reset request to device
+        if (need_rescan) {
+            wait for surprise down error to occur
+            remove device and re-scan
+            restore AER error mask
+        }
+    } else {
+        pci_function_level_reset
+    }
+
+Signed-off-by: Guy Zadicario <guy.zadicario@intel.com>
+---
+ drivers/misc/intel-nnpi/pcie.c | 239 ++++++++++++++++++++++++++++++++-
+ 1 file changed, 238 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/misc/intel-nnpi/pcie.c b/drivers/misc/intel-nnpi/pcie.c
+index dbaaa666cceb..36c03a1e95fa 100644
+--- a/drivers/misc/intel-nnpi/pcie.c
++++ b/drivers/misc/intel-nnpi/pcie.c
+@@ -14,6 +14,7 @@
+ #include <linux/kref.h>
+ #include <linux/atomic.h>
+ #include <linux/aer.h>
++#include <linux/mutex.h>
+ #include "pcie.h"
+ #define ELBI_BASE         0  /* MMIO offset of ELBI registers */
+ #include "nnp_elbi.h"
+@@ -38,6 +39,10 @@
+ static const char nnp_driver_name[] = "nnp_pcie";
+ static const struct nnpdrv_device_hw_callbacks *s_nnp_callbacks;
+ 
++static DEFINE_MUTEX(s_mutex);
++struct workqueue_struct *s_rescan_wq;
++struct kref s_rescan_wq_kref = KREF_INIT(0);
++
+ /* interrupt mask bits we enable and handle at interrupt level */
+ static u32 s_card_status_int_mask =
+ 		   ELBI_PCI_STATUS_COMMAND_FIFO_READ_UPDATE_MASK;
+@@ -63,12 +68,14 @@ struct nnp_memdesc {
+ struct nnp_pci_device {
+ 	struct kref     ref;
+ 	struct pci_dev *pdev;
++	struct pci_dev *port_dev;
+ 	struct device  *dev;
+ 	struct nnp_device *nnpdev;
+ 
+ 	struct nnp_hw_device_info device_info;
+ 	struct nnp_memdesc mmio;
+ 	struct nnp_memdesc mem_bar;
++	int             aer_pos;
+ 
+ 	spinlock_t      irq_lock; /* protects cmdq_free_slots calculation */
+ 	u64             response_buf[ELBI_RESPONSE_FIFO_DEPTH];
+@@ -88,11 +95,23 @@ struct nnp_pci_device {
+ 	struct work_struct reset_work;
+ 
+ 	bool               removing;
++
++	u32		   port_aer_uncor_mask;
+ };
+ 
+ static int nnp_init_pci_device(struct nnp_pci_device *nnp_pci);
+ static void nnp_fini_pci_device(struct nnp_pci_device *nnp_pci);
+ 
++static void start_reset_work(struct nnp_pci_device *nnp_pci,
++			     struct workqueue_struct *wq,
++			     work_func_t            handler);
++
++static void destroy_rescan_wq(struct kref *kref)
++{
++	destroy_workqueue(s_rescan_wq);
++	s_rescan_wq = NULL;
++}
++
+ static void free_nnp_pci(struct kref *kref)
+ {
+ 	struct nnp_pci_device *nnp_pci = container_of(kref,
+@@ -101,6 +120,7 @@ static void free_nnp_pci(struct kref *kref)
+ 
+ 	pci_set_drvdata(nnp_pci->pdev, NULL);
+ 	pci_dev_put(nnp_pci->pdev);
++	kref_put(&s_rescan_wq_kref, destroy_rescan_wq);
+ 	kfree(nnp_pci);
+ }
+ 
+@@ -508,9 +528,206 @@ static int nnp_set_host_doorbell_value(void *hw_handle, u32 value)
+ 	return 0;
+ }
+ 
++static void rescan_work_handler(struct work_struct *work)
++{
++	struct nnp_pci_device *nnp_pci = container_of(work,
++						      struct nnp_pci_device,
++						      reset_work);
++	struct pci_dev *port_dev = nnp_pci->port_dev;
++	struct pci_bus *bus;
++	struct pci_dev *pdev;
++	int aer_pos;
++	u32 uncor_status;
++	int retries = 0;
++
++	/* Get AER uncorrected status of the port device */
++	aer_pos = pci_find_ext_capability(port_dev, PCI_EXT_CAP_ID_ERR);
++	if (!aer_pos)
++		goto done;
++
++	/*
++	 * continue with device remove/rescan only if surpriose remove has
++	 * happened
++	 */
++	pci_read_config_dword(port_dev,
++			      aer_pos + PCI_ERR_UNCOR_STATUS,
++			      &uncor_status);
++	if ((uncor_status & PCI_ERR_UNC_SURPDN) == 0)
++		goto done;
++
++	bus = port_dev->subordinate;
++	pdev = pci_get_slot(bus, PCI_DEVFN(0, 0));
++	if (!pdev) {
++		nnp_log_err(GENERAL_LOG,
++			    "NNP-I device at bus %s already removed!!\n",
++			    pci_name(port_dev));
++		goto done;
++	}
++
++	/* remove device */
++	nnp_pci_put(nnp_pci);
++	pci_stop_and_remove_bus_device_locked(pdev);
++	pci_dev_put(pdev);
++
++	/* rescan port device to re-enumerate the card */
++	do {
++		if (retries > 0)
++			nnp_log_err(GENERAL_LOG,
++				    "NNP-I device rescan retry %d\n", retries);
++
++		pci_lock_rescan_remove();
++		pci_scan_child_bus(bus);
++		pci_assign_unassigned_bridge_resources(port_dev);
++		pci_bus_add_devices(bus);
++		pci_unlock_rescan_remove();
++
++		pdev = pci_get_slot(bus, PCI_DEVFN(0, 0));
++		if (pdev) {
++			pci_dev_put(pdev);
++			break;
++		}
++		msleep(2000);
++	} while (retries++ < 10);
++
++	return;
++
++done:
++	nnp_pci_put(nnp_pci);
++}
++
++static bool pre_surprise_down_reset(struct nnp_pci_device *nnp_pci)
++{
++	struct pci_dev *port_dev;
++	int ret;
++	int aer_pos;
++	u16 slot_ctrl;
++
++	port_dev = pci_upstream_bridge(nnp_pci->pdev);
++	if (!port_dev)
++		return false;
++
++	ret = pcie_capability_read_word(port_dev, PCI_EXP_SLTCTL, &slot_ctrl);
++	if (ret)
++		return false;
++
++	nnp_log_debug(GENERAL_LOG,
++		      "has pciehp %d (0x%x)\n",
++		      (slot_ctrl & PCI_EXP_SLTCTL_HPIE) != 0, slot_ctrl);
++	if ((slot_ctrl & PCI_EXP_SLTCTL_HPIE) != 0)
++		return false;
++
++	aer_pos = pci_find_ext_capability(port_dev, PCI_EXT_CAP_ID_ERR);
++	if (!aer_pos)
++		return false;
++
++	/*
++	 * No hot-plug driver installed on the port device,
++	 * We will need to re-enumerate the device after the link will go
++	 * down.
++	 * Mask the surprise-down error to prevent the error to be handled
++	 * (since this is expected and will be handled in the
++	 * post_surprise_down) function
++	 */
++	pci_read_config_dword(port_dev, aer_pos + PCI_ERR_UNCOR_MASK,
++			      &nnp_pci->port_aer_uncor_mask);
++	if ((nnp_pci->port_aer_uncor_mask & PCI_ERR_UNC_SURPDN) == 0) {
++		pci_write_config_dword(port_dev,
++				       aer_pos + PCI_ERR_UNCOR_MASK,
++				       nnp_pci->port_aer_uncor_mask |
++				       PCI_ERR_UNC_SURPDN);
++	}
++
++	/*
++	 * flag that post_surprise_down function need to be called after the
++	 * reset
++	 */
++	return true;
++}
++
++static int post_surprise_down_reset(struct nnp_pci_device *nnp_pci)
++{
++	struct pci_dev *port_dev;
++	int retries = 5;
++	int aer_pos;
++	u32 uncor_status;
++
++	port_dev = pci_upstream_bridge(nnp_pci->pdev);
++	if (!port_dev)
++		return -EINVAL;
++
++	aer_pos = pci_find_ext_capability(port_dev, PCI_EXT_CAP_ID_ERR);
++	if (!aer_pos)
++		return -EINVAL;
++
++	/* Wait for surprise-removal to happen */
++	do {
++		pci_read_config_dword(port_dev,
++				      aer_pos + PCI_ERR_UNCOR_STATUS,
++				      &uncor_status);
++		if ((uncor_status & PCI_ERR_UNC_SURPDN) == 0) {
++			msleep(100);
++		} else {
++			/*
++			 * surprise remove happened - schedule device
++			 * re-enumeration
++			 */
++			start_reset_work(nnp_pci,
++					 s_rescan_wq, rescan_work_handler);
++			break;
++		}
++	} while (--retries);
++
++	if (!retries)
++		nnp_log_err(GENERAL_LOG,
++			    "Surprise remove has not been detected for %s\n",
++			    pci_name(port_dev));
++
++	return 0;
++}
++
+ static int nnp_reset(void *hw_handle)
+ {
+ 	struct nnp_pci_device *nnp_pci = (struct nnp_pci_device *)hw_handle;
++	u32 card_state;
++	u32 card_flr_mode = 0;
++
++	if (nnp_pci->initted) {
++		card_state = nnp_mmio_read(nnp_pci, ELBI_CPU_STATUS_2);
++		card_flr_mode =
++			(card_state & ELBI_CPU_STATUS_2_FLR_MODE_MASK) >>
++			ELBI_CPU_STATUS_2_FLR_MODE_SHIFT;
++	}
++
++	/* if card flr_mode is cold reset,
++	 * the card will be surprised removed.
++	 * So we better request the card to reset itself not through
++	 * FLR flow since we know we wont be recover without re-enumerating
++	 * the device.
++	 * The hot-plug driver will detect the surprise removal and link-up when
++	 * the card reset completes. If no hot-plug driver exist we will
++	 * initiate a work to remove and re-enumerate the device after the
++	 * reset.
++	 */
++	if (card_flr_mode == 1) {
++		u32 host_db_val;
++		bool need_post_surprise_down;
++
++		need_post_surprise_down = pre_surprise_down_reset(nnp_pci);
++		if (s_nnp_callbacks->reset_prepare)
++			s_nnp_callbacks->reset_prepare(nnp_pci->nnpdev, false);
++
++		msleep(200);
++		host_db_val = nnp_mmio_read(nnp_pci,
++					    ELBI_PCI_HOST_DOORBELL_VALUE);
++		host_db_val |= NNP_HOST_DRV_REQUEST_SELF_RESET_MASK;
++		nnp_mmio_write(nnp_pci,
++			       ELBI_PCI_HOST_DOORBELL_VALUE, host_db_val);
++
++		if (need_post_surprise_down)
++			post_surprise_down_reset(nnp_pci);
++
++		return 0;
++	}
+ 
+ 	return pci_reset_function(nnp_pci->pdev);
+ }
+@@ -765,6 +982,7 @@ static int nnp_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
+ 
+ 	kref_init(&nnp_pci->ref);
+ 	nnp_pci->pdev = pdev;
++	nnp_pci->port_dev = pci_upstream_bridge(pdev);
+ 	nnp_pci->dev = &pdev->dev;
+ 	pci_set_drvdata(pdev, nnp_pci);
+ 
+@@ -777,9 +995,28 @@ static int nnp_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
+ 	spin_lock_init(&nnp_pci->cmdq_lock);
+ 	spin_lock_init(&nnp_pci->irq_lock);
+ 
++	/*
++	 * create global singlethread workqueue to be use for device
++	 * rescan/reset. Only take refcount if alreadt exist.
++	 */
++	mutex_lock(&s_mutex);
++	if (!s_rescan_wq) {
++		s_rescan_wq = create_singlethread_workqueue("nnp_rescan");
++		if (!s_rescan_wq) {
++			rc = -EFAULT;
++			nnp_log_err(START_UP_LOG, "failed to create global rescan workqueue");
++			mutex_unlock(&s_mutex);
++			goto do_exit;
++		}
++	}
++	kref_get(&s_rescan_wq_kref);
++	mutex_unlock(&s_mutex);
++
+ 	rc = nnp_init_pci_device(nnp_pci);
+-	if (rc)
++	if (rc) {
++		kref_put(&s_rescan_wq_kref, destroy_rescan_wq);
+ 		goto do_exit;
++	}
+ 
+ 	/*
+ 	 * Take refcount to the device which will be released only when
+-- 
+2.22.0
+

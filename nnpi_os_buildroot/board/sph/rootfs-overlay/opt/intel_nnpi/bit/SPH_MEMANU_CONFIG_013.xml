@@ -1,0 +1,849 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- This is the configuration file for the csmemanuf test tool. -->
+<!-- This file is divided into the different test types (csmebist, eolconfig, eolvar). -->
+<!-- Any line in this file that is marked with "<!" to start with is NOT editable by the user and is strictly informational. Any changes to these lines will be ignored -->
+<!-- Generally the user may change enabled(true/false), errorlevel(error,warning), and in some cases required value -->
+<!-- It is recommended that you edit this document with an XML specific/capable editor -->
+
+<!-- A missing field or bad value will fail validation and result in an error -->
+<!-- State PossibleValues="Enabled/Disabled" -->
+<!-- ErrAction PossibleValues="ErrorContinue/ErrorStop/WarningContinue" -->
+<memanuf_config>
+	<!-- CSME BIST TESTS -->
+	<csmebist name="Policy Kernel - Boot Guard : Self Test">
+		<!-- The commented fields below CANNOT be edited. Any edits will be ignored by the tool -->
+		<!-- Description>Get test result from NVAR SECURE_BOOT_SELF_TEST_RESULT.</Description -->
+		<!-- IntelRequired>True</IntelRequired -->
+		<!-- TestType>M0_HW</TestType -->
+		<!-- End of uneditable fields -->
+		<!-- Please edit the fields below ONLY with the State or ErrAction -->
+		<State>Enabled</State>
+		<ErrAction>ErrorContinue</ErrAction>
+	</csmebist>
+	<csmebist name="Policy Kernel - ME Configuration : PROC_MISSING">
+		<!-- The commented fields below CANNOT be edited. Any edits will be ignored by the tool -->
+		<!-- Description>Only on mobile. Test fails if rule is not set to MEFWCAPS_NO_ONBOARD_GLUE_LOGIC.</Description -->
+		<!-- IntelRequired>True</IntelRequired -->
+		<!-- TestType>M0_CONFIG</TestType -->
+		<!-- End of uneditable fields -->
+		<!-- Please edit the fields below ONLY with the State or ErrAction -->
+		<State>Enabled</State>
+		<ErrAction>ErrorContinue</ErrAction>
+	</csmebist>
+	<csmebist name="VDM - General : VDM engine">
+		<!-- The commented fields below CANNOT be edited. Any edits will be ignored by the tool -->
+		<!-- Description>Test VDM.</Description -->
+		<!-- IntelRequired>True</IntelRequired -->
+		<!-- TestType>M0_HW</TestType -->
+		<!-- End of uneditable fields -->
+		<!-- Please edit the fields below ONLY with the State or ErrAction -->
+		<State>Enabled</State>
+		<ErrAction>ErrorContinue</ErrAction>
+	</csmebist>
+	<!-- END OF CSME BIST TESTS -->
+	<!-- EOL CONFIG TESTS -->
+	<eolconfig name="Txt Supported">
+		<!-- The commented fields below CANNOT be edited. Any edits will be ignored by the tool -->
+		<!-- Description>Check fpf Txt Supported against expected value</Description -->
+		<!-- IntelRequired>False</IntelRequired -->
+		<!-- Dependencies></Dependencies -->
+		<!-- End of uneditable fields -->
+		<!-- Please edit the fields below ONLY with the State or ErrAction -->
+		<State>Enabled</State>
+		<ErrAction>ErrorContinue</ErrAction>
+		<RequiredValue format="Disabled/00/Enabled/01" example="Disabled">Disabled</RequiredValue>
+	</eolconfig>
+	<eolconfig name="SPI Boot Source">
+		<!-- The commented fields below CANNOT be edited. Any edits will be ignored by the tool -->
+		<!-- Description>Check fpf SPI Boot Source against expected value</Description -->
+		<!-- IntelRequired>False</IntelRequired -->
+		<!-- Dependencies></Dependencies -->
+		<!-- End of uneditable fields -->
+		<!-- Please edit the fields below ONLY with the State or ErrAction -->
+		<State>Enabled</State>
+		<ErrAction>ErrorContinue</ErrAction>
+		<RequiredValue format="Enabled/00/Disabled/01" example="Enabled">Enabled</RequiredValue>
+	</eolconfig>
+	<eolconfig name="SOC Config Lock State">
+		<!-- The commented fields below CANNOT be edited. Any edits will be ignored by the tool -->
+		<!-- Description>Check fpf SOC Config Lock State against expected value</Description -->
+		<!-- IntelRequired>False</IntelRequired -->
+		<!-- Dependencies></Dependencies -->
+		<!-- End of uneditable fields -->
+		<!-- Please edit the fields below ONLY with the State or ErrAction -->
+		<State>Enabled</State>
+		<ErrAction>ErrorContinue</ErrAction>
+		<RequiredValue format="Disabled/00/Enabled/01" example="Disabled">Enabled </RequiredValue>
+	</eolconfig>
+	<eolconfig name="RBE Anti Rollback">
+		<!-- The commented fields below CANNOT be edited. Any edits will be ignored by the tool -->
+		<!-- Description>Check fpf RBE Anti Rollback against expected value</Description -->
+		<!-- IntelRequired>False</IntelRequired -->
+		<!-- Dependencies></Dependencies -->
+		<!-- End of uneditable fields -->
+		<!-- Please edit the fields below ONLY with the State or ErrAction -->
+		<State>Enabled</State>
+		<ErrAction>ErrorContinue</ErrAction>
+		<RequiredValue format="Disabled/00/Enabled/01" example="Disabled">Enabled </RequiredValue>
+	</eolconfig>
+	<eolconfig name="Persistent PRTC Backup Power">
+		<!-- The commented fields below CANNOT be edited. Any edits will be ignored by the tool -->
+		<!-- Description>Check fpf Persistent PRTC Backup Power against expected value</Description -->
+		<!-- IntelRequired>False</IntelRequired -->
+		<!-- Dependencies></Dependencies -->
+		<!-- End of uneditable fields -->
+		<!-- Please edit the fields below ONLY with the State or ErrAction -->
+		<State>Enabled</State>
+		<ErrAction>ErrorContinue</ErrAction>
+		<RequiredValue format="Enabled/00/Disabled/01" example="Enabled">Disabled </RequiredValue>
+	</eolconfig>
+	<eolconfig name="Force Boot Guard ACM">
+		<!-- The commented fields below CANNOT be edited. Any edits will be ignored by the tool -->
+		<!-- Description>Check fpf Force Boot Guard ACM against expected value</Description -->
+		<!-- IntelRequired>False</IntelRequired -->
+		<!-- Dependencies></Dependencies -->
+		<!-- End of uneditable fields -->
+		<!-- Please edit the fields below ONLY with the State or ErrAction -->
+		<State>Enabled</State>
+		<ErrAction>ErrorContinue</ErrAction>
+		<RequiredValue format="Disabled/00/Enabled/01" example="Disabled">Enabled </RequiredValue>
+	</eolconfig>
+	<eolconfig name="Key Manifest ID">
+		<!-- The commented fields below CANNOT be edited. Any edits will be ignored by the tool -->
+		<!-- Description>Check fpf Key Manifest ID against expected value</Description -->
+		<!-- IntelRequired>False</IntelRequired -->
+		<!-- Dependencies></Dependencies -->
+		<!-- End of uneditable fields -->
+		<!-- Please edit the fields below ONLY with the State or ErrAction -->
+		<State>Enabled</State>
+		<ErrAction>ErrorContinue</ErrAction>
+		<RequiredValue format="Hex number with 0x prefix." example="0x00">0x01 </RequiredValue>
+	</eolconfig>
+	<eolconfig name="OEM Secure Boot Policy">
+		<!-- The commented fields below CANNOT be edited. Any edits will be ignored by the tool -->
+		<!-- Description>Check fpf OEM Secure Boot Policy against expected value</Description -->
+		<!-- IntelRequired>False</IntelRequired -->
+		<!-- Dependencies></Dependencies -->
+		<!-- End of uneditable fields -->
+		<!-- Please edit the fields below ONLY with the State or ErrAction -->
+		<State>Enabled</State>
+		<ErrAction>ErrorContinue</ErrAction>
+		<RequiredValue format="Hex number with 0x prefix." example="0x0000">0x0479 </RequiredValue>
+	</eolconfig>
+	<eolconfig name="OEM Public Key Hash">
+		<!-- The commented fields below CANNOT be edited. Any edits will be ignored by the tool -->
+		<!-- Description>Check fpf OEM Public Key Hash against expected value</Description -->
+		<!-- IntelRequired>False</IntelRequired -->
+		<!-- Dependencies></Dependencies -->
+		<!-- End of uneditable fields -->
+		<!-- Please edit the fields below ONLY with the State or ErrAction -->
+		<State>Disabled</State>
+		<ErrAction>ErrorContinue</ErrAction>
+		<RequiredValue format="32 hex pairs with space between pairs" example="04 AB F3 45 03 1D EF A2 B7 E8 98 79 10 45 AB DE F2 35 49 A0 01 35 78 29 37 AB DE EF FA 10 EF 33">4D 19 B4 F2 3F F9 17 0C 2C 46 B3 D7 6B F0 59 19 A7 FA 8B 6B 11 3D F5 3C 86 C0 E8 00 3C 23 A8 DC </RequiredValue>
+	</eolconfig>
+	<eolconfig name="OEM Platform ID">
+		<!-- The commented fields below CANNOT be edited. Any edits will be ignored by the tool -->
+		<!-- Description>Check fpf OEM Platform ID against expected value</Description -->
+		<!-- IntelRequired>False</IntelRequired -->
+		<!-- Dependencies></Dependencies -->
+		<!-- End of uneditable fields -->
+		<!-- Please edit the fields below ONLY with the State or ErrAction -->
+		<State>Enabled</State>
+		<ErrAction>ErrorContinue</ErrAction>
+		<RequiredValue format="Hex number with 0x prefix." example="0x0000">0x0000 </RequiredValue>
+	</eolconfig>
+	<eolconfig name="OEM KM Present">
+		<!-- The commented fields below CANNOT be edited. Any edits will be ignored by the tool -->
+		<!-- Description>Check fpf OEM KM Present against expected value</Description -->
+		<!-- IntelRequired>False</IntelRequired -->
+		<!-- Dependencies></Dependencies -->
+		<!-- End of uneditable fields -->
+		<!-- Please edit the fields below ONLY with the State or ErrAction -->
+		<State>Disabled</State>
+		<ErrAction>ErrorContinue</ErrAction>
+		<RequiredValue format="Disabled/00/Enabled/01" example="Disabled">Enabled </RequiredValue>
+	</eolconfig>
+	<eolconfig name="OEM ID">
+		<!-- The commented fields below CANNOT be edited. Any edits will be ignored by the tool -->
+		<!-- Description>Check fpf OEM ID against expected value</Description -->
+		<!-- IntelRequired>False</IntelRequired -->
+		<!-- Dependencies></Dependencies -->
+		<!-- End of uneditable fields -->
+		<!-- Please edit the fields below ONLY with the State or ErrAction -->
+		<State>Enabled</State>
+		<ErrAction>ErrorContinue</ErrAction>
+		<RequiredValue format="Hex number with 0x prefix." example="0x0000">0x0000 </RequiredValue>
+	</eolconfig>
+	<eolconfig name="KM SVN">
+		<!-- The commented fields below CANNOT be edited. Any edits will be ignored by the tool -->
+		<!-- Description>Check fpf KM SVN against expected value</Description -->
+		<!-- IntelRequired>False</IntelRequired -->
+		<!-- Dependencies></Dependencies -->
+		<!-- End of uneditable fields -->
+		<!-- Please edit the fields below ONLY with the State or ErrAction -->
+		<State>Disabled</State>
+		<ErrAction>ErrorContinue</ErrAction>
+		<RequiredValue format="Hex number with 0x prefix." example="0x00"> </RequiredValue>
+	</eolconfig>
+	<eolconfig name="Intel(R) PTT">
+		<!-- The commented fields below CANNOT be edited. Any edits will be ignored by the tool -->
+		<!-- Description>Check fpf Intel(R) PTT against expected value</Description -->
+		<!-- IntelRequired>False</IntelRequired -->
+		<!-- Dependencies></Dependencies -->
+		<!-- End of uneditable fields -->
+		<!-- Please edit the fields below ONLY with the State or ErrAction -->
+		<State>Enabled</State>
+		<ErrAction>ErrorContinue</ErrAction>
+		<RequiredValue format="Disabled/00/Enabled/01" example="Disabled">Enabled </RequiredValue>
+	</eolconfig>
+	<eolconfig name="IDLM Anti Rollback">
+		<!-- The commented fields below CANNOT be edited. Any edits will be ignored by the tool -->
+		<!-- Description>Check fpf IDLM Anti Rollback against expected value</Description -->
+		<!-- IntelRequired>False</IntelRequired -->
+		<!-- Dependencies></Dependencies -->
+		<!-- End of uneditable fields -->
+		<!-- Please edit the fields below ONLY with the State or ErrAction -->
+		<State>Enabled</State>
+		<ErrAction>ErrorContinue</ErrAction>
+		<RequiredValue format="Disabled/00/Enabled/01" example="Disabled">Enabled </RequiredValue>
+	</eolconfig>
+	<eolconfig name="FW TYPE">
+		<!-- The commented fields below CANNOT be edited. Any edits will be ignored by the tool -->
+		<!-- Description>Check fpf FW TYPE against expected value</Description -->
+		<!-- IntelRequired>False</IntelRequired -->
+		<!-- Dependencies></Dependencies -->
+		<!-- End of uneditable fields -->
+		<!-- Please edit the fields below ONLY with the State or ErrAction -->
+		<State>Enabled</State>
+		<ErrAction>ErrorContinue</ErrAction>
+		<RequiredValue format="Invalid/00/SPS/01/SPSEPO/02/Other/03" example="Invalid">03 </RequiredValue>
+	</eolconfig>
+	<eolconfig name="Error Enforcement Policy 1">
+		<!-- The commented fields below CANNOT be edited. Any edits will be ignored by the tool -->
+		<!-- Description>Check fpf Error Enforcement Policy 1 against expected value</Description -->
+		<!-- IntelRequired>False</IntelRequired -->
+		<!-- Dependencies></Dependencies -->
+		<!-- End of uneditable fields -->
+		<!-- Please edit the fields below ONLY with the State or ErrAction -->
+		<State>Enabled</State>
+		<ErrAction>ErrorContinue</ErrAction>
+		<RequiredValue format="Disabled/00/Enabled/01" example="Disabled">Enabled </RequiredValue>
+	</eolconfig>
+	<eolconfig name="Error Enforcement Policy 0">
+		<!-- The commented fields below CANNOT be edited. Any edits will be ignored by the tool -->
+		<!-- Description>Check fpf Error Enforcement Policy 0 against expected value</Description -->
+		<!-- IntelRequired>False</IntelRequired -->
+		<!-- Dependencies></Dependencies -->
+		<!-- End of uneditable fields -->
+		<!-- Please edit the fields below ONLY with the State or ErrAction -->
+		<State>Enabled</State>
+		<ErrAction>ErrorContinue</ErrAction>
+		<RequiredValue format="Disabled/00/Enabled/01" example="Disabled">Enabled </RequiredValue>
+	</eolconfig>
+	<eolconfig name="BSMM SVN">
+		<!-- The commented fields below CANNOT be edited. Any edits will be ignored by the tool -->
+		<!-- Description>Check fpf BSMM SVN against expected value</Description -->
+		<!-- IntelRequired>False</IntelRequired -->
+		<!-- Dependencies></Dependencies -->
+		<!-- End of uneditable fields -->
+		<!-- Please edit the fields below ONLY with the State or ErrAction -->
+		<State>Enabled</State>
+		<ErrAction>ErrorContinue</ErrAction>
+		<RequiredValue format="Hex number with 0x prefix." example="0x00">0x01 </RequiredValue>
+	</eolconfig>
+	<eolconfig name="ACM SVN">
+		<!-- The commented fields below CANNOT be edited. Any edits will be ignored by the tool -->
+		<!-- Description>Check fpf ACM SVN against expected value</Description -->
+		<!-- IntelRequired>False</IntelRequired -->
+		<!-- Dependencies></Dependencies -->
+		<!-- End of uneditable fields -->
+		<!-- Please edit the fields below ONLY with the State or ErrAction -->
+		<State>Enabled</State>
+		<ErrAction>ErrorContinue</ErrAction>
+		<RequiredValue format="Hex number with 0x prefix." example="0x00">0x02 </RequiredValue>
+	</eolconfig>
+	<eolconfig name="Enforce RPMC Support">
+		<!-- The commented fields below CANNOT be edited. Any edits will be ignored by the tool -->
+		<!-- Description>Check if RPMC configuration is enabled</Description -->
+		<!-- IntelRequired>False</IntelRequired -->
+		<!-- Dependencies>SPI_DEP</Dependencies -->
+		<!-- End of uneditable fields -->
+		<!-- Please edit the fields below ONLY with the State or ErrAction -->
+		<State>Disabled</State>
+		<ErrAction>ErrorContinue</ErrAction>
+	</eolconfig>
+	<eolconfig name="PCHC FW version">
+		<!-- The commented fields below CANNOT be edited. Any edits will be ignored by the tool -->
+		<!-- Description>Check PCHC FW version against expected value</Description -->
+		<!-- IntelRequired>False</IntelRequired -->
+		<!-- Dependencies>PCHC_PARTITION</Dependencies -->
+		<!-- End of uneditable fields -->
+		<!-- Please edit the fields below ONLY with the State or ErrAction -->
+		<State>Enabled</State>
+		<ErrAction>ErrorContinue</ErrAction>
+		<RequiredValue format="major_ver.minor_ver.hotfix_ver.build_num" example="1.2.3.0004">13.0.0.1004 </RequiredValue>
+	</eolconfig>
+	<eolconfig name="Boot Guard status">
+		<!-- The commented fields below CANNOT be edited. Any edits will be ignored by the tool -->
+		<!-- Description>Verifies validity of Boot Guard FW status. As a RequiredValue provide Profile Level for profile dependent checks</Description -->
+		<!-- IntelRequired>True</IntelRequired -->
+		<!-- Dependencies></Dependencies -->
+		<!-- End of uneditable fields -->
+		<!-- Please edit the fields below ONLY with the State or ErrAction -->
+		<State>Enabled</State>
+		<ErrAction>ErrorContinue</ErrAction>
+		<RequiredValue format="Hex number with 0x prefix." example="0x00">0x05 </RequiredValue>
+	</eolconfig>
+	<eolconfig name="FW status">
+		<!-- The commented fields below CANNOT be edited. Any edits will be ignored by the tool -->
+		<!-- Description>Verifies validity of FW status</Description -->
+		<!-- IntelRequired>True</IntelRequired -->
+		<!-- Dependencies></Dependencies -->
+		<!-- End of uneditable fields -->
+		<!-- Please edit the fields below ONLY with the State or ErrAction -->
+		<State>Enabled</State>
+		<ErrAction>ErrorContinue</ErrAction>
+	</eolconfig>
+	<eolconfig name="Checking NVM for fatal flash logs">
+		<!-- The commented fields below CANNOT be edited. Any edits will be ignored by the tool -->
+		<!-- Description>Inspection of NVM found fatal flash logs</Description -->
+		<!-- IntelRequired>False</IntelRequired -->
+		<!-- Dependencies></Dependencies -->
+		<!-- End of uneditable fields -->
+		<!-- Please edit the fields below ONLY with the State or ErrAction -->
+		<State>Disabled</State>
+		<ErrAction>ErrorContinue</ErrAction>
+	</eolconfig>
+	<eolconfig name="Confirm ARB SVN value">
+		<!-- The commented fields below CANNOT be edited. Any edits will be ignored by the tool -->
+		<!-- Description>Confirms that the minimum ARB SVN saved in the PCH fuses matches the ARB SVN of the FW image</Description -->
+		<!-- IntelRequired>False</IntelRequired -->
+		<!-- Dependencies></Dependencies -->
+		<!-- End of uneditable fields -->
+		<!-- Please edit the fields below ONLY with the State or ErrAction -->
+		<State>Disabled</State>
+		<ErrAction>ErrorContinue</ErrAction>
+	</eolconfig>
+	<eolconfig name="PCH Unlocked state">
+		<!-- The commented fields below CANNOT be edited. Any edits will be ignored by the tool -->
+		<!-- Description>Verifies that PCH is locked</Description -->
+		<!-- IntelRequired>True</IntelRequired -->
+		<!-- Dependencies></Dependencies -->
+		<!-- End of uneditable fields -->
+		<!-- Please edit the fields below ONLY with the State or ErrAction -->
+		<State>Enabled</State>
+		<ErrAction>ErrorContinue</ErrAction>
+	</eolconfig>
+	<eolconfig name="HW Binding Disabled">
+		<!-- The commented fields below CANNOT be edited. Any edits will be ignored by the tool -->
+		<!-- Description>Verifies that HW binding is disabled</Description -->
+		<!-- IntelRequired>True</IntelRequired -->
+		<!-- Dependencies></Dependencies -->
+		<!-- End of uneditable fields -->
+		<!-- Please edit the fields below ONLY with the State or ErrAction -->
+		<State>Enabled</State>
+		<ErrAction>ErrorContinue</ErrAction>
+	</eolconfig>
+	<eolconfig name="SOC Config Lock">
+		<!-- The commented fields below CANNOT be edited. Any edits will be ignored by the tool -->
+		<!-- Description>Check that SOC Config Lock FPF is set.</Description -->
+		<!-- IntelRequired>True</IntelRequired -->
+		<!-- Dependencies></Dependencies -->
+		<!-- End of uneditable fields -->
+		<!-- Please edit the fields below ONLY with the State or ErrAction -->
+		<State>Enabled</State>
+		<ErrAction>ErrorContinue</ErrAction>
+	</eolconfig>
+	<eolconfig name="FPFs in UEP Committed">
+		<!-- The commented fields below CANNOT be edited. Any edits will be ignored by the tool -->
+		<!-- Description>Check that FPFs in UEP are committed to Hardware.</Description -->
+		<!-- IntelRequired>True</IntelRequired -->
+		<!-- Dependencies></Dependencies -->
+		<!-- End of uneditable fields -->
+		<!-- Please edit the fields below ONLY with the State or ErrAction -->
+		<State>Enabled</State>
+		<ErrAction>ErrorContinue</ErrAction>
+	</eolconfig>
+	<eolconfig name="Validate Keybox Provisioning">
+		<!-- The commented fields below CANNOT be edited. Any edits will be ignored by the tool -->
+		<!-- Description>Check to see if Keybox is provisioned</Description -->
+		<!-- IntelRequired>False</IntelRequired -->
+		<!-- Dependencies></Dependencies -->
+		<!-- End of uneditable fields -->
+		<!-- Please edit the fields below ONLY with the State or ErrAction -->
+		<State>Disabled</State>
+		<ErrAction>ErrorContinue</ErrAction>
+	</eolconfig>
+	<eolconfig name="Firmware Update OEM ID">
+		<!-- The commented fields below CANNOT be edited. Any edits will be ignored by the tool -->
+		<!-- Description>Check Firmware Update OEM ID value</Description -->
+		<!-- IntelRequired>False</IntelRequired -->
+		<!-- Dependencies></Dependencies -->
+		<!-- End of uneditable fields -->
+		<!-- Please edit the fields below ONLY with the State or ErrAction -->
+		<State>Enabled</State>
+		<ErrAction>ErrorContinue</ErrAction>
+		<RequiredValue format="Hex" example="00000000-0000-0000-0000-000000000000">00000000-0000-0000-0000-000000000000 </RequiredValue>
+	</eolconfig>
+	<eolconfig name="GBE version">
+		<!-- The commented fields below CANNOT be edited. Any edits will be ignored by the tool -->
+		<!-- Description>Check Gbe Version against expected value</Description -->
+		<!-- IntelRequired>False</IntelRequired -->
+		<!-- Dependencies>SPI_DEP</Dependencies -->
+		<!-- End of uneditable fields -->
+		<!-- Please edit the fields below ONLY with the State or ErrAction -->
+		<State>Disabled</State>
+		<ErrAction>ErrorContinue</ErrAction>
+		<RequiredValue format="major_ver.minor_ver" example="0.6"> </RequiredValue>
+	</eolconfig>
+	<eolconfig name="BIOS version">
+		<!-- The commented fields below CANNOT be edited. Any edits will be ignored by the tool -->
+		<!-- Description>Check BIOS Version against expected value</Description -->
+		<!-- IntelRequired>False</IntelRequired -->
+		<!-- Dependencies></Dependencies -->
+		<!-- End of uneditable fields -->
+		<!-- Please edit the fields below ONLY with the State or ErrAction -->
+		<State>Disabled</State>
+		<ErrAction>ErrorContinue</ErrAction>
+		<RequiredValue format="Customer specific" example="HSWLPTU1.86C.0117.R00.1303102001">SPHICLX1.R00.4062.A00.2005070249 </RequiredValue>
+	</eolconfig>
+	<eolconfig name="ME FW version">
+		<!-- The commented fields below CANNOT be edited. Any edits will be ignored by the tool -->
+		<!-- Description>Check Firmware Version against expected value</Description -->
+		<!-- IntelRequired>False</IntelRequired -->
+		<!-- Dependencies></Dependencies -->
+		<!-- End of uneditable fields -->
+		<!-- Please edit the fields below ONLY with the State or ErrAction -->
+		<State>Enabled</State>
+		<ErrAction>ErrorContinue</ErrAction>
+		<RequiredValue format="major_ver.minor_ver.hotfix_ver.build_num H|LP|ULT Corporate|Consumer|Slim" example="12.0.0.1040 LP Consumer">13.0.30.1435 LP Consumer </RequiredValue>
+	</eolconfig>
+	<eolconfig name="Security Descriptor Override (SDO) check">
+		<!-- The commented fields below CANNOT be edited. Any edits will be ignored by the tool -->
+		<!-- Description>Check SDO pin</Description -->
+		<!-- IntelRequired>True</IntelRequired -->
+		<!-- Dependencies>SPI_DEP</Dependencies -->
+		<!-- End of uneditable fields -->
+		<!-- Please edit the fields below ONLY with the State or ErrAction -->
+		<State>Enabled</State>
+		<ErrAction>ErrorContinue</ErrAction>
+	</eolconfig>
+	<eolconfig name="RPMC Configuration">
+		<!-- The commented fields below CANNOT be edited. Any edits will be ignored by the tool -->
+		<!-- Description>Check RPMC configuration</Description -->
+		<!-- IntelRequired>True</IntelRequired -->
+		<!-- Dependencies>SPI_DEP</Dependencies -->
+		<!-- End of uneditable fields -->
+		<!-- Please edit the fields below ONLY with the State or ErrAction -->
+		<State>Disabled</State>
+		<ErrAction>ErrorContinue</ErrAction>
+	</eolconfig>
+	<eolconfig name="EC Write Access Permissions">
+		<!-- The commented fields below CANNOT be edited. Any edits will be ignored by the tool -->
+		<!-- Description>Check EC write access</Description -->
+		<!-- IntelRequired>True</IntelRequired -->
+		<!-- Dependencies>SPI_DEP</Dependencies -->
+		<!-- End of uneditable fields -->
+		<!-- Please edit the fields below ONLY with the State or ErrAction -->
+		<State>Enabled</State>
+		<ErrAction>ErrorContinue</ErrAction>
+		<RequiredValue format="Hex number with 0x prefix." example="0x0101. Value left empty will result in checking against Intel recommended values.">0x0000 </RequiredValue>
+	</eolconfig>
+	<eolconfig name="EC Read Access Permissions">
+		<!-- The commented fields below CANNOT be edited. Any edits will be ignored by the tool -->
+		<!-- Description>Check EC read access</Description -->
+		<!-- IntelRequired>True</IntelRequired -->
+		<!-- Dependencies>SPI_DEP</Dependencies -->
+		<!-- End of uneditable fields -->
+		<!-- Please edit the fields below ONLY with the State or ErrAction -->
+		<State>Enabled</State>
+		<ErrAction>ErrorContinue</ErrAction>
+		<RequiredValue format="Hex number with 0x prefix." example="0x0101. Value left empty will result in checking against Intel recommended values.">0x0000 </RequiredValue>
+	</eolconfig>
+	<eolconfig name="BIOS Write Access Permissions">
+		<!-- The commented fields below CANNOT be edited. Any edits will be ignored by the tool -->
+		<!-- Description>Check BIOS write access</Description -->
+		<!-- IntelRequired>True</IntelRequired -->
+		<!-- Dependencies>SPI_DEP</Dependencies -->
+		<!-- End of uneditable fields -->
+		<!-- Please edit the fields below ONLY with the State or ErrAction -->
+		<State>Enabled</State>
+		<ErrAction>ErrorContinue</ErrAction>
+		<RequiredValue format="Hex number with 0x prefix." example="0x0101. Value left empty will result in checking against Intel recommended values.">0x000A </RequiredValue>
+	</eolconfig>
+	<eolconfig name="BIOS Read Access Permissions">
+		<!-- The commented fields below CANNOT be edited. Any edits will be ignored by the tool -->
+		<!-- Description>Check BIOS read access</Description -->
+		<!-- IntelRequired>True</IntelRequired -->
+		<!-- Dependencies>SPI_DEP</Dependencies -->
+		<!-- End of uneditable fields -->
+		<!-- Please edit the fields below ONLY with the State or ErrAction -->
+		<State>Enabled</State>
+		<ErrAction>ErrorContinue</ErrAction>
+		<RequiredValue format="Hex number with 0x prefix." example="0x0101. Value left empty will result in checking against Intel recommended values.">0x000F </RequiredValue>
+	</eolconfig>
+	<eolconfig name="GBE Write Access Permissions">
+		<!-- The commented fields below CANNOT be edited. Any edits will be ignored by the tool -->
+		<!-- Description>Check GBE write access</Description -->
+		<!-- IntelRequired>True</IntelRequired -->
+		<!-- Dependencies>SPI_DEP</Dependencies -->
+		<!-- End of uneditable fields -->
+		<!-- Please edit the fields below ONLY with the State or ErrAction -->
+		<State>Enabled</State>
+		<ErrAction>ErrorContinue</ErrAction>
+		<RequiredValue format="Hex number with 0x prefix." example="0x0101. Value left empty will result in checking against Intel recommended values.">0x0000 </RequiredValue>
+	</eolconfig>
+	<eolconfig name="GBE Read Access Permissions">
+		<!-- The commented fields below CANNOT be edited. Any edits will be ignored by the tool -->
+		<!-- Description>Check GBE read access</Description -->
+		<!-- IntelRequired>True</IntelRequired -->
+		<!-- Dependencies>SPI_DEP</Dependencies -->
+		<!-- End of uneditable fields -->
+		<!-- Please edit the fields below ONLY with the State or ErrAction -->
+		<State>Enabled</State>
+		<ErrAction>ErrorContinue</ErrAction>
+		<RequiredValue format="Hex number with 0x prefix." example="0x0101. Value left empty will result in checking against Intel recommended values.">0x0000 </RequiredValue>
+	</eolconfig>
+	<eolconfig name="ME Write Access Permissions">
+		<!-- The commented fields below CANNOT be edited. Any edits will be ignored by the tool -->
+		<!-- Description>Check ME write access</Description -->
+		<!-- IntelRequired>True</IntelRequired -->
+		<!-- Dependencies>SPI_DEP</Dependencies -->
+		<!-- End of uneditable fields -->
+		<!-- Please edit the fields below ONLY with the State or ErrAction -->
+		<State>Enabled</State>
+		<ErrAction>ErrorContinue</ErrAction>
+		<RequiredValue format="Hex number with 0x prefix." example="0x0101. Value left empty will result in checking against Intel recommended values.">0x0004 </RequiredValue>
+	</eolconfig>
+	<eolconfig name="ME Read Access Permissions">
+		<!-- The commented fields below CANNOT be edited. Any edits will be ignored by the tool -->
+		<!-- Description>Check ME read access</Description -->
+		<!-- IntelRequired>True</IntelRequired -->
+		<!-- Dependencies>SPI_DEP</Dependencies -->
+		<!-- End of uneditable fields -->
+		<!-- Please edit the fields below ONLY with the State or ErrAction -->
+		<State>Enabled</State>
+		<ErrAction>ErrorContinue</ErrAction>
+		<RequiredValue format="Hex number with 0x prefix." example="0x0101. Value left empty will result in checking against Intel recommended values.">0x000D </RequiredValue>
+	</eolconfig>
+	<eolconfig name="ME Manufacturing Mode status">
+		<!-- The commented fields below CANNOT be edited. Any edits will be ignored by the tool -->
+		<!-- Description>Check End of Manufacturing Mode against Intel recommended value</Description -->
+		<!-- IntelRequired>True</IntelRequired -->
+		<!-- Dependencies></Dependencies -->
+		<!-- End of uneditable fields -->
+		<!-- Please edit the fields below ONLY with the State or ErrAction -->
+		<State>Enabled</State>
+		<ErrAction>ErrorContinue</ErrAction>
+	</eolconfig>
+	<eolconfig name="EOP status check">
+		<!-- The commented fields below CANNOT be edited. Any edits will be ignored by the tool -->
+		<!-- Description>Check that EOP was sent/recieved</Description -->
+		<!-- IntelRequired>True</IntelRequired -->
+		<!-- Dependencies></Dependencies -->
+		<!-- End of uneditable fields -->
+		<!-- Please edit the fields below ONLY with the State or ErrAction -->
+		<State>Enabled</State>
+		<ErrAction>ErrorContinue</ErrAction>
+	</eolconfig>
+	<!-- END OF EOL CONFIG TESTS -->
+	<!-- EOL VAR TESTS -->
+	<eolvar name="eDP Port Config">
+		<!-- The commented fields below CANNOT be edited. Any edits will be ignored by the tool -->
+		<!-- Description>Test variable against expected value</Description -->
+		<!-- IntelRequired>False</IntelRequired -->
+		<!-- Dependencies></Dependencies -->
+		<!-- End of uneditable fields -->
+		<!-- Please edit the fields below ONLY with the State or ErrAction -->
+		<State>Disabled</State>
+		<ErrAction>ErrorContinue</ErrAction>
+		<RequiredValue format="32 hex pairs with space between pairs" example="04 AB F3 45 03 1D EF A2 B7 E8 98 79 10 45 AB DE F2 35 49 A0 01 35 78 29 37 AB DE EF FA 10 EF 33"> </RequiredValue>
+	</eolvar>
+	<eolvar name="Unconfigure On RTC">
+		<!-- The commented fields below CANNOT be edited. Any edits will be ignored by the tool -->
+		<!-- Description>Test variable against expected value</Description -->
+		<!-- IntelRequired>False</IntelRequired -->
+		<!-- Dependencies></Dependencies -->
+		<!-- End of uneditable fields -->
+		<!-- Please edit the fields below ONLY with the State or ErrAction -->
+		<State>Disabled</State>
+		<ErrAction>ErrorContinue</ErrAction>
+		<RequiredValue format="Enabled/00/Disabled/01" example="Enabled"> </RequiredValue>
+	</eolvar>
+	<eolvar name="TLS Supported">
+		<!-- The commented fields below CANNOT be edited. Any edits will be ignored by the tool -->
+		<!-- Description>Test variable against expected value</Description -->
+		<!-- IntelRequired>False</IntelRequired -->
+		<!-- Dependencies></Dependencies -->
+		<!-- End of uneditable fields -->
+		<!-- Please edit the fields below ONLY with the State or ErrAction -->
+		<State>Disabled</State>
+		<ErrAction>ErrorContinue</ErrAction>
+		<RequiredValue format="No/00/Yes/01" example="No"> </RequiredValue>
+	</eolvar>
+	<eolvar name="Processor Emulation">
+		<!-- The commented fields below CANNOT be edited. Any edits will be ignored by the tool -->
+		<!-- Description>Test variable against expected value</Description -->
+		<!-- IntelRequired>False</IntelRequired -->
+		<!-- Dependencies></Dependencies -->
+		<!-- End of uneditable fields -->
+		<!-- Please edit the fields below ONLY with the State or ErrAction -->
+		<State>Disabled</State>
+		<ErrAction>ErrorContinue</ErrAction>
+		<RequiredValue format="No Emulation/00/vPro/01/Core/02/Celerno/03/Pentium/04/Xeon/05/Xeon Manageability Capable/06" example="No Emulation"> </RequiredValue>
+	</eolvar>
+	<eolvar name="PROC_MISSING">
+		<!-- The commented fields below CANNOT be edited. Any edits will be ignored by the tool -->
+		<!-- Description>Test variable against expected value</Description -->
+		<!-- IntelRequired>False</IntelRequired -->
+		<!-- Dependencies>MOBILE</Dependencies -->
+		<!-- End of uneditable fields -->
+		<!-- Please edit the fields below ONLY with the State or ErrAction -->
+		<State>Disabled</State>
+		<ErrAction>ErrorContinue</ErrAction>
+		<RequiredValue format="No onboard glue logic/ff" example="No onboard glue logic"> </RequiredValue>
+	</eolvar>
+	<eolvar name="PAVP Supported">
+		<!-- The commented fields below CANNOT be edited. Any edits will be ignored by the tool -->
+		<!-- Description>Test variable against expected value</Description -->
+		<!-- IntelRequired>False</IntelRequired -->
+		<!-- Dependencies></Dependencies -->
+		<!-- End of uneditable fields -->
+		<!-- Please edit the fields below ONLY with the State or ErrAction -->
+		<State>Disabled</State>
+		<ErrAction>ErrorContinue</ErrAction>
+		<RequiredValue format="No/00/Yes/01" example="No"> </RequiredValue>
+	</eolvar>
+	<eolvar name="OEMSkuRule">
+		<!-- The commented fields below CANNOT be edited. Any edits will be ignored by the tool -->
+		<!-- Description>Test variable against expected value</Description -->
+		<!-- IntelRequired>False</IntelRequired -->
+		<!-- Dependencies></Dependencies -->
+		<!-- End of uneditable fields -->
+		<!-- Please edit the fields below ONLY with the State or ErrAction -->
+		<State>Disabled</State>
+		<ErrAction>ErrorContinue</ErrAction>
+		<RequiredValue format="Hex number with 0x prefix." example="0x00000000"> </RequiredValue>
+	</eolvar>
+	<eolvar name="OEM Tag">
+		<!-- The commented fields below CANNOT be edited. Any edits will be ignored by the tool -->
+		<!-- Description>Test variable against expected value</Description -->
+		<!-- IntelRequired>False</IntelRequired -->
+		<!-- Dependencies></Dependencies -->
+		<!-- End of uneditable fields -->
+		<!-- Please edit the fields below ONLY with the State or ErrAction -->
+		<State>Disabled</State>
+		<ErrAction>ErrorContinue</ErrAction>
+		<RequiredValue format="Hex number with 0x prefix." example="0x00000000"> </RequiredValue>
+	</eolvar>
+	<eolvar name="MCTP Device Ports">
+		<!-- The commented fields below CANNOT be edited. Any edits will be ignored by the tool -->
+		<!-- Description>Test variable against expected value</Description -->
+		<!-- IntelRequired>False</IntelRequired -->
+		<!-- Dependencies></Dependencies -->
+		<!-- End of uneditable fields -->
+		<!-- Please edit the fields below ONLY with the State or ErrAction -->
+		<State>Disabled</State>
+		<ErrAction>ErrorContinue</ErrAction>
+		<RequiredValue format="Hex number with 0x prefix." example="0x00000000"> </RequiredValue>
+	</eolvar>
+	<eolvar name="LSPCON Port Config">
+		<!-- The commented fields below CANNOT be edited. Any edits will be ignored by the tool -->
+		<!-- Description>Test variable against expected value</Description -->
+		<!-- IntelRequired>False</IntelRequired -->
+		<!-- Dependencies></Dependencies -->
+		<!-- End of uneditable fields -->
+		<!-- Please edit the fields below ONLY with the State or ErrAction -->
+		<State>Disabled</State>
+		<ErrAction>ErrorContinue</ErrAction>
+		<RequiredValue format="32 hex pairs with space between pairs" example="04 AB F3 45 03 1D EF A2 B7 E8 98 79 10 45 AB DE F2 35 49 A0 01 35 78 29 37 AB DE EF FA 10 EF 33"> </RequiredValue>
+	</eolvar>
+	<eolvar name="LAN Power Well">
+		<!-- The commented fields below CANNOT be edited. Any edits will be ignored by the tool -->
+		<!-- Description>Test variable against expected value</Description -->
+		<!-- IntelRequired>False</IntelRequired -->
+		<!-- Dependencies></Dependencies -->
+		<!-- End of uneditable fields -->
+		<!-- Please edit the fields below ONLY with the State or ErrAction -->
+		<State>Disabled</State>
+		<ErrAction>ErrorContinue</ErrAction>
+		<RequiredValue format="CoreWell/00/SusWell/01/MEWell/02/SLP_LAN#(MGPIO3)/03" example="CoreWell"> </RequiredValue>
+	</eolvar>
+	<eolvar name="Intel(R) Precise Touch Technology Supported">
+		<!-- The commented fields below CANNOT be edited. Any edits will be ignored by the tool -->
+		<!-- Description>Test variable against expected value</Description -->
+		<!-- IntelRequired>False</IntelRequired -->
+		<!-- Dependencies></Dependencies -->
+		<!-- End of uneditable fields -->
+		<!-- Please edit the fields below ONLY with the State or ErrAction -->
+		<State>Disabled</State>
+		<ErrAction>ErrorContinue</ErrAction>
+		<RequiredValue format="No/00/Yes/01" example="No"> </RequiredValue>
+	</eolvar>
+	<eolvar name="Intel(R) PTT initial power-up state">
+		<!-- The commented fields below CANNOT be edited. Any edits will be ignored by the tool -->
+		<!-- Description>Test variable against expected value</Description -->
+		<!-- IntelRequired>False</IntelRequired -->
+		<!-- Dependencies></Dependencies -->
+		<!-- End of uneditable fields -->
+		<!-- Please edit the fields below ONLY with the State or ErrAction -->
+		<State>Disabled</State>
+		<ErrAction>ErrorContinue</ErrAction>
+		<RequiredValue format="Disabled/00/Enabled/01" example="Disabled"> </RequiredValue>
+	</eolvar>
+	<eolvar name="Intel(R) PTT Supported">
+		<!-- The commented fields below CANNOT be edited. Any edits will be ignored by the tool -->
+		<!-- Description>Test variable against expected value</Description -->
+		<!-- IntelRequired>False</IntelRequired -->
+		<!-- Dependencies></Dependencies -->
+		<!-- End of uneditable fields -->
+		<!-- Please edit the fields below ONLY with the State or ErrAction -->
+		<State>Enabled</State>
+		<ErrAction>ErrorContinue</ErrAction>
+		<RequiredValue format="Disabled/00/Enabled/01" example="Disabled">Enabled </RequiredValue>
+	</eolvar>
+	<eolvar name="Intel(R) ME Region Flash Protection Override">
+		<!-- The commented fields below CANNOT be edited. Any edits will be ignored by the tool -->
+		<!-- Description>Test variable against expected value</Description -->
+		<!-- IntelRequired>False</IntelRequired -->
+		<!-- Dependencies></Dependencies -->
+		<!-- End of uneditable fields -->
+		<!-- Please edit the fields below ONLY with the State or ErrAction -->
+		<State>Disabled</State>
+		<ErrAction>ErrorContinue</ErrAction>
+		<RequiredValue format="False/00/True/01" example="False"> </RequiredValue>
+	</eolvar>
+	<eolvar name="Intel(R) ME Network Services Supported">
+		<!-- The commented fields below CANNOT be edited. Any edits will be ignored by the tool -->
+		<!-- Description>Test variable against expected value</Description -->
+		<!-- IntelRequired>False</IntelRequired -->
+		<!-- Dependencies></Dependencies -->
+		<!-- End of uneditable fields -->
+		<!-- Please edit the fields below ONLY with the State or ErrAction -->
+		<State>Disabled</State>
+		<ErrAction>ErrorContinue</ErrAction>
+		<RequiredValue format="Yes/00/No/01" example="Yes"> </RequiredValue>
+	</eolvar>
+	<eolvar name="Intel(R) ME CLINK Signal">
+		<!-- The commented fields below CANNOT be edited. Any edits will be ignored by the tool -->
+		<!-- Description>Test variable against expected value</Description -->
+		<!-- IntelRequired>False</IntelRequired -->
+		<!-- Dependencies></Dependencies -->
+		<!-- End of uneditable fields -->
+		<!-- Please edit the fields below ONLY with the State or ErrAction -->
+		<State>Disabled</State>
+		<ErrAction>ErrorContinue</ErrAction>
+		<RequiredValue format="Disabled/00/Enabled/01" example="Disabled"> </RequiredValue>
+	</eolvar>
+	<eolvar name="Integrated Sensor Hub Supported">
+		<!-- The commented fields below CANNOT be edited. Any edits will be ignored by the tool -->
+		<!-- Description>Test variable against expected value</Description -->
+		<!-- IntelRequired>False</IntelRequired -->
+		<!-- Dependencies></Dependencies -->
+		<!-- End of uneditable fields -->
+		<!-- Please edit the fields below ONLY with the State or ErrAction -->
+		<State>Disabled</State>
+		<ErrAction>ErrorContinue</ErrAction>
+		<RequiredValue format="Disabled/00/Enabled/01" example="Disabled"> </RequiredValue>
+	</eolvar>
+	<eolvar name="Firmware Update OEM ID">
+		<!-- The commented fields below CANNOT be edited. Any edits will be ignored by the tool -->
+		<!-- Description>Test variable against expected value</Description -->
+		<!-- IntelRequired>False</IntelRequired -->
+		<!-- Dependencies></Dependencies -->
+		<!-- End of uneditable fields -->
+		<!-- Please edit the fields below ONLY with the State or ErrAction -->
+		<State>Disabled</State>
+		<ErrAction>ErrorContinue</ErrAction>
+		<RequiredValue format="Hex" example="00000000-0000-0000-0000-000000000000"> </RequiredValue>
+	</eolvar>
+	<eolvar name="Firmware Dynamic Application Loader Supported">
+		<!-- The commented fields below CANNOT be edited. Any edits will be ignored by the tool -->
+		<!-- Description>Test variable against expected value</Description -->
+		<!-- IntelRequired>False</IntelRequired -->
+		<!-- Dependencies></Dependencies -->
+		<!-- End of uneditable fields -->
+		<!-- Please edit the fields below ONLY with the State or ErrAction -->
+		<State>Disabled</State>
+		<ErrAction>ErrorContinue</ErrAction>
+		<RequiredValue format="No/00/Yes/01" example="No"> </RequiredValue>
+	</eolvar>
+	<eolvar name="FeatureShipState">
+		<!-- The commented fields below CANNOT be edited. Any edits will be ignored by the tool -->
+		<!-- Description>Test variable against expected value</Description -->
+		<!-- IntelRequired>False</IntelRequired -->
+		<!-- Dependencies></Dependencies -->
+		<!-- End of uneditable fields -->
+		<!-- Please edit the fields below ONLY with the State or ErrAction -->
+		<State>Disabled</State>
+		<ErrAction>ErrorContinue</ErrAction>
+		<RequiredValue format="Hex number with 0x prefix." example="0x00000000"> </RequiredValue>
+	</eolvar>
+	<eolvar name="FWUpdLcl">
+		<!-- The commented fields below CANNOT be edited. Any edits will be ignored by the tool -->
+		<!-- Description>Test variable against expected value</Description -->
+		<!-- IntelRequired>False</IntelRequired -->
+		<!-- Dependencies></Dependencies -->
+		<!-- End of uneditable fields -->
+		<!-- Please edit the fields below ONLY with the State or ErrAction -->
+		<State>Disabled</State>
+		<ErrAction>ErrorContinue</ErrAction>
+		<RequiredValue format="Disabled/00/Enabled/01/Full and Partial disabled/03" example="Disabled"> </RequiredValue>
+	</eolvar>
+	<eolvar name="End of Manufacturing Enable">
+		<!-- The commented fields below CANNOT be edited. Any edits will be ignored by the tool -->
+		<!-- Description>Test variable against expected value</Description -->
+		<!-- IntelRequired>False</IntelRequired -->
+		<!-- Dependencies></Dependencies -->
+		<!-- End of uneditable fields -->
+		<!-- Please edit the fields below ONLY with the State or ErrAction -->
+		<State>Enabled</State>
+		<ErrAction>ErrorContinue</ErrAction>
+		<RequiredValue format="No/00/Yes/01" example="No">Yes </RequiredValue>
+	</eolvar>
+	<eolvar name="Delayed Authentication Mode Config">
+		<!-- The commented fields below CANNOT be edited. Any edits will be ignored by the tool -->
+		<!-- Description>Test variable against expected value</Description -->
+		<!-- IntelRequired>False</IntelRequired -->
+		<!-- Dependencies></Dependencies -->
+		<!-- End of uneditable fields -->
+		<!-- Please edit the fields below ONLY with the State or ErrAction -->
+		<State>Disabled</State>
+		<ErrAction>ErrorContinue</ErrAction>
+		<RequiredValue format="Disabled/00/Enabled/01" example="Disabled"> </RequiredValue>
+	</eolvar>
+	<eolvar name="Debug Override Production Silicon">
+		<!-- The commented fields below CANNOT be edited. Any edits will be ignored by the tool -->
+		<!-- Description>Test variable against expected value</Description -->
+		<!-- IntelRequired>False</IntelRequired -->
+		<!-- Dependencies></Dependencies -->
+		<!-- End of uneditable fields -->
+		<!-- Please edit the fields below ONLY with the State or ErrAction -->
+		<State>Disabled</State>
+		<ErrAction>ErrorContinue</ErrAction>
+		<RequiredValue format="Hex number with 0x prefix." example="0x00000000"> </RequiredValue>
+	</eolvar>
+	<eolvar name="Debug Override Pre-Production Silicon">
+		<!-- The commented fields below CANNOT be edited. Any edits will be ignored by the tool -->
+		<!-- Description>Test variable against expected value</Description -->
+		<!-- IntelRequired>False</IntelRequired -->
+		<!-- Dependencies></Dependencies -->
+		<!-- End of uneditable fields -->
+		<!-- Please edit the fields below ONLY with the State or ErrAction -->
+		<State>Disabled</State>
+		<ErrAction>ErrorContinue</ErrAction>
+		<RequiredValue format="Hex number with 0x prefix." example="0x00000000"> </RequiredValue>
+	</eolvar>
+	<eolvar name="Automatic Built in Self Test">
+		<!-- The commented fields below CANNOT be edited. Any edits will be ignored by the tool -->
+		<!-- Description>Test variable against expected value</Description -->
+		<!-- IntelRequired>False</IntelRequired -->
+		<!-- Dependencies></Dependencies -->
+		<!-- End of uneditable fields -->
+		<!-- Please edit the fields below ONLY with the State or ErrAction -->
+		<State>Disabled</State>
+		<ErrAction>ErrorContinue</ErrAction>
+		<RequiredValue format="Disabled/00/Enabled/01" example="Disabled"> </RequiredValue>
+	</eolvar>
+	<!-- END OF EOL VAR TESTS -->
+</memanuf_config>

@@ -1,0 +1,202 @@
+From b2fddc2409b8f4e50cca4b4677aaa913ada6e448 Mon Sep 17 00:00:00 2001
+From: Guy Zadicario <guy.zadicario@intel.com>
+Date: Wed, 1 Apr 2020 14:53:56 +0300
+Subject: [PATCH v3 13/20] misc: nnpi: ipc statistics counters
+
+Added counters for command and responses h/w queue activity
+useful for debug and performance tuning.
+
+Enabled by: echo 1 > /sys/class/nnpi/nnpi%d/ipc_counters
+View by: cat /sys/class/nnpi/nnpi%d/ipc_counters
+
+Signed-off-by: Guy Zadicario <guy.zadicario@intel.com>
+---
+ drivers/misc/intel-nnpi/device.c       | 27 +++++++++++++-
+ drivers/misc/intel-nnpi/device.h       | 29 +++++++++++++++
+ drivers/misc/intel-nnpi/device_sysfs.c | 49 ++++++++++++++++++++++++++
+ 3 files changed, 104 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/misc/intel-nnpi/device.c b/drivers/misc/intel-nnpi/device.c
+index b3bc4736681d..bcef08d57130 100644
+--- a/drivers/misc/intel-nnpi/device.c
++++ b/drivers/misc/intel-nnpi/device.c
+@@ -25,6 +25,7 @@
+ #include "cmd_chan.h"
+ #include "ipc_c2h_events.h"
+ #include "device_sysfs.h"
++#include "nnp_time.h"
+ 
+ static u32 s_num_devices;
+ static DEFINE_MUTEX(s_device_num_mutex);
+@@ -815,6 +816,8 @@ int nnpdrv_device_process_messages(struct nnp_device *nnpdev,
+ 	int j = 0;
+ 	u64 *msg;
+ 	u32 nof_msg;
++	u64 start_time;
++	bool sw_counter_enable = nnpdev->counters.ipc.enable;
+ 	bool fatal_protocol_error = false;
+ 	int ret;
+ 
+@@ -822,6 +825,11 @@ int nnpdrv_device_process_messages(struct nnp_device *nnpdev,
+ 	if ((nnpdev->state & NNP_DEVICE_PROTOCOL_ERROR) != 0)
+ 		return hw_nof_msg;
+ 
++	if (sw_counter_enable)
++		start_time = nnp_time_us();
++	else
++		start_time = 0;
++
+ 	/*
+ 	 * if we have pending messages from previous round
+ 	 * copy the new messages to the pending list and process
+@@ -952,6 +960,12 @@ int nnpdrv_device_process_messages(struct nnp_device *nnpdev,
+ 		nnpdev->response_num_msgs = 0;
+ 	}
+ 
++	if (sw_counter_enable) {
++		nnpdev->counters.ipc.responses_count += j;
++		nnpdev->counters.ipc.responses_consume_time +=
++			(nnp_time_us() - start_time);
++	}
++
+ 	return hw_nof_msg;
+ }
+ 
+@@ -959,8 +973,19 @@ static int cmdq_sched_handler(u64 *msg, int size, void *hw_data)
+ {
+ 	struct nnp_device *nnpdev = (struct nnp_device *)hw_data;
+ 	int ret;
++	u64 wait_time;
++	u64 *timed_wait = NULL;
+ 
+-	ret = nnpdev->hw_ops->write_mesg(nnpdev->hw_handle, msg, size, NULL);
++	if (nnpdev->counters.ipc.enable)
++		timed_wait = &wait_time;
++
++	ret = nnpdev->hw_ops->write_mesg(nnpdev->hw_handle,
++					 msg, size, timed_wait);
++
++	if (ret == 0 && timed_wait) {
++		nnpdev->counters.ipc.commands_sent_count += size;
++		nnpdev->counters.ipc.commands_wait_time += wait_time;
++	}
+ 
+ 	return ret;
+ }
+diff --git a/drivers/misc/intel-nnpi/device.h b/drivers/misc/intel-nnpi/device.h
+index 3befd5229551..fa4201f7ad86 100644
+--- a/drivers/misc/intel-nnpi/device.h
++++ b/drivers/misc/intel-nnpi/device.h
+@@ -66,6 +66,30 @@ struct host_crash_dump {
+ };
+ 
+ struct nnp_device_counters {
++	struct {
++		int enable;
++		u64 commands_wait_time;  /*
++					  * Total time spend waiting for free
++					  * slots in h/w command queue
++					  */
++		u64 commands_sent_count; /*
++					  * Number of commands sent on the h/w
++					  * command queue
++					  */
++		u64 commands_sched_count; /*
++					   * Number of commands scheduled to
++					   * be sent to h/w queue
++					   */
++		u64 responses_consume_time; /*
++					     * Total time spent reading
++					     * responses from h/w queue
++					     */
++		u64 responses_count;  /*
++				       * Total number of responses received
++				       * from device
++				       */
++	} ipc;
++
+ 	struct {
+ 		u64 os_crashed;  /*
+ 				  * Number of times device needed to be reset
+@@ -191,6 +215,11 @@ static inline int nnpdrv_msg_scheduler_queue_add_msg(
+ 					struct msg_scheduler_queue *queue,
+ 					u64 *msg, int size)
+ {
++	struct nnp_device *nnpdev = (struct nnp_device *)queue->device_hw_data;
++
++	if (nnpdev->counters.ipc.enable)
++		nnpdev->counters.ipc.commands_sched_count++;
++
+ 	return msg_scheduler_queue_add_msg(queue, msg, size);
+ }
+ 
+diff --git a/drivers/misc/intel-nnpi/device_sysfs.c b/drivers/misc/intel-nnpi/device_sysfs.c
+index 342ed360d1f9..af7b392bed73 100644
+--- a/drivers/misc/intel-nnpi/device_sysfs.c
++++ b/drivers/misc/intel-nnpi/device_sysfs.c
+@@ -688,6 +688,54 @@ static ssize_t crashlog_size_show(struct device           *dev,
+ }
+ static DEVICE_ATTR_RO(crashlog_size);
+ 
++static ssize_t ipc_counters_show(struct device           *dev,
++				 struct device_attribute *attr,
++				 char                    *buf)
++{
++	struct nnp_device *nnpdev;
++	ssize_t ret = 0;
++
++	nnpdev = (struct nnp_device *)dev_get_drvdata(dev);
++	if (!nnpdev)
++		return -EINVAL;
++
++	ret += snprintf(&buf[ret], PAGE_SIZE - ret, "enable: %d\n",
++			nnpdev->counters.ipc.enable);
++	ret += snprintf(&buf[ret], PAGE_SIZE - ret, "cmd_wait_time: %llu\n",
++			nnpdev->counters.ipc.commands_wait_time);
++	ret += snprintf(&buf[ret], PAGE_SIZE - ret, "cmd_sent_count: %llu\n",
++			nnpdev->counters.ipc.commands_sent_count);
++	ret += snprintf(&buf[ret], PAGE_SIZE - ret, "cmd_sched_count: %llu\n",
++			nnpdev->counters.ipc.commands_sched_count);
++	ret += snprintf(&buf[ret], PAGE_SIZE - ret, "resp_consume_time: %llu\n",
++			nnpdev->counters.ipc.responses_consume_time);
++	ret += snprintf(&buf[ret], PAGE_SIZE - ret, "resp_count: %llu\n",
++			nnpdev->counters.ipc.responses_count);
++
++	return ret;
++}
++
++static ssize_t ipc_counters_store(struct device           *dev,
++				  struct device_attribute *attr,
++				  const char              *buf,
++				  size_t                   count)
++{
++	struct nnp_device *nnpdev;
++	unsigned long val;
++
++	nnpdev = (struct nnp_device *)dev_get_drvdata(dev);
++	if (!nnpdev)
++		return -EINVAL;
++
++	if (kstrtoul(buf, 0, &val) < 0)
++		return -EINVAL;
++
++	nnpdev->counters.ipc.enable = (val != 0);
++
++	return count;
++}
++static DEVICE_ATTR_RW(ipc_counters);
++
+ static ssize_t uncorr_counters_show(struct device           *dev,
+ 				    struct device_attribute *attr,
+ 				    char                    *buf)
+@@ -762,6 +810,7 @@ static struct attribute *nnp_dev_attrs[] = {
+ 	&dev_attr_boot_state.attr,
+ 	&dev_attr_boot_fail_reason.attr,
+ 	&dev_attr_card_state.attr,
++	&dev_attr_ipc_counters.attr,
+ 	&dev_attr_uncorr_counters.attr,
+ 	&dev_attr_corr_counters.attr,
+ 	NULL
+-- 
+2.22.0
+

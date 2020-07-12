@@ -311,7 +311,7 @@ typedef std::vector<shm_values_map_info::ptr> shm_map_vec;
 class counters_values {
 public:
 	typedef std::shared_ptr<counters_values> ptr;
-	typedef std::map<int, counters_values::ptr> map;
+	typedef std::map<int64_t, counters_values::ptr> map;
 
 	/**
 	 * @brief creates a tree of all values objects
@@ -414,12 +414,12 @@ public:
 	/**
 	 * @brief sets the counters_values object of specific object id
 	 */
-	bool set_values(uint32_t id, counters_values::ptr vals);
+	bool set_values(int64_t id, counters_values::ptr vals);
 
 	/**
 	 * @brief retrieve a pointer to one counters_values object
 	 */
-	counters_values::ptr get_values(uint32_t id = 0)
+	counters_values::ptr get_values(int64_t id = 0)
 	{
 		if (m_vals.get() != nullptr)
 			return m_vals;
@@ -477,6 +477,7 @@ public:
 	 */
 	void load_stale_values(const std::string       dirpath,
 			       counters_info_node::ptr info,
+			       int64_t                 stale_id,
 			       int                     orig_obj_id);
 
 	/**
@@ -505,9 +506,9 @@ private:
 				const std::string &dirname,
 				void              *ctx);
 
-	bool load_um_tree(const char *shm_name = nullptr);
+	bool load_um_tree(const char *shm_name = nullptr, bool unlink_if_empty = false);
 
-	typedef std::map<int, counters_values_node::map>         map_vec;
+	typedef std::map<int64_t, counters_values_node::map>         map_vec;
 
 private:
 	const counters_info_node::ptr   m_info;

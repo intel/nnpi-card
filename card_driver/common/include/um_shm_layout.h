@@ -74,12 +74,14 @@ struct um_shm_counters_set {
 	//
 	uint64_t     values_changed_count;       // increments when values
 						 // object is created or destroyed
+	int64_t      next_obj_id;
 	uint64_t           min_sync_point;
 	struct um_shm_list sync_clients;
 };
 
 struct um_shm_values_block {
-	uint32_t         obj_id;
+	int64_t          obj_id;
+	uint32_t         orig_obj_id;
 	uint32_t         mapped_count;
 
 	struct {

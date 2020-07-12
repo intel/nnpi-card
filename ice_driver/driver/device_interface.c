@@ -156,9 +156,10 @@ struct di_job {
 #define TLC_ATU_MAPPING 3
 #define MAX_DEBUGFS_REG_NR 14
 
+#ifdef _DEBUG
 static void __dump_mmu_pmon(struct cve_device *ice);
 static void __dump_delphi_pmon(struct cve_device *ice);
-
+#endif
 
 /* INTERNAL FUNCTIONS */
 /*
@@ -1950,11 +1951,17 @@ void cve_di_interrupt_handler_deferred_proc(struct idc_device *dev)
 		}
 		if (dg->dump_ice_mmu_pmon) {
 			get_ice_mmu_pmon_regs(cve_dev);
+
+			#ifdef _DEBUG
 			__dump_mmu_pmon(cve_dev);
+			#endif
 		}
 		if (dg->dump_ice_delphi_pmon) {
 			get_ice_delphi_pmon_regs(cve_dev);
+
+			#ifdef _DEBUG
 			__dump_delphi_pmon(cve_dev);
+			#endif
 		}
 
 handle_interrupt_check_completion:
@@ -2404,12 +2411,13 @@ uint16_t cve_di_get_cdyn_val(cve_di_job_handle_t hjob)
 	return job->cdyn_val;
 }
 
+#ifdef _DEBUG
 static void __dump_mmu_pmon(struct cve_device *ice)
 {
 	int i = 0;
 
 	for (i = 0; i < ICE_MAX_MMU_PMON; i++) {
-		cve_os_dev_log_default(CVE_LOGLEVEL_INFO,
+		cve_os_dev_log(CVE_LOGLEVEL_INFO,
 		ice->dev_index,
 		"%s\t:%u\n",
 		ice->mmu_pmon[i].pmon_name,
@@ -2438,7 +2446,7 @@ static void __dump_delphi_pmon(struct cve_device *ice)
 		case ICE_DELPHI_PMON_CNN_COMPUTE_CYCLES:
 		case ICE_DELPHI_PMON_CNN_OUTPUT_WRITE_CYCLES:
 
-			cve_os_dev_log_default(CVE_LOGLEVEL_INFO,
+			cve_os_dev_log(CVE_LOGLEVEL_INFO,
 				ice->dev_index,
 				"%s\t:%u\n",
 				ice->delphi_pmon[i].pmon_name,
@@ -2448,7 +2456,7 @@ static void __dump_delphi_pmon(struct cve_device *ice)
 		case ICE_DELPHI_PMON_CYCLES_COUNT_OVERFLOW:
 			perf_status_reg.val = ice->delphi_pmon[i].pmon_value;
 
-				cve_os_dev_log_default(CVE_LOGLEVEL_INFO,
+				cve_os_dev_log(CVE_LOGLEVEL_INFO,
 					ice->dev_index,
 				"Per_Layer_Cycles_Overflow\t:%u\nTotal_Cycles_Overflow\t:%u\n",
 				perf_status_reg.field.per_lyr_cyc_cnt_saturated,
@@ -2458,7 +2466,7 @@ static void __dump_delphi_pmon(struct cve_device *ice)
 		case ICE_DELPHI_PMON_GEMM_CNN_STARTUP:
 			startup_cnt_reg.val = ice->delphi_pmon[i].pmon_value;
 
-				cve_os_dev_log_default(CVE_LOGLEVEL_INFO,
+				cve_os_dev_log(CVE_LOGLEVEL_INFO,
 					ice->dev_index,
 				"CNN_Startup_Count\t:%u\nGemm_Startup_Count\t:%u\n",
 				startup_cnt_reg.field.pe_startup_perf_cnt,
@@ -2469,7 +2477,7 @@ static void __dump_delphi_pmon(struct cve_device *ice)
 		case ICE_DELPHI_PMON_CONFIG_CREDIT_LATENCY:
 			latency_cnt_reg.val = ice->delphi_pmon[i].pmon_value;
 
-				cve_os_dev_log_default(CVE_LOGLEVEL_INFO,
+				cve_os_dev_log(CVE_LOGLEVEL_INFO,
 					ice->dev_index,
 				"Credit_Reset_Latency_Count\t:%u\nCfg_Latency_Count\t:%u\n",
 				latency_cnt_reg.field.
@@ -2480,7 +2488,7 @@ static void __dump_delphi_pmon(struct cve_device *ice)
 		case ICE_DELPHI_PMON_PERF_COUNTERS_OVR_FLW:
 			ovr_flow_reg.val = ice->delphi_pmon[i].pmon_value;
 
-				cve_os_dev_log_default(CVE_LOGLEVEL_INFO,
+				cve_os_dev_log(CVE_LOGLEVEL_INFO,
 					ice->dev_index,
 				"CNN_Startup_Overflow\t:%u\nGemm_Startup_Overflow\t:%u\nGemm_Compute_Overflow\t:%u\nGemm_Teardown_Overflow\t:%u\nCNN_Compute_Overflow\t:%u\nCNN_Teardown_Overflow\t:%u\nCredit_Reset_latency_Overflow\t:%u\nCfg_Latency_Overflow\t:%u\n",
 			ovr_flow_reg.field.pe_startup_perf_cnt_ovr_flow,
@@ -2500,7 +2508,7 @@ static void __dump_delphi_pmon(struct cve_device *ice)
 		}
 	}
 }
-
+#endif
 
 /* Update network's shared read error if exists */
 u32 ice_di_is_shared_read_error(struct cve_device *dev)

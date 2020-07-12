@@ -811,7 +811,11 @@ static void inf_copy_req_complete(struct inf_exec_req *req,
 	}
 
 	if (unlikely(err < 0)) {
-		sph_log_err(EXECUTE_COMMAND_LOG, "Execute copy failed with err=%d\n", err);
+		sph_log_err(EXECUTE_COMMAND_LOG, "Execute copy failed with err=%d (contextID=%u, copyID=%u, cmdlist=%d, isC2H=%d)\n", err,
+			copy->context->protocol_id,
+			copy->protocol_id,
+			cmd ? (int)(cmd->protocol_id) : -1,
+			copy->card2Host);
 		switch (err) {
 		case -ENOMEM:
 			event_val = NNP_IPC_NO_MEMORY;

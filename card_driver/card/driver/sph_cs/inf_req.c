@@ -836,7 +836,11 @@ void inf_req_complete(struct inf_exec_req *req,
 			event_val = NNP_IPC_RUNTIME_FAILED;
 		}
 
-		sph_log_err(EXECUTE_COMMAND_LOG, "Got Error. errno: %d, event_val=%u\n", err, event_val);
+		sph_log_err(EXECUTE_COMMAND_LOG, "Got Error. errno: %d, event_val=%u (contextID=%u, netID=%u, inferID=%u, cmdlist=%d)\n", err, event_val,
+			infreq->devnet->context->protocol_id,
+			infreq->devnet->protocol_id,
+			infreq->protocol_id,
+			cmd ? (int)(cmd->protocol_id) : -1);
 
 		treat_infreq_failure(req, event_val, error_msg, error_msg_size);
 

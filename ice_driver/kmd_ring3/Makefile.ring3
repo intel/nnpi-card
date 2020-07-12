@@ -167,7 +167,7 @@ endif
 
 $(DEPENDS):
 	mkdir -p $(OUTPUTDIR)
-	python make_depends.py $(OUTPUTDIR) $(CFLAGS) -- $(SRCS) > $@
+	python2 make_depends.py $(OUTPUTDIR) $(CFLAGS) -- $(SRCS) > $@
 
 clean:
 ifneq ($(NOCORALCOMPILE),1)

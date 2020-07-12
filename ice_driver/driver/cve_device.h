@@ -838,6 +838,7 @@ struct ice_network {
 	/* Ice error status*/
 	u64 ice_err_status;
 	u32 ice_error_status[MAX_CVE_DEVICES_NR];
+	s32 ice_vir_phy_map[MAX_CVE_DEVICES_NR];
 	bool reset_ntw;
 	bool reserved_on_error;
 
@@ -1097,6 +1098,8 @@ struct cve_completion_event {
 	u32 shared_read_err_status;
 	/* Ice error status*/
 	u32 ice_error_status[MAX_CVE_DEVICES_NR];
+	/* Ice Map; Virtual to physical */
+	s32 ice_vir_phy_map[MAX_CVE_DEVICES_NR];
 	/* Ntw reset / Card Reset / No Reset */
 	enum ice_error_severity err_severity;
 };

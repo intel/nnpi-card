@@ -9,10 +9,8 @@
 /*
  * Value fields of card->host doorbell status register HOST_PCI_DOORBELL_VALUE
  */
-#define NNP_CARD_BOOT_STATE_MASK            0xf
+#define NNP_CARD_BOOT_STATE_MASK            0xff
 #define NNP_CARD_BOOT_STATE_SHIFT           0
-#define NNP_CARD_BIOS_UPDATE_STATE_MASK     0xf0
-#define NNP_CARD_BIOS_UPDATE_STATE_SHIFT    4
 #define NNP_CARD_BIOS_UPDATE_COUNTER_MASK   0xf00
 #define NNP_CARD_BIOS_UPDATE_COUNTER_SHIFT  8
 #define NNP_CARD_ERROR_MASK                 0xf000
@@ -23,19 +21,20 @@
 /* Possible values for card boot state */
 #define NNP_CARD_BOOT_STATE_NOT_READY       0  /* bios has not yet initialized */
 #define NNP_CARD_BOOT_STATE_BIOS_READY      1  /* bios initilaized and waiting for os boot image over pci */
-#define NNP_CARD_BOOT_STATE_BIOS_READY_EMMC 2  /* bios initilaized and is booting from EMMC */
+#define NNP_CARD_BOOT_STATE_RECOVERY_BIOS_READY 2  /* recovery bios initilaized, waiting for capsule update */
 #define NNP_CARD_BOOT_STATE_BOOT_STARTED    3  /* bios copied boot image successfully, os boot has started */
 #define NNP_CARD_BOOT_STATE_DRV_READY       4  /* card has booted and card driver has loaded */
 #define NNP_CARD_BOOT_STATE_CARD_READY      8  /* card driver finished initialization and user space daemon has started */
 #define NNP_CARD_BOOT_STATE_BIOS_SYSINFO_READY 10  /* bios copied data into the system info structure */
+#define NNP_CARD_BOOT_STATE_BIOS_FLASH_STARTED 0x20
 
-/* Possible values for card bios update state */
-#define NNP_CARD_BIOS_UPDATE_STATE_NOT_READY     0  /* bios has not yer initialized or bios update is not needed */
-#define NNP_CARD_BIOS_UPDATE_BIOS_READY          1  /* bios is waiting for bios image before starting bios update */
-#define NNP_CARD_BIOS_UPDATE_WRITING_SPI         2  /* bios started writing image to SPI memory */
-#define NNP_CARD_BIOS_UPDATE_DONE                3  /* bios image updated successfully in SPI */
-
-
+/* Possible card error values */
+#define NNP_CARD_ERROR_HOST_ERROR           1
+#define NNP_CARD_ERROR_BOOT_PARAMS          2
+#define NNP_CARD_ERROR_IMAGE_COPY           3
+#define NNP_CARD_ERROR_CORRUPTED_IMAGE      4
+#define NNP_CARD_ERROR_NOT_CAPSULE          8
+#define NNP_CARD_ERROR_CAPSULE_FAILED       9
 /*
  * Value fields of host->card doorbell status register PCI_HOST_DOORBELL_VALUE
  */

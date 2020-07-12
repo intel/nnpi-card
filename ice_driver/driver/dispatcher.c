@@ -254,6 +254,7 @@ static void copy_event_data_and_remove(cve_context_process_id_t context_pid,
 	u64 *icedc_err_status = (uint64_t *)&data->icedc_err_status;
 	u64 *ice_err_status = (uint64_t *)&data->ice_err_status;
 	u32 *ice_error_status = (uint32_t *)&data->ice_error_status;
+	u32 *ice_vir_phy_map = (uint32_t *)&data->ice_vir_phy_map;
 	u32 *shared_read_err_status = &data->shared_read_err_status;
 	int i;
 	union icedc_intr_status_t reg;
@@ -295,6 +296,8 @@ static void copy_event_data_and_remove(cve_context_process_id_t context_pid,
 		union mmio_hub_mem_interrupt_mask_t ice_status;
 
 		total_time[i] = event->total_time[i];
+
+		ice_vir_phy_map[i] = event->ice_vir_phy_map[i];
 
 		ice_status.val = event->ice_error_status[i];
 
@@ -1179,6 +1182,13 @@ int ice_ds_dispatch_jg(struct jobgroup_descriptor *jobgroup)
 				goto exit;
 		}
 
+		if (job->graph_ice_id < NUM_ICE_UNIT) {
+			ntw->ice_vir_phy_map[job->graph_ice_id] =
+				job->hw_ice_id;
+		} else {
+			ntw->ice_vir_phy_map[i] = job->hw_ice_id;
+		}
+
 		ice_mask |= (1 << dev->dev_index);
 		cve_os_log(CVE_LOGLEVEL_DEBUG,
 			"JobID=0x%lx will be executed on ICE-%u\n",
@@ -1417,6 +1427,17 @@ int ice_ds_raise_event(struct ice_network *ntw,
 			"Safelib memcpy Failed %d\n", ret);
 			return ret;
 		}
+
+		ret = ice_memcpy_s(event.ice_vir_phy_map,
+			MAX_CVE_DEVICES_NR * sizeof(event.ice_vir_phy_map[0]),
+			ntw->ice_vir_phy_map,
+			MAX_CVE_DEVICES_NR * sizeof(event.ice_vir_phy_map[0]));
+		if (ret < 0) {
+			cve_os_log(CVE_LOGLEVEL_ERROR,
+			"Safelib memcpy Failed %d\n", ret);
+			return ret;
+		}
+
 		event.max_ice_cycle = max_ice_cycle;
 
 		if (dg->icedc_state == ICEDC_STATE_CARD_RESET_REQUIRED) {
@@ -1436,6 +1457,16 @@ int ice_ds_raise_event(struct ice_network *ntw,
 	ret = ice_memset_s(ntw->ntw_exec_time,
 			MAX_CVE_DEVICES_NR * sizeof(ntw->ntw_exec_time[0]), 0,
 			MAX_CVE_DEVICES_NR * sizeof(ntw->ntw_exec_time[0]));
+	if (ret < 0) {
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+				"Safelib memset failed %d\n", ret);
+		return ret;
+	}
+
+	/* reset execution time before scheduling another inference */
+	ret = ice_memset_s(ntw->ice_vir_phy_map,
+		MAX_CVE_DEVICES_NR * sizeof(ntw->ice_vir_phy_map[0]), -1,
+		MAX_CVE_DEVICES_NR * sizeof(ntw->ice_vir_phy_map[0]));
 	if (ret < 0) {
 		cve_os_log(CVE_LOGLEVEL_ERROR,
 				"Safelib memset failed %d\n", ret);
@@ -2593,6 +2624,7 @@ static int __process_network_desc(
 	for (i = 0; i < MAX_CVE_DEVICES_NR; i++) {
 		ntw->ntw_exec_time[i] = 0;
 		ntw->ice_error_status[i] = 0;
+		ntw->ice_vir_phy_map[i] = -1;
 	}
 	for (i = 0; i < ICE_CLOS_MAX; i++)
 		ntw->clos[i] = network_desc->llc_size[i];

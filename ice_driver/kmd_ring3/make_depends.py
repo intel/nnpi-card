@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python2
 #
 # NNP-I Linux Driver
 # Copyright (c) 2017-2019, Intel Corporation.

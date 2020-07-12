@@ -1,0 +1,122 @@
+From dbdeaef97f371c0381c624b658f8d936a8704a35 Mon Sep 17 00:00:00 2001
+From: Guy Zadicario <guy.zadicario@intel.com>
+Date: Mon, 27 Apr 2020 12:02:21 +0300
+Subject: [PATCH v3 20/20] misc: nnpi: Added hostres_min_order module parameter
+
+This patch adds a module parameter to allow use compound page
+allocations when allocating host resource.
+
+This is useful in situations where large host resources are
+needed, countinous physical address is not required but DMA
+performance measured to be 3-8% slower for sparsed large buffers.
+
+The allocator will try to allocate with order of 'hostres_min_order'
+or less when resource size is smaller or allocation fails.
+Default value of hostres_min_order is 0.
+---
+ drivers/misc/intel-nnpi/hostres.c | 45 +++++++++++++++++++++++++------
+ 1 file changed, 37 insertions(+), 8 deletions(-)
+
+diff --git a/drivers/misc/intel-nnpi/hostres.c b/drivers/misc/intel-nnpi/hostres.c
+index e26732f06e06..89782b8a9562 100644
+--- a/drivers/misc/intel-nnpi/hostres.c
++++ b/drivers/misc/intel-nnpi/hostres.c
+@@ -73,6 +73,9 @@ struct nnpdrv_host_resource {
+ NNP_STATIC_ASSERT(NENTS_PER_PAGE >= 1,
+ 		  "There should be place for at least 1 DMA chunk addr in every DMA chain page");
+ 
++static int hostres_min_order;
++module_param(hostres_min_order, int, 0600);
++
+ static atomic64_t s_total_hostres_size;
+ 
+ /* Destroys DMA page list of DMA addresses */
+@@ -95,7 +98,7 @@ static void release_hostres(struct kref *kref)
+ 		container_of(kref,
+ 			     struct nnpdrv_host_resource,
+ 			     ref);
+-	unsigned int i;
++	unsigned int i, n, order;
+ 
+ 	NNP_ASSERT(list_empty(&r->devices));
+ 
+@@ -106,9 +109,11 @@ static void release_hostres(struct kref *kref)
+ 	}
+ 
+ 	if (!r->user_memory_buf) {
+-		for (i = 0; i < r->n_pages; i++) {
++		for (i = 0; i < r->n_pages; i += n) {
+ 			NNP_ASSERT(r->pages[i]);
+-			__free_page(r->pages[i]);
++			order = compound_order(r->pages[i]);
++			n = (1u << order);
++			__free_pages(r->pages[i], order);
+ 		}
+ 		vfree(r->pages);
+ 	} else {
+@@ -219,7 +224,8 @@ int nnpdrv_hostres_create(size_t                        size,
+ {
+ 	int err;
+ 	struct nnpdrv_host_resource *r;
+-	unsigned int i;
++	unsigned int i, j, n;
++	unsigned int order;
+ 
+ 	if (!out_resource || size == 0 || dir == DMA_NONE)
+ 		return -EINVAL;
+@@ -245,14 +251,35 @@ int nnpdrv_hostres_create(size_t                        size,
+ 		goto free_res;
+ 	}
+ 
+-	for (i = 0; i < r->n_pages; i++) {
+-		r->pages[i] = alloc_page(GFP_KERNEL | __GFP_COMP);
++	order = hostres_min_order;
++	n = (1u << order);
++
++	for (i = 0; i < r->n_pages; i += n) {
++		while (order > 0 && (r->n_pages - i < n)) {
++			order--;
++			n >>= 1;
++		}
++
++		do {
++			r->pages[i] = alloc_pages(GFP_KERNEL | __GFP_COMP,
++						  order);
++			if (!r->pages[i] && order > 0) {
++				order--;
++				n >>= 1;
++			} else {
++				break;
++			}
++		} while (1);
++
+ 		if (!r->pages[i]) {
+ 			nnp_log_err(CREATE_COMMAND_LOG,
+ 				    "failed to alloc page%u\n", i);
+ 			err = -ENOMEM;
+ 			goto free_pages;
+ 		}
++
++		for (j = 1; j < n; j++)
++			r->pages[i + j] = r->pages[i] + j;
+ 	}
+ 	/* adjacent pages can be joined to 1 chunk */
+ 	sort(r->pages, r->n_pages, sizeof(r->pages[0]), cmp_pfn, NULL);
+@@ -263,10 +290,12 @@ int nnpdrv_hostres_create(size_t                        size,
+ 	return 0;
+ 
+ free_pages:
+-	for (i = 0; i < r->n_pages; i++) {
++	for (i = 0; i < r->n_pages; i += n) {
+ 		if (!r->pages[i])
+ 			break;
+-		__free_page(r->pages[i]);
++		order = compound_order(r->pages[i]);
++		n = (1u << order);
++		__free_pages(r->pages[i], order);
+ 	}
+ 	vfree(r->pages);
+ free_res:
+-- 
+2.22.0
+
