@@ -50,6 +50,8 @@ struct ia_ratio_attr {
 	struct sphpb_pb *sphpb;
 };
 
+static bool ignore_ia_hints;
+
 ssize_t ia_ratio_store(struct kobject *kobj,
 			      struct kobj_attribute *kattr,
 			      const char *buf,
@@ -61,6 +63,12 @@ ssize_t ia_ratio_store(struct kobject *kobj,
 
 	struct sphpb_pb *sphpb = ia_attr->sphpb;
 	unsigned long val;
+
+	if (ignore_ia_hints) {
+		if (sphpb->debug_log)
+			sph_log_info(POWER_BALANCER_LOG, "IA hints ignored");
+		return count;
+	}
 
 	if (kstrtoul(buf, 0, &val) < 0)
 		return -EINVAL;
@@ -111,12 +119,36 @@ ssize_t ia_ratio_show(struct kobject *kobj,
 	return ret;
 }
 
+ssize_t ignore_ia_store(struct kobject *kobj,
+			      struct kobj_attribute *kattr,
+			      const char *buf,
+			      size_t count)
+{
+	bool val;
+
+	if (strtobool(buf, &val) < 0)
+		return -EINVAL;
+
+	ignore_ia_hints = val ? true : false;
+
+	return count;
+}
+
+ssize_t ignore_ia_show(struct kobject *kobj,
+		      struct kobj_attribute *kattr,
+		      char *buf)
+{
+	return snprintf(buf, 8, "%u\n", (uint8_t)ignore_ia_hints);
+}
+
 static struct ia_ratio_attr ia0_attr_data = {.ia_attr = __ATTR(ia0_ratio, 0664, ia_ratio_show, ia_ratio_store), .sphpb = NULL};
 static struct ia_ratio_attr ia1_attr_data = {.ia_attr = __ATTR(ia1_ratio, 0664, ia_ratio_show, ia_ratio_store), .sphpb = NULL};
+static struct ia_ratio_attr ignore_ia_attr_data = {.ia_attr = __ATTR(ignore_ia_hints, 0664, ignore_ia_show, ignore_ia_store), .sphpb = NULL};
 
 static struct attribute *ia_ratio_attrs[] = {
 	&ia0_attr_data.ia_attr.attr,
 	&ia1_attr_data.ia_attr.attr,
+	&ignore_ia_attr_data.ia_attr.attr,
 	NULL,	/* need to NULL terminate the list of attributes */
 };
 
@@ -197,6 +229,8 @@ int sphpb_ia_cycles_sysfs_init(struct sphpb_pb *sphpb)
 
 	ia0_attr_data.sphpb = sphpb;
 	ia1_attr_data.sphpb = sphpb;
+	ignore_ia_attr_data.sphpb = sphpb;
+	ignore_ia_hints = true;
 
 	ret = sysfs_create_group(sphpb->ia_kobj_root, &ia_raio_attr_group);
 	if (ret) {

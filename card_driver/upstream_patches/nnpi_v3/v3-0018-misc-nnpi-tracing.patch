@@ -1,0 +1,665 @@
+From d9e5010e5549c29726185b11abb06eef812fd625 Mon Sep 17 00:00:00 2001
+From: Guy Zadicario <guy.zadicario@intel.com>
+Date: Wed, 1 Apr 2020 14:25:21 +0300
+Subject: [PATCH v3 18/20] misc: nnpi: tracing
+
+Added ftrace tracing on command queue insertion point  for
+selected ipc commands and host resource lock/unlock events.
+
+Added the following sysfs attributes under /sys/class/nnpi/nnpi%d/:
+
+clock_stamp - WO attribute, send command to device to insert trace point
+              and insert ftrace event as well.
+ipc_event_h2c_en - RW attribute, write ipc opcode value to enable trace point
+                   when command with that opcode is sent to device.
+                   show lists all enabled opcodes.
+ipc_event_h2c_dis - WO attribute, write ipc opcode value to disable trace point
+                   when command with that opcode is sent to device.
+ipc_event_c2h_en - RW attribute, write ipc opcode value to enable trace point
+                   when response with that opcode is received from device.
+                   show lists all enabled opcodes.
+ipc_event_c2h_dis - WO attribute, write ipc opcode value to disable trace point
+                   when response with that opcode is received from device.
+
+Signed-off-by: Guy Zadicario <guy.zadicario@intel.com>
+---
+ drivers/misc/intel-nnpi/device.c       |  17 ++-
+ drivers/misc/intel-nnpi/device.h       |   2 +
+ drivers/misc/intel-nnpi/device_sysfs.c | 187 +++++++++++++++++++++++++
+ drivers/misc/intel-nnpi/hostres.c      |  49 +++++++
+ drivers/misc/intel-nnpi/trace.c        |   8 ++
+ drivers/misc/intel-nnpi/trace.h        | 150 ++++++++++++++++++++
+ drivers/misc/intel-nnpi/trace_defs.h   |  22 +++
+ 7 files changed, 434 insertions(+), 1 deletion(-)
+ create mode 100644 drivers/misc/intel-nnpi/trace.c
+ create mode 100644 drivers/misc/intel-nnpi/trace.h
+ create mode 100644 drivers/misc/intel-nnpi/trace_defs.h
+
+diff --git a/drivers/misc/intel-nnpi/device.c b/drivers/misc/intel-nnpi/device.c
+index 05430e80ad82..8ad3d71c585d 100644
+--- a/drivers/misc/intel-nnpi/device.c
++++ b/drivers/misc/intel-nnpi/device.c
+@@ -26,6 +26,7 @@
+ #include "ipc_c2h_events.h"
+ #include "device_sysfs.h"
+ #include "nnp_time.h"
++#include "trace.h"
+ 
+ static u32 s_num_devices;
+ static DEFINE_MUTEX(s_device_num_mutex);
+@@ -890,6 +891,11 @@ int nnpdrv_device_process_messages(struct nnp_device *nnpdev,
+ 				if (msg_size > (nof_msg - j))               \
+ 					partial_msg = 1;                    \
+ 				else {                                      \
++					if (nnpdev->ipc_c2h_en[op_code])     \
++						DO_TRACE(trace_host_ipc(1,  \
++								&msg[j],    \
++								msg_size,   \
++								nnpdev->id)); \
+ 					CALL_IPC_OPCODE_HANDLER(name, type, \
+ 								nnpdev,     \
+ 								&msg[j]);   \
+@@ -924,6 +930,9 @@ int nnpdrv_device_process_messages(struct nnp_device *nnpdev,
+ 			msg_size = process_bios_message(nnpdev,
+ 					(union nnp_bios_ipc_header *)&msg[j],
+ 					(nof_msg - j));
++			if (nnpdev->ipc_c2h_en[op_code])
++				DO_TRACE(trace_host_ipc(1, &msg[j],
++							msg_size, nnpdev->id));
+ 			partial_msg = (msg_size == 0);
+ 			break;
+ 
+@@ -980,6 +989,7 @@ int nnpdrv_device_process_messages(struct nnp_device *nnpdev,
+ static int cmdq_sched_handler(u64 *msg, int size, void *hw_data)
+ {
+ 	struct nnp_device *nnpdev = (struct nnp_device *)hw_data;
++	int op_code = ((union h2c_chan_msg_header *)msg)->opcode;
+ 	int ret;
+ 	u64 wait_time;
+ 	u64 *timed_wait = NULL;
+@@ -987,9 +997,11 @@ static int cmdq_sched_handler(u64 *msg, int size, void *hw_data)
+ 	if (nnpdev->counters.ipc.enable)
+ 		timed_wait = &wait_time;
+ 
++	if (nnpdev->ipc_h2c_en[op_code])
++		DO_TRACE(trace_host_ipc(0, msg, size, nnpdev->id));
++
+ 	ret = nnpdev->hw_ops->write_mesg(nnpdev->hw_handle,
+ 					 msg, size, timed_wait);
+-
+ 	if (ret == 0 && timed_wait) {
+ 		nnpdev->counters.ipc.commands_sent_count += size;
+ 		nnpdev->counters.ipc.commands_wait_time += wait_time;
+@@ -1404,6 +1416,9 @@ int nnpdrv_device_create(void                              *hw_handle,
+ 			      "Doorbel call to set driver state ready failure rc=%d\n",
+ 			      ret);
+ 
++	memset(nnpdev->ipc_h2c_en, 0, sizeof(nnpdev->ipc_h2c_en));
++	memset(nnpdev->ipc_c2h_en, 0, sizeof(nnpdev->ipc_c2h_en));
++
+ 	kref_init(&nnpdev->ref);
+ 	spin_lock_init(&nnpdev->lock);
+ 	*out_nnpdev = nnpdev;
+diff --git a/drivers/misc/intel-nnpi/device.h b/drivers/misc/intel-nnpi/device.h
+index 23b11dd6777d..d85322248977 100644
+--- a/drivers/misc/intel-nnpi/device.h
++++ b/drivers/misc/intel-nnpi/device.h
+@@ -193,6 +193,8 @@ struct nnp_device {
+ 
+ 	struct dentry *debugfs_dir;
+ 
++	bool ipc_h2c_en[IPC_OP_MAX];
++	bool ipc_c2h_en[IPC_OP_MAX];
+ 	u8   ipc_chan_resp_op_size[32];
+ 	u8   ipc_chan_cmd_op_size[32];
+ 	struct nnp_device_counters counters;
+diff --git a/drivers/misc/intel-nnpi/device_sysfs.c b/drivers/misc/intel-nnpi/device_sysfs.c
+index f9c9fa695ab5..2524b8b23705 100644
+--- a/drivers/misc/intel-nnpi/device_sysfs.c
++++ b/drivers/misc/intel-nnpi/device_sysfs.c
+@@ -15,6 +15,11 @@
+ #include "nnp_inbound_mem.h"
+ #include "nnp_log.h"
+ #include "ipc_c2h_events.h"
++#include "trace.h"
++#include <linux/trace_clock.h>
++
++#define CLOCK_TYPE_STR_MAX_SIZE 7
++#define CLOCK_VALUE_STR_MAX_SIZE 32
+ 
+ static ssize_t enable_show(struct device           *dev,
+ 			   struct device_attribute *attr,
+@@ -159,6 +164,77 @@ static ssize_t reset_store(struct device           *dev,
+ }
+ static DEVICE_ATTR_WO(reset);
+ 
++static ssize_t clock_stamp_store(struct device		*dev,
++				 struct device_attribute *attr,
++				 const char              *buf,
++				 size_t                   count)
++{
++	struct nnp_device *nnpdev;
++	union clock_stamp_msg clock_msg;
++	char clock_type_host[CLOCK_TYPE_STR_MAX_SIZE + 1];
++	int i;
++
++	if (count <= 1 ||
++	    (count > (CLOCK_VALUE_STR_MAX_SIZE + CLOCK_TYPE_STR_MAX_SIZE))) {
++		nnp_dev_err(dev, START_UP_LOG,
++			    "Invalid Input. Input should be: <type_str,clock> or <type_str>. size: %lu\n",
++			    count);
++		return -EINVAL;
++	}
++
++	nnpdev = (struct nnp_device *)dev_get_drvdata(dev);
++	if (!nnpdev)
++		return -EINVAL;
++
++	clock_msg.value[0] = 0;
++	clock_msg.value[1] = 0;
++	memset(clock_type_host, '\0', CLOCK_TYPE_STR_MAX_SIZE + 1);
++	clock_msg.opcode = NNP_IPC_H2C_OP_CLOCK_STAMP;
++
++	/*
++	 * user's input can be one of these options:
++	 * 1. <type_str,clock_value_decimal>
++	 * 2. <type_str>
++	 */
++	for (i = 0; i < count; i++) {
++		if (buf[i] == ',' || buf[i] == '\n') {
++			break;
++		} else if (i >= CLOCK_TYPE_STR_MAX_SIZE) {
++			nnp_dev_err(dev, START_UP_LOG,
++				    "Invalid clock. Input should be: <type_str,clock> or <type_str>. size: %lu\n",
++				    count);
++			return -EINVAL;
++		}
++
++		clock_msg.i_type[i] = buf[i];
++		clock_type_host[i] = buf[i];
++	}
++
++	if (buf[i] != ',') {
++		/* ',' was not found */
++		clock_msg.i_clock = trace_clock_local();
++	} else {
++		/* both type_str and clock were found */
++		if (kstrtoull(&buf[i + 1], 0, &clock_msg.i_clock) < 0) {
++			nnp_dev_err(dev, START_UP_LOG,
++				    "Invalid clock. Input should be: <type_str,clock> or <type_str>. size: %lu\n",
++				    count);
++			return -EINVAL;
++		}
++	}
++
++	nnpdev->hw_ops->write_mesg(nnpdev->hw_handle,
++					&clock_msg.value[0],
++					sizeof(clock_msg) / sizeof(u64),
++					NULL);
++
++	DO_TRACE(trace_host_clock_stamp(clock_type_host,
++					clock_msg.i_clock, nnpdev->id));
++
++	return count;
++}
++static DEVICE_ATTR_WO(clock_stamp);
++
+ void nnpdrv_device_sysfs_get_state_strings(struct nnp_device *nnpdev,
+ 					   const char **state,
+ 					   const char **boot_state,
+@@ -825,6 +901,99 @@ static ssize_t ipc_counters_store(struct device           *dev,
+ }
+ static DEVICE_ATTR_RW(ipc_counters);
+ 
++static int ipc_event_set(struct device *dev,
++			 const char    *buf,
++			 size_t         count,
++			 bool           is_cmd,
++			 bool           enable)
++{
++	unsigned long index;
++	struct nnp_device *nnpdev;
++
++	if (kstrtoul(buf, 0, &index) < 0)
++		return -EINVAL;
++
++	if (index < 0 || index >= IPC_OP_MAX)
++		return -EINVAL;
++
++	if (is_cmd)
++		nnpdev->ipc_h2c_en[index] = enable;
++	else
++		nnpdev->ipc_c2h_en[index] = enable;
++
++	return count;
++}
++
++static int ipc_event_get(struct device *dev,
++			 char    *buf,
++			 bool           is_cmd)
++{
++	bool *arr;
++	struct nnp_device *nnpdev;
++	int ret = 0, i = 0;
++
++	if (is_cmd)
++		arr = nnpdev->ipc_h2c_en;
++	else
++		arr = nnpdev->ipc_c2h_en;
++
++	for (i = 0 ; i < IPC_OP_MAX ; i++)
++		if (arr[i])
++			ret += snprintf(buf + ret, PAGE_SIZE, "%d\n", i);
++
++	return ret;
++}
++
++static ssize_t ipc_event_h2c_en_store(struct device           *dev,
++				      struct device_attribute *attr,
++				      const char              *buf,
++				      size_t                   count)
++{
++	return ipc_event_set(dev, buf, count, true, true);
++}
++
++static ssize_t ipc_event_h2c_en_show(struct device           *dev,
++				     struct device_attribute *attr,
++				     char                    *buf)
++{
++	return ipc_event_get(dev, buf, true);
++}
++static DEVICE_ATTR_RW(ipc_event_h2c_en);
++
++static ssize_t ipc_event_h2c_dis_store(struct device           *dev,
++				       struct device_attribute *attr,
++				       const char              *buf,
++				       size_t                   count)
++{
++	return ipc_event_set(dev, buf, count, true, false);
++}
++static DEVICE_ATTR_WO(ipc_event_h2c_dis);
++
++static ssize_t ipc_event_c2h_en_store(struct device           *dev,
++				      struct device_attribute *attr,
++				      const char              *buf,
++				      size_t                   count)
++{
++	return ipc_event_set(dev, buf, count, false, true);
++}
++
++static ssize_t ipc_event_c2h_en_show(struct device           *dev,
++				     struct device_attribute *attr,
++				     char                    *buf)
++{
++	return ipc_event_get(dev, buf, false);
++}
++static DEVICE_ATTR_RW(ipc_event_c2h_en);
++
++static ssize_t ipc_event_c2h_dis_store(struct device           *dev,
++				       struct device_attribute *attr,
++				       const char              *buf,
++				       size_t                   count)
++{
++	return ipc_event_set(dev, buf, count, false, false);
++}
++static DEVICE_ATTR_WO(ipc_event_c2h_dis);
++
+ static ssize_t uncorr_counters_show(struct device           *dev,
+ 				    struct device_attribute *attr,
+ 				    char                    *buf)
+@@ -879,6 +1048,7 @@ static struct attribute *nnp_dev_attrs[] = {
+ 	&dev_attr_enable.attr,
+ 	&dev_attr_boot_image.attr,
+ 	&dev_attr_reset.attr,
++	&dev_attr_clock_stamp.attr,
+ 	&dev_attr_total_unprotected_mem.attr,
+ 	&dev_attr_total_protected_mem.attr,
+ 	&dev_attr_protocol_version.attr,
+@@ -902,6 +1072,10 @@ static struct attribute *nnp_dev_attrs[] = {
+ 	&dev_attr_boot_fail_reason.attr,
+ 	&dev_attr_card_state.attr,
+ 	&dev_attr_ipc_counters.attr,
++	&dev_attr_ipc_event_h2c_en.attr,
++	&dev_attr_ipc_event_h2c_dis.attr,
++	&dev_attr_ipc_event_c2h_en.attr,
++	&dev_attr_ipc_event_c2h_dis.attr,
+ 	&dev_attr_uncorr_counters.attr,
+ 	&dev_attr_corr_counters.attr,
+ 	NULL
+@@ -985,6 +1159,19 @@ int nnpdrv_device_sysfs_init(struct nnp_device *nnpdev)
+ 			       &dev_attr_channels.attr, 0400);
+ 	ret |= sysfs_chmod_file(&nnpdev->dev->kobj,
+ 				&dev_attr_crashlog_size.attr, 0400);
++
++	/* set ipc event permissions to 0666 */
++	ret |= sysfs_chmod_file(&nnpdev->dev->kobj,
++				&dev_attr_ipc_event_h2c_en.attr, 0666);
++	ret |= sysfs_chmod_file(&nnpdev->dev->kobj,
++				&dev_attr_ipc_event_h2c_dis.attr, 0666);
++	ret |= sysfs_chmod_file(&nnpdev->dev->kobj,
++				&dev_attr_ipc_event_c2h_en.attr, 0666);
++	ret |= sysfs_chmod_file(&nnpdev->dev->kobj,
++				&dev_attr_ipc_event_c2h_dis.attr, 0666);
++	ret |= sysfs_chmod_file(&nnpdev->dev->kobj,
++				&dev_attr_clock_stamp.attr, 0666);
++
+ 	if (ret)
+ 		return ret;
+ 
+diff --git a/drivers/misc/intel-nnpi/hostres.c b/drivers/misc/intel-nnpi/hostres.c
+index 085520b0d2a6..e26732f06e06 100644
+--- a/drivers/misc/intel-nnpi/hostres.c
++++ b/drivers/misc/intel-nnpi/hostres.c
+@@ -18,6 +18,7 @@
+ #include "ipc_protocol.h"
+ #include "nnp_debug.h"
+ #include "nnp_log.h"
++#include "trace.h"
+ 
+ struct dma_list {
+ 	void             *vaddr;
+@@ -787,6 +788,12 @@ int nnpdrv_hostres_dev_lock(struct nnpdrv_host_resource *res,
+ 	NNP_ASSERT(mapping_for_dev(res, nnpdev->hw_device_info->hw_device) !=
+ 		   NULL);
+ 
++	DO_TRACE(trace_hostres(NNP_TRACE_LOCK_ENTER,
++			       0,
++			       (u64)(uintptr_t)res,
++			       res->readers,
++			       res->dir == DMA_TO_DEVICE));
++
+ 	spin_lock(&res->lock);
+ 	/* Check if requested access is Read Only */
+ 	if (dir == DMA_TO_DEVICE) {
+@@ -807,6 +814,12 @@ int nnpdrv_hostres_dev_lock(struct nnpdrv_host_resource *res,
+ 	}
+ 	spin_unlock(&res->lock);
+ 
++	DO_TRACE(trace_hostres(NNP_TRACE_LOCK_EXIT,
++			       0,
++			       (u64)(uintptr_t)res,
++			       res->readers,
++			       res->dir == DMA_TO_DEVICE));
++
+ 	return 0;
+ }
+ 
+@@ -823,6 +836,12 @@ int nnpdrv_hostres_dev_unlock(struct nnpdrv_host_resource *res,
+ 	NNP_ASSERT(mapping_for_dev(res, nnpdev->hw_device_info->hw_device) !=
+ 		   NULL);
+ 
++	DO_TRACE(trace_hostres(NNP_TRACE_UNLOCK_ENTER,
++			       0,
++			       (u64)(uintptr_t)res,
++			       res->readers,
++			       res->dir == DMA_TO_DEVICE));
++
+ 	spin_lock(&res->lock);
+ 	/* Check if requested access is Read Only */
+ 	if (dir == DMA_TO_DEVICE) {
+@@ -834,6 +853,12 @@ int nnpdrv_hostres_dev_unlock(struct nnpdrv_host_resource *res,
+ 	}
+ 	spin_unlock(&res->lock);
+ 
++	DO_TRACE(trace_hostres(NNP_TRACE_UNLOCK_EXIT,
++			       0,
++			       (u64)(uintptr_t)res,
++			       res->readers,
++			       res->dir == DMA_TO_DEVICE));
++
+ 	wake_up_all(&res->access_waitq);
+ 
+ 	return 0;
+@@ -874,6 +899,12 @@ int nnpdrv_hostres_user_lock(struct nnpdrv_host_resource *res,
+ 	}
+ 	spin_unlock(&res->lock);
+ 
++	DO_TRACE(trace_hostres(NNP_TRACE_LOCK_ENTER,
++			       1,
++			       (u64)(uintptr_t)res,
++			       res->readers,
++			       res->dir == DMA_FROM_DEVICE));
++
+ 	spin_lock(&res->lock);
+ 	/* Check if requested access is Read Only */
+ 	if (res->dir == DMA_FROM_DEVICE) {
+@@ -949,6 +980,12 @@ int nnpdrv_hostres_user_lock(struct nnpdrv_host_resource *res,
+ 		spin_unlock(&res->lock);
+ 	}
+ 
++	DO_TRACE(trace_hostres(NNP_TRACE_LOCK_EXIT,
++			       1,
++			       (u64)(uintptr_t)res,
++			       res->readers,
++			       res->dir == DMA_FROM_DEVICE));
++
+ 	return ret;
+ }
+ 
+@@ -965,6 +1002,12 @@ int nnpdrv_hostres_user_unlock(struct nnpdrv_host_resource *res)
+ 	}
+ 	spin_unlock(&res->lock);
+ 
++	DO_TRACE(trace_hostres(NNP_TRACE_UNLOCK_ENTER,
++			       1,
++			       (u64)(uintptr_t)res,
++			       res->readers,
++			       res->dir == DMA_FROM_DEVICE));
++
+ 	spin_lock(&res->lock);
+ 	/* Check if requested access is Read Only */
+ 	if (res->dir == DMA_FROM_DEVICE) {
+@@ -990,6 +1033,12 @@ int nnpdrv_hostres_user_unlock(struct nnpdrv_host_resource *res)
+ 		spin_unlock(&res->lock);
+ 	}
+ 
++	DO_TRACE(trace_hostres(NNP_TRACE_UNLOCK_EXIT,
++			       1,
++			       (u64)(uintptr_t)res,
++			       res->readers,
++			       res->dir == DMA_FROM_DEVICE));
++
+ 	wake_up_all(&res->access_waitq);
+ 
+ 	return 0;
+diff --git a/drivers/misc/intel-nnpi/trace.c b/drivers/misc/intel-nnpi/trace.c
+new file mode 100644
+index 000000000000..f61ce8666cd4
+--- /dev/null
++++ b/drivers/misc/intel-nnpi/trace.c
+@@ -0,0 +1,8 @@
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++/********************************************
++ * Copyright (C) 2019-2020 Intel Corporation
++ ********************************************/
++
++#define CREATE_TRACE_POINTS
++#include "trace.h"
+diff --git a/drivers/misc/intel-nnpi/trace.h b/drivers/misc/intel-nnpi/trace.h
+new file mode 100644
+index 000000000000..23d73f7a726c
+--- /dev/null
++++ b/drivers/misc/intel-nnpi/trace.h
+@@ -0,0 +1,150 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++
++/********************************************
++ * Copyright (C) 2019-2020 Intel Corporation
++ ********************************************/
++#undef TRACE_SYSTEM
++#define TRACE_INCLUDE_PATH .
++#define TRACE_INCLUDE_FILE nnpdrv_trace
++#define TRACE_SYSTEM nnpdrv
++
++#if !defined(_NNPDRV_TRACE_H) || defined(TRACE_HEADER_MULTI_READ)
++#define _NNPDRV_TRACE_H
++
++#include "trace_defs.h"
++#include <linux/tracepoint.h>
++#include "ipc_protocol.h"
++#include "device.h"
++
++#ifdef TRACE
++#define DO_TRACE(x) (x)
++#else
++#define DO_TRACE(x)
++#endif
++
++#define NNP_TP_STRUCT__entry TP_STRUCT__entry
++#define NNP_TP_fast_assign   TP_fast_assign
++#define NNP_TP_printk        TP_printk
++
++/* Define functions to convert protocol opcode codes to names */
++#ifndef TRACE_HEADER_MULTI_READ
++static inline const char *H2C_HWQ_MSG_STR(u8 x)
++{
++	switch (x) {
++	case H2C_OPCODE_NAME(QUERY_VERSION):
++		return H2C_OPCODE_NAME_STR(QUERY_VERSION);
++	case H2C_OPCODE_NAME(CLOCK_STAMP):
++		return H2C_OPCODE_NAME_STR(CLOCK_STAMP);
++	case H2C_OPCODE_NAME(SETUP_CRASH_DUMP):
++		return H2C_OPCODE_NAME_STR(SETUP_CRASH_DUMP);
++	case H2C_OPCODE_NAME(SETUP_SYS_INFO_PAGE):
++		return H2C_OPCODE_NAME_STR(SETUP_SYS_INFO_PAGE);
++	case H2C_OPCODE_NAME(CHANNEL_OP):
++		return H2C_OPCODE_NAME_STR(CHANNEL_OP);
++	case H2C_OPCODE_NAME(CHANNEL_RB_OP):
++		return H2C_OPCODE_NAME_STR(CHANNEL_RB_OP);
++	case H2C_OPCODE_NAME(CHANNEL_HOSTRES_OP):
++		return H2C_OPCODE_NAME_STR(CHANNEL_HOSTRES_OP);
++	case H2C_OPCODE_NAME(BIOS_PROTOCOL):
++		return H2C_OPCODE_NAME_STR(BIOS_PROTOCOL);
++	default:
++		return "not found";
++	}
++}
++
++static inline const char *C2H_HWQ_MSG_STR(u8 x)
++{
++	switch (x) {
++	case C2H_OPCODE_NAME(EVENT_REPORT):
++		return C2H_OPCODE_NAME_STR(EVENT_REPORT);
++	case C2H_OPCODE_NAME(QUERY_VERSION_REPLY):
++		return C2H_OPCODE_NAME_STR(QUERY_VERSION_REPLY);
++	case C2H_OPCODE_NAME(QUERY_VERSION_REPLY2):
++		return C2H_OPCODE_NAME_STR(QUERY_VERSION_REPLY2);
++	case C2H_OPCODE_NAME(SYS_INFO):
++		return C2H_OPCODE_NAME_STR(SYS_INFO);
++	case C2H_OPCODE_NAME(BIOS_PROTOCOL):
++		return C2H_OPCODE_NAME_STR(BIOS_PROTOCOL);
++	default:
++		return "not found";
++	}
++}
++#endif
++
++TRACE_EVENT(hostres,
++	    TP_PROTO(u32 lock_state, u32 is_user,
++		     u64 handle, int readers, u32 is_read),
++	    TP_ARGS(lock_state, is_user, handle, readers, is_read),
++	    NNP_TP_STRUCT__entry(__field(u64, handle)
++				 __field(u32, lock_state)
++				 __field(u32, is_user)
++				 __field(u32, is_read)
++				 __field(int, readers)),
++	    NNP_TP_fast_assign(__entry->lock_state = lock_state;
++			       __entry->is_user = is_user;
++			       __entry->handle  = handle;
++			       __entry->readers = readers;
++			       __entry->is_read = is_read;),
++	    NNP_TP_printk(
++		"lock_state=%s is_user=%d handle=0x%llx readers=%d is_read=%d",
++		__NNP_TRACE_LOCK_STR(__entry->lock_state),
++		__entry->is_user,
++		__entry->handle,
++		__entry->readers,
++		__entry->is_read)
++);
++
++TRACE_EVENT(NNP_TRACE_IPC,
++	    TP_PROTO(u8 dir, u64 *msg, u32 size, u8 card_id),
++	    TP_ARGS(dir, msg, size, card_id),
++	    NNP_TP_STRUCT__entry(__field(u64, msg[4])
++				 __field(u32, size)
++				 __field(u8, dir)
++				 __field(u8, card_id)),
++	    NNP_TP_fast_assign(__entry->msg[0] = msg[0];
++			       __entry->msg[1] = (size > 1 ? msg[1] : 0);
++			       __entry->msg[2] = (size > 2 ? msg[2] : 0);
++			       __entry->msg[3] = (size > 3 ? msg[3] : 0);
++			       __entry->size = size;
++			       __entry->card_id = card_id;
++			       __entry->dir = dir),
++	    NNP_TP_printk(
++		"card_id=%u dir=%s op=%s size=%u payload=0x%llx,0x%llx,0x%llx,0x%llx",
++		__entry->card_id,
++		__entry->dir == 0 ? "command" : "response",
++		__entry->dir == 0 ?
++		H2C_HWQ_MSG_STR(__entry->msg[0] & NNP_IPC_OPCODE_MASK) :
++		C2H_HWQ_MSG_STR(__entry->msg[0] & NNP_IPC_OPCODE_MASK),
++		__entry->size,
++		__entry->msg[0],
++		__entry->msg[1],
++		__entry->msg[2],
++		__entry->msg[3])
++);
++
++TRACE_EVENT(NNP_TRACE_CLOCK_STAMP,
++	    TP_PROTO(char *type, u64 clock, u8 card_id),
++	    TP_ARGS(type, clock, card_id),
++	    NNP_TP_STRUCT__entry(__field(char, type[8])
++				 __field(u64, clock)
++				 __field(u8, card_id)),
++	    NNP_TP_fast_assign(__entry->type[0] = type[0];
++			       __entry->type[1] = type[1];
++			       __entry->type[2] = type[2];
++			       __entry->type[3] = type[3];
++			       __entry->type[4] = type[4];
++			       __entry->type[5] = type[5];
++			       __entry->type[6] = type[6];
++			       __entry->type[7] = type[7];
++			       __entry->clock = clock;
++			       __entry->card_id = card_id;),
++	NNP_TP_printk("card_id=%u type=%s clock=%llu",
++		      __entry->card_id,
++		      __entry->type,
++		      __entry->clock)
++);
++
++#endif /* if !defined(_TRACE_SYNC_H) || defined(TRACE_HEADER_MULTI_READ) */
++
++/* This part must be outside protection */
++#include <trace/define_trace.h>
+diff --git a/drivers/misc/intel-nnpi/trace_defs.h b/drivers/misc/intel-nnpi/trace_defs.h
+new file mode 100644
+index 000000000000..74e59209bd23
+--- /dev/null
++++ b/drivers/misc/intel-nnpi/trace_defs.h
+@@ -0,0 +1,22 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++
++/********************************************
++ * Copyright (C) 2019-2020 Intel Corporation
++ ********************************************/
++
++#ifndef _NNPDRV_TRACE_DEFS_H
++#define _NNPDRV_TRACE_DEFS_H
++
++enum {
++	NNP_TRACE_UNLOCK_ENTER = 0,
++	NNP_TRACE_UNLOCK_EXIT  = 1,
++	NNP_TRACE_LOCK_ENTER   = 2,
++	NNP_TRACE_LOCK_EXIT    = 3
++};
++
++#define __NNP_TRACE_LOCK_STR(x) \
++	((x) == NNP_TRACE_UNLOCK_ENTER ? "unlock_enter" : \
++	 ((x) == NNP_TRACE_UNLOCK_EXIT  ? "unlock_exit" : \
++	  ((x) == NNP_TRACE_LOCK_ENTER   ? "lock_enter" : "lock_exit")))
++
++#endif /* _NNPDRV_TRACE_DEFS_H */
+-- 
+2.22.0
+

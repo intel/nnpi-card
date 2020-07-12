@@ -163,22 +163,13 @@ void clean_ptr2id(void)
 static uint32_t mem_thr;
 module_param(mem_thr, uint, 0644);
 
-static inline uint32_t getFreeMem(void)
-{
-	struct sysinfo i;
-
-	si_meminfo(&i);
-	return  i.freeram * (i.mem_unit >> 10);
-}
-
 static inline bool check_memory_threshold(void)
 {
-	uint32_t freeRam;
-
 	if (mem_thr) {
-		freeRam = getFreeMem();
-		if (freeRam < mem_thr) {
-			sph_log_info(CREATE_COMMAND_LOG, "free memory below the threshold (%u) freeRam (%u)", mem_thr, freeRam);
+		uint32_t available_ram_kb = si_mem_available() << (NNP_PAGE_SHIFT - 10);
+
+		if (available_ram_kb < mem_thr) {
+			sph_log_err(CREATE_COMMAND_LOG, "Available memory (%u KB) below the threshold (%u KB) ", available_ram_kb, mem_thr);
 			return false;
 		}
 	}

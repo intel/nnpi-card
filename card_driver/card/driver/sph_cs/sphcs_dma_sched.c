@@ -418,7 +418,20 @@ static void do_schedule(struct sphcs_dma_sched *dmaSched,
 				if (atomic_read(&DMA_DIRECTION_INFO(dmaSched, direction).active_high_priority_transactions) > 0 ||
 					DMA_QUEUE_INFO_PTR(dmaSched, direction, SPHCS_DMA_PRIORITY_HIGH)->reqList_size > 0) {
 					NNP_SPIN_UNLOCK_IRQRESTORE(&high_q->lock_irq, queue_flags);
-					break;
+					/*
+					 * High priority queue is not empty.
+					 * If high priority queue has not been evaluated in this schedule tick
+					 * start by evaluating the high queue, otherwise break as no point
+					 * continue checking rest of queues.
+					 */
+					if (dir_info->sched_q_start_idx != SPHCS_DMA_PRIORITY_HIGH) {
+						dir_info->sched_q_start_idx = SPHCS_DMA_PRIORITY_HIGH;
+						priority_queue = SPHCS_DMA_PRIORITY_HIGH;
+						q = DMA_QUEUE_INFO_PTR(dmaSched, direction, priority_queue);
+						n = 0;
+					} else {
+						break;
+					}
 				}
 				NNP_SPIN_UNLOCK_IRQRESTORE(&high_q->lock_irq, queue_flags);
 			}
@@ -486,7 +499,7 @@ static void do_schedule(struct sphcs_dma_sched *dmaSched,
 		if (low_q->wait_ticks >= 3)
 			dir_info->sched_q_start_idx = SPHCS_DMA_PRIORITY_LOW;
 		else
-			dir_info->sched_q_start_idx = 0;
+			dir_info->sched_q_start_idx = SPHCS_DMA_PRIORITY_HIGH;
 	}
 
 	NNP_SPIN_UNLOCK_IRQRESTORE(&DMA_DIRECTION_INFO(dmaSched, direction).lock_irq, flags);

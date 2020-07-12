@@ -555,7 +555,7 @@ int do_reset_device(struct cve_device *cve_dev, uint8_t idc_reset)
 
 	err = ice_di_is_shared_read_error(cve_dev);
 	if (err) {
-		cve_os_dev_log_default(CVE_LOGLEVEL_INFO,
+		cve_os_dev_log(CVE_LOGLEVEL_INFO,
 			cve_dev->dev_index,
 			"shared_read_status value:%x\n",
 			err);

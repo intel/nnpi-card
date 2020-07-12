@@ -136,11 +136,12 @@
 #define ELBI_CPU_STATUS_3                                   (ELBI_BASE + 0x1c4)
 
 /* Bitfields updated in ELBI_CPU_STATUS_2 indicating card driver states */
-#define ELBI_CPU_STATUS_2_FLR_MODE_MASK                     GENMASK(1, 0)  /* indicates next card reset behaviour:
-									    *   00 - warm reset
-									    *   01 - cold reset
-									    *   10 - ignore FLR (will not reset the card)
-									    *   11 - warm reset + bios flash + cold_reset (capsule update)
+#define ELBI_CPU_STATUS_2_FLR_MODE_MASK                     GENMASK(2, 0)  /* indicates next card reset behaviour:
+									    *  000 - warm reset
+									    *  001 - cold reset
+									    *  010 - ignore FLR (will not reset the card)
+									    *  011 - warm reset + bios flash + cold_reset (capsule update)
+									    *  100 - hwonly warm reset - no s/w notification at all
 									    */
 #define ELBI_CPU_STATUS_2_FLR_MODE_SHIFT                    0
 

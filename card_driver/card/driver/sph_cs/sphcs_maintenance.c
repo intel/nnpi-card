@@ -334,25 +334,6 @@ static long fpga_update(void __user *arg)
 	return 0;
 }
 
-static long set_bios_update_state(void __user *arg)
-{
-	uint32_t bios_update_state;
-	int ret;
-
-	ret = copy_from_user(&bios_update_state, arg, sizeof(uint32_t));
-	if (unlikely(ret != 0))
-		return -EIO;
-
-	if (!s_fpga_client)
-		return -ENODEV;
-
-	i2c_smbus_write_word_data(s_fpga_client,
-				  FPGA_INBAND_BIOS_UPDATE_REG,
-				  bios_update_state & 1);
-
-	return 0;
-}
-
 static long sphcs_maint_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 {
 	long ret = 0;
@@ -386,9 +367,6 @@ static long sphcs_maint_ioctl(struct file *f, unsigned int cmd, unsigned long ar
 		break;
 	case IOCTL_MAINT_FPGA_UPDATE:
 		ret = fpga_update((void __user *)arg);
-		break;
-	case IOCTL_MAINT_SET_BIOS_UPDATE_STATE:
-		ret = set_bios_update_state((void __user *)arg);
 		break;
 	default:
 		sph_log_err(MAINTENANCE_LOG, "got invalid cmd: %u\n", cmd);
@@ -486,7 +464,11 @@ static int sphcs_maint_attach_fpga(struct device *dev, void *dummy)
 		     s_board_id, s_fab_id, s_fpga_rev, s_brd_part_no, s_prd_serial);
 
 	/* Update ASIC stepping in FPGA register */
+#ifdef CARD_PLATFORM_BR
 	stepping = cpu_data(0).x86_stepping;
+#else
+	stepping = 0;
+#endif
 	sph_log_info(MAINTENANCE_LOG, "ASIC Stepping: %d\n", stepping);
 	i2c_smbus_write_word_data(s_fpga_client,
 				  FPGA_ASIC_STEPPING_REG,

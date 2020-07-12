@@ -525,6 +525,7 @@ static int inf_cpylst_req_execute(struct inf_exec_req *req)
 				   COPY_SPHCS_SW_COUNTERS_GROUP)) {
 		now = nnp_time_us();
 		dt = now - req->time;
+		req->time = now;
 		// make sure cpylst is alive for counters update
 		inf_cmd_get(cmd);
 	} else {
@@ -604,7 +605,6 @@ finish:
 				}
 			}
 		}
-		req->time = now;
 
 		// release kref for counters update
 		inf_cmd_put(cmd);
@@ -683,7 +683,8 @@ static void inf_cpylst_req_complete(struct inf_exec_req *req,
 		 req->lli->num_lists,
 		 req->lli->num_elements));
 
-	if (req->time > 0 &&
+	if (req->size > 0 &&
+	    req->time > 0 &&
 	    NNP_SW_GROUP_IS_ENABLE(cpylst->copies[0]->sw_counters,
 				   COPY_SPHCS_SW_COUNTERS_GROUP))
 		dt = nnp_time_us() - req->time;
@@ -751,12 +752,6 @@ static void inf_cpylst_req_complete(struct inf_exec_req *req,
 						cmd->protocol_id);
 	}
 
-	memcpy(cpylst->cur_sizes, cpylst->sizes, cpylst->n_copies * sizeof(cpylst->sizes[0]));
-
-	cpylst->active = false;
-
-	inf_exec_req_put(req);
-
 	if (dt > 0) {
 		struct inf_copy *copy;
 
@@ -796,6 +791,12 @@ static void inf_cpylst_req_complete(struct inf_exec_req *req,
 			}
 		}
 	}
+
+	memcpy(cpylst->cur_sizes, cpylst->sizes, cpylst->n_copies * sizeof(cpylst->sizes[0]));
+
+	cpylst->active = false;
+
+	inf_exec_req_put(req);
 
 	if (send_cmdlist_event_report) {
 		DO_TRACE(trace_cmdlist(SPH_TRACE_OP_STATUS_COMPLETE,

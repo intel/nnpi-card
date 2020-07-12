@@ -189,8 +189,9 @@ static enum {
 	SPH_FLR_MODE_WARM = 0,
 	SPH_FLR_MODE_COLD,
 	SPH_FLR_MODE_IGNORE,
-	SPH_FLR_MODE_CAPSULE
-} s_flr_mode;
+	SPH_FLR_MODE_CAPSULE,
+	SPH_FLR_MODE_HWONLY
+} s_flr_mode = SPH_FLR_MODE_HWONLY;
 
 struct sph_dma_channel {
 	u64   usTime;
@@ -280,6 +281,8 @@ static ssize_t sph_show_flr_mode(struct device *dev,
 		return snprintf(buf, PAGE_SIZE, "ignore\n");
 	case SPH_FLR_MODE_CAPSULE:
 		return snprintf(buf, PAGE_SIZE, "capsule\n");
+	case SPH_FLR_MODE_HWONLY:
+		return snprintf(buf, PAGE_SIZE, "hwonly\n");
 	case SPH_FLR_MODE_WARM:
 	default:
 		return snprintf(buf, PAGE_SIZE, "warm\n");
@@ -292,6 +295,8 @@ static ssize_t sph_store_flr_mode(struct device *dev,
 {
 	struct pci_dev *pdev = to_pci_dev(dev);
 	struct nnp_pci_device *nnp_pci;
+	u32 int_mask;
+	unsigned long flags;
 
 	nnp_pci = pci_get_drvdata(pdev);
 	if (!nnp_pci)
@@ -305,6 +310,8 @@ static ssize_t sph_store_flr_mode(struct device *dev,
 		s_flr_mode = SPH_FLR_MODE_IGNORE;
 	else if (count >= 7 && !strncmp(buf, "capsule", 7))
 		s_flr_mode = SPH_FLR_MODE_CAPSULE;
+	else if (count >= 7 && !strncmp(buf, "hwonly", 6))
+		s_flr_mode = SPH_FLR_MODE_HWONLY;
 	else
 		return -EINVAL;
 
@@ -312,14 +319,84 @@ static ssize_t sph_store_flr_mode(struct device *dev,
 		       ELBI_CPU_STATUS_2,
 		       s_flr_mode);
 
-	sph_log_debug(GENERAL_LOG, "wrote 0x%x to cpu_status_2 (0x%x)\n",
+	//
+	// Update interrupt mask
+	//
+	NNP_SPIN_LOCK_IRQSAVE(&nnp_pci->irq_lock, flags);
+	int_mask = ~(s_host_status_int_mask | s_host_status_threaded_mask);
+	if (s_flr_mode == SPH_FLR_MODE_HWONLY)
+		int_mask |= ELBI_IOSF_STATUS_LINE_FLR_MASK;
+	nnp_mmio_write(nnp_pci,
+		       ELBI_IOSF_MSI_MASK,
+		       int_mask);
+	NNP_SPIN_UNLOCK_IRQRESTORE(&nnp_pci->irq_lock, flags);
+
+	sph_log_debug(GENERAL_LOG, "wrote 0x%x to cpu_status_2 (0x%x), int_mask=0x%x\n",
 		      s_flr_mode,
-		      nnp_mmio_read(nnp_pci, ELBI_CPU_STATUS_2));
+		      nnp_mmio_read(nnp_pci, ELBI_CPU_STATUS_2), int_mask);
 
 	return count;
 }
 
 static DEVICE_ATTR(flr_mode, 0644, sph_show_flr_mode, sph_store_flr_mode);
+
+#define GEN3_EQ_CONTROL_OFF   0x8a8
+
+static ssize_t sph_show_gen3_eq_pset_req_vec(struct device *dev,
+					     struct device_attribute *attr, char *buf)
+{
+	struct pci_dev *pdev = to_pci_dev(dev);
+	struct nnp_pci_device *nnp_pci;
+	u32 val;
+
+	nnp_pci = pci_get_drvdata(pdev);
+	if (!nnp_pci)
+		return -EFAULT;
+
+	val = nnp_mmio_read(nnp_pci, GEN3_EQ_CONTROL_OFF);
+	val >>= 8;
+	val &= 0xffff;
+
+	return snprintf(buf, PAGE_SIZE, "gen3_eq_pset_req_vec=0x%x (preset %d)\n", val, ffs(val) - 1);
+}
+
+static ssize_t sph_store_gen3_eq_pset_req_vec(struct device *dev,
+					      struct device_attribute *attr,
+					      const char *buf, size_t count)
+{
+	struct pci_dev *pdev = to_pci_dev(dev);
+	struct nnp_pci_device *nnp_pci;
+	unsigned long val;
+	u32 reg;
+
+	nnp_pci = pci_get_drvdata(pdev);
+	if (!nnp_pci)
+		return -EFAULT;
+
+	if (count >= 4 && !strncmp(buf, "zero", 4)) {
+		val = 0;
+	} else {
+		if (kstrtoul(buf, 0, &val) < 0)
+			return -EINVAL;
+
+		if (val <= 10)
+			val = BIT(val);
+		else
+			return -EINVAL;
+	}
+
+	reg = nnp_mmio_read(nnp_pci, GEN3_EQ_CONTROL_OFF);
+	reg &= ~(0xffff00);
+	reg |= (val << 8);
+	nnp_mmio_write(nnp_pci, GEN3_EQ_CONTROL_OFF, reg);
+
+	sph_log_debug(GENERAL_LOG, "wrote 0x%x to GEN3_EQ_CONTROL_OFF\n",
+		      reg);
+
+	return count;
+}
+
+static DEVICE_ATTR(gen3_eq_pset_req_vec, 0644, sph_show_gen3_eq_pset_req_vec, sph_store_gen3_eq_pset_req_vec);
 
 static ssize_t sph_show_link_width(struct device *dev,
 				   struct device_attribute *attr, char *buf)
@@ -469,7 +546,8 @@ static void sph_warm_reset(void)
 		udelay(50);
 		outb(cf9|boot_mode, 0xcf9); /* Actually Do reset */
 		udelay(50);
-	} else if (s_flr_mode != SPH_FLR_MODE_IGNORE) {
+	} else if (s_flr_mode != SPH_FLR_MODE_IGNORE &&
+		   s_flr_mode != SPH_FLR_MODE_HWONLY) {
 		/*
 		 * Warm reset
 		 * Here we assume that the following argument was given
@@ -624,6 +702,7 @@ static irqreturn_t interrupt_handler(int irq, void *data)
 	unsigned long flags;
 	u32 dma_read_status = 0, dma_write_status = 0;
 	bool should_wake = false;
+	u32 int_mask;
 
 	NNP_SPIN_LOCK_IRQSAVE(&nnp_pci->irq_lock, flags);
 
@@ -636,7 +715,13 @@ static irqreturn_t interrupt_handler(int irq, void *data)
 	 */
 	nnp_mmio_write(nnp_pci,
 		       ELBI_IOSF_MSI_MASK,
-		       ~((uint32_t)(ELBI_IOSF_STATUS_LINE_FLR_MASK)));
+		       s_flr_mode != SPH_FLR_MODE_HWONLY ?
+				~((uint32_t)(ELBI_IOSF_STATUS_LINE_FLR_MASK)) :
+				0xFFFFFFFF);
+
+	int_mask = ~(s_host_status_int_mask | s_host_status_threaded_mask);
+	if (s_flr_mode == SPH_FLR_MODE_HWONLY)
+		int_mask |= ELBI_IOSF_STATUS_LINE_FLR_MASK;
 
 	nnp_pci->host_status = nnp_mmio_read(nnp_pci, ELBI_IOSF_STATUS);
 
@@ -651,7 +736,7 @@ static irqreturn_t interrupt_handler(int irq, void *data)
 	     (s_host_status_int_mask | s_host_status_threaded_mask)) == 0) {
 		nnp_mmio_write(nnp_pci,
 			       ELBI_IOSF_MSI_MASK,
-			       ~(s_host_status_int_mask | s_host_status_threaded_mask));
+			       int_mask);
 		return IRQ_NONE;
 	}
 
@@ -741,7 +826,7 @@ static irqreturn_t interrupt_handler(int irq, void *data)
 	/* Enable desired interrupts */
 	nnp_mmio_write(nnp_pci,
 		       ELBI_IOSF_MSI_MASK,
-		       ~(s_host_status_int_mask | s_host_status_threaded_mask));
+		       int_mask);
 
 	NNP_SPIN_UNLOCK_IRQRESTORE(&nnp_pci->irq_lock, flags);
 
@@ -1810,6 +1895,7 @@ static int nnp_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 	u32 doorbell_val, status;
 	int rc = -ENODEV;
 	u32 dma_rs, dma_ws;
+	u32 int_mask;
 
 	if (PCI_FUNC(pdev->devfn) != NNP_PCI_DEVFN) {
 		sph_log_err(START_UP_LOG, "unsupported pci.devfn=%u (driver only supports pci.devfn=%u)\n", PCI_FUNC(pdev->devfn), NNP_PCI_DEVFN);
@@ -1915,6 +2001,13 @@ static int nnp_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 		goto free_interrupts;
 	}
 
+	rc = device_create_file(nnp_pci->dev, &dev_attr_gen3_eq_pset_req_vec);
+	if (rc) {
+		sph_log_err(START_UP_LOG, "Failed to create attr rc=%d", rc);
+		device_remove_file(nnp_pci->dev, &dev_attr_link_width);
+		device_remove_file(nnp_pci->dev, &dev_attr_flr_mode);
+		goto free_interrupts;
+	}
 	/* update bus master state - enable DMA if bus master is set */
 	set_bus_master_state(nnp_pci);
 
@@ -1932,9 +2025,13 @@ static int nnp_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 		nnp_mmio_write(nnp_pci, ELBI_IOSF_STATUS, ELBI_IOSF_STATUS_DOORBELL_MASK);
 
 	/* Enable desired interrupts */
+	int_mask = ~(s_host_status_int_mask | s_host_status_threaded_mask);
+	if (s_flr_mode == SPH_FLR_MODE_HWONLY)
+		int_mask |= ELBI_IOSF_STATUS_LINE_FLR_MASK;
+
 	nnp_mmio_write(nnp_pci,
 		       ELBI_IOSF_MSI_MASK,
-		       ~(s_host_status_int_mask | s_host_status_threaded_mask));
+		       int_mask);
 
 	/* check available message in command hwQ */
 	nnp_process_commands(nnp_pci);
@@ -1973,6 +2070,7 @@ static void nnp_remove(struct pci_dev *pdev)
 
 	device_remove_file(nnp_pci->dev, &dev_attr_flr_mode);
 	device_remove_file(nnp_pci->dev, &dev_attr_link_width);
+	device_remove_file(nnp_pci->dev, &dev_attr_gen3_eq_pset_req_vec);
 
 #ifdef ULT
 	debugfs_remove_recursive(s_debugfs_dir);
