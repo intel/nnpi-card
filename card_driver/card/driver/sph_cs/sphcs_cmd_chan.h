@@ -47,11 +47,14 @@ struct sphcs_cmd_chan {
 	struct hlist_node hash_node;
 	int               destroyed;
 	struct workqueue_struct *wq;
+	struct workqueue_struct *wq_exec;
+	atomic_t                 sched_queued;
 	struct msg_scheduler_queue *respq;
 	struct work_struct work;
 
 	struct sphcs_dma_desc c2h_dma_desc;
 	struct sphcs_dma_desc h2c_dma_desc;
+	struct sphcs_dma_desc h2c_dma_exec_desc;
 
 	spinlock_t lock_bh;
 	DECLARE_HASHTABLE(hostres_hash, 6);

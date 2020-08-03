@@ -54,7 +54,7 @@ int sphcs_cmd_chan_create(uint16_t                protocol_id,
 
 	cmd_chan->wq = create_singlethread_workqueue("chan_wq");
 	if (!cmd_chan->wq) {
-		sph_log_err(CREATE_COMMAND_LOG, "Failed to initialize workqueue\n");
+		sph_log_err(CREATE_COMMAND_LOG, "Failed to initialize channel workqueue\n");
 		kfree(cmd_chan);
 		return NNP_IPC_NO_MEMORY;
 	}
@@ -65,6 +65,24 @@ int sphcs_cmd_chan_create(uint16_t                protocol_id,
 		destroy_workqueue(cmd_chan->wq);
 		kfree(cmd_chan);
 		return NNP_IPC_NO_MEMORY;
+	}
+
+	if (protocol_id < 256) { //for context
+		cmd_chan->h2c_dma_exec_desc.dma_direction = SPHCS_DMA_DIRECTION_HOST_TO_CARD;
+		cmd_chan->h2c_dma_exec_desc.dma_priority = SPHCS_DMA_PRIORITY_NORMAL;
+		cmd_chan->h2c_dma_exec_desc.flags = 0;
+		cmd_chan->h2c_dma_exec_desc.serial_channel =
+			sphcs_dma_sched_create_serial_channel(g_the_sphcs->dmaSched);
+
+		atomic_set(&cmd_chan->sched_queued, 0);
+		cmd_chan->wq_exec = create_singlethread_workqueue("chan_wq_exec");
+		if (!cmd_chan->wq_exec) {
+			sph_log_err(CREATE_COMMAND_LOG, "Failed to initialize channel execution workqueue\n");
+			sphcs_destroy_response_queue(g_the_sphcs, cmd_chan->respq);
+			destroy_workqueue(cmd_chan->wq);
+			kfree(cmd_chan);
+			return NNP_IPC_NO_MEMORY;
+		}
 	}
 
 	//
@@ -87,6 +105,8 @@ int sphcs_cmd_chan_create(uint16_t                protocol_id,
 	NNP_SPIN_UNLOCK_BH(&g_the_sphcs->lock_bh);
 
 	if (found) {
+		if (protocol_id < 256)
+			destroy_workqueue(cmd_chan->wq_exec);
 		destroy_workqueue(cmd_chan->wq);
 		sphcs_destroy_response_queue(g_the_sphcs, cmd_chan->respq);
 		kfree(cmd_chan);
@@ -105,6 +125,10 @@ static void cmd_chan_release(struct work_struct *work)
 
 	cmd_chan = container_of(work, struct sphcs_cmd_chan, work);
 
+	if (cmd_chan->protocol_id < 256) { //for context
+		drain_workqueue(cmd_chan->wq_exec);
+		destroy_workqueue(cmd_chan->wq_exec);
+	}
 	drain_workqueue(cmd_chan->wq);
 	destroy_workqueue(cmd_chan->wq);
 	sphcs_destroy_response_queue(g_the_sphcs, cmd_chan->respq);

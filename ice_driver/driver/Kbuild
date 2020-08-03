@@ -4,6 +4,7 @@
 #  SPDX-License-Identifier: GPL-2.0-or-later
 #############################################
 
+KBUILD_EXTRA_SYMBOLS := $(src)/../Module.symvers
 MODULE_NAME := intel_nnpi
 CONFIG_INTEL_NNPI ?= m
 

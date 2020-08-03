@@ -1,0 +1,61 @@
+From 17b84d06e3cf2bef42e6428b5ea902d4f551662c Mon Sep 17 00:00:00 2001
+From: Gil Montag <gil.montag@intel.com>
+Date: Thu, 2 Jul 2020 16:05:42 +0300
+Subject: [PATCH] Added force_polling module parameter to allow 8250 device to
+ work in polling mode
+
+---
+ drivers/tty/serial/8250/8250_core.c | 16 ++++++++++++++++
+ 1 file changed, 16 insertions(+)
+
+diff --git a/drivers/tty/serial/8250/8250_core.c b/drivers/tty/serial/8250/8250_core.c
+index 45d9117cab68..dad5176f354c 100644
+--- a/drivers/tty/serial/8250/8250_core.c
++++ b/drivers/tty/serial/8250/8250_core.c
+@@ -55,6 +55,11 @@ static struct uart_driver serial8250_reg;
+ 
+ static unsigned int skip_txen_test; /* force skip of txen test at init time */
+ 
++/* Force polled mode for all newly detected ports.
++ * This can be used if IRQs don't arrive and similar buggyness.
++ */
++static unsigned int force_polling;
++
+ #define PASS_LIMIT	512
+ 
+ #include <asm/serial.h>
+@@ -326,6 +331,13 @@ static int univ8250_setup_irq(struct uart_8250_port *up)
+ 			  uart_poll_timeout(port) + HZ / 5);
+ 	}
+ 
++	if (force_polling) {
++		pr_debug("ttyS%d - using polled mode instead of interrupt %u\n",
++			 serial_index(port),
++			 port->irq);
++		port->irq = 0;
++	}
++
+ 	/*
+ 	 * If the "interrupt" for this port doesn't correspond with any
+ 	 * hardware interrupt, we use a timer-based system.  The original
+@@ -1250,6 +1262,9 @@ MODULE_PARM_DESC(nr_uarts, "Maximum number of UARTs supported. (1-" __MODULE_STR
+ module_param(skip_txen_test, uint, 0644);
+ MODULE_PARM_DESC(skip_txen_test, "Skip checking for the TXEN bug at init time");
+ 
++module_param(force_polling, uint, 0644);
++MODULE_PARM_DESC(force_polling, "Set ports to polling mode at init time");
++
+ #ifdef CONFIG_SERIAL_8250_RSA
+ module_param_hw_array(probe_rsa, ulong, ioport, &probe_rsa_count, 0444);
+ MODULE_PARM_DESC(probe_rsa, "Probe I/O ports for RSA");
+@@ -1276,6 +1291,7 @@ static void __used s8250_options(void)
+ 	module_param_cb(share_irqs, &param_ops_uint, &share_irqs, 0644);
+ 	module_param_cb(nr_uarts, &param_ops_uint, &nr_uarts, 0644);
+ 	module_param_cb(skip_txen_test, &param_ops_uint, &skip_txen_test, 0644);
++	module_param_cb(force_polling, &param_ops_uint, &force_polling, 0644);
+ #ifdef CONFIG_SERIAL_8250_RSA
+ 	__module_param_call(MODULE_PARAM_PREFIX, probe_rsa,
+ 		&param_array_ops, .arr = &__param_arr_probe_rsa,
+-- 
+2.17.1
+

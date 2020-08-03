@@ -103,7 +103,7 @@ static inline void __iomem *ibecc_map_mchbar(struct pci_dev *dev0)
 	mchbar_addr = ((u64)mchbar_addr_hi << 32) | mchbar_addr_lo;
 
 	if ((mchbar_addr & MCHBAR_EN))
-		mchbar = ioremap_nocache(mchbar_addr & MCHBAR_MASK, MCHBAR_SIZE);
+		mchbar = ioremap(mchbar_addr & MCHBAR_MASK, MCHBAR_SIZE);
 
 	return mchbar;
 }

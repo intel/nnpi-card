@@ -9,7 +9,7 @@
 #include <linux/types.h>
 #include "ipc_protocol.h"
 
-#define NNP_IPC_CHAN_PROTOCOL_VERSION NNP_MAKE_VERSION(1, 4, 0)
+#define NNP_IPC_CHAN_PROTOCOL_VERSION NNP_MAKE_VERSION(1, 5, 0)
 
 #define NNP_IPC_GENMSG_BAD_CLIENT_ID   0xFFF
 

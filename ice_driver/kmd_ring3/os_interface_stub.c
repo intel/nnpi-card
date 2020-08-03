@@ -43,6 +43,7 @@
 #include "cve_context_process.h"
 #include "project_settings.h"
 #include "ice_debug.h"
+#include "cve_firmware.h"
 
 #ifdef NULL_DEVICE_RING3
 #include "dummy_coral.h"
@@ -552,8 +553,12 @@ void ice_os_mutex_cleanup(void)
 void cve_os_interface_cleanup(void)
 {
 	u32 i, active_ice;
+	struct cve_device_group *dg = cve_dg_get();
 
 	cve_dg_stop_poweroff_thread();
+
+	/* release memory for any custom firmware cached globally */
+	cve_fw_unload(NULL, dg->loaded_cust_fw_sections);
 
 	active_ice = (~icemask) & VALID_ICE_MASK;
 	while (active_ice) {
@@ -578,7 +583,7 @@ void getnstimeofday(struct timespec *ts) {
 	timespec_get(ts, TIME_UTC);
 }
 
-uint64_t trace_clock_local(void)
+uint64_t trace_clock_global(void)
 {
 	struct timespec ts;
 
@@ -980,12 +985,14 @@ int cve_ioctl_misc(int fd, int request, struct cve_ioctl_param *param)
 				param->load_firmware.fw_image_size_bytes,
 				(uintptr_t)param->load_firmware.fw_binmap,
 				param->load_firmware.fw_binmap_size_bytes);
+		/* Md5 based caching disabled for RING3 */
 		retval = cve_ds_handle_fw_loading(context_pid,
 				param->load_firmware.contextid,
 				param->load_firmware.networkid,
 				param->load_firmware.fw_image,
 				param->load_firmware.fw_binmap,
-				param->load_firmware.fw_binmap_size_bytes);
+				param->load_firmware.fw_binmap_size_bytes,
+				NULL);
 		break;
 	case CVE_IOCTL_WAIT_FOR_EVENT:
 		cve_os_log(CVE_LOGLEVEL_DEBUG,

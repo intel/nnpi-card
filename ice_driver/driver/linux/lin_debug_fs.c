@@ -39,7 +39,6 @@ static struct cve_debug_st cve_debug[] = {
 void cve_debug_init(void)
 {
 
-	struct dentry *u32int;
 	u32 i;
 
 	/*debugfs section*/
@@ -54,13 +53,8 @@ void cve_debug_init(void)
 
 	for (i = 0 ; i < DEBUG_CONF_NUM ; i++) {
 		/* create a file which handles on/off of debug config  */
-		u32int = debugfs_create_u32(cve_debug[i].str,
+		debugfs_create_u32(cve_debug[i].str,
 				cve_debug[i].mode, dirret, &(cve_debug[i].val));
-		if (!u32int) {
-			cve_os_log(CVE_LOGLEVEL_ERROR,
-					"error creating %s file\n",
-					cve_debug[i].str);
-		}
 
 		cve_os_log(CVE_LOGLEVEL_DEBUG,
 				"cve debug configuration -%s- = %d\n",

@@ -498,10 +498,11 @@ static void ibecc_clean_error(void)
 	if (likely(!ibecc_error_injection_requested))
 		return;
 
-	if (addr_for_err_inj)
+	if (addr_for_err_inj) {
 		sphcs_ibecc_clean_ctxt_err(addr_for_err_inj);
+		vm_unmap_ram(addr_for_err_inj, 1);
+	}
 
-	vm_unmap_ram(addr_for_err_inj, 1);
 	devres_for_err_inj = NULL;
 	addr_for_err_inj = NULL;
 }

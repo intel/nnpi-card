@@ -513,6 +513,7 @@ struct cve_device_group {
 	int trace_update_status;
 	struct trace_node_sysfs *node_group_sysfs;
 
+	struct cve_fw_loaded_sections *loaded_cust_fw_sections;
 };
 
 /* Holds all the relevant IDs required for maintaining a map between

@@ -149,7 +149,7 @@ int sphpb_map_bios_mailbox(struct sphpb_pb *sphpb)
 
 	mchbar_addr = mchbar_addr & MCHBAR_MASK;
 
-	io_addr = ioremap_nocache(mchbar_addr + BIOS_MAILBOX_START, BIOS_MAILBOX_LENGTH);
+	io_addr = ioremap(mchbar_addr + BIOS_MAILBOX_START, BIOS_MAILBOX_LENGTH);
 	if (unlikely(io_addr == NULL)) {
 		sph_log_err(POWER_BALANCER_LOG, "unable to map bios mailbox bar 0hunk %llx\n", mchbar_addr + BIOS_MAILBOX_START);
 		return -EIO;

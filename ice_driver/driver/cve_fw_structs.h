@@ -60,6 +60,7 @@ struct cve_fw_section_descriptor {
  * Each "cve_fw_loaded_sections" describes one fw type
  * (according to fw_binary_type enumerator)
  */
+#define __MD5_MAX_SZ 16
 struct cve_fw_loaded_sections {
 	struct cve_dle_t list;
 	/* firmware sections */
@@ -70,6 +71,9 @@ struct cve_fw_loaded_sections {
 	/* firmware type*/
 	enum fw_binary_type fw_type;
 	Version *fw_version;
+	/* md5 sum of the image	 */
+	u8 md5[__MD5_MAX_SZ];
+	char md5_str[(__MD5_MAX_SZ * 2) + 1];
 };
 
 /*

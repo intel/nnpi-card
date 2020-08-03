@@ -1,0 +1,8 @@
+config BR2_PACKAGE_KASAN
+        bool "intel_nnapi_kasan_package"
+    depends on BR2_LINUX_KERNEL
+        help
+      the purpose of this package under intel-nnpi packages 
+      is to copy the kasan lib's from the toolchain to the device filesystem
+
+          http://www.intel.com
