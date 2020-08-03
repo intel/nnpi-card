@@ -617,7 +617,7 @@ static void dispatch_next_subjobs(struct di_job *job,
 	cve_os_write_mmio_32(dev,
 		cfg_default.mmio_cb_doorbell_offset, db);
 
-	dev->busy_start_time = trace_clock_local();
+	dev->busy_start_time = trace_clock_global();
 	ice_swc_counter_set(dev->hswc,
 		ICEDRV_SWC_DEVICE_COUNTER_BUSY_START_TIME,
 		(nsec_to_usec(dev->busy_start_time)));
@@ -877,7 +877,7 @@ int set_idc_registers(struct ice_network *ntw, uint8_t lock)
 
 	ice_pe_val = value;
 	sphpb_cbs = dg->sphpb.sphpb_cbs;
-	t = trace_clock_local();
+	t = trace_clock_global();
 
 	do {
 		if (mask & (1ULL << (dev->dev_index + 4))) {
@@ -1502,7 +1502,7 @@ int cve_di_interrupt_handler(struct idc_device *idc_dev)
 	}
 
 	isr_status_node->int_jiffy = ice_os_get_current_jiffy();
-	cur_ts = trace_clock_local();
+	cur_ts = trace_clock_global();
 
 	/* Currently only serving ICE Int Request, not Ice Error request */
 	status_lo = (status64 & 0x0000FFF0);

@@ -79,6 +79,14 @@ int cve_dev_fw_load_and_map(cve_dev_context_handle_t hcontext,
 		const u32 fw_binmap_size_bytes,
 		struct cve_fw_loaded_sections **out_fw_sec);
 
+int ice_dev_fw_load(const u64 fw_image,
+		const u64 fw_binmap,
+		const u32 fw_binmap_size_bytes,
+		struct cve_fw_loaded_sections **out_fw_sec);
+
+int ice_dev_fw_map(cve_dev_context_handle_t hcontext,
+		struct cve_fw_loaded_sections *out_fw_sec);
+
 void cve_dev_get_emb_cb_list(cve_dev_context_handle_t hcontext,
 		cve_di_subjob_handle_t **out_embedded_cbs_subjobs);
 

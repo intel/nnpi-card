@@ -1780,6 +1780,15 @@ term_sysfsCall:
 
 	term_ice_poweroff_sysfs();
 
+	/* release memory for any custom firmware cached globally */
+	cve_os_log(CVE_LOGLEVEL_DEBUG,
+			"UnMapping cached f/w 0x%p MD5:%s\n",
+			dg->loaded_cust_fw_sections,
+			dg->loaded_cust_fw_sections->md5_str);
+
+	if (dg)
+		cve_fw_unload(NULL, dg->loaded_cust_fw_sections);
+
 	active_ice = (~g_icemask) & VALID_ICE_MASK;
 	while (active_ice) {
 		i = __builtin_ctz(active_ice);
@@ -2017,7 +2026,8 @@ static long cve_ioctl_misc(
 					p->networkid,
 					p->fw_image,
 					p->fw_binmap,
-					p->fw_binmap_size_bytes);
+					p->fw_binmap_size_bytes,
+					p->md5);
 #endif
 		}
 		break;

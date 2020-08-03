@@ -34,7 +34,6 @@ struct inf_cmd_list {
 	//for edit params
 	struct req_params   *edits;
 	uint16_t             edits_idx;
-	atomic_t             sched_queued;
 	enum event_val       sched_failed;
 	unsigned int         ptr2id;
 

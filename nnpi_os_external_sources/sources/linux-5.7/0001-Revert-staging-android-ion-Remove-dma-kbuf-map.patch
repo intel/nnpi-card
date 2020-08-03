@@ -1,0 +1,70 @@
+From a910cd74c3f34e78aa22148297918b6f00271c64 Mon Sep 17 00:00:00 2001
+From: farah kassabri <farah.kassabri@intel.com>
+Date: Sat, 4 Jul 2020 19:36:23 -0400
+Subject: [PATCH]  Revert staging ion.c: Remove dma kbuf map/unmap operations
+
+---
+ drivers/staging/android/ion/ion.c | 18 +++++++++++++++++-
+ include/linux/dma-buf.h           |  3 +++
+ 2 files changed, 20 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/staging/android/ion/ion.c b/drivers/staging/android/ion/ion.c
+index 38b51eace4f9..3fc09fa1ba92 100644
+--- a/drivers/staging/android/ion/ion.c
++++ b/drivers/staging/android/ion/ion.c
+@@ -274,6 +274,18 @@ static void ion_dma_buf_release(struct dma_buf *dmabuf)
+ 	_ion_buffer_destroy(buffer);
+ }
+ 
++static void *ion_dma_buf_kmap(struct dma_buf *dmabuf, unsigned long offset)
++{
++       struct ion_buffer *buffer = dmabuf->priv;
++
++       return buffer->vaddr + offset * PAGE_SIZE;
++}
++
++static void ion_dma_buf_kunmap(struct dma_buf *dmabuf, unsigned long offset,
++                              void *ptr)
++{
++}
++
+ static int ion_dma_buf_begin_cpu_access(struct dma_buf *dmabuf,
+ 					enum dma_data_direction direction)
+ {
+@@ -337,6 +349,8 @@ static const struct dma_buf_ops dma_buf_ops = {
+ 	.detach = ion_dma_buf_detatch,
+ 	.begin_cpu_access = ion_dma_buf_begin_cpu_access,
+ 	.end_cpu_access = ion_dma_buf_end_cpu_access,
++	.map = ion_dma_buf_kmap,
++	.unmap = ion_dma_buf_kunmap,
+ };
+ 
+ static int ion_alloc(size_t len, unsigned int heap_id_mask, unsigned int flags)
+@@ -519,7 +533,9 @@ static long ion_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
+ static const struct file_operations ion_fops = {
+ 	.owner          = THIS_MODULE,
+ 	.unlocked_ioctl = ion_ioctl,
+-	.compat_ioctl	= compat_ptr_ioctl,
++#ifdef CONFIG_COMPAT
++	.compat_ioctl   = ion_ioctl,
++#endif
+ };
+ 
+ static int debug_shrink_set(void *data, u64 val)
+diff --git a/include/linux/dma-buf.h b/include/linux/dma-buf.h
+index 57bcef6f988a..7e8747e2a28a 100644
+--- a/include/linux/dma-buf.h
++++ b/include/linux/dma-buf.h
+@@ -265,6 +265,9 @@ struct dma_buf_ops {
+ 	 */
+ 	int (*mmap)(struct dma_buf *, struct vm_area_struct *vma);
+ 
++	void *(*map)(struct dma_buf *, unsigned long);
++	void (*unmap)(struct dma_buf *, unsigned long, void *);
++
+ 	void *(*vmap)(struct dma_buf *);
+ 	void (*vunmap)(struct dma_buf *, void *vaddr);
+ };
+-- 
+2.22.0
+

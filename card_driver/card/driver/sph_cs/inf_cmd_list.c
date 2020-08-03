@@ -59,8 +59,6 @@ int inf_cmd_create(uint16_t              protocol_id,
 	inf_exec_error_list_init(&cmd->error_list, context);
 	INIT_LIST_HEAD(&cmd->devres_id_ranges);
 
-	atomic_set(&cmd->sched_queued, 0);
-
 	*out_cmd = cmd;
 	return 0;
 }

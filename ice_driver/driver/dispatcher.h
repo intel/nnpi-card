@@ -121,6 +121,7 @@ int cve_ds_handle_destroy_network(
  * fw_image - address to FW bin
  * fw_binmap - address to FW map information
  * fw_binmap_size_bytes  - sizeof FW map information
+ * md5 - md5 sum of the firmware
  * outputs: same as the ioctl declaration
  * returns: same as defined in the ioctl declaration
  */
@@ -130,7 +131,8 @@ int cve_ds_handle_fw_loading(
 		cve_network_id_t network_id,
 		u64 fw_image,
 		u64 fw_binmap,
-		u32 fw_binmap_size_bytes);
+		u32 fw_binmap_size_bytes,
+		u8 *md5);
 
 /*
  * handle a job completion notification

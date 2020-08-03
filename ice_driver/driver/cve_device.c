@@ -113,7 +113,7 @@ int cve_device_init(struct cve_device *dev, int index, u64 pe_value)
 	ice_swc_counter_set(dev->hswc, ICEDRV_SWC_DEVICE_COUNTER_POWER_STATE,
 		ice_dev_get_power_state(dev));
 
-	dev->idle_start_time = trace_clock_local();
+	dev->idle_start_time = trace_clock_global();
 	ice_swc_counter_set(dev->hswc,
 		ICEDRV_SWC_DEVICE_COUNTER_IDLE_START_TIME,
 		(nsec_to_usec(dev->idle_start_time)));

@@ -119,6 +119,172 @@ static void __destroy_infer_desc(struct ice_infer *inf);
 static void __flush_inf_cbs(struct ice_infer *inf);
 #endif
 
+#ifdef RING3_VALIDATION
+/* For RING3 bypass caching logic */
+static void __assign_fw_ownership(struct cve_device_group *dg,
+		struct ice_network *network,
+		struct cve_fw_loaded_sections *out_fw_sec, u8 *md5)
+{
+	cve_dle_add_to_list_after(
+			network->loaded_cust_fw_sections,
+			list, out_fw_sec);
+}
+
+#else
+
+static void __assign_fw_ownership(struct cve_device_group *dg,
+		struct ice_network *network,
+		struct cve_fw_loaded_sections *out_fw_sec, u8 *md5)
+{
+	u8 i = 0;
+	int ret = 0;
+
+	/* store the MD5 sum*/
+	for (; i < ICEDRV_MD5_MAX_SIZE; i++) {
+		out_fw_sec->md5[i] = md5[i];
+
+		ret = ice_snprintf_s_u(&out_fw_sec->md5_str[i * 2],
+				sizeof(out_fw_sec->md5_str), "%02x", md5[i]);
+		if (ret < 0)
+			cve_os_log(CVE_LOGLEVEL_ERROR,
+					"MD5 copy to string failed(%d)\n",
+					ret);
+	}
+	out_fw_sec->md5_str[i*2] = '\0';
+
+	if (!dg->loaded_cust_fw_sections) {
+		/* add new loaded dynamic fw to global struct */
+		cve_dle_add_to_list_after(dg->loaded_cust_fw_sections,
+				list, out_fw_sec);
+		cve_os_log(CVE_LOGLEVEL_DEBUG,
+				"Cached firmware fw_sec_struct:0x%p MD5:%s\n",
+				out_fw_sec, out_fw_sec->md5_str);
+	} else {
+		cve_dle_add_to_list_after(
+				network->loaded_cust_fw_sections,
+				list, out_fw_sec);
+		cve_os_log(CVE_LOGLEVEL_DEBUG,
+				"NTW:0x%p Adding custom firmware fw_sec_struct:0x%p MD5:%s\n",
+				network, out_fw_sec, out_fw_sec->md5_str);
+	}
+}
+
+#endif
+
+/* return 0 on success
+ * return -1 if nothing to compare i.e. no caching
+ * return 1 if mismatch detected
+ */
+static int __compare_md5(struct cve_device_group *dg,
+		struct ice_network *network,
+		u8 *md5)
+{
+	int not_equal = 0;
+	u8 i = 0;
+
+	/* If no MD5, exit */
+	if (!md5) {
+		not_equal = 1;
+		goto exit;
+	}
+
+	/* if no copy cached yet, so nothing to compare */
+	if (!dg->loaded_cust_fw_sections) {
+		not_equal = -1;
+		cve_os_log(CVE_LOGLEVEL_INFO,
+				"no firmware cached, loading new firmware\n");
+		goto exit;
+	}
+
+	for (; i < ICEDRV_MD5_MAX_SIZE; i++) {
+		if (dg->loaded_cust_fw_sections->md5[i] != md5[i])
+			break;
+	}
+
+	/* at least 1 byte did not match */
+	if (i < ICEDRV_MD5_MAX_SIZE) {
+		not_equal = 1;
+		cve_os_log(CVE_LOGLEVEL_INFO,
+				"MD5 mismatch cached:%s loading new firmware\n",
+				dg->loaded_cust_fw_sections->md5_str);
+	}
+
+exit:
+	return not_equal;
+}
+
+static void __cleanup_fw_loading(struct ice_network *network,
+		struct cve_fw_loaded_sections *out_fw_sec,
+		int md5_match)
+{
+	struct cve_device_group *dg = cve_dg_get();
+
+	if (md5_match < 0) {
+		/* remove fw from global struct */
+		cve_dle_remove_from_list(dg->loaded_cust_fw_sections,
+				list, out_fw_sec);
+		cve_os_log(CVE_LOGLEVEL_DEBUG,
+				"release cached firmware fw_sec_struct:0x%p MD5:%s\n",
+				out_fw_sec, out_fw_sec->md5_str);
+	} else {
+		cve_dle_remove_from_list(
+				network->loaded_cust_fw_sections,
+				list, out_fw_sec);
+		cve_os_log(CVE_LOGLEVEL_DEBUG,
+				"NTW:0x%p clean custom firmware fw_sec_struct:0x%p MD5:%s\n",
+				network, out_fw_sec, out_fw_sec->md5_str);
+	}
+
+}
+
+static int __process_fw_loading(struct ice_network *network,
+		u64 fw_image, u64 fw_binmap, u32 fw_binmap_size, u8 *md5)
+{
+	int ret = CVE_DEFAULT_ERROR_CODE;
+	struct cve_device_group *dg = cve_dg_get();
+	struct cve_fw_loaded_sections *out_fw_sec;
+	int load_new_fw = 0;
+
+	load_new_fw = __compare_md5(dg, network, md5);
+	out_fw_sec = dg->loaded_cust_fw_sections;
+
+	/* check if we stored a copy of IVP lib, if not, store it */
+	if (load_new_fw) {
+		/* allocate and load a copy of the firmware */
+		ret = ice_dev_fw_load(fw_image, fw_binmap,
+				fw_binmap_size, &out_fw_sec);
+		if (ret < 0) {
+			cve_os_log_default(CVE_LOGLEVEL_ERROR,
+					"NTW:0x%llx cve_dev_fw_load failed %d\n",
+					network->network_id, ret);
+			goto out;
+		}
+
+		__assign_fw_ownership(dg, network, out_fw_sec, md5);
+	}
+
+	cve_os_log(CVE_LOGLEVEL_DEBUG,
+				"NTW:0x%llx Mapping f/w 0x%p md5:%s\n",
+				network->network_id, out_fw_sec,
+				out_fw_sec->md5_str);
+	ret = ice_dev_fw_map(network->dev_hctx_list, out_fw_sec);
+	if (ret < 0) {
+		cve_os_log_default(CVE_LOGLEVEL_ERROR,
+				"NTW:0x%llx fw_map(0x%p) MD5:%s failed:%d\n",
+				network->network_id, out_fw_sec,
+				out_fw_sec->md5_str, ret);
+		goto err_fw_map;
+	}
+
+	return ret;
+err_fw_map:
+	if (load_new_fw)
+		__cleanup_fw_loading(network, out_fw_sec, load_new_fw);
+out:
+	return ret;
+}
+
+
 static int __alloc_and_copy(void *base_address,
 	size_t sz,
 	void **kernel_copy)
@@ -389,7 +555,7 @@ static void copy_event_data_and_remove(cve_context_process_id_t context_pid,
 
 	ice_swc_counter_add(ntw->hswc,
 			ICEDRV_SWC_SUB_NETWORK_NETBUSYTIME,
-			nsec_to_usec(trace_clock_local()
+			nsec_to_usec(trace_clock_global()
 				- inf->busy_start_time));
 	DO_TRACE(trace_icedrvEventGeneration(SPH_TRACE_OP_STATE_COMPLETE,
 					ctx->swc_node.sw_id,
@@ -942,7 +1108,7 @@ static int __dispatch_single_job(
 
 		do_reset(cve_dev, dev_next_ctx, hdom, job, RESET_TYPE_HARD);
 
-		po_ts = trace_clock_local();
+		po_ts = trace_clock_global();
 
 		len = ice_snprintf_s_u(sync_marker, sizeof(sync_marker),
 				"0xDEAD1CE%x\n", cve_dev->dev_index);
@@ -3974,12 +4140,12 @@ int cve_ds_handle_fw_loading(
 		cve_network_id_t network_id,
 		u64 fw_image,
 		u64 fw_binmap,
-		u32 fw_binmap_size_bytes)
+		u32 fw_binmap_size_bytes,
+		u8 *md5)
 {
 	int retval = CVE_DEFAULT_ERROR_CODE;
 	struct cve_device_group *dg = cve_dg_get();
 	struct ice_network *network = NULL;
-	struct cve_fw_loaded_sections *out_fw_sec;
 
 	retval = cve_os_lock(&g_cve_driver_biglock, CVE_INTERRUPTIBLE);
 	if (retval != 0) {
@@ -4023,22 +4189,15 @@ int cve_ds_handle_fw_loading(
 				fw_binmap_size_bytes, MAX_FW_SIZE_BYTES);
 		goto out;
 	}
-	retval = cve_dev_fw_load_and_map(network->dev_hctx_list,
-			fw_image,
-			fw_binmap,
-			fw_binmap_size_bytes,
-			&out_fw_sec);
 
+	retval = __process_fw_loading(network, fw_image, fw_binmap,
+			fw_binmap_size_bytes, md5);
 	if (retval < 0) {
 		cve_os_log_default(CVE_LOGLEVEL_ERROR,
-			"cve_dev_fw_load_and_map failed %d\n",
-			retval);
+				"cve_dev_fw_load_and_map failed %d\n",
+				retval);
 		goto out;
 	}
-
-	/* add new loaded dynamic fw to loaded_cust_fw_sections struct */
-	cve_dle_add_to_list_after(network->loaded_cust_fw_sections,
-		list, out_fw_sec);
 
 	/* success */
 	retval = 0;

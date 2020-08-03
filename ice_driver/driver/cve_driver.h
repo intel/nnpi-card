@@ -29,6 +29,7 @@
 #define LLC_FREQ_DIVIDER_FACTOR 100
 #define ICEDRV_VALID_ICE_MASK 0xFFF
 #define MAX_ICE_DUMP_COUNT 0x3F
+#define ICEDRV_MD5_MAX_SIZE 16
 
 typedef __u64 cve_bufferid_t;
 
@@ -538,6 +539,8 @@ struct cve_load_firmware_params {
 	__u64 fw_binmap;
 	/* size of the binary map */
 	__u32 fw_binmap_size_bytes;
+	/* MD5 sum of firmware image */
+	__u8 md5[ICEDRV_MD5_MAX_SIZE];
 };
 
 /*

@@ -276,7 +276,7 @@ static int ice_pm_monitor_task(void *data)
 			goto out_null_list;
 
 		icemask = 0;
-		t = trace_clock_local();
+		t = trace_clock_global();
 
 		while (jiffies_to_msecs(cur_jiffy - head->poff_jiffy) >=
 				configured_timeout_ms) {

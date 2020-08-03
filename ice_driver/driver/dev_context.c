@@ -218,9 +218,6 @@ exit:
 
 
 static int ice_map_fw_per_dev_ctx(cve_dev_context_handle_t hcontext,
-		const u64 fw_image,
-		const u64 fw_binmap,
-		const u32 fw_binmap_size_bytes,
 		struct cve_fw_loaded_sections *load_fw_sec)
 {
 	int retval = CVE_DEFAULT_ERROR_CODE;
@@ -303,6 +300,68 @@ void ice_fini_sw_dev_contexts(cve_dev_context_handle_t hcontext_list,
 	cve_fw_unload(NULL, loaded_fw_sections_list);
 }
 
+int ice_dev_fw_load(const u64 fw_image,
+		const u64 fw_binmap,
+		const u32 fw_binmap_size_bytes,
+		struct cve_fw_loaded_sections **out_fw_sec)
+{
+	int retval = CVE_DEFAULT_ERROR_CODE;
+
+	cve_os_log(CVE_LOGLEVEL_DEBUG,
+			"Start Firmware Load and Map on all ICEs\n");
+
+	retval = __load_fw(fw_image,
+			fw_binmap,
+			fw_binmap_size_bytes,
+			out_fw_sec);
+	if (retval < 0) {
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+				"load_fw failed %d\n", retval);
+		goto out;
+	}
+
+	cve_os_log(CVE_LOGLEVEL_DEBUG,
+			"End Firmware Load and Map on all ICEs\n");
+
+out:
+	/* TODO: unload fw that was already loaded */
+
+	return retval;
+}
+
+int ice_dev_fw_map(cve_dev_context_handle_t hcontext_list,
+		struct cve_fw_loaded_sections *out_fw_sec)
+{
+	struct dev_context *dev_context_list =
+		(struct dev_context *) hcontext_list;
+	struct dev_context *dev_ctx_item = dev_context_list;
+	int retval = CVE_DEFAULT_ERROR_CODE;
+
+	cve_os_log(CVE_LOGLEVEL_DEBUG,
+			"Start Firmware Mapping on ICEs\n");
+
+	do {
+		retval = ice_map_fw_per_dev_ctx(dev_ctx_item,
+			out_fw_sec);
+		if (retval < 0) {
+			cve_os_log(CVE_LOGLEVEL_ERROR,
+				"ce_load_fw_per_dev_ctx failed %d\n",
+				retval);
+			goto out;
+		}
+		dev_ctx_item = cve_dle_next(dev_ctx_item, list);
+	} while (dev_ctx_item != dev_context_list);
+
+	cve_os_log(CVE_LOGLEVEL_DEBUG,
+			"End Firmware Map on ICEs\n");
+
+out:
+	/* TODO: unload fw that was already loaded */
+
+	return retval;
+}
+
+
 int cve_dev_fw_load_and_map(cve_dev_context_handle_t hcontext_list,
 		const u64 fw_image,
 		const u64 fw_binmap,
@@ -329,9 +388,6 @@ int cve_dev_fw_load_and_map(cve_dev_context_handle_t hcontext_list,
 
 	do {
 		retval = ice_map_fw_per_dev_ctx(dev_ctx_item,
-			fw_image,
-			fw_binmap,
-			fw_binmap_size_bytes,
 			*out_fw_sec);
 		if (retval < 0) {
 			cve_os_log(CVE_LOGLEVEL_ERROR,

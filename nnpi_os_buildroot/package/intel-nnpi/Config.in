@@ -3,4 +3,5 @@ source "package/intel-nnpi/psw/Config.in"
 source "package/intel-nnpi/ice_driver_kernel/Config.in"
 source "package/intel-nnpi/ice_driver_user/Config.in"
 source "package/intel-nnpi/runtime/Config.in"
+source "package/intel-nnpi/kasan/Config.in"
 

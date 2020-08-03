@@ -154,7 +154,7 @@ int ice_os_mutex_init(void);
 void ice_os_mutex_cleanup(void);
 
 void getnstimeofday(struct timespec *ts);
-uint64_t trace_clock_local(void);
+uint64_t trace_clock_global(void);
 unsigned int jiffies_to_msecs(unsigned long jiffy);
 
 #define likely(x)       __builtin_expect(!!(x), 1)

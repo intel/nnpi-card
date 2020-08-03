@@ -3207,7 +3207,6 @@ static void handle_sched_cmdlist(struct inf_cmd_list *cmdlist,
 	uint16_t i, k, j = 0;
 
 	NNP_ASSERT(params != NULL || num_params == 0);
-	NNP_ASSERT(atomic_read(&cmdlist->sched_queued) == 0);
 
 	NNP_ASSERT(atomic_read(&cmdlist->num_left) == 0);
 	atomic_inc(&cmdlist->num_left); // to prevent completion reports in time of schedule
@@ -3328,7 +3327,7 @@ static int cmdlist_schedule_dma_complete(struct sphcs *sphcs,
 	p = data->vptr;
 	sched_dma_size = data->data_size;
 
-	sphcs_cmd_chan_update_cmd_head(cmd->context->chan, 0, PAGE_SIZE);
+	sphcs_cmd_chan_update_cmd_head(cmd->context->chan, 1, PAGE_SIZE);
 
 	if (unlikely(status == SPHCS_DMA_STATUS_FAILED)) {
 		val = NNP_IPC_DMA_ERROR;
@@ -3466,7 +3465,7 @@ static void cmd_sched_op_work_handler(struct work_struct *work)
 	inf_cmd_get(cmd);
 
 	ret = sphcs_dma_sched_start_xfer_single(g_the_sphcs->dmaSched,
-						&cmd->context->chan->h2c_dma_desc,//TODO: consider use high priority
+						&cmd->context->chan->h2c_dma_exec_desc,
 						op->host_dma_addr,
 						dma_addr,
 						op->dma_data.data_size,
@@ -3488,10 +3487,10 @@ free_page:
 				    op->dma_data.dma_page_hndl);
 send_error:
 	cmdlst_send_fail_reports(cmd, val, op->dma_data.is_last, 0);
-	sphcs_cmd_chan_update_cmd_head(cmd->context->chan, 0, PAGE_SIZE);
+	sphcs_cmd_chan_update_cmd_head(cmd->context->chan, 1, PAGE_SIZE);
 	kfree(op);
 done:
-	atomic_dec(&cmd->sched_queued);
+	atomic_dec(&cmd->context->chan->sched_queued);
 	// for opwork
 	inf_cmd_put(cmd);
 }
@@ -3524,7 +3523,7 @@ void IPC_OPCODE_HANDLER(CHAN_SCHEDULE_CMDLIST)(struct sphcs                    *
 	}
 
 	if (cmd->size > 0) {
-		cmd_data_rb = &context->chan->h2c_rb[0];
+		cmd_data_rb = &context->chan->h2c_rb[1];
 		/* need to advance h2c ring buffer by one page */
 		host_rb_update_free_space(cmd_data_rb, NNP_PAGE_SIZE);
 		ret = host_rb_get_avail_space(cmd_data_rb,
@@ -3576,7 +3575,7 @@ void IPC_OPCODE_HANDLER(CHAN_SCHEDULE_CMDLIST)(struct sphcs                    *
 		goto send_error;
 	}
 
-	if (atomic_read(&cmdlist->sched_queued) == 0)
+	if (atomic_read(&cmdlist->context->chan->sched_queued) == 0)
 		ret = dma_page_pool_get_free_page_nowait(g_the_sphcs->dma_page_pool,
 						&dma_data.dma_page_hndl,
 						&dma_data.vptr,
@@ -3592,7 +3591,7 @@ void IPC_OPCODE_HANDLER(CHAN_SCHEDULE_CMDLIST)(struct sphcs                    *
 		inf_cmd_get(cmdlist);
 
 		ret = sphcs_dma_sched_start_xfer_single(g_the_sphcs->dmaSched,
-							&context->chan->h2c_dma_desc,//TODO: consider use high priority
+							&context->chan->h2c_dma_exec_desc,
 							host_dma_addr,
 							dma_addr,
 							cmd->size,
@@ -3619,7 +3618,7 @@ void IPC_OPCODE_HANDLER(CHAN_SCHEDULE_CMDLIST)(struct sphcs                    *
 		goto send_error;
 	}
 
-	atomic_inc(&cmdlist->sched_queued);
+	atomic_inc(&cmdlist->context->chan->sched_queued);
 	// put kref for opwork
 	inf_cmd_get(cmdlist);
 
@@ -3629,7 +3628,7 @@ void IPC_OPCODE_HANDLER(CHAN_SCHEDULE_CMDLIST)(struct sphcs                    *
 	work->dma_data.is_last = cmd->is_last;
 
 	INIT_WORK(&work->work, cmd_sched_op_work_handler);
-	queue_work(context->chan->wq, &work->work);
+	queue_work(context->chan->wq_exec, &work->work);
 
 	goto done;
 

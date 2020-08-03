@@ -1341,20 +1341,16 @@ void sphcs_dma_sched_init_debugfs(struct sphcs_dma_sched *dmaSched,
 
 	for (i = 0; i < SPHCS_DMA_NUM_PRIORITIES; i++) {
 		snprintf(allowed_mask_name, 32, "h2c_pri%d_allowed_hw_channels", i);
-		f = debugfs_create_u32(allowed_mask_name,
+		debugfs_create_u32(allowed_mask_name,
 				       0644,
 				       dir,
 				       &dmaSched->direction[SPHCS_DMA_DIRECTION_HOST_TO_CARD].reqQueue[i].allowed_hw_channels);
-		if (IS_ERR_OR_NULL(f))
-			goto err;
 
 		snprintf(allowed_mask_name, 32, "c2h_pri%d_allowed_hw_channels", i);
-		f = debugfs_create_u32(allowed_mask_name,
+		debugfs_create_u32(allowed_mask_name,
 				       0644,
 				       dir,
 				       &dmaSched->direction[SPHCS_DMA_DIRECTION_CARD_TO_HOST].reqQueue[i].allowed_hw_channels);
-		if (IS_ERR_OR_NULL(f))
-			goto err;
 	}
 
 	return;
