@@ -468,7 +468,7 @@ static int sphcs_process_messages(struct sphcs *sphcs, u64 *hw_msg, u32 hw_size)
 
 	} while (j < size);
 
-	/* 
+	/*
 	 * if unprocessed messages left, copy it to the pensing messages buffer
 	 * for the next time
 	 */
@@ -872,6 +872,25 @@ free_dma_req_data:
 
 static void sphcs_host_disconnect_work_handler(struct work_struct *work);
 
+static int trace_timestamp_show(struct seq_file *m, void *v)
+{
+	seq_printf(m, "%llu\n", trace_clock_global());
+
+	return 0;
+}
+
+static int trace_timestamp_open(struct inode *inode, struct file *filp)
+{
+	return single_open(filp, trace_timestamp_show, inode->i_private);
+}
+
+static const struct file_operations trace_timestamp_fops = {
+	.open		= trace_timestamp_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+};
+
 static int sphcs_create_sphcs(void                           *hw_handle,
 			      struct device                  *hw_device,
 			      const struct sphcs_pcie_hw_ops *hw_ops,
@@ -976,6 +995,12 @@ static int sphcs_create_sphcs(void                           *hw_handle,
 	}
 
 	sphcs_inf_init_debugfs(sphcs->debugfs_dir);
+
+	debugfs_create_file("trace_timestamp",
+			    0444,
+			    sphcs->debugfs_dir,
+			    NULL,
+			    &trace_timestamp_fops);
 
 	ret = nnp_create_sw_counters_info_node(NULL,
 					       &g_sw_counters_set_global,
