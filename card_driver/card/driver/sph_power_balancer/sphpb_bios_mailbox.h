@@ -49,6 +49,7 @@ enum bios_mailbox_command {
 	MAILBOX_BIOS_CMD_READ_VR_TDC_CONFIG =                   25,
 	MAILBOX_BIOS_CMD_WRITE_VR_TDC_CONFIG =                  26,
 	MAILBOX_BIOS_CMD_STATIC_VR_INTERFACE =                  27, // LKF Only
+	MAILBOX_BIOS_CMD_VR_IMON_CALIBRATION =                  27, // SPH Only?
 	MAILBOX_BIOS_CMD_READ_C6DRAM_CONFIG =                   28,
 	MAILBOX_BIOS_CMD_WRITE_C6DRAM_CONFIG =                  29,
 	MAILBOX_BIOS_CMD_ODOMETER_CONFIG =                      31,
@@ -181,6 +182,11 @@ enum BIOS_SAGV_CONFIG_POLICIES {
 #define BIOS_OC_INTERFACE_SUBCMD_READ_VCCIN_MAX_LIMIT                   10
 #define BIOS_OC_INTERFACE_SUBCMD_WRITE_VCCIN_MAX_LIMIT                  11
 
+// Mailbox subcommands and constants for #define MAILBOX_BIOS_CMD_VR_IMON_CALIBRATION
+#define BIOS_IMON_CALIBRATION_VCCIN_READ_SUBCOMMAND   0
+#define BIOS_IMON_CALIBRATION_VCCIN_WRITE_SUBCOMMAND  1
+#define BIOS_IMON_CALIBRATION_SA_READ_SUBCOMMAND      2
+#define BIOS_IMON_CALIBRATION_SA_WRITE_SUBCOMMAND     3
 
 
 /////////////////////////////////////////////////////////
@@ -238,3 +244,15 @@ void sphpb_unmap_bios_mailbox(struct sphpb_pb *sphpb);
 
 int set_sagv_freq(enum BIOS_SAGV_CONFIG_POLICIES qclk,
 		  enum BIOS_SAGV_CONFIG_POLICIES psf0);
+
+int get_imon_sa_calib_config(uint16_t *imon_offset,
+			     uint16_t *imon_slope_factor);
+
+int set_imon_sa_calib_config(uint16_t imon_offset,
+			     uint16_t imon_slope_factor);
+
+int get_imon_vccin_calib_config(uint16_t *imon_offset,
+				uint16_t *imon_slope);
+
+int set_imon_vccin_calib_config(uint16_t imon_offset,
+				uint16_t imon_slope);

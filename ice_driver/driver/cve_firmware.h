@@ -25,6 +25,10 @@
 
 #define MAX_NAME_LEN 1024
 
+/* MAX_FW_SIZE_BYTES value corresponds to the max fw size in bytes and */
+/* can be calculated as 10240*1024 bytes */
+#define MAX_FW_SIZE_BYTES 10485760
+
 #define RTL_DEBUG_A_STEP_FW_PATH "intel_nnpi/a_step/debug/"
 #define RTL_RELEASE_A_STEP_FW_PATH "intel_nnpi/a_step/release/"
 #define RTL_DEBUG_B_STEP_FW_PATH "intel_nnpi/b_step/debug/"

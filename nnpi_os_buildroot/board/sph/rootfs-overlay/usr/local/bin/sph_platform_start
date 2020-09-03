@@ -71,7 +71,7 @@ ln -sf /opt/intel_nnpi/bin/sph_maintenance /usr/bin/sph_maintenance
 
 #initializing SPH card driver
 echo "initializing SPH card driver"
-modprobe sphcs.ko mem_thr=75000
+modprobe sphcs.ko mem_thr=25000
 error_check "modprobe sphcs.ko"
 
 #initializing SPH power balancing driver
@@ -81,6 +81,9 @@ error_check "modprobe intel_sphpb.ko"
 
 #invoke a wrapper script that calculates cmd line args for insmod sph_memalloc.ko and insmods it accordingly
 . memalloc_sph
+
+echo "Applying power correction settings from FPGA"
+/opt/intel_nnpi/bin/set_power_from_fpga.sh
 
 export LD_LIBRARY_PATH=/usr/local/lib
 

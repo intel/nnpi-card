@@ -68,16 +68,6 @@ struct genmsg_global_data {
 };
 static struct genmsg_global_data s_genmsg;
 
-struct genmsg_command_entry {
-	union h2c_GenericMessaging msg;
-	struct list_head node;
-};
-
-static struct list_head s_pending_commands;
-static spinlock_t       s_pending_commands_lock_bh;
-static struct work_struct s_pending_commands_work;
-static uint32_t         s_num_pending_commands;
-
 struct channel_data;
 
 struct genmsg_dma_command_data {
@@ -120,10 +110,6 @@ struct channel_data {
 
 	u16                channel_id;
 	struct hlist_node  hash_node;
-
-	struct msg_scheduler_queue *respq;
-	struct sphcs_dma_desc c2h_dma_desc;
-	struct sphcs_dma_desc h2c_dma_desc;
 
 	enum channel_close_state closing;
 	int               hanging_up;
@@ -1257,13 +1243,19 @@ static void handle_cmd_dma_failed(struct genmsg_dma_command_data *dma_data)
 		sphcs_cmd_chan_update_cmd_head(dma_data->cmd_chan, 0, NNP_PAGE_SIZE);
 		sphcs_msg_scheduler_queue_add_msg(dma_data->cmd_chan->respq, (u64 *)&msg.value, 1);
 	} else if (dma_data->channel) {
+		sphcs_cmd_chan_update_cmd_head(dma_data->cmd_chan, 0, NNP_PAGE_SIZE);
 		/*
 		 * mark io_error on channel - next read/write will fail
 		 * and app will close the channel
 		 */
-		if (is_channel_ptr(dma_data->channel) &&
-			_chnl_open == dma_data->channel->closing)
+		NNP_SPIN_LOCK(&dma_data->channel->read_lock);
+		if (_chnl_open == dma_data->channel->closing)
 			dma_data->channel->io_error = true;
+		dma_data->channel->n_read_dma_req--;
+		NNP_SPIN_UNLOCK(&dma_data->channel->read_lock);
+		if (dma_data->channel->n_read_dma_req == 0)
+			wake_up_all(&dma_data->channel->read_waitq);
+
 	}
 
 	/* return back dma page to pool */
@@ -1279,94 +1271,91 @@ int sphcs_genmsg_cmd_dma_complete_callback(struct sphcs *sphcs, void *ctx, const
 {
 	struct genmsg_dma_command_data *dma_data = (struct genmsg_dma_command_data *)user_data;
 
-	/*
-	 * send a reply to host to free the xmited dma page
-	 * in case of connect command, it will happen on the connect response
-	 * after the service client will reply to the connect request
-	 */
-	if (!dma_data->msg.connect)
-		sphcs_cmd_chan_update_cmd_head(dma_data->cmd_chan, 0, NNP_PAGE_SIZE);
-
 	if (status == SPHCS_DMA_STATUS_FAILED) {
 		sph_log_err(SERVICE_LOG, "Dma error\n");
 		/* dma failed */
 		handle_cmd_dma_failed(dma_data);
-	} else {
-		/* if it is not an error - it must be done */
-		NNP_ASSERT(status == SPHCS_DMA_STATUS_DONE);
 
-		if (dma_data->msg.connect) {
-			/* This is a connect request - route to a service */
-			struct service_data *service;
-			u32 *name_len = (u32 *)(dma_data->vptr);
-			const char *name = (const char *)(name_len+1);
+		return -1;
+	}
 
-			service = find_service(name, *name_len);
+	/* if it is not an error - it must be done */
+	NNP_ASSERT(status == SPHCS_DMA_STATUS_DONE);
 
-			if (service != NULL) {
-				struct pending_packet *pend;
+	if (dma_data->msg.connect) {
+		/* This is a connect request - route to a service */
+		struct service_data *service;
+		u32 *name_len = (u32 *)(dma_data->vptr);
+		const char *name = (const char *)(name_len+1);
 
-				pend = kzalloc(sizeof(*pend), GFP_NOWAIT);
-				if (unlikely(pend == NULL)) {
-					sph_log_err(SERVICE_LOG, "Failed to allocate pending connection struct!!\n");
-				} else {
-					/* insert into the connection pending list */
-					memcpy(&pend->dma_data, dma_data, sizeof(*dma_data));
-					NNP_SPIN_LOCK(&service->lock);
-					list_add_tail(&pend->node, &service->pending_connections);
-					NNP_SPIN_UNLOCK(&service->lock);
-					wake_up_all(&service->waitq);
-				}
-			} else {
-				/* service not found -
-				 * send connect failed reply message back to host
-				 */
+		service = find_service(name, *name_len);
+
+		if (service != NULL) {
+			struct pending_packet *pend;
+
+			pend = kzalloc(sizeof(*pend), GFP_NOWAIT);
+			if (unlikely(pend == NULL)) {
+				sph_log_err(SERVICE_LOG, "Failed to allocate pending connection struct!!\n");
 				handle_cmd_dma_failed(dma_data);
+				return -1;
 			}
+			/* insert into the connection pending list */
+			memcpy(&pend->dma_data, dma_data, sizeof(*dma_data));
+			NNP_SPIN_LOCK(&service->lock);
+			list_add_tail(&pend->node, &service->pending_connections);
+			NNP_SPIN_UNLOCK(&service->lock);
+			wake_up_all(&service->waitq);
+			/*keep cmd_chan ref for the new connection*/
 		} else {
-			/* this is a generic packet - route to a channel */
-			struct channel_data *channel;
-
-			/*
-			 * cmd_chan pointer already in the channel struct, no
-			 * need to keep it in the pending packet
+			/* service not found -
+			 * send connect failed reply message back to host
 			 */
-			sphcs_cmd_chan_put(dma_data->cmd_chan);
-
-			channel = dma_data->channel;
-			if (is_channel_ptr(channel) &&
-				_chnl_open == dma_data->channel->closing) {
-				struct pending_packet *pend;
-
-				pend = kzalloc(sizeof(*pend), GFP_NOWAIT);
-				if (!pend) {
-					sph_log_err(SERVICE_LOG, "Failed to allocate pending packet struct!!\n");
-				} else {
-					/* insert into the channel's pending read packets */
-					INIT_LIST_HEAD(&pend->node);
-					memcpy(&pend->dma_data, dma_data, sizeof(*dma_data));
-					NNP_SPIN_LOCK(&channel->read_lock);
-					list_add_tail(&pend->node, &channel->pending_read_packets);
-					NNP_SPIN_UNLOCK(&channel->read_lock);
-					wake_up_all(&channel->read_waitq);
-				}
-			} else {
-				sph_log_err(SERVICE_LOG, "Got generic message with NULL or closing channel handle!!!\n");
-
-				/* return back dma page to pool */
-				dma_page_pool_set_page_free(sphcs->dma_page_pool, dma_data->dma_page_hndl);
-
-			}
-
-			if (is_channel_ptr(channel)) {
-				NNP_SPIN_LOCK(&channel->read_lock);
-				if (channel->n_read_dma_req)
-					channel->n_read_dma_req--;
-				NNP_SPIN_UNLOCK(&channel->read_lock);
-				if (!channel->n_read_dma_req)
-					wake_up_all(&channel->read_waitq);
-			}
+			handle_cmd_dma_failed(dma_data);
+			return -1;
 		}
+	} else {
+		/* this is a generic packet - route to a channel */
+		struct pending_packet *pend;
+		struct channel_data *channel;
+
+		channel = dma_data->channel;
+		NNP_ASSERT(is_channel_ptr(channel));
+
+		pend = kzalloc(sizeof(*pend), GFP_NOWAIT);
+		if (unlikely(pend == NULL)) {
+			sph_log_err(SERVICE_LOG, "Failed to allocate pending packet struct!!\n");
+			handle_cmd_dma_failed(dma_data);
+			return -1;
+		}
+
+		INIT_LIST_HEAD(&pend->node);
+		memcpy(&pend->dma_data, dma_data, sizeof(*dma_data));
+
+		NNP_SPIN_LOCK(&channel->read_lock);
+		if (channel->closing != _chnl_open) {
+			NNP_SPIN_UNLOCK(&channel->read_lock);
+			kfree(pend);
+			sph_log_err(SERVICE_LOG, "Got generic message with closing channel handle!!!\n");
+			handle_cmd_dma_failed(dma_data);
+			return -1;
+		}
+		/* insert into the channel's pending read packets */
+		list_add_tail(&pend->node, &channel->pending_read_packets);
+		if (channel->n_read_dma_req)
+			channel->n_read_dma_req--;
+		NNP_SPIN_UNLOCK(&channel->read_lock);
+		wake_up_all(&channel->read_waitq);
+		/*
+		 * send a reply to host to free the xmited dma page
+		 * in case of connect command, it will happen on the connect response
+		 * after the service client will reply to the connect request
+		 */
+		sphcs_cmd_chan_update_cmd_head(dma_data->cmd_chan, 0, NNP_PAGE_SIZE);
+		/*
+		 * cmd_chan pointer already in the channel struct, no
+		 * need to keep it for the pending packet
+		 */
+		sphcs_cmd_chan_put(dma_data->cmd_chan);
 	}
 
 	return 0;
@@ -1382,13 +1371,13 @@ int process_genmsg_command(struct sphcs *sphcs,
 {
 	struct genmsg_dma_command_data dma_data;
 	dma_addr_t dma_addr;
-	int ret;
+	int ret = 0;
 
 	if (!req->hangup && !req->service_list_req && !req->host_pfn) {
 		/* This is a protocol error - should not happen!!! */
 		sph_log_err(SERVICE_LOG, "Got generic message packet from host connect=%d with NULL host pfn\n", req->connect);
 		sphcs_cmd_chan_put(cmd_chan);
-		return 0;
+		return -1;
 	}
 
 	if (req->service_list_req) {
@@ -1416,11 +1405,11 @@ int process_genmsg_command(struct sphcs *sphcs,
 		/* handle hangup packet */
 		if (req->hangup) {
 			struct pending_packet *pend;
+
 			/* channel is not yet closing add empty read packet */
 			/* but only after all pending read dma requests are done*/
 			wait_event_interruptible(channel->read_waitq,
 						 channel->n_read_dma_req == 0);
-
 			/*
 			 * cmd_chan pointer already in the channel struct, no
 			 * need to keep it in the pending packet
@@ -1433,9 +1422,8 @@ int process_genmsg_command(struct sphcs *sphcs,
 			}
 
 			pend = kzalloc(sizeof(*pend), GFP_NOWAIT);
-			if (!pend) {
-				sph_log_err(SERVICE_LOG, "Failed to allocate pending packet struct!!\n");
-			} else {
+			/*Don't send no mem error message here, maybe pend is not needed*/
+			if (pend != NULL) {
 				/* insert into the channel's pending read packets */
 				memcpy(pend->dma_data.msg.value,
 				       req->value,
@@ -1444,6 +1432,11 @@ int process_genmsg_command(struct sphcs *sphcs,
 			}
 
 			NNP_SPIN_LOCK(&channel->read_lock);
+
+			if (channel->n_read_dma_req > 0) {
+				sph_log_err(SERVICE_LOG, "Critical! Should never happen. Received message after drain while hanging_up\n");
+				NNP_ASSERT(channel->n_read_dma_req == 0);
+			}
 
 			/* check again hang up with the lock */
 			if (channel->hanging_up) {
@@ -1462,10 +1455,13 @@ int process_genmsg_command(struct sphcs *sphcs,
 				if (pend) {
 					pend->dma_data.cmd_chan = cmd_chan;
 					list_add_tail(&pend->node, &channel->pending_read_packets);
+					NNP_SPIN_UNLOCK(&channel->read_lock);
 					wake_up_all(&channel->read_waitq);
+				} else {
+					NNP_SPIN_UNLOCK(&channel->read_lock);
+					sph_log_err(SERVICE_LOG, "Failed to allocate pending packet struct!!\n");
+					ret = -1;
 				}
-
-				NNP_SPIN_UNLOCK(&channel->read_lock);
 			} else {
 				if (channel->closing == _chnl_preclose) {
 					NNP_SPIN_UNLOCK(&channel->read_lock);
@@ -1473,21 +1469,29 @@ int process_genmsg_command(struct sphcs *sphcs,
 					channel->closing = _chnl_close_done;
 					NNP_SPIN_UNLOCK(&channel->read_lock);
 					channel_put(channel);
-				} else
+				} else {
 					NNP_SPIN_UNLOCK(&channel->read_lock);
+				}
 
 				kfree(pend);
 			}
 
 			/* Remove ref from find_channel() */
 			channel_put(channel);
-			return 0;
+			return ret;
 		}
-
 		/* Remove ref from find_channel() */
 		channel_put(channel);
-	} else
+	} else {
 		dma_data.channel = NULL;
+		if (req->hangup) {
+			sph_log_err(CREATE_COMMAND_LOG, "Protocol error: connect and hangup bits must not be set together.\n");
+			sphcs_cmd_chan_put(cmd_chan);
+			return -1;
+		}
+	}
+
+	NNP_ASSERT(!req->hangup);
 
 	ret = dma_page_pool_get_free_page(sphcs->dma_page_pool,
 					  &dma_data.dma_page_hndl,
@@ -1495,8 +1499,8 @@ int process_genmsg_command(struct sphcs *sphcs,
 					  &dma_addr);
 	if (ret) {
 		sph_log_err(SERVICE_LOG, "Failed to get free page (err: %d)\n", ret);
-		if (!req->hangup)
-			sphcs_cmd_chan_update_cmd_head(cmd_chan, 0, NNP_PAGE_SIZE);
+		sphcs_cmd_chan_update_cmd_head(cmd_chan, 0, NNP_PAGE_SIZE);
+		sphcs_cmd_chan_put(cmd_chan);
 		return ret;
 	}
 
@@ -1507,18 +1511,21 @@ int process_genmsg_command(struct sphcs *sphcs,
 	dma_data.dma_addr = dma_addr;
 	dma_data.cmd_chan = cmd_chan;
 
-	if (dma_data.channel) {
+	if (dma_data.channel != NULL) {
 		NNP_SPIN_LOCK(&dma_data.channel->read_lock);
 		dma_data.channel->n_read_dma_req++;
+		if (dma_data.channel->hanging_up) {
+			NNP_SPIN_UNLOCK(&dma_data.channel->read_lock);
+			sph_log_err(SERVICE_LOG, "Critical! Should never happen. Received message after hanging_up\n");
+			handle_cmd_dma_failed(&dma_data);
+			return -1;
+		}
 		NNP_SPIN_UNLOCK(&dma_data.channel->read_lock);
 	}
 
 	/* start DMA xfer to bring the packet */
 	ret = sphcs_dma_sched_start_xfer_single(sphcs->dmaSched,
-						cmd_chan ? &cmd_chan->h2c_dma_desc :
-						    dma_data.channel ?
-						    &dma_data.channel->h2c_dma_desc :
-						    &g_dma_desc_h2c_normal,
+						&cmd_chan->h2c_dma_desc,
 						dma_data.host_dma_addr,
 						dma_addr,
 						req->size + 1,
@@ -1531,34 +1538,6 @@ int process_genmsg_command(struct sphcs *sphcs,
 	}
 
 	return 0;
-}
-
-/*
- * workqueue work function - process pending messages
- * received from h/w Q while dma page pool does not have pre-allocated pages
- */
-static void sphcs_genmsg_process_pending(struct work_struct *work)
-{
-	struct genmsg_command_entry *entry;
-	int rc;
-
-	NNP_SPIN_LOCK_BH(&s_pending_commands_lock_bh);
-	while (s_num_pending_commands) {
-		entry = list_first_entry(&s_pending_commands,
-					 struct genmsg_command_entry,
-					 node);
-		NNP_SPIN_UNLOCK_BH(&s_pending_commands_lock_bh);
-
-		rc = process_genmsg_command(g_the_sphcs, &entry->msg, NULL);
-		if (rc)
-			sph_log_err(SERVICE_LOG, "FATAL: process_genmsg failed rc=%d\n", rc);
-
-		NNP_SPIN_LOCK_BH(&s_pending_commands_lock_bh);
-		list_del(&entry->node);
-		kfree(entry);
-		s_num_pending_commands--;
-	}
-	NNP_SPIN_UNLOCK_BH(&s_pending_commands_lock_bh);
 }
 
 /*
@@ -1725,11 +1704,6 @@ int sphcs_init_genmsg_interface(void)
 		unregister_chrdev_region(s_devnum, 1);
 		return ret;
 	}
-
-	INIT_LIST_HEAD(&s_pending_commands);
-	spin_lock_init(&s_pending_commands_lock_bh);
-	INIT_WORK(&s_pending_commands_work, sphcs_genmsg_process_pending);
-	s_num_pending_commands = 0;
 
 	hash_init(s_genmsg.channel_hash);
 	ida_init(&s_genmsg.channel_ida);

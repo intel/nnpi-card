@@ -623,6 +623,8 @@ int do_reset_device(struct cve_device *cve_dev, uint8_t idc_reset)
 		/* retval |= get_gp_reg_val_reset_done(cve_dev); */
 		get_gp_reg_val_reset_done(cve_dev);
 
+		/*reset cdyn value due to reset cycle*/
+		cve_dev->cdyn_val = 0;
 	} else {
 
 		cve_os_dev_log(CVE_LOGLEVEL_DEBUG,

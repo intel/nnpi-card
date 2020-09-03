@@ -1,0 +1,1824 @@
+From 06d97ecac6280b53d8490829f37e5660336ba3c0 Mon Sep 17 00:00:00 2001
+From: Guy Zadicario <guy.zadicario@intel.com>
+Date: Tue, 21 Apr 2020 14:15:00 +0300
+Subject: [PATCH v6 08/19] misc: nnpi: device chardev + command channel
+
+This adds a character device for each NNP-I device (/dev/nnpi%d) with IOCTL
+interface which allows user-space to generate a "command channel"
+object through which user-space can send command direcly to the
+message scheduler for submission to the device. As well as receive
+responses arrived from the device.
+
+Each created channel creates an anon file descriptor, user-space sends commands
+to the device by writing to that file. responses from the device can be read from
+that file and the channel is destroyed when the file is closed.
+
+The IOCTL interface for that character device is in: include/uapi/misc/intel_nnpi.h
+
+When creating a "command channel", the user should give an open file descriptor
+to the /dev/nnpi_host device, we maintain a list of all channels allocated by the
+same nnpi_host connection (which we treat as "same application").
+
+Signed-off-by: Guy Zadicario <guy.zadicario@intel.com>
+Reviewed-by: Vaibhav Agarwal <vaibhav.agarwal@intel.com>
+---
+ drivers/misc/intel-nnpi/Makefile                   |   3 +-
+ drivers/misc/intel-nnpi/cmd_chan.c                 | 469 +++++++++++++++++++++
+ drivers/misc/intel-nnpi/cmd_chan.h                 |  69 +++
+ drivers/misc/intel-nnpi/device.c                   | 297 ++++++++++++-
+ drivers/misc/intel-nnpi/device.h                   |  13 +-
+ drivers/misc/intel-nnpi/device_chardev.c           | 310 ++++++++++++++
+ drivers/misc/intel-nnpi/device_chardev.h           |  31 ++
+ .../misc/intel-nnpi/if_include/ipc_c2h_events.h    | 198 +++++++++
+ drivers/misc/intel-nnpi/if_include/ipc_protocol.h  |   1 +
+ drivers/misc/intel-nnpi/nnp_ringbuf.h              |  84 ++++
+ drivers/misc/intel-nnpi/nnpdrv_main.c              |   8 +
+ include/uapi/misc/intel_nnpi.h                     |  62 +++
+ 12 files changed, 1542 insertions(+), 3 deletions(-)
+ create mode 100644 drivers/misc/intel-nnpi/cmd_chan.c
+ create mode 100644 drivers/misc/intel-nnpi/cmd_chan.h
+ create mode 100644 drivers/misc/intel-nnpi/device_chardev.c
+ create mode 100644 drivers/misc/intel-nnpi/device_chardev.h
+ create mode 100644 drivers/misc/intel-nnpi/if_include/ipc_c2h_events.h
+ create mode 100644 drivers/misc/intel-nnpi/nnp_ringbuf.h
+
+diff --git a/drivers/misc/intel-nnpi/Makefile b/drivers/misc/intel-nnpi/Makefile
+index 23da892..5bcc0d0 100644
+--- a/drivers/misc/intel-nnpi/Makefile
++++ b/drivers/misc/intel-nnpi/Makefile
+@@ -7,6 +7,7 @@
+ obj-m	:= intel_nnpidrv.o
+ 
+ intel_nnpidrv-y := nnpdrv_main.o pcie.o device.o msg_scheduler.o \
+-		   hostres.o host_chardev.o inf_proc.o bootimage.o
++		   hostres.o host_chardev.o inf_proc.o bootimage.o \
++                   device_chardev.o cmd_chan.o
+ 
+ ccflags-y += -I$(srctree)/$(src)/if_include
+diff --git a/drivers/misc/intel-nnpi/cmd_chan.c b/drivers/misc/intel-nnpi/cmd_chan.c
+new file mode 100644
+index 0000000..78c3979
+--- /dev/null
++++ b/drivers/misc/intel-nnpi/cmd_chan.c
+@@ -0,0 +1,469 @@
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++/********************************************
++ * Copyright (C) 2019-2020 Intel Corporation
++ ********************************************/
++
++#include "cmd_chan.h"
++#include <linux/kernel.h>
++#include <linux/slab.h>
++#include <linux/file.h>
++#include <linux/anon_inodes.h>
++#include "ipc_protocol.h"
++#include "nnp_log.h"
++#include "host_chardev.h"
++#include "nnp_ringbuf.h"
++#include "ipc_c2h_events.h"
++
++struct respq_elem {
++	struct nnp_ringbuf rb;
++	struct list_head  node;
++	u8                buf[4096 - 16 - sizeof(struct list_head)];
++};
++
++static inline int is_cmd_chan_file(struct file *f);
++
++static int cmd_chan_file_release(struct inode *inode, struct file *f)
++{
++	struct nnpdrv_cmd_chan *chan =
++		(struct nnpdrv_cmd_chan *)f->private_data;
++	struct file *host_file;
++
++	if (!is_cmd_chan_file(f))
++		return -EINVAL;
++
++	nnpdrv_cmd_chan_send_destroy(chan);
++
++	host_file = chan->host_file;
++	nnpdrv_cmd_chan_put(chan);
++	fput(host_file);
++
++	return 0;
++}
++
++static ssize_t cmd_chan_file_read(struct file *f,
++				  char __user *buf,
++				  size_t       size,
++				  loff_t      *off)
++{
++	struct nnpdrv_cmd_chan *chan =
++		(struct nnpdrv_cmd_chan *)f->private_data;
++	struct respq_elem *respq;
++	u32 packet_size;
++	u64 msg[16];  /* maximum possible message in the response queue */
++	bool from_list = false;
++	bool removed_from_list = false;
++	int ret;
++
++	if (!is_cmd_chan_file(f))
++		return -EINVAL;
++
++	ret = wait_event_interruptible(chan->resp_waitq,
++			!list_empty(&chan->respq_list) ||
++			chan->closing ||
++			nnp_ringbuf_avail_bytes(&chan->curr_respq->rb) >
++			sizeof(u32));
++	if (ret < 0) {
++		if (ret == -ERESTARTSYS)
++			return -EINTR;
++		return ret;
++	}
++
++	if (chan->closing)
++		return 0;
++
++	spin_lock_bh(&chan->resp_lock_bh);
++	if (!list_empty(&chan->respq_list)) {
++		respq = list_first_entry(&chan->respq_list,
++					 struct respq_elem,
++					 node);
++		from_list = true;
++	} else {
++		respq = chan->curr_respq;
++	}
++
++	nnp_ringbuf_pop(&respq->rb, (u8 *)&packet_size, sizeof(u32));
++	/* Check packet_size does not overrun msg size */
++	if (packet_size > sizeof(msg))
++		return -EINVAL;
++	nnp_ringbuf_pop(&respq->rb, (u8 *)msg, packet_size);
++
++	if (from_list && nnp_ringbuf_avail_bytes(&respq->rb) == 0) {
++		list_del(&respq->node);
++		removed_from_list = true;
++	}
++	spin_unlock_bh(&chan->resp_lock_bh);
++
++	if (removed_from_list)
++		kfree(respq);
++
++	ret = copy_to_user(buf, msg, packet_size);
++	if (ret)
++		return -EIO;
++
++	return packet_size;
++}
++
++static ssize_t cmd_chan_file_write(struct file       *f,
++				   const char __user *buf,
++				   size_t             size,
++				   loff_t            *off)
++{
++	struct nnpdrv_cmd_chan *chan =
++		(struct nnpdrv_cmd_chan *)f->private_data;
++	u64 msg[MSG_SCHED_MAX_MSG_SIZE];
++	union h2c_chan_msg_header *hdr;
++	int ret;
++
++	if (!is_cmd_chan_file(f))
++		return -EINVAL;
++
++	if (chan->closing)
++		return 0;
++
++	if (size == 1) {
++		u8 b;
++
++		ret = copy_from_user(&b, buf, 1);
++		if (ret != 0)
++			return -EIO;
++
++		if (b == 4) {
++			nnpdrv_cmd_chan_set_closing(chan);
++			return 1;
++		}
++	}
++
++	/*
++	 * size must be multiple of 8 bytes and cannot exceed maximum message
++	 * size
++	 */
++	if ((size > MSG_SCHED_MAX_MSG_SIZE * 8) ||
++	    (size &  0x7) != 0)
++		return -EINVAL;
++
++	ret = copy_from_user(msg, buf, size);
++	if (ret != 0)
++		return -EIO;
++
++	/*
++	 * Check chan_id, opcode and message size are valid
++	 */
++	hdr = (union h2c_chan_msg_header *)&msg[0];
++	if (hdr->chan_id != chan->protocol_id)
++		return -EINVAL;
++	if (hdr->opcode < 32 || hdr->opcode > 63)
++		return -EINVAL;
++	if (size != (chan->nnpdev->ipc_chan_cmd_op_size[hdr->opcode - 32] * 8))
++		return -EINVAL;
++
++	if (!is_card_fatal_drv_event(
++				chan->card_critical_error.event_code))
++		ret  = msg_scheduler_queue_add_msg(chan->cmdq,
++						   msg,
++						   size >> 3);
++	else
++		ret = -EPIPE;
++
++	if (ret < 0)
++		return ret;
++	else
++		return size;
++}
++
++static unsigned int cmd_chan_file_poll(struct file              *f,
++				       struct poll_table_struct *pt)
++{
++	struct nnpdrv_cmd_chan *chan =
++		(struct nnpdrv_cmd_chan *)f->private_data;
++	unsigned int mask = (POLLOUT | POLLWRNORM);
++
++	if (!is_cmd_chan_file(f))
++		return 0;
++
++	poll_wait(f, &chan->resp_waitq, pt);
++	spin_lock_bh(&chan->resp_lock_bh);
++	if (!list_empty(&chan->respq_list) ||
++	    nnp_ringbuf_avail_bytes(&chan->curr_respq->rb) > sizeof(u32))
++		mask |= (POLLIN | POLLRDNORM);
++	spin_unlock_bh(&chan->resp_lock_bh);
++
++	return mask;
++}
++
++static const struct file_operations nnpdrv_cmd_chan_fops = {
++	.owner = THIS_MODULE,
++	.release = cmd_chan_file_release,
++	.read = cmd_chan_file_read,
++	.write = cmd_chan_file_write,
++	.poll = cmd_chan_file_poll
++};
++
++static inline int is_cmd_chan_file(struct file *f)
++{
++	return f->f_op == &nnpdrv_cmd_chan_fops;
++}
++
++int nnpdrv_cmd_chan_create(struct nnp_device       *nnpdev,
++			   int                      host_fd,
++			   u32                      weight,
++			   unsigned int             min_id,
++			   unsigned int             max_id,
++			   bool                     get_device_events,
++			   struct nnpdrv_cmd_chan **out_cmd_chan)
++{
++	struct nnpdrv_cmd_chan *cmd_chan;
++	u16 protocol_id;
++	int ret;
++	unsigned int max_proto_id = (1 << NNP_IPC_CHANNEL_BITS) - 1;
++
++	if (min_id > max_proto_id)
++		return -EINVAL;
++	if (max_id > max_proto_id)
++		max_id = max_proto_id;
++
++	ret = ida_simple_get(&nnpdev->cmd_chan_ida,
++			     min_id,
++			     max_id,
++			     GFP_KERNEL);
++	if (ret < 0)
++		return ret;
++	protocol_id = ret;
++
++	cmd_chan = kzalloc(sizeof(*cmd_chan), GFP_KERNEL);
++	if (!cmd_chan) {
++		nnp_dev_err(nnpdev->dev, CREATE_COMMAND_LOG,
++			    "FATAL: %s():%u failed to allocate command channel object\n",
++			    __func__, __LINE__);
++		ida_simple_remove(&nnpdev->cmd_chan_ida, protocol_id);
++		return -ENOMEM;
++	}
++
++	cmd_chan->host_file = nnpdrv_host_file_get(host_fd);
++	if (!cmd_chan->host_file) {
++		ida_simple_remove(&nnpdev->cmd_chan_ida, protocol_id);
++		kfree(cmd_chan);
++		return -EINVAL;
++	}
++
++	cmd_chan->cmdq = nnpdrv_create_cmd_queue(nnpdev, weight);
++	if (!cmd_chan->cmdq) {
++		nnp_dev_err(nnpdev->dev, CREATE_COMMAND_LOG,
++			    "FATAL: %s():%u failed to create cmd queue channel object\n",
++			    __func__, __LINE__);
++		fput(cmd_chan->host_file);
++		ida_simple_remove(&nnpdev->cmd_chan_ida, protocol_id);
++		kfree(cmd_chan);
++		return -ENOMEM;
++	}
++
++	cmd_chan->curr_respq = kzalloc(sizeof(*cmd_chan->curr_respq),
++				       GFP_KERNEL);
++	if (!cmd_chan->curr_respq) {
++		nnp_dev_err(nnpdev->dev, CREATE_COMMAND_LOG,
++			    "FATAL: %s():%u failed to create resp1 element\n",
++			    __func__, __LINE__);
++		nnpdrv_destroy_cmd_queue(nnpdev, cmd_chan->cmdq);
++		fput(cmd_chan->host_file);
++		ida_simple_remove(&nnpdev->cmd_chan_ida, protocol_id);
++		kfree(cmd_chan);
++		return -ENOMEM;
++	}
++
++	kref_init(&cmd_chan->ref);
++	cmd_chan->magic = nnpdrv_cmd_chan_create;
++	cmd_chan->protocol_id = protocol_id;
++	atomic_set(&cmd_chan->destroyed, 0);
++	nnpdrv_device_get(nnpdev);
++	cmd_chan->nnpdev = nnpdev;
++	cmd_chan->fd = -1;
++	cmd_chan->get_device_events = get_device_events;
++
++	cmd_chan->proc_info =
++		(struct inf_process_info *)cmd_chan->host_file->private_data;
++	inf_proc_get(cmd_chan->proc_info);
++
++	init_waitqueue_head(&cmd_chan->resp_waitq);
++	spin_lock_init(&cmd_chan->resp_lock_bh);
++	INIT_LIST_HEAD(&cmd_chan->respq_list);
++
++	spin_lock_init(&cmd_chan->lock);
++
++	INIT_LIST_HEAD(&cmd_chan->curr_respq->node);
++	nnp_ringbuf_init(&cmd_chan->curr_respq->rb,
++			 cmd_chan->curr_respq->buf,
++			 sizeof(cmd_chan->curr_respq->buf));
++
++	/*
++	 * Add channel to the channel hash
++	 */
++	spin_lock(&nnpdev->lock);
++	hash_add(nnpdev->cmd_chan_hash,
++		 &cmd_chan->hash_node,
++		 cmd_chan->protocol_id);
++
++	/*
++	 * Channel with id <= 255 is an inference context channel
++	 */
++	if (cmd_chan->protocol_id <= 255)
++		nnpdev->num_active_contexts++;
++	spin_unlock(&nnpdev->lock);
++
++	*out_cmd_chan = cmd_chan;
++
++	return 0;
++}
++
++static void cmd_chan_release(struct kref *kref)
++{
++	struct nnpdrv_cmd_chan *cmd_chan;
++	struct nnp_device *nnpdev;
++
++	cmd_chan = container_of(kref, struct nnpdrv_cmd_chan, ref);
++	nnpdev = cmd_chan->nnpdev;
++
++	msg_scheduler_queue_flush(cmd_chan->cmdq);
++	nnpdrv_destroy_cmd_queue(nnpdev, cmd_chan->cmdq);
++
++	spin_lock(&nnpdev->lock);
++	hash_del(&cmd_chan->hash_node);
++	/*
++	 * Channel with id <= 255 is an inference context channel
++	 */
++	if (cmd_chan->protocol_id <= 255)
++		nnpdev->num_active_contexts--;
++	spin_unlock(&nnpdev->lock);
++	ida_simple_remove(&cmd_chan->nnpdev->cmd_chan_ida,
++			  cmd_chan->protocol_id);
++
++	if (cmd_chan->fd < 0)
++		fput(cmd_chan->host_file);
++
++	inf_proc_put(cmd_chan->proc_info);
++
++	kfree(cmd_chan->curr_respq);
++	kfree(cmd_chan);
++
++	nnpdrv_device_put(nnpdev);
++}
++
++int is_cmd_chan_ptr(void *ptr)
++{
++	struct nnpdrv_cmd_chan *cmd_chan = (struct nnpdrv_cmd_chan *)ptr;
++
++	return (ptr && cmd_chan->magic == nnpdrv_cmd_chan_create);
++}
++
++bool nnpdrv_cmd_chan_get(struct nnpdrv_cmd_chan *cmd_chan)
++{
++	int ret;
++
++	ret = kref_get_unless_zero(&cmd_chan->ref);
++	return ret != 0;
++}
++
++int nnpdrv_cmd_chan_put(struct nnpdrv_cmd_chan *cmd_chan)
++{
++	return kref_put(&cmd_chan->ref, cmd_chan_release);
++}
++
++void nnpdrv_cmd_chan_set_closing(struct nnpdrv_cmd_chan *cmd_chan)
++{
++	if (cmd_chan && !cmd_chan->closing) {
++		cmd_chan->closing = 1;
++		wake_up_all(&cmd_chan->resp_waitq);
++	}
++}
++
++int nnpdrv_cmd_chan_create_file(struct nnpdrv_cmd_chan *cmd_chan)
++{
++	if (cmd_chan->fd != -1)
++		return -EINVAL;
++
++	if (!nnpdrv_cmd_chan_get(cmd_chan)) {
++		nnp_dev_err(cmd_chan->nnpdev->dev, GENERAL_LOG,
++			    "failed to get chan refcount during create!!!\n");
++		return -EFAULT;
++	}
++
++	cmd_chan->fd = anon_inode_getfd("nnpi_chan",
++					&nnpdrv_cmd_chan_fops,
++					cmd_chan,
++					O_RDWR | O_CLOEXEC);
++	if (cmd_chan->fd < 0) {
++		nnp_dev_err(cmd_chan->nnpdev->dev, GENERAL_LOG,
++			    "failed to create channel file descriptor\n");
++		nnpdrv_cmd_chan_put(cmd_chan);
++	}
++
++	return cmd_chan->fd;
++}
++
++int nnpdrv_cmd_chan_send_destroy(struct nnpdrv_cmd_chan *chan)
++{
++	union h2c_channel_op msg;
++
++	if (atomic_read(&chan->destroyed) != 0)
++		return 0;
++
++	msg.value = 0;
++	msg.opcode = NNP_IPC_H2C_OP_CHANNEL_OP;
++	msg.protocol_id = chan->protocol_id;
++	msg.destroy = 1;
++
++	chan->event_msg.value = 0;
++
++	/*
++	 * If card is in critical state (or was during the channel lifetime)
++	 * we destroy the channel.
++	 * otherwise, we send a destroy command to card and will destroy when
++	 * the destroy reply arrives.
++	 */
++	if (is_card_fatal_drv_event(
++				chan->card_critical_error.event_code)) {
++		if (atomic_xchg(&chan->destroyed, 1) == 0)
++			nnpdrv_cmd_chan_put(chan);
++		return 0;
++	}
++
++	return nnpdrv_msg_scheduler_queue_add_msg(chan->nnpdev->public_cmdq,
++						  &msg.value,
++						  1);
++}
++
++int nnpdrv_cmd_chan_add_response(struct nnpdrv_cmd_chan *cmd_chan,
++				 u64                    *hw_msg,
++				 u32                     byte_size)
++{
++	struct respq_elem *respq = cmd_chan->curr_respq;
++
++	spin_lock_bh(&cmd_chan->resp_lock_bh);
++	if (nnp_ringbuf_free_bytes(&respq->rb) < (byte_size + sizeof(u32))) {
++		spin_unlock_bh(&cmd_chan->resp_lock_bh);
++		respq = kmalloc(sizeof(*respq), GFP_NOWAIT);
++		if (!respq) {
++			nnp_dev_err(cmd_chan->nnpdev->dev, GENERAL_LOG,
++				    "FATAL: failed to allocate response queue for channel %d losing response\n",
++				    cmd_chan->protocol_id);
++			return -EFAULT;
++		}
++		nnp_ringbuf_init(&respq->rb,
++				 respq->buf,
++				 sizeof(respq->buf));
++
++		spin_lock_bh(&cmd_chan->resp_lock_bh);
++		list_add_tail(&cmd_chan->curr_respq->node,
++			      &cmd_chan->respq_list);
++		cmd_chan->curr_respq = respq;
++	}
++
++	nnp_ringbuf_push(&respq->rb, (u8 *)&byte_size, sizeof(u32));
++	nnp_ringbuf_push(&respq->rb, (u8 *)hw_msg, byte_size);
++
++	spin_unlock_bh(&cmd_chan->resp_lock_bh);
++
++	wake_up_all(&cmd_chan->resp_waitq);
++
++	return 0;
++}
++
+diff --git a/drivers/misc/intel-nnpi/cmd_chan.h b/drivers/misc/intel-nnpi/cmd_chan.h
+new file mode 100644
+index 0000000..cc79fa1
+--- /dev/null
++++ b/drivers/misc/intel-nnpi/cmd_chan.h
+@@ -0,0 +1,69 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++
++/********************************************
++ * Copyright (C) 2019-2020 Intel Corporation
++ ********************************************/
++
++#ifndef NNPDRV_CMD_CHAN_H
++#define NNPDRV_CMD_CHAN_H
++
++#include <linux/kref.h>
++#include <linux/hashtable.h>
++#include <linux/spinlock.h>
++#include <linux/list.h>
++#include <linux/wait.h>
++#include <linux/atomic.h>
++#include <linux/fs.h>
++#include "device.h"
++#include "inf_proc.h"
++#include "ipc_protocol.h"
++
++struct respq_elem;
++
++struct nnpdrv_cmd_chan {
++	void             *magic;
++	struct kref       ref;
++	struct nnp_device *nnpdev;
++	u16               protocol_id;
++	struct hlist_node hash_node;
++	atomic_t          destroyed;
++	union c2h_event_report event_msg;
++	union c2h_event_report card_critical_error;
++	bool              get_device_events;
++
++	int fd;
++	struct msg_scheduler_queue *cmdq;
++	struct file *host_file;
++	struct inf_process_info *proc_info;
++	int    closing;
++
++	spinlock_t        lock; /* protects struct fields modifications */
++
++	spinlock_t        resp_lock_bh; /* protects respq_list del/ins */
++	wait_queue_head_t resp_waitq;
++	struct list_head  respq_list;
++	struct respq_elem *curr_respq;
++};
++
++int nnpdrv_cmd_chan_create(struct nnp_device       *nnpdev,
++			   int                      host_fd,
++			   u32                      weight,
++			   unsigned int             min_id,
++			   unsigned int             max_id,
++			   bool                     get_device_events,
++			   struct nnpdrv_cmd_chan **out_cmd_chan);
++
++int is_cmd_chan_ptr(void *ptr);
++
++bool nnpdrv_cmd_chan_get(struct nnpdrv_cmd_chan *cmd_chan);
++int nnpdrv_cmd_chan_put(struct nnpdrv_cmd_chan *cmd_chan);
++void nnpdrv_cmd_chan_set_closing(struct nnpdrv_cmd_chan *cmd_chan);
++
++int nnpdrv_cmd_chan_create_file(struct nnpdrv_cmd_chan *cmd_chan);
++int nnpdrv_cmd_chan_send_destroy(struct nnpdrv_cmd_chan *chan);
++
++int nnpdrv_cmd_chan_add_response(struct nnpdrv_cmd_chan *cmd_chan,
++				 u64                    *hw_msg,
++				 u32                     byte_size);
++
++#endif
+diff --git a/drivers/misc/intel-nnpi/device.c b/drivers/misc/intel-nnpi/device.c
+index c686d75..a0e9c60 100644
+--- a/drivers/misc/intel-nnpi/device.c
++++ b/drivers/misc/intel-nnpi/device.c
+@@ -21,6 +21,9 @@
+ #include "host_chardev.h"
+ #include "bootimage.h"
+ #include "nnp_boot_defs.h"
++#include "device_chardev.h"
++#include "cmd_chan.h"
++#include "ipc_c2h_events.h"
+ 
+ static u32 s_num_devices;
+ static DEFINE_MUTEX(s_device_num_mutex);
+@@ -33,7 +36,6 @@ static int nnpdrv_first_device_init(void)
+ 	if (s_num_devices == 0) {
+ 		/* initialize host chardev interface */
+ 		ret = init_host_interface();
+-
+ 		if (ret == 0)
+ 			s_num_devices++;
+ 	}
+@@ -90,6 +92,9 @@ static void process_query_version_reply(struct work_struct *work)
+ 	struct query_version_work *query_version_work;
+ 	u32 protocol_version;
+ 	u32 card_boot_state;
++	u64 chan_resp_op_size;
++	u64 chan_cmd_op_size;
++	int i;
+ 
+ 	query_version_work =
+ 		container_of(work, struct query_version_work, work);
+@@ -97,6 +102,20 @@ static void process_query_version_reply(struct work_struct *work)
+ 	card_boot_state = (query_version_work->nnpdev->card_doorbell_val &
+ 		       NNP_CARD_BOOT_STATE_MASK) >> NNP_CARD_BOOT_STATE_SHIFT;
+ 
++	chan_resp_op_size = query_version_work->chan_resp_op_size;
++	for (i = 0; i < 32; i++) {
++		query_version_work->nnpdev->ipc_chan_resp_op_size[i] =
++			(chan_resp_op_size & 0x3);
++		chan_resp_op_size >>= 2;
++	}
++
++	chan_cmd_op_size = query_version_work->chan_cmd_op_size;
++	for (i = 0; i < 32; i++) {
++		query_version_work->nnpdev->ipc_chan_cmd_op_size[i] =
++			(chan_cmd_op_size & 0x3);
++		chan_cmd_op_size >>= 2;
++	}
++
+ 	nnp_log_debug(GENERAL_LOG,
+ 		      "Got DriverReady message, ipcProtocolVer=%d.%d.%d chan_protocol_ver=%d.%d.%d\n",
+ 		      NNP_VERSION_MAJOR(query_version_work->protocol_version),
+@@ -244,6 +263,193 @@ static int process_bios_message(struct nnp_device         *nnpdev,
+ 	return msg_size;
+ }
+ 
++struct nnpdrv_cmd_chan *nnpdrv_device_find_channel(struct nnp_device *nnpdev,
++						   u16              protocol_id)
++{
++	struct nnpdrv_cmd_chan *cmd_chan;
++
++	spin_lock(&nnpdev->lock);
++	hash_for_each_possible(nnpdev->cmd_chan_hash,
++			       cmd_chan,
++			       hash_node,
++			       protocol_id)
++		if (cmd_chan->protocol_id == protocol_id) {
++			if (!nnpdrv_cmd_chan_get(cmd_chan))
++				break;
++			spin_unlock(&nnpdev->lock);
++			return cmd_chan;
++		}
++	spin_unlock(&nnpdev->lock);
++
++	return NULL;
++}
++
++static void nnpdrv_destroy_all_channels(struct nnp_device *nnpdev)
++{
++	struct nnpdrv_cmd_chan *cmd_chan;
++	int i;
++	bool found = true;
++
++	do {
++		found = false;
++		spin_lock(&nnpdev->lock);
++		hash_for_each(nnpdev->cmd_chan_hash,
++			      i,
++			      cmd_chan,
++			      hash_node) {
++			if (atomic_xchg(&cmd_chan->destroyed, 1) == 0) {
++				spin_unlock(&nnpdev->lock);
++				nnpdrv_cmd_chan_put(cmd_chan);
++				found = true;
++				break;
++			}
++		}
++	} while (found);
++	spin_unlock(&nnpdev->lock);
++}
++
++void nnpdrv_submit_device_event_to_channels(struct nnp_device *nnpdev,
++					    union c2h_event_report *event_msg,
++					    bool                   force)
++{
++	struct nnpdrv_cmd_chan *cmd_chan;
++	int i;
++
++	spin_lock(&nnpdev->lock);
++	hash_for_each(nnpdev->cmd_chan_hash,
++		      i,
++		      cmd_chan,
++		      hash_node) {
++		if (is_card_fatal_event(event_msg->event_code) &&
++		    !is_card_fatal_drv_event(
++				cmd_chan->card_critical_error.event_code)) {
++			cmd_chan->card_critical_error.value = event_msg->value;
++			wake_up_all(&nnpdev->waitq);
++		}
++
++		if (force || cmd_chan->get_device_events)
++			nnpdrv_cmd_chan_add_response(cmd_chan,
++						     (u64 *)event_msg,
++						     sizeof(*event_msg));
++	}
++	spin_unlock(&nnpdev->lock);
++
++	/*
++	 * Destroy all communication channels to the device
++	 */
++	if (is_card_fatal_drv_event(event_msg->event_code))
++		nnpdrv_destroy_all_channels(nnpdev);
++}
++
++static void nnpdrv_device_process_events(struct nnp_device *nnpdev,
++				union c2h_event_report *event_msg)
++{
++	struct nnpdrv_cmd_chan *cmd_chan;
++
++	if (is_card_fatal_event(event_msg->event_code)) {
++		nnpdrv_submit_device_event_to_channels(nnpdev, event_msg, true);
++	} else {
++		switch (event_msg->event_code) {
++		case NNP_IPC_CREATE_CHANNEL_SUCCESS:
++		case NNP_IPC_CREATE_CHANNEL_FAILED:
++			cmd_chan = nnpdrv_device_find_channel(nnpdev,
++							     event_msg->obj_id);
++			if (!cmd_chan) {
++				nnp_log_err(GENERAL_LOG,
++					    "Got channel create reply for not existing channel %d\n",
++					    event_msg->obj_id);
++			} else {
++				cmd_chan->event_msg.value = event_msg->value;
++				nnpdrv_cmd_chan_put(cmd_chan);
++				wake_up_all(&nnpdev->waitq);
++			}
++			break;
++		case NNP_IPC_DESTROY_CHANNEL_FAILED:
++			nnp_log_err(GENERAL_LOG,
++				    "Channel destroyed failed channel %d val %d\n",
++				    event_msg->obj_id, event_msg->event_val);
++			fallthrough;
++		case NNP_IPC_CHANNEL_DESTROYED:
++			cmd_chan = nnpdrv_device_find_channel(nnpdev,
++							     event_msg->obj_id);
++			if (!cmd_chan) {
++				nnp_log_err(GENERAL_LOG,
++					    "Got channel destroyed reply for not existing channel %d\n",
++					    event_msg->obj_id);
++			} else {
++				/*
++				 * put twice - one for the get made by find, one
++				 */
++				if (atomic_xchg(&cmd_chan->destroyed, 1) == 0)
++					nnpdrv_cmd_chan_put(cmd_chan);
++				nnpdrv_cmd_chan_set_closing(cmd_chan);
++				nnpdrv_cmd_chan_put(cmd_chan);
++			}
++			break;
++		default:
++			nnp_log_err(GENERAL_LOG,
++				    "Unknown event received - %u\n",
++				    event_msg->event_code);
++			return;
++		}
++
++		nnpdrv_submit_device_event_to_channels(nnpdev,
++						       event_msg, false);
++	}
++}
++
++struct event_report_work {
++	struct work_struct work;
++	struct nnp_device    *nnpdev;
++	union c2h_event_report msg;
++};
++
++static void device_event_report_handler(struct work_struct *work)
++{
++	struct event_report_work *req = container_of(work,
++						    struct event_report_work,
++						    work);
++
++	nnpdrv_device_process_events(req->nnpdev, &req->msg);
++
++	kfree(req);
++}
++
++static void IPC_OPCODE_HANDLER(EVENT_REPORT)(struct nnp_device *nnpdev,
++					     union c2h_event_report *event_msg)
++{
++	struct event_report_work *req;
++
++	if (event_msg->ctx_valid) {
++		struct nnpdrv_cmd_chan *cmd_chan;
++
++		cmd_chan = nnpdrv_device_find_channel(nnpdev,
++						      event_msg->context_id);
++		if (cmd_chan) {
++			if (nnpdrv_cmd_chan_add_response(cmd_chan,
++				(u64 *)event_msg, sizeof(*event_msg)))
++				nnp_log_err(GENERAL_LOG,
++					    "Adding message response id=%d failure\n",
++					    event_msg->context_id);
++			nnpdrv_cmd_chan_put(cmd_chan);
++		} else {
++			nnp_log_err(GENERAL_LOG,
++				    "Got context Event Report for non existing context id %d\n",
++				    event_msg->context_id);
++		}
++		return;
++	}
++
++	req = kzalloc(sizeof(*req), GFP_NOWAIT);
++	if (!req)
++		return;
++
++	memcpy(&req->msg, event_msg, sizeof(*event_msg));
++	req->nnpdev = nnpdev;
++	INIT_WORK(&req->work, device_event_report_handler);
++	queue_work(nnpdev->wq, &req->work);
++}
++
+ static void IPC_OPCODE_HANDLER(SYS_INFO)(struct nnp_device        *nnpdev,
+ 					 union c2h_sys_info        *msg)
+ {
+@@ -262,6 +468,49 @@ static void IPC_OPCODE_HANDLER(SYS_INFO)(struct nnp_device        *nnpdev,
+ 	}
+ }
+ 
++static int dispatch_chan_message(struct nnp_device *nnpdev,
++				 u64               *hw_msg,
++				 u32                size)
++{
++	int op_code = ((union c2h_chan_msg_header *)hw_msg)->opcode;
++	int chan_id = ((union c2h_chan_msg_header *)hw_msg)->chan_id;
++	struct nnpdrv_cmd_chan *chan;
++	int msg_size = 0;
++
++	if (op_code < 32 || op_code > 63) {
++		/* Should not happen! */
++		nnp_log_err(IPC_LOG, "chan response opcode out-of-range received %d (0x%llx)\n",
++			    op_code, *hw_msg);
++		NNP_ASSERT(0);
++		return -EINVAL;
++	}
++
++	msg_size = nnpdev->ipc_chan_resp_op_size[op_code - 32];
++	if (msg_size == 0) {
++		/* Should not happen! */
++		nnp_log_err(IPC_LOG, "Unknown response chan opcode received %d (0x%llx)\n",
++			    op_code, *hw_msg);
++		NNP_ASSERT(0);
++		return -EINVAL;
++	}
++
++	if (size < msg_size)
++		return -EFAULT;
++
++	chan = nnpdrv_device_find_channel(nnpdev, chan_id);
++	if (!chan) {
++		nnp_log_err(GENERAL_LOG,
++			    "Got response for invalid channel chan_id=%d 0x%llx\n",
++			    chan_id, *hw_msg);
++		return msg_size;
++	}
++
++	nnpdrv_cmd_chan_add_response(chan, hw_msg, msg_size * 8);
++	nnpdrv_cmd_chan_put(chan);
++
++	return msg_size;
++}
++
+ /*
+  * HWQ messages handler,
+  * This function is *NOT* re-entrant!!!
+@@ -276,6 +525,7 @@ int nnpdrv_device_process_messages(struct nnp_device *nnpdev,
+ 	u64 *msg;
+ 	u32 nof_msg;
+ 	bool fatal_protocol_error = false;
++	int ret;
+ 
+ 	/* ignore any response if protocol error detected */
+ 	if ((nnpdev->state & NNP_DEVICE_PROTOCOL_ERROR) != 0)
+@@ -310,6 +560,22 @@ int nnpdrv_device_process_messages(struct nnp_device *nnpdev,
+ 		int msg_size = 0;
+ 		int partial_msg = 0;
+ 
++		/* opcodes above OP_BIOS_PROTOCOL are routed to a channel */
++		if (op_code > NNP_IPC_C2H_OP_BIOS_PROTOCOL) {
++			ret = dispatch_chan_message(nnpdev,
++						    &msg[j], (nof_msg - j));
++			if (ret > 0) {
++				j += ret;
++			} else {
++				if (ret == -EFAULT)
++					partial_msg = true;
++				else
++					fatal_protocol_error = true;
++				break;
++			}
++			continue;
++		}
++
+ 		/* dispatch the message request */
+ 		#define HANDLE_RESPONSE(name, type)                         \
+ 			do {                                                \
+@@ -324,6 +590,10 @@ int nnpdrv_device_process_messages(struct nnp_device *nnpdev,
+ 			} while (0)
+ 
+ 		switch (op_code) {
++		case C2H_OPCODE_NAME(EVENT_REPORT):
++			HANDLE_RESPONSE(EVENT_REPORT, union c2h_event_report);
++			break;
++
+ 		case C2H_OPCODE_NAME(QUERY_VERSION_REPLY):
+ 			HANDLE_RESPONSE(QUERY_VERSION_REPLY,
+ 					union c2h_query_version_reply_msg);
+@@ -692,6 +962,12 @@ int nnpdrv_device_create(void                              *hw_handle,
+ 	nnpdev->hw_handle = hw_handle;
+ 	nnpdev->hw_device_info = hw_device_info;
+ 	nnpdev->hw_ops = hw_ops;
++	nnpdev->num_ice_devices = 0;
++	nnpdev->protocol_version = 0;
++
++	ida_init(&nnpdev->cmd_chan_ida);
++	hash_init(nnpdev->cmd_chan_hash);
++	init_waitqueue_head(&nnpdev->waitq);
+ 
+ 	if (s_debugfs_dir) {
+ 		nnpdev->debugfs_dir = debugfs_create_dir(&nnpdev->name[6],
+@@ -759,6 +1035,19 @@ int nnpdrv_device_create(void                              *hw_handle,
+ 		(struct nnp_sys_info *)((uintptr_t)nnpdev->bios_system_info +
+ 					NNP_PAGE_SIZE);
+ 
++	/* Create the character device interface to this device */
++	ret = nnpdev_device_chardev_create(nnpdev);
++	if (ret)
++		goto err_exit;
++
++	/* set host driver state to "Not ready" */
++	ret = nnpdev->hw_ops->set_host_doorbell_value(nnpdev->hw_handle,
++		NNP_HOST_DRV_STATE_NOT_READY << NNP_HOST_DRV_STATE_SHIFT);
++	if (ret)
++		nnp_log_debug(START_UP_LOG,
++			      "Doorbel call to set driver state ready failure rc=%d\n",
++			      ret);
++
+ 	kref_init(&nnpdev->ref);
+ 	spin_lock_init(&nnpdev->lock);
+ 	*out_nnpdev = nnpdev;
+@@ -784,6 +1073,8 @@ int nnpdrv_device_create(void                              *hw_handle,
+ 	nnpdrv_destroy_cmd_queue(nnpdev, nnpdev->public_cmdq);
+ 	if (nnpdev->cmdq_sched)
+ 		msg_scheduler_destroy(nnpdev->cmdq_sched);
++	debugfs_remove_recursive(nnpdev->debugfs_dir);
++	ida_destroy(&nnpdev->cmd_chan_ida);
+ 	nnpdrv_last_device_fini();
+ err_early_exit:
+ 	if (-1 != nnpdev->id)
+@@ -936,6 +1227,9 @@ static void nnpdrv_free_device(struct work_struct *work)
+ 
+ 	NNP_ASSERT(nnpdev->release_completion);
+ 
++	/* destroy device character device */
++	nnpdev_device_chardev_destroy(nnpdev);
++
+ 	dma_free_coherent(nnpdev->hw_device_info->hw_device,
+ 			1 << (NNP_PAGE_SHIFT + NNP_CRASH_DUMP_SIZE_PAGE_ORDER),
+ 			nnpdev->host_crash_dump.vaddr,
+@@ -956,6 +1250,7 @@ static void nnpdrv_free_device(struct work_struct *work)
+ 
+ 	ida_simple_remove(&s_dev_ida, nnpdev->id);
+ 	debugfs_remove_recursive(nnpdev->debugfs_dir);
++	ida_destroy(&nnpdev->cmd_chan_ida);
+ 	kfree(nnpdev);
+ 	complete(completion);
+ }
+diff --git a/drivers/misc/intel-nnpi/device.h b/drivers/misc/intel-nnpi/device.h
+index bdf2425..6e7100c 100644
+--- a/drivers/misc/intel-nnpi/device.h
++++ b/drivers/misc/intel-nnpi/device.h
+@@ -12,12 +12,14 @@
+ #include <linux/kref.h>
+ #include <linux/completion.h>
+ #include <linux/idr.h>
++#include <linux/hashtable.h>
+ #include <linux/spinlock.h>
++#include <linux/cdev.h>
+ #include "pcie.h"
+ #include "msg_scheduler.h"
+ #include "nnp_inbound_mem.h"
+ 
+-#define NNP_MAX_DEVS		32
++#define NNP_MAX_DEVS		256
+ #define DEVICE_NAME_LEN         32
+ #define NNP_DEVICE_MAX_BOOT_IMAGE_PATH_SIZE 256
+ 
+@@ -72,6 +74,8 @@ struct nnp_device {
+ 	struct completion *release_completion;
+ 	struct work_struct free_work;
+ 
++	struct cdev cdev;
++	struct device *dev;
+ 	struct host_crash_dump host_crash_dump;
+ 	struct msg_scheduler       *cmdq_sched;
+ 	struct msg_scheduler_queue *public_cmdq;
+@@ -86,6 +90,10 @@ struct nnp_device {
+ 	u64            response_buf[32];
+ 	u32            response_num_msgs;
+ 
++	struct ida cmd_chan_ida;
++	DECLARE_HASHTABLE(cmd_chan_hash, 6);
++	wait_queue_head_t waitq;
++
+ 	dma_addr_t                  bios_system_info_dma_addr;
+ 	struct nnp_c2h_system_info *bios_system_info;
+ 	bool                        bios_system_info_valid;
+@@ -102,6 +110,9 @@ struct nnp_device {
+ 	u32            card_doorbell_val;
+ 
+ 	struct dentry *debugfs_dir;
++
++	u8   ipc_chan_resp_op_size[32];
++	u8   ipc_chan_cmd_op_size[32];
+ };
+ 
+ int nnpdrv_device_init(void);
+diff --git a/drivers/misc/intel-nnpi/device_chardev.c b/drivers/misc/intel-nnpi/device_chardev.c
+new file mode 100644
+index 0000000..49f0af1
+--- /dev/null
++++ b/drivers/misc/intel-nnpi/device_chardev.c
+@@ -0,0 +1,310 @@
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++/********************************************
++ * Copyright (C) 2019-2020 Intel Corporation
++ ********************************************/
++
++#include <linux/init.h>
++#include <linux/module.h>
++#include <linux/kernel.h>
++#include <linux/cdev.h>
++#include <linux/device.h>
++#include <linux/slab.h>
++#include <uapi/misc/intel_nnpi.h>
++#include "device_chardev.h"
++#include "nnp_log.h"
++#include "cmd_chan.h"
++#include "idr_allocator.h"
++#include "inf_proc.h"
++#include "ipc_c2h_events.h"
++
++static dev_t       s_devnum;
++static struct class *s_class;
++
++#define NNPDRV_DEVICE_DEV_NAME "nnpi"
++
++static inline int is_nnp_device_file(struct file *f);
++
++static int nnpdrv_device_open(struct inode *inode, struct file *f)
++{
++	struct device_client_info *client;
++
++	if (!is_nnp_device_file(f))
++		return -EINVAL;
++
++	if (!inode->i_cdev)
++		return -EINVAL;
++
++	client = kzalloc(sizeof(*client), GFP_KERNEL);
++	if (!client)
++		return -ENOMEM;
++
++	client->nnpdev = container_of(inode->i_cdev,
++				      struct nnp_device,
++				      cdev);
++
++	f->private_data = client;
++
++	return 0;
++}
++
++static int nnpdrv_device_release(struct inode *inode, struct file *f)
++{
++	struct device_client_info *client =
++		(struct device_client_info *)f->private_data;
++
++	if (!is_nnp_device_file(f))
++		return -EINVAL;
++
++	kfree(client);
++	f->private_data = NULL;
++
++	return 0;
++}
++
++static int event_valToNNPErrno(enum event_val event_val)
++{
++	nnp_log_debug(GENERAL_LOG, "Got error. event_val: %d\n", event_val);
++
++	switch (event_val) {
++	case NNP_IPC_NO_ERROR:
++		return 0;
++	case NNP_IPC_NO_MEMORY:
++		return -ENOMEM;
++	default:
++		return -EFAULT;
++	}
++}
++
++static long create_channel(struct device_client_info *cinfo, void __user *arg)
++{
++	struct nnp_device *nnpdev = cinfo->nnpdev;
++	struct ioctl_nnpi_create_channel req;
++	struct nnpdrv_cmd_chan *chan;
++	union h2c_channel_op msg;
++	u32 error_mask;
++	long ret = 0;
++
++	ret = copy_from_user(&req, arg, sizeof(req));
++	if (ret != 0)
++		return -EIO;
++
++	req.o_errno = 0;
++
++	if (req.i_max_id < req.i_min_id)
++		return -EINVAL;
++
++	if (req.i_version != NNPI_IOCTL_INTERFACE_VERSION) {
++		nnp_dev_err(nnpdev->dev, CREATE_COMMAND_LOG,
++			    "Error: kernel(v0x%x) and user space(v0x%x) use different versions\n",
++			    NNPI_IOCTL_INTERFACE_VERSION, req.i_version);
++		req.o_errno = NNPER_VERSIONS_MISMATCH;
++		goto done;
++	}
++
++	/*
++	 * Do not allow create command channel if device is in
++	 * error state.
++	 * However allow new non infer context channels in case
++	 * of fatal ICE error in order to allow retrieve debug
++	 * information.
++	 */
++	error_mask = NNP_DEVICE_ERROR_MASK;
++	if (req.i_max_id >= 256)
++		error_mask &= ~(NNP_DEVICE_FATAL_ICE_ERROR);
++
++	if ((nnpdev->state & error_mask) ||
++	    !(nnpdev->state & NNP_DEVICE_CARD_DRIVER_READY) ||
++	    (req.i_max_id < 256 &&
++	     (nnpdev->state & NNP_DEVICE_ACTIVE_MASK) !=
++	     NNP_DEVICE_ACTIVE_MASK)) {
++		req.o_errno = NNPER_DEVICE_NOT_READY;
++		goto done;
++	}
++
++	/* Validate channel protocol version */
++	if (NNP_VERSION_MAJOR(req.i_protocol_version) !=
++	    NNP_VERSION_MAJOR(nnpdev->chan_protocol_version) ||
++	    NNP_VERSION_MINOR(req.i_protocol_version) !=
++	    NNP_VERSION_MINOR(nnpdev->chan_protocol_version)) {
++		nnp_dev_err(nnpdev->dev, CREATE_COMMAND_LOG,
++			    "Error: Protocol version mismatch between UMD and card payload\n");
++		nnp_dev_err(nnpdev->dev, CREATE_COMMAND_LOG,
++			    "UMD protocol version %d.%d.%d\n",
++			    NNP_VERSION_MAJOR(req.i_protocol_version),
++			    NNP_VERSION_MINOR(req.i_protocol_version),
++			    NNP_VERSION_DOT(req.i_protocol_version));
++		nnp_dev_err(nnpdev->dev, CREATE_COMMAND_LOG,
++			    "Card protocol version %d.%d.%d\n",
++			    NNP_VERSION_MAJOR(nnpdev->chan_protocol_version),
++			    NNP_VERSION_MINOR(nnpdev->chan_protocol_version),
++			    NNP_VERSION_DOT(nnpdev->chan_protocol_version));
++		req.o_errno = NNPER_VERSIONS_MISMATCH;
++		goto done;
++	}
++
++	ret = nnpdrv_cmd_chan_create(nnpdev,
++				     req.i_host_fd,
++				     req.i_weight,
++				     req.i_min_id,
++				     req.i_max_id,
++				     req.i_get_device_events,
++				     &chan);
++	if (ret < 0)
++		goto done;
++
++	/*
++	 * send the create request to card
++	 */
++	msg.value = 0;
++	msg.opcode = NNP_IPC_H2C_OP_CHANNEL_OP;
++	msg.protocol_id = chan->protocol_id;
++	msg.uid = current_euid().val;
++	if (capable(CAP_SYS_ADMIN))
++		msg.privileged = 1;
++
++	ret = nnpdrv_msg_scheduler_queue_add_msg(nnpdev->public_cmdq,
++					   &msg.value,
++					   1);
++
++	if (ret < 0) {
++		nnpdrv_cmd_chan_put(chan);
++		goto done;
++	}
++
++	ret = wait_event_interruptible(nnpdev->waitq,
++		chan->event_msg.value != 0 ||
++		is_card_fatal_drv_event(chan->card_critical_error.event_code));
++	if (chan->event_msg.value == 0) {
++		if (ret < 0) {
++			ret = -EINTR;
++		} else {
++			req.o_errno = NNPER_DEVICE_ERROR;
++			ret = -EFAULT;
++		}
++	} else if (chan->event_msg.event_code ==
++		   NNP_IPC_CREATE_CHANNEL_FAILED) {
++		req.o_errno = event_valToNNPErrno(chan->event_msg.event_val);
++	}
++
++	req.o_channel_id = chan->protocol_id;
++
++	/*
++	 * Attach file descriptor to the channel object - if created
++	 * successfully
++	 */
++	if (ret == 0 && req.o_errno == 0)
++		req.o_fd = nnpdrv_cmd_chan_create_file(chan);
++
++	/* remove channel object if failed */
++	if (ret != 0 || req.o_errno != 0 || req.o_fd < 0)
++		nnpdrv_cmd_chan_send_destroy(chan);
++
++done:
++	req.o_privileged = capable(CAP_SYS_ADMIN) ? 1 : 0;
++	if (copy_to_user(arg, &req, sizeof(req)) != 0)
++		return -EIO;
++
++	return ret;
++}
++
++static long nnpdrv_device_ioctl(struct file  *f,
++				unsigned int  cmd,
++				unsigned long arg)
++{
++	struct device_client_info *client =
++		(struct device_client_info *)f->private_data;
++
++	if (!is_nnp_device_file(f))
++		return -EINVAL;
++
++	switch (cmd) {
++	case IOCTL_NNPI_DEVICE_CREATE_CHANNEL:
++		return create_channel(client, (void __user *)arg);
++	default:
++		nnp_dev_err(client->nnpdev->dev, GENERAL_LOG,
++			    "Unsupported device IOCTL 0x%x\n", cmd);
++	}
++
++	return -EINVAL;
++}
++
++static const struct file_operations nnpdrv_device_fops = {
++	.owner = THIS_MODULE,
++	.open = nnpdrv_device_open,
++	.release = nnpdrv_device_release,
++	.unlocked_ioctl = nnpdrv_device_ioctl,
++	.compat_ioctl = nnpdrv_device_ioctl
++};
++
++static inline int is_nnp_device_file(struct file *f)
++{
++	return (f->f_op == &nnpdrv_device_fops);
++}
++
++int nnpdev_device_chardev_create(struct nnp_device *nnpdev)
++{
++	int ret;
++
++	if (!nnpdev)
++		return -EINVAL;
++
++	cdev_init(&nnpdev->cdev, &nnpdrv_device_fops);
++	nnpdev->cdev.owner = THIS_MODULE;
++	ret = cdev_add(&nnpdev->cdev,
++		       MKDEV(MAJOR(s_devnum), nnpdev->id),
++		       1);
++	if (ret)
++		return ret;
++
++	nnpdev->dev = device_create(s_class,
++				    NULL,
++				    MKDEV(MAJOR(s_devnum), nnpdev->id),
++				    nnpdev,
++				    NNPI_DEVICE_DEV_FMT,
++				    nnpdev->id);
++	if (IS_ERR(nnpdev->dev)) {
++		cdev_del(&nnpdev->cdev);
++		return PTR_ERR(nnpdev->dev);
++	}
++
++	return 0;
++}
++
++void nnpdev_device_chardev_destroy(struct nnp_device *nnpdev)
++{
++	if (nnpdev) {
++		device_destroy(s_class, MKDEV(MAJOR(s_devnum), nnpdev->id));
++		cdev_del(&nnpdev->cdev);
++	}
++}
++
++int nnpdev_device_chardev_init(void)
++{
++	int ret;
++
++	ret = alloc_chrdev_region(&s_devnum, 0,
++				  NNP_MAX_DEVS, NNPDRV_DEVICE_DEV_NAME);
++	if (ret < 0) {
++		nnp_log_err(START_UP_LOG,
++			    "failed to allocate devnum %d\n", ret);
++		return ret;
++	}
++
++	s_class = class_create(THIS_MODULE, NNPDRV_DEVICE_DEV_NAME);
++	if (IS_ERR(s_class)) {
++		ret = PTR_ERR(s_class);
++		nnp_log_err(START_UP_LOG, "failed to register class %d\n", ret);
++		unregister_chrdev_region(s_devnum, NNP_MAX_DEVS);
++		return ret;
++	}
++
++	return 0;
++}
++
++void nnpdev_device_chardev_cleanup(void)
++{
++	class_destroy(s_class);
++	unregister_chrdev_region(s_devnum, NNP_MAX_DEVS);
++}
++
+diff --git a/drivers/misc/intel-nnpi/device_chardev.h b/drivers/misc/intel-nnpi/device_chardev.h
+new file mode 100644
+index 0000000..837d9f3
+--- /dev/null
++++ b/drivers/misc/intel-nnpi/device_chardev.h
+@@ -0,0 +1,31 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++
++/********************************************
++ * Copyright (C) 2019-2020 Intel Corporation
++ ********************************************/
++#ifndef _NNPDRV_DEVICE_CHARDEV_H
++#define _NNPDRV_DEVICE_CHARDEV_H
++
++#include "device.h"
++#include <linux/list.h>
++#include <linux/fs.h>
++
++struct events_report_client_info {
++	struct list_head events_list_head;
++	struct list_head node;
++};
++
++struct inf_process_info;
++
++struct device_client_info {
++	struct nnp_device *nnpdev;
++	struct file *host_file;
++	bool is_inf_client;
++};
++
++int nnpdev_device_chardev_create(struct nnp_device *nnpdev);
++void nnpdev_device_chardev_destroy(struct nnp_device *nnpdev);
++int nnpdev_device_chardev_init(void);
++void nnpdev_device_chardev_cleanup(void);
++
++#endif
+diff --git a/drivers/misc/intel-nnpi/if_include/ipc_c2h_events.h b/drivers/misc/intel-nnpi/if_include/ipc_c2h_events.h
+new file mode 100644
+index 0000000..eb8b145
+--- /dev/null
++++ b/drivers/misc/intel-nnpi/if_include/ipc_c2h_events.h
+@@ -0,0 +1,198 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++
++/********************************************
++ * Copyright (C) 2019-2020 Intel Corporation
++ ********************************************/
++#ifndef _NNP_IPC_C2H_EVENTS_H
++#define _NNP_IPC_C2H_EVENTS_H
++
++/**
++ * The following describes the possible values for a c2h_event_report message
++ * sent from card to host to report on some error or other events.
++ *
++ * The c2h_event_report message has the following fields available to describe
++ * the event:
++ *    event_code  - 8 bits value describing the type of event
++ *    event_val   - 8 bits value - interpetation depends on event_code
++ *    context_id  - the protocol_id of the context in which the event was
++ *                 occurred.
++ *    obj_id      - 16 bits, interpretation depends on event_code, usually used
++ *                 to hold an inference object protocol ID.
++ *    obj_id_2    - 16 bits, in case obj_id is not enough to describe the object
++ * In this file we define the possible values for the above fields and document
++ * each field meaning for each possible event_code.
++ */
++
++/**
++ * Event codes ranges
++ *
++ * Those ranges should match the definition of RuntimeEventCodes
++ * defined in include/sphcsInference.h and used by the daemon/runtime
++ * interface !!!
++ *
++ * error codes are grouped into the following ranges:
++ *     0 -   3   ==> non error events generated by daemon/runtime
++ *     4 -  47   ==> non error events generated by card kernel driver
++ *    48 -  51   ==> non-critical error events generated by daemon/runtime
++ *    52 -  95   ==> non-critical error events generatd by kernel driver
++ *    96 - 103   ==> context-critical error events generated by daemon/runtime
++ *   104 - 111   ==> context-critical error events generated by kernel driver
++ *   112 - 119   ==> card-critical error events generated by daemon/runtime
++ *   120 - 127   ==> card-critical error events generated by kernel driver
++ *
++ * context-critical error event is one that puts the infer context in an
++ * un-recovarable error state.
++ * card-critical error event is one that make the card not useful for inference
++ * request until it is reset.
++ */
++#define EVENT_NON_ERR_START             0
++#define EVENT_NON_ERR_DRV_START         4
++#define EVENT_ERR_START                48
++#define EVENT_ERR_DRV_START            52
++#define EVENT_CONTEXT_FATAL_START      96
++#define EVENT_CONTEXT_FATAL_DRV_START 104
++#define EVENT_CARD_FATAL_START        112
++#define EVENT_CARD_FATAL_DRV_START    120
++
++#define is_context_fatal_event(e)  ((e) >= EVENT_CONTEXT_FATAL_START && \
++				    (e) < EVENT_CARD_FATAL_START)
++#define is_card_fatal_event(e)     ((e) >= EVENT_CARD_FATAL_START)
++#define is_card_fatal_drv_event(e)     ((e) >= EVENT_CARD_FATAL_DRV_START)
++
++#define NNP_IPC_RUNTIME_DONE   (EVENT_NON_ERR_START + 1)
++/*            MAX offset for EVENT_NON_ERR_START is 3 */
++
++/* non-error event codes */
++#define NNP_IPC_CREATE_CONTEXT_SUCCESS   (EVENT_NON_ERR_DRV_START + 0)
++#define NNP_IPC_CREATE_DEVRES_SUCCESS    (EVENT_NON_ERR_DRV_START + 1)
++#define NNP_IPC_CREATE_COPY_SUCCESS      (EVENT_NON_ERR_DRV_START + 2)
++#define NNP_IPC_EXECUTE_COPY_SUCCESS     (EVENT_NON_ERR_DRV_START + 3)
++#define NNP_IPC_DEVRES_DESTROYED         (EVENT_NON_ERR_DRV_START + 4)
++#define NNP_IPC_COPY_DESTROYED           (EVENT_NON_ERR_DRV_START + 5)
++#define NNP_IPC_CONTEXT_DESTROYED        (EVENT_NON_ERR_DRV_START + 6)
++#define NNP_IPC_CREATE_DEVNET_SUCCESS    (EVENT_NON_ERR_DRV_START + 7)
++#define NNP_IPC_DEVNET_DESTROYED         (EVENT_NON_ERR_DRV_START + 8)
++#define NNP_IPC_CREATE_INFREQ_SUCCESS    (EVENT_NON_ERR_DRV_START + 9)
++#define NNP_IPC_INFREQ_DESTROYED         (EVENT_NON_ERR_DRV_START + 10)
++#define NNP_IPC_RECOVER_CONTEXT_SUCCESS  (EVENT_NON_ERR_DRV_START + 11)
++#define NNP_IPC_THERMAL_TRIP_EVENT       (EVENT_NON_ERR_DRV_START + 12)
++#define NNP_IPC_DEVNET_ADD_RES_SUCCESS   (EVENT_NON_ERR_DRV_START + 13)
++#define NNP_IPC_DEVICE_STATE_CHANGED     (EVENT_NON_ERR_DRV_START + 14)
++#define NNP_IPC_DEVNET_RESOURCES_RESERVATION_SUCCESS \
++	(EVENT_NON_ERR_DRV_START + 15)
++#define NNP_IPC_DEVNET_RESOURCES_RELEASE_SUCCESS  (EVENT_NON_ERR_DRV_START + 16)
++#define NNP_IPC_CREATE_CHANNEL_SUCCESS   (EVENT_NON_ERR_DRV_START + 17)
++#define NNP_IPC_CHANNEL_DESTROYED        (EVENT_NON_ERR_DRV_START + 18)
++#define NNP_IPC_CHANNEL_SET_RB_SUCCESS   (EVENT_NON_ERR_DRV_START + 19)
++#define NNP_IPC_CHANNEL_MAP_HOSTRES_SUCCESS   (EVENT_NON_ERR_DRV_START + 20)
++#define NNP_IPC_CHANNEL_UNMAP_HOSTRES_SUCCESS (EVENT_NON_ERR_DRV_START + 21)
++#define NNP_IPC_ABORT_REQUEST            (EVENT_NON_ERR_DRV_START + 22)
++#define NNP_IPC_GET_FIFO                 (EVENT_NON_ERR_DRV_START + 23)
++#define NNP_IPC_CREATE_CMD_SUCCESS       (EVENT_NON_ERR_DRV_START + 24)
++#define NNP_IPC_CMD_DESTROYED            (EVENT_NON_ERR_DRV_START + 25)
++#define NNP_IPC_EXECUTE_CMD_COMPLETE     (EVENT_NON_ERR_DRV_START + 26)
++#define NNP_IPC_DEVNET_SET_PROPERTY_SUCCESS  (EVENT_NON_ERR_DRV_START + 27)
++#define NNP_IPC_EXECUTE_CPYLST_SUCCESS   (EVENT_NON_ERR_DRV_START + 28)
++#define NNP_IPC_GET_CR_FIFO_REPLY        (EVENT_NON_ERR_DRV_START + 29)
++#define NNP_IPC_P2P_PEERS_CONNECTED      (EVENT_NON_ERR_DRV_START + 30)
++#define NNP_IPC_P2P_PEER_DEV_UPDATED     (EVENT_NON_ERR_DRV_START + 31)
++#define NNP_IPC_EXECUTE_COPY_SUBRES_SUCCESS  (EVENT_NON_ERR_DRV_START + 32)
++/*                   MAX offset for EVENT_NON_ERR_DRV_START is 43 */
++
++/* non-critical error event codes */
++#define NNP_IPC_CREATE_CONTEXT_FAILED    (EVENT_ERR_DRV_START + 0)
++#define NNP_IPC_CREATE_DEVRES_FAILED     (EVENT_ERR_DRV_START + 1)
++#define NNP_IPC_CREATE_COPY_FAILED       (EVENT_ERR_DRV_START + 2)
++#define NNP_IPC_DESTROY_CONTEXT_FAILED   (EVENT_ERR_DRV_START + 3)
++#define NNP_IPC_DESTROY_DEVRES_FAILED    (EVENT_ERR_DRV_START + 4)
++#define NNP_IPC_DESTROY_COPY_FAILED      (EVENT_ERR_DRV_START + 5)
++#define NNP_IPC_CREATE_SYNC_FAILED       (EVENT_ERR_DRV_START + 6)
++#define NNP_IPC_ERROR_SUB_RESOURCE_LOAD_FAILED      (EVENT_ERR_DRV_START + 7)
++#define NNP_IPC_CREATE_DEVNET_FAILED     (EVENT_ERR_DRV_START + 8)
++#define NNP_IPC_DESTROY_DEVNET_FAILED    (EVENT_ERR_DRV_START + 9)
++#define NNP_IPC_CREATE_INFREQ_FAILED     (EVENT_ERR_DRV_START + 10)
++#define NNP_IPC_DESTROY_INFREQ_FAILED    (EVENT_ERR_DRV_START + 11)
++#define NNP_IPC_RECOVER_CONTEXT_FAILED   (EVENT_ERR_DRV_START + 12)
++#define NNP_IPC_ERROR_MCE_CORRECTABLE    (EVENT_ERR_DRV_START + 13)
++#define NNP_IPC_ERROR_MCE_UNCORRECTABLE  (EVENT_ERR_DRV_START + 14)
++#define NNP_IPC_DEVNET_ADD_RES_FAILED    (EVENT_ERR_DRV_START + 15)
++#define NNP_IPC_DEVNET_RESOURCES_RESERVATION_FAILED (EVENT_ERR_DRV_START + 16)
++#define NNP_IPC_DEVNET_RESOURCES_RELEASE_FAILED     (EVENT_ERR_DRV_START + 17)
++#define NNP_IPC_CREATE_CHANNEL_FAILED    (EVENT_ERR_DRV_START + 18)
++#define NNP_IPC_DESTROY_CHANNEL_FAILED   (EVENT_ERR_DRV_START + 19)
++#define NNP_IPC_CHANNEL_SET_RB_FAILED    (EVENT_ERR_DRV_START + 20)
++#define NNP_IPC_CREATE_CMD_FAILED        (EVENT_ERR_DRV_START + 21)
++#define NNP_IPC_DESTROY_CMD_FAILED       (EVENT_ERR_DRV_START + 22)
++#define NNP_IPC_CHANNEL_MAP_HOSTRES_FAILED   (EVENT_ERR_DRV_START + 23)
++#define NNP_IPC_CHANNEL_UNMAP_HOSTRES_FAILED (EVENT_ERR_DRV_START + 24)
++#define NNP_IPC_DEVNET_SET_PROPERTY_FAILED  (EVENT_ERR_DRV_START + 25)
++#define NNP_IPC_ERROR_DRAM_ECC_CORRECTABLE (EVENT_ERR_DRV_START + 26)
++#define NNP_IPC_EXECUTE_COPY_FAILED        (EVENT_ERR_DRV_START + 27)
++#define NNP_IPC_SCHEDULE_INFREQ_FAILED     (EVENT_ERR_DRV_START + 28)
++#define NNP_IPC_EXECUTE_CPYLST_FAILED      (EVENT_ERR_DRV_START + 29)
++#define NNP_IPC_EXECUTE_COPY_SUBRES_FAILED  (EVENT_ERR_DRV_START + 30)
++/*                   MAX offset for EVENT_ERR_DRV_START is 43 */
++
++/* context critical error event codes */
++#define NNP_IPC_ERROR_RUNTIME_LAUNCH     (EVENT_CONTEXT_FATAL_START + 0)
++#define NNP_IPC_ERROR_RUNTIME_DIED       (EVENT_CONTEXT_FATAL_START + 1)
++/*                   MAX offset for EVENT_CONTEXT_FATAL_START is 7 */
++
++#define NNP_IPC_CONTEXT_EXEC_ERROR          (EVENT_CONTEXT_FATAL_DRV_START + 0)
++#define NNP_IPC_CTX_DRAM_ECC_UNCORRECTABLE  (EVENT_CONTEXT_FATAL_DRV_START + 1)
++/*                   MAX offset for EVENT_CONTEXT_FATAL_DRV_START is 7 */
++
++/* card critical error event codes */
++#define NNP_IPC_ERROR_OS_CRASHED          (EVENT_CARD_FATAL_START + 0)
++#define NNP_IPC_ERROR_DRAM_ECC_UNCORRECTABLE_FATAL  (EVENT_CARD_FATAL_START + 1)
++#define NNP_IPC_ERROR_FATAL_ICE_ERROR     (EVENT_CARD_FATAL_START + 2)
++/*                   MAX offset for EVENT_CARD_FATAL_START is 7 */
++
++/* card critical and driver fatal*/
++#define NNP_IPC_ERROR_PCI_ERROR           (EVENT_CARD_FATAL_DRV_START + 0)
++#define NNP_IPC_ERROR_MCE_UNCORRECTABLE_FATAL  (EVENT_CARD_FATAL_DRV_START + 1)
++#define NNP_IPC_ERROR_CARD_RESET          (EVENT_CARD_FATAL_DRV_START + 2)
++#define NNP_IPC_ERROR_CHANNEL_KILLED      (EVENT_CARD_FATAL_DRV_START + 3)
++#define NNP_IPC_ERROR_PROTOCOL_ERROR      (EVENT_CARD_FATAL_DRV_START + 4)
++/*                   MAX offset for EVENT_CARD_FATAL_DRV_START is 7 */
++
++enum event_val {
++	NNP_IPC_NO_ERROR		= 0,
++	NNP_IPC_NO_SUCH_CONTEXT		= 1,
++	NNP_IPC_NO_SUCH_DEVRES		= 2,
++	NNP_IPC_NO_SUCH_COPY		= 3,
++	NNP_IPC_NO_SUCH_NET		= 4,
++	NNP_IPC_NO_SUCH_INFREQ		= 5,
++	NNP_IPC_ALREADY_EXIST		= 6,
++	NNP_IPC_NO_DAEMON		= 7,
++	NNP_IPC_NO_MEMORY		= 8,
++	NNP_IPC_RUNTIME_FAILED		= 9,
++	NNP_IPC_RUNTIME_LAUNCH_FAILED	= 10,
++	NNP_IPC_DMA_ERROR		= 11,
++	NNP_IPC_RUNTIME_NOT_SUPPORTED	= 12,
++	NNP_IPC_RUNTIME_INVALID_EXECUTABLE_NETWORK_BINARY = 13,
++	NNP_IPC_RUNTIME_INFER_MISSING_RESOURCE        = 14,
++	NNP_IPC_RUNTIME_INFER_EXEC_ERROR              = 15,
++	NNP_IPC_RUNTIME_INFER_SCHEDULE_ERROR          = 16,
++	NNP_IPC_CONTEXT_BROKEN                        = 17,
++	NNP_IPC_DEVNET_RESERVE_INSUFFICIENT_RESOURCES = 18,
++	NNP_IPC_TIMEOUT_EXCEEDED        = 19,
++	NNP_IPC_ECC_ALLOC_FAILED        = 20,
++	NNP_IPC_NO_SUCH_CHANNEL         = 21,
++	NNP_IPC_NO_SUCH_CMD             = 22,
++	NNP_IPC_NO_SUCH_HOSTRES         = 23,
++	NNP_IPC_DEVNET_EDIT_BUSY        = 24,
++	NNP_IPC_DEVNET_EDIT_ERROR       = 25,
++	NNP_IPC_NOT_SUPPORTED           = 26,
++	NNP_IPC_ICEDRV_INFER_EXEC_ERROR = 27,
++	NNP_IPC_ICEDRV_INFER_EXEC_ERROR_NEED_RESET = 28,
++	NNP_IPC_ICEDRV_INFER_EXEC_ERROR_NEED_CARD_RESET = 29,
++	NNP_IPC_NO_EXEC_ERRORS          = 30,
++	NNP_IPC_IO_ERROR                = 31,
++	NNP_IPC_INPUT_IS_DIRTY          = 32,
++
++	/* Non failure events */
++	NNP_IPC_CMDLIST_FINISHED       = 128,
++};
++
++#endif
+diff --git a/drivers/misc/intel-nnpi/if_include/ipc_protocol.h b/drivers/misc/intel-nnpi/if_include/ipc_protocol.h
+index 7d1f874..79d8449 100644
+--- a/drivers/misc/intel-nnpi/if_include/ipc_protocol.h
++++ b/drivers/misc/intel-nnpi/if_include/ipc_protocol.h
+@@ -11,6 +11,7 @@
+ #ifdef __KERNEL__
+ #include <linux/dma-mapping.h>
+ #include "nnp_debug.h"
++#include "ipc_c2h_events.h"
+ #include "nnp_inbound_mem.h"
+ 
+ #define CHECK_MESSAGE_SIZE(t, n_qw) \
+diff --git a/drivers/misc/intel-nnpi/nnp_ringbuf.h b/drivers/misc/intel-nnpi/nnp_ringbuf.h
+new file mode 100644
+index 0000000..1dd5f16
+--- /dev/null
++++ b/drivers/misc/intel-nnpi/nnp_ringbuf.h
+@@ -0,0 +1,84 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++
++/********************************************
++ * Copyright (C) 2019-2020 Intel Corporation
++ ********************************************/
++#ifndef _NNPDRV_RINGBUF_HEAD_TAIL_H
++#define _NNPDRV_RINGBUF_HEAD_TAIL_H
++
++#include <linux/types.h>
++
++struct nnp_ringbuf {
++	u8 *buf;
++	u32 ring_size;
++	u32 head;
++	u32 tail;
++	bool is_full;
++};
++
++static inline void nnp_ringbuf_init(struct nnp_ringbuf *rb,
++				    u8                 *buf,
++				    u32                 size)
++{
++	rb->buf = buf;
++	rb->ring_size = size;
++	rb->head = 0;
++	rb->tail = 0;
++	rb->is_full = false;
++}
++
++static inline u32 nnp_ringbuf_free_bytes(struct nnp_ringbuf *rb)
++{
++	if (rb->is_full)
++		return 0;
++	else if (rb->tail >= rb->head)
++		return (rb->head + rb->ring_size - rb->tail);
++	else
++		return (rb->head - rb->tail);
++}
++
++static inline u32 nnp_ringbuf_avail_bytes(struct nnp_ringbuf *rb)
++{
++	if (rb->is_full)
++		return rb->ring_size;
++	else if (rb->head > rb->tail)
++		return (rb->tail + rb->ring_size - rb->head);
++	else
++		return (rb->tail - rb->head);
++}
++
++static inline void nnp_ringbuf_push(struct nnp_ringbuf *rb,
++				    u8                 *buf,
++				    u32                 count)
++{
++	u8 *dst = rb->buf + rb->tail;
++	u32 t = rb->ring_size - rb->tail;
++
++	if (t >= count) {
++		memcpy(dst, buf, count);
++	} else {
++		memcpy(dst, buf, t);
++		memcpy(rb->buf, buf + t, count - t);
++	}
++	rb->tail = (rb->tail + count) % rb->ring_size;
++	if (rb->tail == rb->head)
++		rb->is_full = true;
++}
++
++static inline void nnp_ringbuf_pop(struct nnp_ringbuf *rb,
++				   u8                 *buf,
++				   u32                 count)
++{
++	u8 *src = rb->buf + rb->head;
++	u32 t = rb->ring_size - rb->head;
++
++	if (t >= count) {
++		memcpy(buf, src, count);
++	} else {
++		memcpy(buf, src, t);
++		memcpy(buf + t, rb->buf, count - t);
++	}
++	rb->head = (rb->head + count) % rb->ring_size;
++	rb->is_full = false;
++}
++#endif
+diff --git a/drivers/misc/intel-nnpi/nnpdrv_main.c b/drivers/misc/intel-nnpi/nnpdrv_main.c
+index 010119c..728ab7f 100644
+--- a/drivers/misc/intel-nnpi/nnpdrv_main.c
++++ b/drivers/misc/intel-nnpi/nnpdrv_main.c
+@@ -10,6 +10,7 @@
+ #include <linux/stringify.h>
+ #include "pcie.h"
+ #include "device.h"
++#include "device_chardev.h"
+ #include "nnp_log.h"
+ 
+ static struct nnpdrv_device_hw_callbacks nnp_dev_callbacks = {
+@@ -29,6 +30,12 @@ static int nnpdrv_init_module(void)
+ 	if (ret)
+ 		return ret;
+ 
++	ret = nnpdev_device_chardev_init();
++	if (ret) {
++		nnp_log_err(START_UP_LOG, "failed to init chardev class\n");
++		goto err_return;
++	}
++
+ 	ret = nnpdrv_pci_init(&nnp_dev_callbacks);
+ 	if (ret) {
+ 		nnp_log_err(START_UP_LOG, "failed to init pcie\n");
+@@ -51,6 +58,7 @@ static void nnpdrv_cleanup(void)
+ 	nnpdrv_hw_cleanup();
+ 
+ 	nnpdrv_device_fini();
++	nnpdev_device_chardev_cleanup();
+ }
+ 
+ module_init(nnpdrv_init_module);
+diff --git a/include/uapi/misc/intel_nnpi.h b/include/uapi/misc/intel_nnpi.h
+index bd0b28e..550538a 100644
+--- a/include/uapi/misc/intel_nnpi.h
++++ b/include/uapi/misc/intel_nnpi.h
+@@ -62,6 +62,68 @@ struct nnpdrv_ioctl_destroy_hostres {
+ 	__u8  o_errno;
+ };
+ 
++/*
++ * ioctls for /dev/nnpi%d device
++ */
++#define NNPI_DEVICE_DEV_FMT "nnpi%u"
++#define IOCTL_NNPI_DEVICE_CREATE_CHANNEL      \
++	_IOWR('D', 0, struct ioctl_nnpi_create_channel)
++
++#define IOCTL_NNPI_DEVICE_CREATE_CHANNEL_RB   \
++	_IOWR('D', 1, struct ioctl_nnpi_create_channel_data_ringbuf)
++
++#define IOCTL_NNPI_DEVICE_DESTROY_CHANNEL_RB  \
++	_IOWR('D', 2, struct ioctl_nnpi_destroy_channel_data_ringbuf)
++
++#define IOCTL_NNPI_DEVICE_CHANNEL_MAP_HOSTRES \
++	_IOWR('D', 3, struct ioctl_nnpi_channel_map_hostres)
++
++#define IOCTL_NNPI_DEVICE_CHANNEL_UNMAP_HOSTRES \
++	_IOWR('D', 4, struct ioctl_nnpi_channel_unmap_hostres)
++
++struct ioctl_nnpi_create_channel {
++	__u32 i_weight;
++	__s32    i_host_fd;
++	__s32    i_min_id;
++	__s32    i_max_id;
++	__s32    i_get_device_events;
++	__u32 i_version;
++	__u16 i_protocol_version;
++	__s32    o_fd;
++	__u16 o_channel_id;
++	__s32    o_privileged;
++	__u8  o_errno;
++};
++
++struct ioctl_nnpi_create_channel_data_ringbuf {
++	__u16 i_channel_id;
++	__u8  i_id;
++	__u8  i_h2c;
++	__u64 i_hostres_handle;
++	__u8  o_errno;
++};
++
++struct ioctl_nnpi_destroy_channel_data_ringbuf {
++	__u16 i_channel_id;
++	__u8  i_id;
++	__u8  i_h2c;
++	__u8  o_errno;
++};
++
++struct ioctl_nnpi_channel_map_hostres {
++	__u16 i_channel_id;
++	__u64 i_hostres_handle;
++	__u16 o_map_id;
++	__u8  o_sync_needed;
++	__u8  o_errno;
++};
++
++struct ioctl_nnpi_channel_unmap_hostres {
++	__u16 i_channel_id;
++	__u16 i_map_id;
++	__u8  o_errno;
++};
++
+ /****************************************************************
+  * Error code values - errors returned in o_errno fields of
+  * above structures may be base linux errno values as well as
+-- 
+1.8.3.1
+

@@ -35,7 +35,6 @@ int sphcs_cmd_chan_create(uint16_t                protocol_id,
 	cmd_chan->protocol_id = protocol_id;
 	cmd_chan->uid = uid;
 	cmd_chan->privileged = privileged;
-	cmd_chan->destroyed = false;
 
 	spin_lock_init(&cmd_chan->lock_bh);
 	hash_init(cmd_chan->hostres_hash);
