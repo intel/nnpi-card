@@ -212,10 +212,9 @@ struct sphcs_cmd_chan *sphcs_find_channel(struct sphcs *sphcs, uint16_t protocol
 	return NULL;
 }
 
-int find_and_destroy_channel(struct sphcs *sphcs, uint16_t protocol_id)
+static struct sphcs_cmd_chan *find_and_remove_chan(struct sphcs *sphcs, uint16_t protocol_id)
 {
 	struct sphcs_cmd_chan *iter, *chan = NULL;
-	int i;
 
 	NNP_SPIN_LOCK_BH(&sphcs->lock_bh);
 	hash_for_each_possible(sphcs->cmd_chan_hash,
@@ -227,14 +226,17 @@ int find_and_destroy_channel(struct sphcs *sphcs, uint16_t protocol_id)
 			break;
 		}
 
-	if (unlikely(chan == NULL)) {
-		NNP_SPIN_UNLOCK_BH(&sphcs->lock_bh);
-		return -ENXIO;
-	}
+	if (unlikely(chan != NULL))
+		hash_del(&chan->hash_node);
 
-	chan->destroyed = true;
-	hash_del(&chan->hash_node);
 	NNP_SPIN_UNLOCK_BH(&sphcs->lock_bh);
+
+	return chan;
+}
+
+static void destroy_removed_chan(struct sphcs_cmd_chan *chan)
+{
+	int i;
 
 	drain_workqueue(chan->wq);
 
@@ -249,8 +251,6 @@ int find_and_destroy_channel(struct sphcs *sphcs, uint16_t protocol_id)
 		}
 
 	sphcs_cmd_chan_put(chan);
-
-	return 0;
 }
 
 static void destroy_all_channels(struct sphcs *sphcs)
@@ -266,12 +266,11 @@ static void destroy_all_channels(struct sphcs *sphcs)
 			      i,
 			      chan,
 			      hash_node) {
-			if (!chan->destroyed) {
-				NNP_SPIN_UNLOCK_BH(&sphcs->lock_bh);
-				find_and_destroy_channel(sphcs, chan->protocol_id);
-				found = true;
-				break;
-			}
+			hash_del(&chan->hash_node);
+			NNP_SPIN_UNLOCK_BH(&sphcs->lock_bh);
+			destroy_removed_chan(chan);
+			found = true;
+			break;
 		}
 	} while (found);
 	NNP_SPIN_UNLOCK_BH(&sphcs->lock_bh);
@@ -280,6 +279,7 @@ static void destroy_all_channels(struct sphcs *sphcs)
 struct channel_op_work {
 	struct work_struct  work;
 	union h2c_channel_op cmd;
+	struct sphcs_cmd_chan *chan;
 };
 
 static void channel_op_work_handler(struct work_struct *work)
@@ -291,40 +291,35 @@ static void channel_op_work_handler(struct work_struct *work)
 	struct sphcs_cmd_chan *chan;
 	uint8_t event;
 	enum event_val val = NNP_IPC_NO_ERROR;
-	int ret;
 
 	if (op->cmd.destroy) {
-		ret = find_and_destroy_channel(sphcs, op->cmd.protocol_id);
-		if (unlikely(ret < 0)) {
-			event = NNP_IPC_DESTROY_CHANNEL_FAILED;
-			val = NNP_IPC_NO_SUCH_CHANNEL;
-			goto send_error;
-		}
-	} else {
-		chan = sphcs_find_channel(sphcs, op->cmd.protocol_id);
-		if (unlikely(chan != NULL)) {
-			sphcs_cmd_chan_put(chan);
-			event = NNP_IPC_CREATE_CHANNEL_FAILED;
-			val = NNP_IPC_ALREADY_EXIST;
-			goto send_error;
-		}
-
-		val = sphcs_cmd_chan_create(op->cmd.protocol_id,
-					    op->cmd.uid,
-					    op->cmd.privileged ? true : false,
-					    &chan);
-		if (unlikely(val != NNP_IPC_NO_ERROR)) {
-			event = NNP_IPC_CREATE_CHANNEL_FAILED;
-			goto send_error;
-		}
-
-		sphcs_send_event_report(sphcs,
-					NNP_IPC_CREATE_CHANNEL_SUCCESS,
-					0,
-					NULL,
-					-1,
-					op->cmd.protocol_id);
+		destroy_removed_chan(op->chan);
+		goto done;
 	}
+	chan = sphcs_find_channel(sphcs, op->cmd.protocol_id);
+	if (unlikely(chan != NULL)) {
+		sphcs_cmd_chan_put(chan);
+		event = NNP_IPC_CREATE_CHANNEL_FAILED;
+		val = NNP_IPC_ALREADY_EXIST;
+		sph_log_err(CREATE_COMMAND_LOG, "Should never happen. Create chan(id=%hu) failed, already exist.\n", op->cmd.protocol_id);
+		goto send_error;
+	}
+
+	val = sphcs_cmd_chan_create(op->cmd.protocol_id,
+				    op->cmd.uid,
+				    op->cmd.privileged ? true : false,
+				    &chan);
+	if (unlikely(val != NNP_IPC_NO_ERROR)) {
+		event = NNP_IPC_CREATE_CHANNEL_FAILED;
+		goto send_error;
+	}
+
+	sphcs_send_event_report(sphcs,
+				NNP_IPC_CREATE_CHANNEL_SUCCESS,
+				0,
+				NULL,
+				-1,
+				op->cmd.protocol_id);
 
 	goto done;
 
@@ -340,6 +335,7 @@ static void IPC_OPCODE_HANDLER(CHANNEL_OP)(
 {
 	struct channel_op_work *work;
 	uint8_t event;
+	enum event_val val;
 
 	work = kzalloc(sizeof(*work), GFP_NOWAIT);
 	if (unlikely(work == NULL)) {
@@ -347,18 +343,29 @@ static void IPC_OPCODE_HANDLER(CHANNEL_OP)(
 			event = NNP_IPC_DESTROY_CHANNEL_FAILED;
 		else
 			event = NNP_IPC_CREATE_CHANNEL_FAILED;
-		sphcs_send_event_report(sphcs,
-					event,
-					NNP_IPC_NO_MEMORY,
-					NULL,
-					-1,
-					cmd->protocol_id);
-		return;
+		val = NNP_IPC_NO_MEMORY;
+		goto send_error;
 	}
 
 	work->cmd.value = cmd->value;
+	if (cmd->destroy) {
+		work->chan = find_and_remove_chan(sphcs, cmd->protocol_id);
+		if (unlikely(work->chan == NULL)) {
+			kfree(work);
+			event = NNP_IPC_DESTROY_CHANNEL_FAILED;
+			val = NNP_IPC_NO_SUCH_CHANNEL;
+			sph_log_err(CREATE_COMMAND_LOG, "Destroy chan(id=%hu) failed, no such chan.\n", cmd->protocol_id);
+			goto send_error;
+		}
+	}
+
 	INIT_WORK(&work->work, channel_op_work_handler);
 	queue_work(sphcs->wq, &work->work);
+
+	return;
+
+send_error:
+	sphcs_send_event_report(sphcs, event, val, NULL, -1, cmd->protocol_id);
 }
 
 /*

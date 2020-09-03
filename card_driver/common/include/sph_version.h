@@ -24,9 +24,9 @@
 #define STR(x) _STR(x)
 
 #define SPH_MAJOR 0
-#define SPH_MINOR 8
+#define SPH_MINOR 9
 #define SPH_PATCH 0
-#define SPH_PATCH_MINOR 4
+#define SPH_PATCH_MINOR 0
 
 #define NNP_VERSION  STR(VERSION: v.SPH_MAJOR.SPH_MINOR.SPH_PATCH.SPH_PATCH_MINOR)
 #define AUTHOR_STR   STR(AUTHOR: Intel Corporation 2018-2020)

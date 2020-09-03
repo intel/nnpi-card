@@ -127,12 +127,6 @@ int inf_cpylst_create(struct inf_cmd_list *cmd,
 	cpylst->lli.vptr = NULL;
 	cpylst->cur_lli.vptr = NULL;
 	cpylst->destroyed = 0;
-	cpylst->min_block_time = U64_MAX;
-	cpylst->max_block_time = 0;
-	cpylst->min_exec_time = U64_MAX;
-	cpylst->max_exec_time = 0;
-	cpylst->min_hw_exec_time = U64_MAX;
-	cpylst->max_hw_exec_time = 0;
 
 	sphcs_dma_multi_xfer_handle_init(&cpylst->multi_xfer_handle);
 
@@ -327,7 +321,6 @@ int inf_cpylst_add_copy(struct inf_cpylst *cpylst,
 	if (unlikely(cpylst->added_copies == cpylst->n_copies)) {
 		ret = inf_cpylst_init_llis(cpylst);
 		memcpy(cpylst->cur_sizes, cpylst->sizes, cpylst->n_copies * sizeof(cpylst->sizes[0]));
-		cpylst->active = false;
 	}
 	return ret;
 }
@@ -474,9 +467,6 @@ static enum EXEC_REQ_READINESS inf_cpylst_req_ready(struct inf_exec_req *req)
 
 	NNP_ASSERT(req->cmd_type == CMDLIST_CMD_COPYLIST);
 
-	if (req->cpylst->active)
-		return EXEC_REQ_READINESS_NOT_READY;
-
 	read = req->cpylst->copies[0]->card2Host;
 	for (i = 0; i < req->num_opt_depend_devres; ++i) {
 		dev_res_status = inf_devres_req_ready(req->opt_depend_devres[i], req, read);
@@ -555,8 +545,6 @@ static int inf_cpylst_req_execute(struct inf_exec_req *req)
 			break;
 		}
 	}
-
-	cpylst->active = true;
 
 	if (inf_context_get_state(req->context) != CONTEXT_OK) {
 		ret = -NNPER_CONTEXT_BROKEN;
@@ -663,7 +651,7 @@ static void inf_cpylst_req_complete(struct inf_exec_req *req,
 	bool send_cmdlist_event_report = false;
 	bool has_dirty_outputs = false;
 	uint16_t i;
-	u64 dt;
+	u64 dt, total_size = req->size;
 
 	NNP_ASSERT(req->cmd_type == CMDLIST_CMD_COPYLIST);
 	NNP_ASSERT(req->cmd != NULL);
@@ -728,34 +716,13 @@ static void inf_cpylst_req_complete(struct inf_exec_req *req,
 	NNP_ASSERT(cmd != NULL);
 	send_cmdlist_event_report = atomic_dec_and_test(&cmd->num_left);
 
-	if (event_val == 0 && send_cmdlist_event_report) {
-		// if success and should send both cmd and copy reports,
-		// send one merged report
-		sphcs_send_event_report_ext(g_the_sphcs,
-					    NNP_IPC_EXECUTE_CPYLST_SUCCESS,
-					    //event_val isn't 0 to differentiate
-					    //between CMD and cpylst
-					    NNP_IPC_CMDLIST_FINISHED,
-					    cmd->context->chan->respq,
-					    cmd->context->protocol_id,
-					    cmd->protocol_id,
-					    cpylst->idx_in_cmd);
-	} else {
+	if (event_val != 0 || !send_cmdlist_event_report)
 		send_cpylst_report(req, event_val);
 
-		if (send_cmdlist_event_report)
-			sphcs_send_event_report(g_the_sphcs,
-						NNP_IPC_EXECUTE_CMD_COMPLETE,
-						0,
-						cmd->context->chan->respq,
-						cmd->context->protocol_id,
-						cmd->protocol_id);
-	}
+	inf_exec_req_put(req);
 
 	if (dt > 0) {
 		struct inf_copy *copy;
-
-		NNP_ASSERT(req->size > 0);
 
 		i = 0;
 		for (copy = cpylst->copies[i]; i < cpylst->n_copies; copy = cpylst->copies[++i]) {
@@ -765,7 +732,7 @@ static void inf_cpylst_req_complete(struct inf_exec_req *req,
 						   COPY_SPHCS_SW_COUNTERS_EXEC_COUNT);
 
 				if (cpylst->cur_sizes[i] > 0) {
-					u64 cur_dt = dt * cpylst->cur_sizes[i] / req->size;
+					u64 cur_dt = dt * cpylst->cur_sizes[i] / total_size;
 
 					if (cur_dt == 0)
 						continue;
@@ -794,11 +761,27 @@ static void inf_cpylst_req_complete(struct inf_exec_req *req,
 
 	memcpy(cpylst->cur_sizes, cpylst->sizes, cpylst->n_copies * sizeof(cpylst->sizes[0]));
 
-	cpylst->active = false;
-
-	inf_exec_req_put(req);
-
 	if (send_cmdlist_event_report) {
+		if (event_val == 0) {
+			// if success should send both cmd and copy reports,
+			// send one merged report
+			sphcs_send_event_report_ext(g_the_sphcs,
+						NNP_IPC_EXECUTE_CPYLST_SUCCESS,
+						//event_val isn't 0 to differentiate
+						//between CMD and cpylst
+						NNP_IPC_CMDLIST_FINISHED,
+						cmd->context->chan->respq,
+						cmd->context->protocol_id,
+						cmd->protocol_id,
+						cpylst->idx_in_cmd);
+		} else {
+			sphcs_send_event_report(g_the_sphcs,
+						NNP_IPC_EXECUTE_CMD_COMPLETE,
+						0,
+						cmd->context->chan->respq,
+						cmd->context->protocol_id,
+						cmd->protocol_id);
+		}
 		DO_TRACE(trace_cmdlist(SPH_TRACE_OP_STATUS_COMPLETE,
 			 cmd->context->protocol_id, cmd->protocol_id));
 		// for schedule

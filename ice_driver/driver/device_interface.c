@@ -482,7 +482,6 @@ static void dispatch_next_subjobs(struct di_job *job,
 		struct cve_device *dev)
 {
 	u32 db = 0;
-	u32 __maybe_unused is_cold_run = job->cold_run;
 	u32 cbd_size = sizeof(union CVE_SHARED_CB_DESCRIPTOR);
 	cve_virtual_address_t iceva;
 	struct ice_network *ntw = (struct ice_network *) dev->dev_ntw_id;
@@ -491,6 +490,9 @@ static void dispatch_next_subjobs(struct di_job *job,
 	const struct sphpb_callbacks *sphpb_cbs;
 	int ret;
 	bool throttling;
+
+	dev->is_cold_run = job->cold_run;
+
 
 	if (job->cold_run)
 		__prepare_cbdt(job, dev);
@@ -526,19 +528,25 @@ static void dispatch_next_subjobs(struct di_job *job,
 					ret);
 			}
 		}
-		if (job->cdyn_val) {
+		if (job->cdyn_val && dev->cdyn_val != job->cdyn_val) {
 			/* For A step Throttling is disabled */
 			throttling = false;
 			if (ice_get_iccp_throttling_flag())
 				throttling = true;
 			ret = ice_iccp_license_request(dev, throttling,
 								job->cdyn_val);
+			cve_os_dev_log(CVE_LOGLEVEL_DEBUG,
+					dev->dev_index,
+					" Sending iccp license request Curr:%u Requested:%u",
+					dev->cdyn_val,
+					job->cdyn_val);
 			if (ret) {
 				cve_os_dev_log(CVE_LOGLEVEL_ERROR,
 					dev->dev_index,
 					" failed in iccp license request (%d)\n",
 					ret);
 			}
+			dev->cdyn_val = job->cdyn_val;
 		}
 		/* Cold Run */
 		if (disable_embcb) {
@@ -606,37 +614,8 @@ static void dispatch_next_subjobs(struct di_job *job,
 	if (ntw->ntw_enable_bp)
 		ice_di_enable_tlc_bp(dev);
 
-	/* reset the TLC FIFO indexes */
-	cve_os_write_mmio_32(dev,
-	 cfg_default.mmio_cbd_base_addr_offset,
-	 iceva);
-
-	dev->db_jiffy = ice_os_get_current_jiffy();
-
-	/* ring the doorbell once with the last descriptor */
-	cve_os_write_mmio_32(dev,
-		cfg_default.mmio_cb_doorbell_offset, db);
-
-	dev->busy_start_time = trace_clock_global();
-	ice_swc_counter_set(dev->hswc,
-		ICEDRV_SWC_DEVICE_COUNTER_BUSY_START_TIME,
-		(nsec_to_usec(dev->busy_start_time)));
-	ice_swc_counter_add(dev->hswc, ICEDRV_SWC_DEVICE_COUNTER_IDLE_TIME,
-		nsec_to_usec(dev->busy_start_time - dev->idle_start_time));
-	cve_os_log(CVE_LOGLEVEL_DEBUG,
-		"busy_start_time(usec)=%llu\n",
-		nsec_to_usec(dev->busy_start_time));
-
-	DO_TRACE(trace_icedrvScheduleJob(
-				SPH_TRACE_OP_STATE_START,
-				dev->dev_index,
-				ntw->wq->context->swc_node.sw_id,
-				ntw->swc_node.parent_sw_id,
-				ntw->swc_node.sw_id, ntw->network_id,
-				ntw->curr_exe->swc_node.sw_id,
-				(void *)job->ds_hjob,
-				SPH_TRACE_OP_STATUS_EXEC_TYPE, is_cold_run));
-
+	dev->cbd_base_va = iceva;
+	dev->db_cbd_id = db;
 }
 
 
@@ -1031,12 +1010,15 @@ int unset_idc_registers_multi(u32 icemask, uint8_t lock)
 void cve_di_reset_device(struct cve_device *cve_dev)
 {
 	uint8_t idc_reset;
+	uint32_t needs_reset;
 
 	/* Do not perform IDC reset for this ICE if
 	 * it was just powered on
 	 */
-	idc_reset = (cve_dev->di_cve_needs_reset & CVE_DI_RESET_DUE_POWER_ON) ?
-			0 : 1;
+	needs_reset = (cve_dev->di_cve_needs_reset &
+			~(CVE_DI_RESET_DUE_POWER_ON |
+			CVE_DI_RESET_DUE_NTW_SWITCH));
+	idc_reset = (needs_reset) ? 1 : 0;
 
 	if (do_reset_device(cve_dev, idc_reset))
 		cve_os_dev_log_default(CVE_LOGLEVEL_ERROR,
@@ -1045,7 +1027,8 @@ void cve_di_reset_device(struct cve_device *cve_dev)
 
 	cve_os_dev_log(CVE_LOGLEVEL_DEBUG,
 			cve_dev->dev_index,
-			"Perform Reset Device Reason=0x%08x, Ntw=%d, Job=%d, Timeout=%d, Power=%d\n",
+			"Perform Reset(%d) (needs_reset:0x%x) Reason=0x%08x, Ntw=%d, Job=%d, Timeout=%d, Power=%d Context=%d\n",
+			idc_reset, needs_reset,
 			cve_dev->di_cve_needs_reset,
 			((cve_dev->di_cve_needs_reset &
 				CVE_DI_RESET_DUE_NTW_SWITCH) != 0),
@@ -1054,7 +1037,9 @@ void cve_di_reset_device(struct cve_device *cve_dev)
 			((cve_dev->di_cve_needs_reset &
 				CVE_DI_RESET_DUE_TIME_OUT) != 0),
 			((cve_dev->di_cve_needs_reset &
-				CVE_DI_RESET_DUE_POWER_ON) != 0));
+				CVE_DI_RESET_DUE_POWER_ON) != 0),
+			((cve_dev->di_cve_needs_reset &
+				CVE_DI_RESET_DUE_CTX_SWITCH) != 0));
 
 	cve_dev->di_cve_needs_reset = 0;
 }
@@ -1922,6 +1907,8 @@ void cve_di_interrupt_handler_deferred_proc(struct idc_device *dev)
 			ice_dump_hw_err_info(cve_dev);
 			ice_dump_hw_cntr_info(ntw);
 			ice_ds_handle_ice_error(&dev->cve_dev[index], status);
+			cve_di_set_device_reset_flag(cve_dev,
+					CVE_DI_RESET_DUE_CVE_ERROR);
 			/* Signal dump was created */
 			if (is_ice_dump_completed(status)) {
 				/* Don't allow TLC to further
@@ -2038,7 +2025,59 @@ void cve_di_dispatch_job(struct cve_device *cve_dev,
 	job->dispatch_time_stamp = cve_os_get_time_stamp();
 
 	dispatch_next_subjobs(job, cve_dev);
+	cve_dev->hjob = hjob;
 }
+
+void cve_di_do_job_db(struct cve_device *ice, cve_di_job_handle_t hjob)
+{
+	struct di_job __maybe_unused *job = (struct di_job *)hjob;
+	struct ice_network __maybe_unused *ntw =
+		(struct ice_network *) ice->dev_ntw_id;
+
+	cve_os_dev_log(CVE_LOGLEVEL_INFO,
+		ice->dev_index,
+		"NtwID:0x%llx Ring the doorbell\n",
+		ntw->network_id);
+
+	/* reset the TLC FIFO indexes */
+	cve_os_write_mmio_32(ice,
+	 cfg_default.mmio_cbd_base_addr_offset, ice->cbd_base_va);
+
+	/* ring the doorbell once with the last descriptor */
+	cve_os_write_mmio_32(ice,
+		cfg_default.mmio_cb_doorbell_offset, ice->db_cbd_id);
+
+	DO_TRACE(trace_icedrvScheduleJob(
+				SPH_TRACE_OP_STATE_START,
+				ice->dev_index,
+				ntw->wq->context->swc_node.sw_id,
+				ntw->swc_node.parent_sw_id,
+				ntw->swc_node.sw_id, ntw->network_id,
+				ntw->curr_exe->swc_node.sw_id,
+				(void *)job->ds_hjob,
+				SPH_TRACE_OP_STATUS_EXEC_TYPE,
+				ice->is_cold_run));
+
+}
+
+void cve_di_set_counters(struct cve_device *ice,
+		u64 busy_start_time,
+		unsigned long db_jiffy)
+{
+
+	ice->db_jiffy = db_jiffy;
+	ice->busy_start_time = busy_start_time;
+	ice_swc_counter_set(ice->hswc,
+		ICEDRV_SWC_DEVICE_COUNTER_BUSY_START_TIME,
+		(nsec_to_usec(ice->busy_start_time)));
+	ice_swc_counter_add(ice->hswc, ICEDRV_SWC_DEVICE_COUNTER_IDLE_TIME,
+		nsec_to_usec(ice->busy_start_time - ice->idle_start_time));
+	cve_os_log(CVE_LOGLEVEL_DEBUG,
+		"busy_start_time(usec)=%llu\n",
+		nsec_to_usec(ice->busy_start_time));
+
+}
+
 
 void cve_di_set_page_directory_base_addr(struct cve_device *cve_dev,
 		u32 base_addr)

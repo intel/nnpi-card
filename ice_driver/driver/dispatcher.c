@@ -54,10 +54,6 @@
 */
 #define MAX_BUFFER_COUNT 524288
 
-/* MAX_FW_SIZE_BYTES value corresponds to the max fw size in bytes and */
-/* can be calculated as 10240*1024 bytes */
-#define MAX_FW_SIZE_BYTES 10485760
-
 /*Calculate average ice cycles */
 #define __calc_ice_max_cycle(max_ice_cycle, total_time) \
 do { \
@@ -264,9 +260,9 @@ static int __process_fw_loading(struct ice_network *network,
 	}
 
 	cve_os_log(CVE_LOGLEVEL_DEBUG,
-				"NTW:0x%llx Mapping f/w 0x%p md5:%s\n",
+				"NTW:0x%llx Mapping f/w 0x%p md5:%s load_new_fw:%d\n",
 				network->network_id, out_fw_sec,
-				out_fw_sec->md5_str);
+				out_fw_sec->md5_str, load_new_fw);
 	ret = ice_dev_fw_map(network->dev_hctx_list, out_fw_sec);
 	if (ret < 0) {
 		cve_os_log_default(CVE_LOGLEVEL_ERROR,
@@ -1260,6 +1256,21 @@ int config_ds_trace_node_sysfs(struct cve_device *dev, struct ice_network *ntw,
 	return retval;
 }
 
+static void __trigger_work_on_ice(struct ice_network *ntw)
+{
+	struct cve_device *dev;
+	u64 busy_start_time = trace_clock_global();
+	unsigned long db_jiffy = ice_os_get_current_jiffy();
+
+	dev = ntw->ice_list;
+	do {
+		cve_di_set_counters(dev, busy_start_time, db_jiffy);
+		cve_di_do_job_db(dev, dev->hjob);
+		dev = cve_dle_next(dev, owner_list);
+	} while (dev != ntw->ice_list);
+}
+
+
 int ice_ds_dispatch_jg(struct jobgroup_descriptor *jobgroup)
 {
 	u32 i, ice_mask = 0;
@@ -1385,7 +1396,7 @@ int ice_ds_dispatch_jg(struct jobgroup_descriptor *jobgroup)
 		if (retval)
 			goto exit;
 	}
-
+	__trigger_work_on_ice(ntw);
 exit:
 	DO_TRACE(trace__icedrvScheduleInfer(
 		SPH_TRACE_OP_STATE_START,

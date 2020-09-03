@@ -50,6 +50,7 @@ int cve_device_init(struct cve_device *dev, int index, u64 pe_value)
 
 	/* Initializes Invalid Persistent Nw*/
 	dev->dev_ntw_id = INVALID_NETWORK_ID;
+	dev->dev_ctx_id = INVALID_CONTEXT_ID;
 
 	pe_mask = BIT_ULL(dev->dev_index) << 4;
 	/*If device is ON*/
@@ -127,6 +128,8 @@ int cve_device_init(struct cve_device *dev, int index, u64 pe_value)
 									retval);
 	}
 	configure_pmon_names(dev);
+
+	dev->cdyn_val = 0;
 
 	/* success */
 	return 0;

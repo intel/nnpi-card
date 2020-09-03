@@ -66,7 +66,7 @@
 #define CVE_DEVICE_INDEX_BASE 0
 #define DEVICE_NAME MODULE_NAME"%d"
 #define DISABLE_DEBUGFS_ICE_DUMP 1
-
+#define __MAX_KMALLOC_ALLOWED_SZ (0x400000) /* 4M */
 /* DATA STRUCTURES */
 
 struct cve_os_internal_timer_t {
@@ -725,7 +725,20 @@ int __cve_os_malloc_zero(size_t size_bytes, void **out_ptr)
 	void *p = NULL;
 
 	FUNC_ENTER();
-	p = kzalloc(size_bytes, GFP_KERNEL);
+	if (unlikely(size_bytes >= __MAX_KMALLOC_ALLOWED_SZ)) {
+		int ret = 0;
+
+		p = vmalloc(size_bytes);
+		if (p) {
+			ret = ice_memset_s(p, size_bytes, 0, size_bytes);
+			if (ret < 0)
+				cve_os_log(CVE_LOGLEVEL_ERROR,
+						"Error:%d Safelib memset failed sz:%lu\n",
+						ret, size_bytes);
+		}
+	} else {
+		p = kzalloc(size_bytes, GFP_KERNEL);
+	}
 	*out_ptr = p;
 
 #ifdef ENABLE_MEM_DETECT
@@ -771,8 +784,13 @@ int __cve_os_free(void *base_address,
 		}
 	}
 #endif
+	if (unlikely(size_bytes >= __MAX_KMALLOC_ALLOWED_SZ)) {
+		if (base_address)
+			vfree(base_address);
+	} else {
+		kfree(base_address);
+	}
 
-	kfree(base_address);
 	FUNC_LEAVE();
 
 	return 0;

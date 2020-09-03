@@ -456,6 +456,14 @@ static int cve_fw_load_firmware_from_user_mem(u64 fw_image,
 			goto out;
 		}
 
+		if (s->size_bytes > MAX_FW_SIZE_BYTES) {
+			retval = -ICEDRV_KERROR_FW_PERM;
+			cve_os_log_default(CVE_LOGLEVEL_ERROR,
+				"FW section size is more than allowable. Received=%d, Max_allowable=%d\n",
+				s->size_bytes, MAX_FW_SIZE_BYTES);
+			goto out;
+		}
+
 		/* Allocate DMA'able memory and get its kernel virt address */
 		retval = OS_ALLOC_DMA_SG(dev,
 				s->size_bytes,
@@ -466,6 +474,14 @@ static int cve_fw_load_firmware_from_user_mem(u64 fw_image,
 			cve_os_log(CVE_LOGLEVEL_ERROR,
 					"OS_ALLOC_DMA_SG failed: %d\n",
 					retval);
+			goto out;
+		}
+
+		if (s->offset_in_file > MAX_FW_SIZE_BYTES) {
+			retval = -ICEDRV_KERROR_FW_PERM;
+			cve_os_log_default(CVE_LOGLEVEL_ERROR,
+				"FW section offset is more than allowable. Received=%d, Max_allowable=%d\n",
+				s->offset_in_file, MAX_FW_SIZE_BYTES);
 			goto out;
 		}
 
