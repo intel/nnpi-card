@@ -1,0 +1,26 @@
+#!/bin/sh
+
+BASEDIR=$(dirname "$0")
+
+# Default runtime is 2 minutes
+RUNTIME=2
+
+if [ $# -ne 0 ]; then
+    RUNTIME=$1
+fi
+
+
+case $RUNTIME in
+    ''|*[!0-9]*) echo Time required;exit ;;
+esac
+
+MOD=$((RUNTIME%2))
+
+# Split runtime equally
+TOOLRUNTIME=$(($RUNTIME/2))
+
+SANDSTONE="$(($TOOLRUNTIME+$MOD))m"
+IMUNCH=$(($TOOLRUNTIME*60))
+
+$BASEDIR/../sandstone/sandstone  --retest-on-failure=10 --total-time=$SANDSTONE
+$BASEDIR/../iMunch/imunch -t $IMUNCH

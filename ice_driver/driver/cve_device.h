@@ -266,6 +266,12 @@ struct cve_device {
 #endif
 	/* in Jiffies */
 	unsigned long db_jiffy;
+
+	u32 db_cbd_id;
+	u32 is_cold_run;
+	void *hjob;
+	u32 cbd_base_va;
+
 	u64 idle_start_time;
 	u64 busy_start_time;
 	/* Is ICE in free pool */

@@ -201,6 +201,13 @@ void cve_di_dispatch_job(struct cve_device *cve_dev,
 		cve_di_job_handle_t hjob,
 		cve_di_subjob_handle_t *e_cbs);
 
+void cve_di_do_job_db(struct cve_device *cve_dev,
+		cve_di_job_handle_t hjob);
+
+void cve_di_set_counters(struct cve_device *cve_dev,
+		u64 busy_start_time,
+		unsigned long db_jiffy);
+
 /* sets device interface reset flag
  * inputs :
  *     value  - enum cve_device_reset_reason

@@ -2222,6 +2222,11 @@ static int network_op_dma_complete(struct sphcs *sphcs,
 		NNP_SPIN_UNLOCK(&devnet->lock);
 		goto done;
 	}
+	if (unlikely(devnet->created && devnet->context->attached < 0)) { //RT died
+		NNP_SPIN_UNLOCK(&devnet->lock);
+		goto done;
+	}
+
 	NNP_ASSERT(devnet->edit_status == CREATE_STARTED);
 	devnet->edit_status = DMA_COMPLETED;
 	// get kref for RT
@@ -2255,6 +2260,8 @@ send_error:
 				devnet->context->protocol_id,
 				devnet->protocol_id);
 done:
+	if (unlikely(devnet->created && devnet->context->attached < 0)) //RT died
+		inf_devnet_delete_devres(devnet, false);
 	kfree(devnet->edit_data);
 	devnet->edit_data = NULL;
 done_curr_packet:

@@ -303,6 +303,30 @@ void inf_context_destroy_objects(struct inf_context *context)
 		found = false;
 		NNP_SPIN_LOCK(&context->lock);
 		hash_for_each(context->devres_hash, i, devres, hash_node) {
+			if (devres->is_p2p_dst) {
+				NNP_SPIN_LOCK_IRQSAVE(&devres->lock_irq, flags);
+				if (!devres->is_dirty) {
+					found = true;
+					inf_devres_set_dirty(devres, true);
+					devres->p2p_buf.ready = true;
+
+					NNP_SPIN_UNLOCK_IRQRESTORE(&devres->lock_irq, flags);
+					NNP_SPIN_UNLOCK(&context->lock);
+					/* advance sched tick and try execute next requests */
+					atomic_add(2, &context->sched_tick);
+					inf_devres_try_execute(devres);
+					break;
+				}
+				NNP_SPIN_UNLOCK_IRQRESTORE(&devres->lock_irq, flags);
+			}
+		}
+	} while (found);
+	NNP_SPIN_UNLOCK(&context->lock);
+
+	do {
+		found = false;
+		NNP_SPIN_LOCK(&context->lock);
+		hash_for_each(context->devres_hash, i, devres, hash_node) {
 			NNP_SPIN_LOCK_IRQSAVE(&devres->lock_irq, flags);
 			if (devres->destroyed == 0)
 				found = true;
@@ -503,70 +527,79 @@ void del_all_active_create_and_inf_requests(struct inf_context *context)
 
 	sph_log_info(CONTEXT_STATE_LOG, "contextID: %u\n", context->protocol_id);
 
-	NNP_SPIN_LOCK(&context->lock);
-	hash_for_each(context->devnet_hash, i, devnet, hash_node) {
-		NNP_SPIN_LOCK(&devnet->lock);
-		// Complete all active infreq
-		do {
-			found = false;
+	do {
+		found = false;
+		NNP_SPIN_LOCK(&context->lock);
+		hash_for_each(context->devnet_hash, i, devnet, hash_node) {
+			NNP_SPIN_LOCK(&devnet->lock);
 			hash_for_each(devnet->infreq_hash, j, infreq, hash_node) {
 				NNP_SPIN_LOCK_IRQSAVE(&infreq->lock_irq, flags);
+				// Complete active infreq
 				if (infreq->active_req != NULL) {
 					NNP_ASSERT(infreq->status == CREATED);
 					active_req = infreq->active_req;
 					infreq->active_req = NULL;
 					NNP_SPIN_UNLOCK_IRQRESTORE(&infreq->lock_irq, flags);
 					NNP_SPIN_UNLOCK(&devnet->lock);
-					found = true;
 					NNP_SPIN_UNLOCK(&context->lock);
+					found = true;
 					inf_req_complete(active_req,
 							 -NNPER_CONTEXT_BROKEN,
 							 NULL,
 							 0);
-					NNP_SPIN_LOCK(&context->lock);
-					NNP_SPIN_LOCK(&devnet->lock);
+					break;
+				// Destroy not fully created infreqs
+				} else if (infreq->status == DMA_COMPLETED ||
+					   (infreq->status != CREATED && infreq->destroyed == 0)) {
+					NNP_SPIN_UNLOCK_IRQRESTORE(&infreq->lock_irq, flags);
+					NNP_SPIN_UNLOCK(&devnet->lock);
+					NNP_SPIN_UNLOCK(&context->lock);
+					found = true;
+					sphcs_send_event_report_ext(g_the_sphcs,
+						NNP_IPC_CREATE_INFREQ_FAILED,
+						NNP_IPC_RUNTIME_FAILED,
+						context->chan->respq,
+						context->protocol_id,
+						infreq->protocol_id,
+						devnet->protocol_id);
+					destroy_infreq_on_create_failed(infreq);
 					break;
 				}
 				NNP_SPIN_UNLOCK_IRQRESTORE(&infreq->lock_irq, flags);
 			}
-		} while (found);
-		// Destroy not fully created infreqs
-		do {
-			found = false;
-			hash_for_each(devnet->infreq_hash, j, infreq, hash_node) {
-				if (infreq->status != CREATED) {
-					NNP_SPIN_UNLOCK(&devnet->lock);
-					found = true;
-					destroy_infreq_on_create_failed(infreq);
-					NNP_SPIN_LOCK(&devnet->lock);
-					break;
-				}
-			}
-		} while (found);
-		NNP_SPIN_UNLOCK(&devnet->lock);
-	}
+			if (found)
+				break;
+			NNP_SPIN_UNLOCK(&devnet->lock);
+		}
+	} while (found);
+	NNP_SPIN_UNLOCK(&context->lock);
+
 	// Destroy not fully created devnets / devnets with not added resources
 	do {
 		found = false;
+		NNP_SPIN_LOCK(&context->lock);
 		hash_for_each(context->devnet_hash, i, devnet, hash_node) {
-			if (devnet->edit_status != CREATED) {
+			if (devnet->edit_status == DMA_COMPLETED ||
+			    (!devnet->created && devnet->destroyed == 0)) {
 				NNP_SPIN_UNLOCK(&context->lock);
 				found = true;
 				inf_devnet_on_create_or_add_res_failed(devnet);
-				NNP_SPIN_LOCK(&context->lock);
 				break;
 			}
 		}
 	} while (found);
+	NNP_SPIN_UNLOCK(&context->lock);
+
 	// Destroy not fully created devreses
 	do {
 		found = false;
+		NNP_SPIN_LOCK(&context->lock);
 		hash_for_each(context->devres_hash, i, devres, hash_node) {
-			if (devres->status != CREATED) {
+			if (devres->status == DMA_COMPLETED ||
+			    (devres->status != CREATED && devres->destroyed == 0)) {
 				NNP_SPIN_UNLOCK(&context->lock);
 				found = true;
 				destroy_devres_on_create_failed(devres);
-				NNP_SPIN_LOCK(&context->lock);
 				break;
 			}
 		}
