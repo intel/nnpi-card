@@ -528,25 +528,19 @@ static void dispatch_next_subjobs(struct di_job *job,
 					ret);
 			}
 		}
-		if (job->cdyn_val && dev->cdyn_val != job->cdyn_val) {
+		if (job->cdyn_val) {
 			/* For A step Throttling is disabled */
 			throttling = false;
 			if (ice_get_iccp_throttling_flag())
 				throttling = true;
 			ret = ice_iccp_license_request(dev, throttling,
 								job->cdyn_val);
-			cve_os_dev_log(CVE_LOGLEVEL_DEBUG,
-					dev->dev_index,
-					" Sending iccp license request Curr:%u Requested:%u",
-					dev->cdyn_val,
-					job->cdyn_val);
 			if (ret) {
 				cve_os_dev_log(CVE_LOGLEVEL_ERROR,
 					dev->dev_index,
 					" failed in iccp license request (%d)\n",
 					ret);
 			}
-			dev->cdyn_val = job->cdyn_val;
 		}
 		/* Cold Run */
 		if (disable_embcb) {
@@ -1010,15 +1004,12 @@ int unset_idc_registers_multi(u32 icemask, uint8_t lock)
 void cve_di_reset_device(struct cve_device *cve_dev)
 {
 	uint8_t idc_reset;
-	uint32_t needs_reset;
 
 	/* Do not perform IDC reset for this ICE if
 	 * it was just powered on
 	 */
-	needs_reset = (cve_dev->di_cve_needs_reset &
-			~(CVE_DI_RESET_DUE_POWER_ON |
-			CVE_DI_RESET_DUE_NTW_SWITCH));
-	idc_reset = (needs_reset) ? 1 : 0;
+	idc_reset = (cve_dev->di_cve_needs_reset & CVE_DI_RESET_DUE_POWER_ON) ?
+			0 : 1;
 
 	if (do_reset_device(cve_dev, idc_reset))
 		cve_os_dev_log_default(CVE_LOGLEVEL_ERROR,
@@ -1027,8 +1018,7 @@ void cve_di_reset_device(struct cve_device *cve_dev)
 
 	cve_os_dev_log(CVE_LOGLEVEL_DEBUG,
 			cve_dev->dev_index,
-			"Perform Reset(%d) (needs_reset:0x%x) Reason=0x%08x, Ntw=%d, Job=%d, Timeout=%d, Power=%d Context=%d\n",
-			idc_reset, needs_reset,
+			"Perform Reset Device Reason=0x%08x, Ntw=%d, Job=%d, Timeout=%d, Power=%d\n",
 			cve_dev->di_cve_needs_reset,
 			((cve_dev->di_cve_needs_reset &
 				CVE_DI_RESET_DUE_NTW_SWITCH) != 0),
@@ -1037,9 +1027,7 @@ void cve_di_reset_device(struct cve_device *cve_dev)
 			((cve_dev->di_cve_needs_reset &
 				CVE_DI_RESET_DUE_TIME_OUT) != 0),
 			((cve_dev->di_cve_needs_reset &
-				CVE_DI_RESET_DUE_POWER_ON) != 0),
-			((cve_dev->di_cve_needs_reset &
-				CVE_DI_RESET_DUE_CTX_SWITCH) != 0));
+				CVE_DI_RESET_DUE_POWER_ON) != 0));
 
 	cve_dev->di_cve_needs_reset = 0;
 }
@@ -1907,8 +1895,6 @@ void cve_di_interrupt_handler_deferred_proc(struct idc_device *dev)
 			ice_dump_hw_err_info(cve_dev);
 			ice_dump_hw_cntr_info(ntw);
 			ice_ds_handle_ice_error(&dev->cve_dev[index], status);
-			cve_di_set_device_reset_flag(cve_dev,
-					CVE_DI_RESET_DUE_CVE_ERROR);
 			/* Signal dump was created */
 			if (is_ice_dump_completed(status)) {
 				/* Don't allow TLC to further

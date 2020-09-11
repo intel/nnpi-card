@@ -436,26 +436,11 @@ int create_sphpb(void)
 		goto cleanup_power_overshoot_sysfs;
 	}
 
-	ret = sphpb_ddr_freq_sysfs_init(sphpb);
-	if (unlikely(ret != 0))
-		goto cleanup_throttle_sysfs;
-
-	ret = sphpb_imon_conf_sysfs_init(sphpb);
-	if (unlikely(ret != 0))
-		goto cleanup_ddr_sysfs;
-
 	sphpb_trace_init();
 
 	g_the_sphpb = sphpb;
 
 	return 0;
-
-cleanup_ddr_sysfs:
-	sphpb_imon_conf_sysfs_deinit(sphpb);
-
-cleanup_throttle_sysfs:
-	sphpb_throttle_deinit(sphpb);
-
 cleanup_power_overshoot_sysfs:
 	sphpb_power_overshoot_sysfs_deinit(sphpb);
 
@@ -492,10 +477,6 @@ void destroy_sphpb(void)
 {
 	if (unlikely(g_the_sphpb == NULL))
 		return;
-
-	sphpb_imon_conf_sysfs_deinit(g_the_sphpb);
-
-	sphpb_ddr_freq_sysfs_deinit(g_the_sphpb);
 
 	sphpb_throttle_deinit(g_the_sphpb);
 

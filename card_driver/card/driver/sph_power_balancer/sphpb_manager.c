@@ -206,51 +206,13 @@ int sphpb_mng_get_efficient_ice_list(struct sphpb_pb *sphpb,
 	return 0;
 }
 
-int set_ddr_freq(struct sphpb_pb *sphpb, int qclk)
-{
-	int ret;
-	uint32_t pre_ddr_value = sphpb->request_ddr_value;
-
-	if (qclk == sphpb->request_ddr_value)
-		return 0;
-
-	sphpb->request_ddr_value = qclk;
-
-	if (sphpb->throttle_data.curr_state != SPHPB_NO_THROTTLE)
-		return 0;
-
-	ret = set_sagv_freq(qclk, SAGV_POLICY_DYNAMIC);
-	if (unlikely(ret != 0)) {
-		sph_log_err(POWER_BALANCER_LOG, "Error: Failed to set new ddr bw request (%d), ret=%d\n", qclk, ret);
-		return ret;
-	}
-
-	if (g_the_sphpb->debug_log)
-		sph_log_info(POWER_BALANCER_LOG,
-			     "set ddr frequency mode to %s\n",
-			     sph_ddr_bw_to_str[qclk]);
-
-	DO_TRACE(trace__power_set(SPH_TRACE_OP_STATUS_STOP,
-				  SPH_TRACE_OP_POWER_SET_DRAM_LEVEL,
-				  sphpb->icebo_ring_divisor,
-				  pre_ddr_value));
-
-
-	DO_TRACE(trace__power_set(SPH_TRACE_OP_STATUS_START,
-				  SPH_TRACE_OP_POWER_SET_DRAM_LEVEL,
-				  sphpb->icebo_ring_divisor,
-				  sphpb->request_ddr_value));
-
-	return 0;
-}
-
 static int update_ddr_request(struct sphpb_pb *sphpb,
 			      uint32_t ice_index,
 			      uint32_t ice_bw_request)
 {
 	uint32_t icebo_number = (ice_index / SPHPB_MAX_ICE_PER_ICEBO);
 	uint32_t ice_in_icebo = (ice_index % SPHPB_MAX_ICE_PER_ICEBO);
-	enum BIOS_SAGV_CONFIG_POLICIES ddr_value_to_set;
+	int ddr_value_to_set;
 	int ret = 0;
 
 	mutex_lock(&sphpb->mutex_lock);
@@ -275,8 +237,36 @@ static int update_ddr_request(struct sphpb_pb *sphpb,
 	else
 		ddr_value_to_set = SAGV_POLICY_FIXED_LOW;
 
-	ret = set_ddr_freq(sphpb, ddr_value_to_set);
 
+	if (ddr_value_to_set != sphpb->request_ddr_value) {
+		uint32_t pre_ddr_value = sphpb->request_ddr_value;
+
+		sphpb->request_ddr_value = ddr_value_to_set;
+		if (sphpb->throttle_data.curr_state == SPHPB_NO_THROTTLE) {
+			ret = set_sagv_freq(ddr_value_to_set, SAGV_POLICY_DYNAMIC);
+			if (ret) {
+				sph_log_err(POWER_BALANCER_LOG, "Error: Failed to set new ddr bw request (%d), ret=%d\n", ddr_value_to_set, ret);
+				goto end_func;
+			}
+
+			if (g_the_sphpb->debug_log)
+				sph_log_info(POWER_BALANCER_LOG,
+					     "set ddr frequency mode to %s\n",
+					     sph_ddr_bw_to_str[ddr_value_to_set]);
+
+			DO_TRACE(trace__power_set(SPH_TRACE_OP_STATUS_STOP,
+						 SPH_TRACE_OP_POWER_SET_DRAM_LEVEL,
+						 sphpb->icebo_ring_divisor,
+						 pre_ddr_value));
+
+
+			DO_TRACE(trace__power_set(SPH_TRACE_OP_STATUS_START,
+						 SPH_TRACE_OP_POWER_SET_DRAM_LEVEL,
+						 sphpb->icebo_ring_divisor,
+						 sphpb->request_ddr_value));
+		}
+	}
+end_func:
 	mutex_unlock(&sphpb->mutex_lock);
 
 	return ret;

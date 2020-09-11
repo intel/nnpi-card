@@ -1106,6 +1106,13 @@ static int sphcs_create_sphcs(void                           *hw_handle,
 	mce_register_decode_chain(&sphcs->mce_notifier);
 #endif
 
+#ifdef HW_LAYER_SPH
+	/* Make link to pcie device from module kobj for convinience */
+	ret = sysfs_create_link(&THIS_MODULE->mkobj.kobj, &hw_device->kobj, "pci");
+	if (ret)
+		sph_log_info(START_UP_LOG, "Failed to link to pci device node\n");
+#endif
+
 	sph_log_debug(START_UP_LOG, "Created command streamer\n");
 	return 0;
 
@@ -1220,6 +1227,9 @@ static int sphcs_destroy_sphcs(struct sphcs *sphcs)
 	sphcs_deinit_th_driver();
 	g_the_sphcs = NULL;
 	debugfs_remove_recursive(sphcs->debugfs_dir);
+#ifdef HW_LAYER_SPH
+	sysfs_remove_link(&THIS_MODULE->mkobj.kobj, "pci");
+#endif
 
 	sphcs_remove_p2p_heap();
 

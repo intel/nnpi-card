@@ -416,7 +416,7 @@
 		<!-- Please edit the fields below ONLY with the State or ErrAction -->
 		<State>Enabled</State>
 		<ErrAction>ErrorContinue</ErrAction>
-		<RequiredValue format="major_ver.minor_ver.hotfix_ver.build_num H|LP|ULT Corporate|Consumer|Slim" example="12.0.0.1040 LP Consumer">13.0.30.1435 LP Consumer </RequiredValue>
+		<RequiredValue format="major_ver.minor_ver.hotfix_ver.build_num H|LP|ULT Corporate|Consumer|Slim" example="12.0.0.1040 LP Consumer">13.0.40.1541 LP Consumer </RequiredValue>
 	</eolconfig>
 	<eolconfig name="Security Descriptor Override (SDO) check">
 		<!-- The commented fields below CANNOT be edited. Any edits will be ignored by the tool -->

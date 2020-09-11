@@ -232,8 +232,6 @@ struct cve_device {
 	enum ICE_POWER_STATE power_state;
 	/* last network id that ran on this device */
 	cve_network_id_t dev_ntw_id;
-	/* last context id that ran on this device */
-	cve_network_id_t dev_ctx_id;
 	/* ice freq value */
 	u32 frequency;
 	/* copy of DTF registers to maintain during device reset */
@@ -280,9 +278,6 @@ struct cve_device {
 	bool in_free_pool;
 	struct ice_pmon_config mmu_pmon[ICE_MAX_MMU_PMON];
 	struct ice_pmon_config delphi_pmon[ICE_MAX_DELPHI_PMON];
-
-	/* store cdyn request value, if unchanged, dont request it */
-	u16 cdyn_val;
 };
 
 struct llc_pmon_config {

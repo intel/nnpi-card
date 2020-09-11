@@ -28,12 +28,20 @@ struct inf_cpylst {
 	uint64_t             *cur_sizes;
 	uint32_t              added_copies;
 	uint64_t              size;
+	bool                  active;
+
 
 	struct lli_desc lli;
 	struct lli_desc cur_lli;
 	struct sphcs_dma_multi_xfer_handle multi_xfer_handle;
 
 	int destroyed;
+	u64 min_block_time;
+	u64 max_block_time;
+	u64 min_exec_time;
+	u64 max_exec_time;
+	u64 min_hw_exec_time;
+	u64 max_hw_exec_time;
 };
 
 int inf_cpylst_create(struct inf_cmd_list *cmd,

@@ -971,12 +971,6 @@ void ice_dg_borrow_this_ice(struct ice_network *ntw,
 	struct icebo_desc *bo = &dg->dev_info.icebo_list[dev->dev_index / 2];
 
 	dev->dev_ntw_id = ntw->network_id;
-
-	if (dev->dev_ctx_id != ntw->wq->context->context_id) {
-
-		cve_di_set_device_reset_flag(dev, CVE_DI_RESET_DUE_CTX_SWITCH);
-		dev->dev_ctx_id = ntw->wq->context->context_id;
-	}
 	cve_os_log(CVE_LOGLEVEL_INFO,
 			"NtwID:0x%llx Reserved ICE%d power_status:%d\n",
 			ntw->network_id, dev->dev_index,
