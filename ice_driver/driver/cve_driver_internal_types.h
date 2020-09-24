@@ -26,6 +26,7 @@ typedef void *cve_mm_allocation_t;
 /* type of an arbitrary data item associated with a context */
 typedef void *cve_private_data_t;
 typedef u64 cve_context_id_t;
+typedef u64 ice_pnetwork_id_t;
 typedef u64 cve_network_id_t;
 typedef u64 cve_infer_id_t;
 typedef u64 cve_context_process_id_t;

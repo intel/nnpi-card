@@ -24,6 +24,7 @@
 #include "idc_device.h"
 #endif
 
+#define ENABLE_GPR_WAIT 0
 /*
  * reset source enum .
  */
@@ -34,6 +35,7 @@ enum cve_device_reset_reason {
 	CVE_DI_RESET_DUE_TIME_OUT = 0x8,
 	CVE_DI_RESET_DUE_POWER_ON = 0x10,
 	CVE_DI_RESET_DUE_CTX_SWITCH = 0x20,
+	CVE_DI_RESET_DUE_PNTW_SWITCH = 0x40
 };
 
 int set_idc_registers(struct ice_network *ntw, uint8_t lock);
@@ -200,7 +202,8 @@ int cve_di_handle_submit_job(
  */
 void cve_di_dispatch_job(struct cve_device *cve_dev,
 		cve_di_job_handle_t hjob,
-		cve_di_subjob_handle_t *e_cbs);
+		cve_di_subjob_handle_t *e_cbs,
+		cve_di_subjob_handle_t *warm_dev_ecb);
 
 void cve_di_do_job_db(struct cve_device *cve_dev,
 		cve_di_job_handle_t hjob);

@@ -829,7 +829,7 @@ void ice_dump_hw_cntr_info(struct ice_network *ntw)
 			cfg_default.bar0_mem_evctice0_offset;
 	uint32_t read_val;
 
-	head = ntw->cntr_list;
+	head = ntw->pntw->cntr_list;
 	if (!head)
 		return;
 

@@ -34,7 +34,7 @@ struct sphcs_hostres_map {
 	struct sg_table host_sgt;
 	uint16_t protocol_id;
 	uint64_t user_handle; //host resource user handle
-	uint32_t size;
+	uint64_t size;
 	struct hlist_node hash_node;
 };
 

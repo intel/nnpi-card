@@ -921,20 +921,30 @@ int cve_ioctl_misc(int fd, int request, struct cve_ioctl_param *param)
 				context_pid,
 				param->destroy_context.contextid);
 		break;
+	case ICE_IOCTL_CREATE_PNETWORK:
+		cve_os_log(CVE_LOGLEVEL_DEBUG,
+				"Simulation mode - ICE_IOCTL_CREATE_PNETWORK\n");
+		retval = ice_ds_create_pnetwork(context_pid,
+				param->create_pnetwork.context_id,
+				&param->create_pnetwork.pnetwork,
+				(uint64_t *)
+				&param->create_pnetwork.pnetwork.pnetwork_id);
+		break;
 	case CVE_IOCTL_CREATE_NETWORK:
 		cve_os_log(CVE_LOGLEVEL_DEBUG,
 				"Simulation mode - CVE_IOCTL_CREATE_NETWORK\n");
 		retval = cve_ds_handle_create_network(context_pid,
-				param->create_network.contextid,
+				param->create_network.context_id,
+				param->create_network.pnetwork_id,
 				&param->create_network.network,
 				(uint64_t *)&param->create_network.network.network_id);
 		break;
-	case CVE_IOCTL_DESTROY_NETWORK:
+	case ICE_IOCTL_DESTROY_PNETWORK:
 		cve_os_log(CVE_LOGLEVEL_DEBUG,
-				"Simulation mode - CVE_IOCTL_DESTROY_NETWORK\n");
-		retval = cve_ds_handle_destroy_network(context_pid,
-				param->destroy_network.contextid,
-				param->destroy_network.networkid);
+				"Simulation mode - ICE_IOCTL_DESTROY_PNETWORK\n");
+		retval = ice_ds_destroy_pnetwork(context_pid,
+				param->destroy_pnetwork.context_id,
+				param->destroy_pnetwork.pnetwork_id);
 		break;
 	case CVE_IOCTL_CREATE_INFER:
 		cve_os_log(CVE_LOGLEVEL_DEBUG,
@@ -949,9 +959,9 @@ int cve_ioctl_misc(int fd, int request, struct cve_ioctl_param *param)
 		cve_os_log(CVE_LOGLEVEL_DEBUG,
 				"Simulation mode - CVE_IOCTL_REPORT_SHARED_SURFACES\n");
 		retval = cve_ds_handle_shared_surfaces(context_pid,
-				param->report_ss.contextid,
-				param->report_ss.networkid,
-				&param->report_ss.ss_desc);
+				param->report_ss.context_id,
+				param->report_ss.pnetwork_id,
+				&param->report_ss);
 		break;
 	case CVE_IOCTL_EXECUTE_INFER:
 		cve_os_log(CVE_LOGLEVEL_DEBUG,
@@ -974,8 +984,8 @@ int cve_ioctl_misc(int fd, int request, struct cve_ioctl_param *param)
 		cve_os_log(CVE_LOGLEVEL_DEBUG,
 				"Simulation mode - CVE_IOCTL_MANAGE_RESOURCE\n");
 		retval = cve_ds_handle_manage_resource(context_pid,
-				param->manage_resource.contextid,
-				param->manage_resource.networkid,
+				param->manage_resource.context_id,
+				param->manage_resource.pnetwork_id,
 				&param->manage_resource.resource);
 		break;
 	case CVE_IOCTL_LOAD_FIRMWARE:
@@ -987,8 +997,8 @@ int cve_ioctl_misc(int fd, int request, struct cve_ioctl_param *param)
 				param->load_firmware.fw_binmap_size_bytes);
 		/* Md5 based caching disabled for RING3 */
 		retval = cve_ds_handle_fw_loading(context_pid,
-				param->load_firmware.contextid,
-				param->load_firmware.networkid,
+				param->load_firmware.context_id,
+				param->load_firmware.pnetwork_id,
 				param->load_firmware.fw_image,
 				param->load_firmware.fw_binmap,
 				param->load_firmware.fw_binmap_size_bytes,
@@ -1005,8 +1015,8 @@ int cve_ioctl_misc(int fd, int request, struct cve_ioctl_param *param)
 		cve_os_log(CVE_LOGLEVEL_DEBUG,
 				"Simulation mode - CVE_IOCTL_GET_VERSION\n");
 		retval = cve_ds_get_version(context_pid,
-				param->get_version.contextid,
-				param->get_version.networkid,
+				param->get_version.context_id,
+				param->get_version.pnetwork_id,
 				&param->get_version.out_versions);
 		break;
 	case CVE_IOCTL_GET_METADATA:
@@ -1019,8 +1029,8 @@ int cve_ioctl_misc(int fd, int request, struct cve_ioctl_param *param)
 		cve_os_log(CVE_LOGLEVEL_DEBUG,
 				"Simulation mode - ICE_IOCTL_RESET_NETWORK\n");
 		retval = ice_ds_reset_network(context_pid,
-                                param->reset_network.contextid,
-                                param->reset_network.networkid);
+                                param->reset_network.context_id,
+                                param->reset_network.pnetwork_id);
 		break;
 	default:
 		cve_os_log(CVE_LOGLEVEL_ERROR, "Unknown ioctl request (%d) was used\n", request);

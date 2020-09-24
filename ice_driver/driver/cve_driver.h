@@ -334,20 +334,37 @@ struct cve_job_group {
 	__u64 out_job_group_id;
 };
 
+struct ice_pnetwork_descriptor {
+	/** Object id from user for sw counters
+	 *  Can be negative if driver generated ID to be used
+	 */
+	__s64 obj_id;
+	/* out, parent network id */
+	__u64 pnetwork_id;
+
+	/* Num ICE requirement for this Network */
+	__u8 num_ice;
+	/* LLC requirement for this Network */
+	__u32 llc_size[ICE_CLOS_MAX];
+	/* list of total size requirement per page size */
+	__u64 va_partition_config[ICEDRV_PAGE_ALIGNMENT_MAX];
+	__u64 infer_buf_page_config[ICEDRV_PAGE_ALIGNMENT_MAX];
+
+	/* Completion event required*/
+	__u32 produce_completion;
+	enum icebo_req_type icebo_req;
+	__u8 shared_read;
+	__u8 max_shared_distance;
+	__u32 wdt_value;
+};
+
 struct ice_network_descriptor {
 	/** Object id from user for sw counters
 	 *  Can be negative if driver generated ID to be used
 	 */
 	__s64 obj_id;
-	/** parent object id, full network id w.r.t card
-	 *  should be unique per context, can be -1 if driver generated id to
-	 *  be used
-	 */
-	__s64 parent_obj_id;
 	/* Num ICE requirement for this Network */
 	__u8 num_ice;
-	/* LLC requirement for this Network */
-	__u32 llc_size[ICE_CLOS_MAX];
 	/* List of Buffers used by this Network */
 	struct cve_surface_descriptor *buf_desc_list;
 	/* Number of entries in above list */
@@ -358,17 +375,13 @@ struct ice_network_descriptor {
 	struct cve_job_group *jg_desc_list;
 	/* Number of entries in above list */
 	__u32 num_jg_desc;
-	/* Completion event required*/
-	__u32 produce_completion;
 	/* out, job group id */
 	__u64 network_id;
 	enum ice_network_type network_type;
 	__u8 is_ice_dump_enabled;
-	enum icebo_req_type icebo_req;
-	__u8 shared_read;
-	__u8 max_shared_distance;
 	__u32 infer_buf_count;
 	__u64 infer_buf_page_config[ICEDRV_PAGE_ALIGNMENT_MAX];
+	__u8 is_last;
 };
 
 struct ice_infer_descriptor {
@@ -387,11 +400,22 @@ struct ice_infer_descriptor {
 };
 
 /*
+* parameter for IOCTL- create parent network
+*/
+struct ice_create_pnetwork {
+	/*in, context id*/
+	__u64 context_id;
+	/*inout*/
+	struct ice_pnetwork_descriptor pnetwork;
+};
+
+/*
 * parameter for IOCTL-submit
 */
 struct cve_create_network {
 	/*in, context id*/
-	__u64 contextid;
+	__u64 context_id;
+	__u64 pnetwork_id;
 	/*inout*/
 	struct ice_network_descriptor network;
 };
@@ -408,18 +432,20 @@ struct cve_create_infer {
 	struct ice_infer_descriptor infer;
 };
 
-struct ice_ss_descriptor {
+struct ice_ntw_ss_descriptor {
+	__u64 network_id;
 	__u32 *index_list;
 	__u32 num_index;
 };
 
 struct ice_report_ss {
 	/*in, context id*/
-	__u64 contextid;
-	/*in, network id*/
-	__u64 networkid;
+	__u64 context_id;
+	/*in, parent network id*/
+	__u64 pnetwork_id;
 	/*inout*/
-	struct ice_ss_descriptor ss_desc;
+	struct ice_ntw_ss_descriptor *ntw_ss_desc;
+	__u32 num_ntw;
 };
 
 struct ice_execute_infer_data {
@@ -469,21 +495,21 @@ struct ice_resource_request {
  */
 struct ice_manage_resource {
 	/*in, context id*/
-	__u64 contextid;
+	__u64 context_id;
 	/*in, network id*/
-	__u64 networkid;
+	__u64 pnetwork_id;
 	/*inout*/
 	struct ice_resource_request resource;
 };
 
 /*
- * parameter for IOCTL-destroy
+ * parameter for IOCTL-destroy parent network
  */
-struct cve_destroy_network {
+struct ice_destroy_pnetwork {
 	/*in, context id*/
-	__u64 contextid;
+	__u64 context_id;
 	/*in*/
-	__u64 networkid;
+	__u64 pnetwork_id;
 };
 
 struct ice_hw_config_llc_freq {
@@ -528,9 +554,9 @@ struct ice_hw_config_ice_freq {
 */
 struct cve_load_firmware_params {
 	/* context id */
-	__u64 contextid;
+	__u64 context_id;
 	/* network id */
-	__u64 networkid;
+	__u64 pnetwork_id;
 	/* address of the memory that holds the image */
 	__u64 fw_image;
 	/* size of the fw image */
@@ -645,9 +671,9 @@ struct cve_components_version {
 
 struct cve_get_version_params {
 	/* in, context id */
-	__u64 contextid;
-	/*in, id of the network */
-	__u64 networkid;
+	__u64 context_id;
+	/*in, id of the parent network */
+	__u64 pnetwork_id;
 	/* out, all components version */
 	struct cve_components_version out_versions;
 };
@@ -755,9 +781,9 @@ struct ice_debug_control_ice_dump {
 
 struct ice_reset_network_params {
 	/* in, id of the context */
-	__u64 contextid;
-	/*in, id of the network */
-	__u64 networkid;
+	__u64 context_id;
+	/*in, id of the parent network */
+	__u64 pnetwork_id;
 };
 
 /* a union of all the different parameters */
@@ -765,13 +791,14 @@ struct cve_ioctl_param {
 	union {
 		struct cve_create_context_params create_context;
 		struct cve_destroy_context_params destroy_context;
+		struct ice_create_pnetwork create_pnetwork;
 		struct cve_create_network create_network;
 		struct cve_create_infer create_infer;
 		struct ice_report_ss report_ss;
 		struct cve_execute_infer execute_infer;
 		struct cve_destroy_infer destroy_infer;
 		struct ice_manage_resource manage_resource;
-		struct cve_destroy_network destroy_network;
+		struct ice_destroy_pnetwork destroy_pnetwork;
 		struct cve_load_firmware_params load_firmware;
 		struct cve_get_event get_event;
 		struct cve_get_version_params get_version;
@@ -808,7 +835,7 @@ struct cve_ioctl_param {
 
 #define CVE_IOCTL_CREATE_NETWORK \
 	_IOWR(CVE_IOCTL_SEQ_NUM, 17, struct cve_ioctl_param)
-#define CVE_IOCTL_DESTROY_NETWORK \
+#define ICE_IOCTL_DESTROY_PNETWORK \
 	_IOWR(CVE_IOCTL_SEQ_NUM, 18, struct cve_ioctl_param)
 #define CVE_IOCTL_MANAGE_RESOURCE \
 	_IOWR(CVE_IOCTL_SEQ_NUM, 19, struct cve_ioctl_param)
@@ -816,5 +843,7 @@ struct cve_ioctl_param {
 	_IOW(CVE_IOCTL_SEQ_NUM, 21, struct cve_ioctl_param)
 #define CVE_IOCTL_REPORT_SHARED_SURFACES \
 	_IOW(CVE_IOCTL_SEQ_NUM, 22, struct cve_ioctl_param)
+#define ICE_IOCTL_CREATE_PNETWORK \
+	_IOWR(CVE_IOCTL_SEQ_NUM, 23, struct cve_ioctl_param)
 #endif /* _CVE_DRIVER_H_ */
 

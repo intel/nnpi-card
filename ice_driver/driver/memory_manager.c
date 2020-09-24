@@ -53,6 +53,7 @@ struct allocation_desc {
 	/* Type of Memory i.e. Kernel/User/Shared/Infer */
 	enum osmm_memory_type mem_type;
 	u8 dump;
+	u64 user_count;
 };
 
 /* INTERNAL FUNCTIONS */
@@ -155,6 +156,7 @@ static int create_new_allocation(
 	alloc->dirty_cache = 0;
 	alloc->dirty_dram = 0;
 	alloc->dirty_dram_src_cve = NULL;
+	alloc->user_count = 1;
 
 	/* success */
 	*out_alloc = alloc;
@@ -172,17 +174,36 @@ void ice_mm_transfer_shared_surface(
 {
 	struct allocation_desc *ntw_alloc =
 		(struct allocation_desc *)ntw_buf->ntw_buf_alloc;
-	struct allocation_desc *inf_alloc =
+	struct allocation_desc __maybe_unused *inf_alloc =
 		(struct allocation_desc *)inf_buf->inf_buf_alloc;
+	struct allocation_desc dummy;
 
-	ntw_alloc->fd = inf_alloc->fd;
-	ntw_alloc->vaddr = inf_alloc->vaddr;
-	ntw_alloc->mem_type = inf_alloc->mem_type;
+	u64 sz = 0; u32 page_sz = 0; u8 pid = 0; u64 fd = 0;
 
-	ice_osmm_dma_buf_transfer(&ntw_alloc->halloc,
-		&inf_alloc->halloc);
+	ice_mm_get_buf_info(ntw_buf->ntw_buf_alloc, &sz, &page_sz, &pid, &fd);
+	cve_os_log(CVE_LOGLEVEL_DEBUG,
+			"NTWBufInfo:0x%p Count:%llu Sz:%llu PageSz:%u Pid:%u Fd:%llu\n",
+			ntw_buf->ntw_buf_alloc, ntw_alloc->user_count,
+			sz, page_sz, pid, fd);
+	ice_mm_get_buf_info(inf_buf->inf_buf_alloc, &sz, &page_sz, &pid, &fd);
+	cve_os_log(CVE_LOGLEVEL_DEBUG,
+			"InferBufInfo:0x%p Count:%llu Sz:%llu PageSz:%u Pid:%u Fd:%llu\n",
+			inf_buf->inf_buf_alloc, inf_alloc->user_count,
+			sz, page_sz, pid, fd);
 
-	OS_FREE(inf_alloc, sizeof(*inf_alloc));
+	ASSERT(ntw_alloc->user_count == 1);
+	/* release alloc handle for ths infer in network and re-assign it with
+	 * a valid handle from infer, this ensures its not deleted when this
+	 * infer is deleted and its shared user continue using it
+	 */
+	*(&dummy) = *ntw_alloc;
+	dummy.fd = inf_alloc->fd;
+	dummy.vaddr = inf_alloc->vaddr;
+	dummy.mem_type = inf_alloc->mem_type;
+	dummy.halloc = inf_alloc->halloc;
+	*inf_alloc = *(&dummy);
+	cve_mm_destroy_buffer(0, ntw_buf->ntw_buf_alloc);
+	ntw_buf->ntw_buf_alloc = inf_buf->inf_buf_alloc;
 	inf_buf->inf_buf_alloc = NULL;
 }
 
@@ -538,7 +559,11 @@ int cve_mm_create_infer_buffer(
 		goto free_mem;
 	}
 
+	inf_alloc->user_count = 1;
 	inf_buf->inf_buf_alloc = (cve_mm_allocation_t)inf_alloc;
+	cve_os_log(CVE_LOGLEVEL_DEBUG,
+			"NewAlloc InferId:0x%llx inf_alloc:0x%p user_count:%llu\n",
+			inf_id, inf_alloc, inf_alloc->user_count);
 
 	goto out;
 
@@ -557,6 +582,14 @@ void cve_mm_destroy_infer_buffer(
 
 	if (!inf_alloc)
 		return;
+
+	cve_os_log(CVE_LOGLEVEL_DEBUG,
+			"InferId:0x%llx inf_alloc:0x%p user_count:%llu\n",
+			inf_id, inf_alloc, inf_alloc->user_count);
+	if (inf_alloc->user_count > 1) {
+		inf_alloc->user_count--;
+		return;
+	}
 
 	cve_osmm_inf_dma_buf_unmap(inf_alloc->halloc);
 	OS_FREE(inf_alloc, sizeof(*inf_alloc));
@@ -659,6 +692,15 @@ void cve_mm_destroy_buffer(
 {
 	struct allocation_desc *alloc = (struct allocation_desc *)allocation;
 
+	cve_os_log(CVE_LOGLEVEL_DEBUG,
+			"CTXId:0x%llx inf_alloc->user_count:%llu\n",
+			context_id, alloc->user_count);
+
+	if (alloc->user_count > 1) {
+		alloc->user_count--;
+		return;
+	}
+
 	cve_mm_reclaim_allocation(alloc);
 
 	/* May be further optimized:
@@ -700,7 +742,7 @@ int cve_mm_unmap_kva(cve_mm_allocation_t halloc)
 {
 	struct allocation_desc *alloc = (struct allocation_desc *)halloc;
 
-	if (alloc->is_mapped) {
+	if (alloc->is_mapped && alloc->user_count == 1) {
 		cve_osmm_unmap_kva(alloc->halloc, alloc->vaddr);
 		alloc->is_mapped = false;
 		cve_os_log(CVE_LOGLEVEL_DEBUG,
@@ -904,7 +946,7 @@ static void __calc_cntr_va(struct jobgroup_descriptor *jobgroup,
 	increase_value = 32;
 
 	/* Guaranteed that all required counters are mapped */
-	j = jobgroup->network->cntr_info.cntr_id_map[pp_desc->cntr_id];
+	j = jobgroup->network->pntw->cntr_id_map[pp_desc->cntr_id];
 	cve_os_log(CVE_LOGLEVEL_DEBUG,
 		"CntrSwID=%u already Mapped to CntrHwID=%u. NtwID:0x%llx\n",
 		pp_desc->cntr_id, j, jobgroup->network->network_id);
@@ -1392,13 +1434,33 @@ void dump_patched_surf(struct ice_network *ntw)
 	}
 }
 
-void ice_mm_get_buf_sizes(cve_mm_allocation_t halloc,
-		u64 *size_bytes, u32 *page_size, u8 *pid)
+void ice_mm_get_buf_info(cve_mm_allocation_t halloc,
+		u64 *size_bytes, u32 *page_size, u8 *pid, u64 *fd)
 {
 	struct allocation_desc *alloc = (struct allocation_desc *)halloc;
 
 	*size_bytes = alloc->size_bytes;
-	ice_osmm_get_page_size(alloc->halloc, page_size, pid);
+	ice_osmm_get_buf_info(alloc->halloc, page_size, pid, fd);
+}
+
+void ice_mm_inc_user(cve_mm_allocation_t halloc)
+{
+	struct allocation_desc *alloc = (struct allocation_desc *)halloc;
+
+	alloc->user_count++;
+	cve_os_log(CVE_LOGLEVEL_DEBUG,
+			"alloc:0x%p user_count:%llu\n",
+			alloc, alloc->user_count);
+}
+
+void ice_mm_get_user(cve_mm_allocation_t halloc, u64 *count)
+{
+	struct allocation_desc *alloc = (struct allocation_desc *)halloc;
+
+	*count = alloc->user_count;
+	cve_os_log(CVE_LOGLEVEL_DEBUG,
+			"alloc:0x%p user_count:%llu\n",
+			alloc, alloc->user_count);
 }
 
 void ice_mm_use_extended_iceva(struct cve_ntw_buffer *ntw_buf)

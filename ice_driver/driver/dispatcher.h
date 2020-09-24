@@ -73,6 +73,7 @@ int cve_ds_close_context(
 int cve_ds_handle_create_network(
 		cve_context_process_id_t context_pid,
 		cve_context_id_t context_id,
+		ice_pnetwork_id_t pntw_id,
 		struct ice_network_descriptor *network,
 		u64 *ntw_id);
 
@@ -93,8 +94,8 @@ int cve_ds_handle_execute_infer(
 int cve_ds_handle_shared_surfaces(
 		cve_context_process_id_t context_pid,
 		cve_context_id_t context_id,
-		cve_network_id_t ntw_id,
-		struct ice_ss_descriptor *ss_desc);
+		ice_pnetwork_id_t pntw_id,
+		struct ice_report_ss *ss_desc);
 
 int cve_ds_handle_destroy_infer(
 		cve_context_process_id_t context_pid,
@@ -105,14 +106,19 @@ int cve_ds_handle_destroy_infer(
 int cve_ds_handle_manage_resource(
 		cve_context_process_id_t context_pid,
 		cve_context_id_t context_id,
-		cve_network_id_t ntw_id,
+		ice_pnetwork_id_t pntw_id,
 		struct ice_resource_request *rreq);
 
-int cve_ds_handle_destroy_network(
+int ice_ds_create_pnetwork(
 		cve_context_process_id_t context_pid,
 		cve_context_id_t context_id,
-		cve_network_id_t ntw_id);
+		struct ice_pnetwork_descriptor *pnetwork,
+		u64 *pntw_id);
 
+int ice_ds_destroy_pnetwork(
+		cve_context_process_id_t context_pid,
+		cve_context_id_t context_id,
+		ice_pnetwork_id_t pntw_id);
 /*
  * handle the IOCTL FW loading request
  * inputs :
@@ -128,7 +134,7 @@ int cve_ds_handle_destroy_network(
 int cve_ds_handle_fw_loading(
 		cve_context_process_id_t context_pid,
 		cve_context_id_t context_id,
-		cve_network_id_t network_id,
+		ice_pnetwork_id_t pntw_id,
 		u64 fw_image,
 		u64 fw_binmap,
 		u32 fw_binmap_size_bytes,
@@ -185,7 +191,7 @@ int cve_ds_wait_for_event(cve_context_process_id_t context_pid,
  */
 int cve_ds_get_version(cve_context_process_id_t context_pid,
 		cve_context_id_t context_id,
-		cve_network_id_t ntw_id,
+		ice_pnetwork_id_t pntw_id,
 		struct cve_components_version *out_versions);
 
 /**
@@ -199,7 +205,7 @@ int cve_ds_get_metadata(struct cve_get_metadata_params *metadata);
 int ice_ds_reset_network(
 		cve_context_process_id_t context_pid,
 		cve_context_id_t context_id,
-		cve_network_id_t ntw_id);
+		ice_pnetwork_id_t pntw_id);
 
 #define _no_op_return_zero 0
 #ifdef RING3_VALIDATION
@@ -220,11 +226,11 @@ enum pool_status cve_ds_map_pool_context(struct ds_context *context);
 void cve_ds_unmap_pool_context(struct ds_context *context);
 #endif
 
-enum resource_status ice_ds_ntw_reserve_resource(struct ice_network *ntw);
-void ice_ds_ntw_release_resource(struct ice_network *ntw);
+enum resource_status ice_ds_ntw_reserve_resource(struct ice_pnetwork *pntw);
+void ice_ds_ntw_release_resource(struct ice_pnetwork *pntw);
 
-enum resource_status ice_ds_ntw_borrow_resource(struct ice_network *ntw);
-void ice_ds_ntw_return_resource(struct ice_network *ntw);
+enum resource_status ice_ds_ntw_borrow_resource(struct ice_pnetwork *pntw);
+void ice_ds_ntw_return_resource(struct ice_pnetwork *pntw);
 
 int ice_di_get_core_blob_sz(void);
 
@@ -236,8 +242,9 @@ int ice_ds_raise_event(struct ice_network *ntw,
 
 int ice_iccp_license_request(struct cve_device *dev, bool throttling,
 				uint16_t license_value);
-void ice_ds_block_network(struct ice_network *ntw,
+void ice_ds_block_network(struct ice_pnetwork *pntw,
 	cve_ds_job_handle_t ds_jobh, u32 status,
 	bool is_ice_err);
+int ice_iccp_license_ack(struct cve_device *dev);
 
 #endif /* _DISPATCHER_H_ */

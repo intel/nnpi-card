@@ -1988,6 +1988,48 @@ void cve_fw_restore(struct cve_device *cve_dev,
 	}
 }
 
+void cve_fw_restore_tlc(struct cve_device *cve_dev,
+		struct cve_fw_mapped_sections *head)
+{
+	struct cve_fw_mapped_sections *mapped_fw = NULL;
+	struct cve_fw_loaded_sections *load_sec;
+
+	/* restoring dynamic FW bin */
+	if (head) {
+		mapped_fw = head;
+		do {
+			load_sec = mapped_fw->cve_fw_loaded;
+			if (load_sec->fw_type == CVE_FW_TLC_TYPE)
+				restore_fw_sections(cve_dev, mapped_fw);
+
+			mapped_fw = cve_dle_next(mapped_fw, list);
+		} while (head != mapped_fw);
+	}
+}
+
+void cve_fw_restore_ivp(struct cve_device *cve_dev,
+		struct cve_fw_mapped_sections *head)
+{
+	struct cve_fw_mapped_sections *mapped_fw = NULL;
+	struct cve_fw_loaded_sections *load_sec;
+
+	/* restoring dynamic FW bin */
+	if (head) {
+		mapped_fw = head;
+		do {
+			load_sec = mapped_fw->cve_fw_loaded;
+			if ((load_sec->fw_type == CVE_FW_IVP_MFW_TYPE) ||
+					(load_sec->fw_type ==
+					 CVE_FW_IVP_BANK0_TYPE) ||
+					(load_sec->fw_type ==
+					 CVE_FW_IVP_BANK1_TYPE))
+				restore_fw_sections(cve_dev, mapped_fw);
+
+			mapped_fw = cve_dle_next(mapped_fw, list);
+		} while (head != mapped_fw);
+	}
+}
+
 /*
  * reclaim firmware loading sections & dma handles
  * inputs : cve_section_descriptor *sections_lst - list of fw sections

@@ -226,8 +226,8 @@ void cve_osmm_print_page_table(os_domain_handle hdomain);
 void cve_osmm_domain_destroy(os_domain_handle *hdom,
 		u32 domain_array_size);
 
-void ice_osmm_get_page_size(os_allocation_handle halloc,
-		u32 *page_sz, u8 *pid);
+void ice_osmm_get_buf_info(os_allocation_handle halloc,
+		u32 *page_sz, u8 *pid, u64 *fd);
 
 void ice_osmm_dma_buf_transfer(os_allocation_handle *hdst,
 		os_allocation_handle *hsrc);

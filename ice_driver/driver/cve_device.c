@@ -49,6 +49,7 @@ int cve_device_init(struct cve_device *dev, int index, u64 pe_value)
 	dev->version_info.format = "Revision = %x.%x\n";
 
 	/* Initializes Invalid Persistent Nw*/
+	dev->dev_pntw_id = INVALID_NETWORK_ID;
 	dev->dev_ntw_id = INVALID_NETWORK_ID;
 	dev->dev_ctx_id = INVALID_CONTEXT_ID;
 
@@ -130,6 +131,8 @@ int cve_device_init(struct cve_device *dev, int index, u64 pe_value)
 	configure_pmon_names(dev);
 
 	dev->cdyn_val = 0;
+	dev->cdyn_requested = 0;
+	dev->tlc_reg_val = 0;
 
 	/* success */
 	return 0;
