@@ -125,6 +125,12 @@ int cve_fw_map(os_domain_handle hdom,
 void cve_fw_restore(struct cve_device *cve_dev,
 		struct cve_fw_mapped_sections *head);
 
+void cve_fw_restore_tlc(struct cve_device *cve_dev,
+		struct cve_fw_mapped_sections *head);
+
+void cve_fw_restore_ivp(struct cve_device *cve_dev,
+		struct cve_fw_mapped_sections *head);
+
 /*
  * unload all the firmware binaries that were loaded to specific
  * cve device

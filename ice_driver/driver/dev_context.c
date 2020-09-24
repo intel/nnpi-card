@@ -416,15 +416,36 @@ void cve_dev_restore_fws(struct cve_device *cve_dev,
 	cve_fw_restore(cve_dev, context->mapped_fw_sections);
 }
 
-int ice_init_sw_dev_contexts(struct ice_network_descriptor *ntw_desc,
-		struct ice_network *ntw)
+void cve_dev_restore_tlc_fw(struct cve_device *cve_dev,
+		cve_dev_context_handle_t hcontext)
+{
+	struct dev_context *context = (struct dev_context *)hcontext;
+
+	/* restore the FWs just before the reset */
+	cve_fw_restore_tlc(cve_dev, context->mapped_fw_sections);
+}
+
+void cve_dev_restore_ivp_fw(struct cve_device *cve_dev,
+		cve_dev_context_handle_t hcontext)
+{
+	struct dev_context *context = (struct dev_context *)hcontext;
+
+	/* restore the FWs just before the reset */
+	cve_fw_restore_ivp(cve_dev, context->mapped_fw_sections);
+}
+
+
+int ice_init_sw_dev_contexts(u8 num_ice,
+		u64 *va_partition_config,
+		u64 *infer_buf_page_config,
+		struct ice_pnetwork *pntw)
 {
 	struct dev_context *dev_context_list = NULL;
 	int retval = CVE_DEFAULT_ERROR_CODE, i;
 	struct dev_context *nc = NULL;
 
 	/* Create domain equal to number of ICE requirements of the network*/
-	for (i = 0; i < ntw_desc->num_ice; i++) {
+	for (i = 0; i < num_ice; i++) {
 		retval = OS_ALLOC_ZERO(sizeof(struct dev_context),
 				(void **)&nc);
 		if (retval != 0) {
@@ -435,8 +456,8 @@ int ice_init_sw_dev_contexts(struct ice_network_descriptor *ntw_desc,
 		}
 
 		retval = cve_osmm_get_domain(i,
-				(uint64_t *)ntw_desc->va_partition_config,
-				(uint64_t *)ntw_desc->infer_buf_page_config,
+				(uint64_t *)va_partition_config,
+				(uint64_t *)infer_buf_page_config,
 				&nc->hdom);
 		if (retval < 0) {
 			cve_os_log(CVE_LOGLEVEL_ERROR,
@@ -461,11 +482,11 @@ int ice_init_sw_dev_contexts(struct ice_network_descriptor *ntw_desc,
 		cve_dle_add_to_list_before(
 				dev_context_list, list, nc);
 
-		ntw->dev_ctx[i] = nc;
+		pntw->dev_ctx[i] = nc;
 	}
 
 	/* success */
-	ntw->dev_hctx_list = dev_context_list;
+	pntw->dev_hctx_list = dev_context_list;
 
 	return retval;
 
@@ -490,19 +511,19 @@ out:
 	return retval;
 }
 
-int ice_extend_sw_dev_contexts(struct ice_network *ntw)
+int ice_extend_sw_dev_contexts(struct ice_pnetwork *pntw)
 {
 	u32 i;
 	int retval = CVE_DEFAULT_ERROR_CODE;
 	struct dev_context *nc = NULL;
 
 	/* Create domain equal to number of ICE requirements of the network*/
-	for (i = 0; i < ntw->num_ice; i++) {
+	for (i = 0; i < pntw->num_ice; i++) {
 
-		nc = ntw->dev_ctx[i];
+		nc = pntw->dev_ctx[i];
 
 		retval = cve_osmm_extend_domain(
-				(uint64_t *)ntw->infer_buf_page_config,
+				(uint64_t *)pntw->infer_buf_page_config,
 				nc->hdom);
 		if (retval < 0) {
 			cve_os_log(CVE_LOGLEVEL_ERROR,

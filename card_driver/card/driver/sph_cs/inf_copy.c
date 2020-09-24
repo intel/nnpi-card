@@ -609,7 +609,7 @@ static int inf_copy_req_execute(struct inf_exec_req *req)
 		 copy->lli.num_elements));
 
 	if (copy->subres_copy) {
-		u32 transfer_size;
+		u64 transfer_size;
 		u32 lli_size_keep;
 		int ret;
 
@@ -634,6 +634,7 @@ static int inf_copy_req_execute(struct inf_exec_req *req)
 								 req->devres_offset);
 		if (transfer_size < 1)
 			return -EINVAL;
+		NNP_ASSERT(transfer_size >= req->size);
 	}
 
 	if (copy->sw_counters &&

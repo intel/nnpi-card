@@ -108,7 +108,7 @@ void cve_dg_print(struct cve_device_group *group);
 static inline int
 is_workqueue_contain_network(struct cve_workqueue *wq)
 {
-	return (wq->ntw_list != NULL);
+	return (wq->pntw_list != NULL);
 }
 
 /*
@@ -175,18 +175,18 @@ u32 ice_get_reset_cdyn_val(void);
 u32 ice_get_blocked_cdyn_val(void);
 
 enum resource_status ice_dg_check_resource_availability(
-		struct ice_network *ntw);
-bool ice_dg_can_lazy_capture_ice(struct ice_network *ntw);
-void ice_dg_borrow_this_ice(struct ice_network *ntw,
+		struct ice_pnetwork *pntw);
+bool ice_dg_can_lazy_capture_ice(struct ice_pnetwork *pntw);
+void ice_dg_borrow_this_ice(struct ice_pnetwork *ntw,
 		struct cve_device *dev, bool lazy);
-void ice_dg_borrow_next_pbo(struct ice_network *ntw,
-	struct job_descriptor *job_0,
-	struct job_descriptor *job_1);
-void ice_dg_borrow_next_dice(struct ice_network *ntw,
-	struct job_descriptor *job_0);
+void ice_dg_borrow_next_pbo(struct ice_pnetwork *pntw,
+		struct cve_device **ice0,
+		struct cve_device **ice1);
+void ice_dg_borrow_next_dice(struct ice_pnetwork *pntw,
+		struct cve_device **ice0);
 void ice_dg_reserve_this_ice(struct cve_device *dev);
 void ice_dg_release_this_ice(struct cve_device *dev);
-void ice_dg_return_this_ice(struct ice_network *ntw,
+void ice_dg_return_this_ice(struct ice_pnetwork *ntw,
 		struct cve_device *dev);
 
 #endif /* CVE_DEVICE_GROUP_H_ */

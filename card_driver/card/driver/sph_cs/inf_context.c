@@ -303,6 +303,30 @@ void inf_context_destroy_objects(struct inf_context *context)
 		found = false;
 		NNP_SPIN_LOCK(&context->lock);
 		hash_for_each(context->devres_hash, i, devres, hash_node) {
+			if (devres->is_p2p_dst) {
+				NNP_SPIN_LOCK_IRQSAVE(&devres->lock_irq, flags);
+				if (!devres->is_dirty) {
+					found = true;
+					inf_devres_set_dirty(devres, true);
+					devres->p2p_buf.ready = true;
+
+					NNP_SPIN_UNLOCK_IRQRESTORE(&devres->lock_irq, flags);
+					NNP_SPIN_UNLOCK(&context->lock);
+					/* advance sched tick and try execute next requests */
+					atomic_add(2, &context->sched_tick);
+					inf_devres_try_execute(devres);
+					break;
+				}
+				NNP_SPIN_UNLOCK_IRQRESTORE(&devres->lock_irq, flags);
+			}
+		}
+	} while (found);
+	NNP_SPIN_UNLOCK(&context->lock);
+
+	do {
+		found = false;
+		NNP_SPIN_LOCK(&context->lock);
+		hash_for_each(context->devres_hash, i, devres, hash_node) {
 			NNP_SPIN_LOCK_IRQSAVE(&devres->lock_irq, flags);
 			if (devres->destroyed == 0)
 				found = true;

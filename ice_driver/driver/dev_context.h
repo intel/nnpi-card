@@ -27,9 +27,10 @@
  *                   cve device
  * returns: 0 on success, a negative error code on failure
  */
-int ice_init_sw_dev_contexts(struct ice_network_descriptor *ntw_desc,
-		struct ice_network *ntw);
-
+int ice_init_sw_dev_contexts(u8 num_ice,
+		u64 *va_partition_config,
+		u64 *infer_buf_page_config,
+		struct ice_pnetwork *pntw);
 /*
  * free all the resources that were taken by the dev contexts (per cve
  * context)
@@ -62,6 +63,12 @@ void cve_dev_get_os_domain_arr(cve_dev_context_handle_t hcontext_list,
  * returns: None
  */
 void cve_dev_restore_fws(struct cve_device *cve_dev,
+		cve_dev_context_handle_t hcontext);
+
+void cve_dev_restore_tlc_fw(struct cve_device *cve_dev,
+		cve_dev_context_handle_t hcontext);
+
+void cve_dev_restore_ivp_fw(struct cve_device *cve_dev,
 		cve_dev_context_handle_t hcontext);
 
 /*
@@ -127,6 +134,6 @@ int cve_dev_alloc_and_map_cbdt(cve_dev_context_handle_t dev_ctx,
 int cve_dev_dealloc_and_unmap_cbdt(cve_dev_context_handle_t dev_ctx,
 			struct fifo_descriptor *fifo_desc);
 
-int ice_extend_sw_dev_contexts(struct ice_network *ntw);
+int ice_extend_sw_dev_contexts(struct ice_pnetwork *pntw);
 
 #endif /* _DEVICE_CONTEXT_H_ */

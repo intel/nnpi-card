@@ -230,6 +230,8 @@ struct cve_device {
 	 *	b. ice_dev_get_power_state
 	 */
 	enum ICE_POWER_STATE power_state;
+	/* last pnetwork id that ran on this device */
+	cve_network_id_t dev_pntw_id;
 	/* last network id that ran on this device */
 	cve_network_id_t dev_ntw_id;
 	/* last context id that ran on this device */
@@ -283,6 +285,9 @@ struct cve_device {
 
 	/* store cdyn request value, if unchanged, dont request it */
 	u16 cdyn_val;
+	u32 cdyn_requested;
+	u32 gp_reg14_val;
+	u32 tlc_reg_val;
 };
 
 struct llc_pmon_config {
@@ -432,8 +437,8 @@ struct cve_device_group {
 	u16 num_avl_pool;
 	/* number of non-reserved pool */
 	u16 num_nonres_pool;
-	/* List of ntw holding resources */
-	struct ice_network *ntw_with_resources;
+	/* List of pntw holding resources */
+	struct ice_pnetwork *pntw_with_resources;
 	/* number of running networks */
 	u32 num_running_ntw;
 	/* CLOS state */
@@ -537,6 +542,8 @@ struct cve_hw_cntr_descriptor {
 	u16 hw_cntr_id;
 	/* Counter ID assigned by graph */
 	u16 graph_cntr_id;
+	/* parent network ID to which this Counter is attached */
+	u64 cntr_pntw_id;
 	/* network ID to which this Counter is attached */
 	u64 cntr_ntw_id;
 	/* Is Counter in free pool */
@@ -565,7 +572,7 @@ struct cve_workqueue {
 	/* links to the context workqueues */
 	struct cve_dle_t list_context_wqs;
 	/* list of networks within this WQ*/
-	struct ice_network *ntw_list;
+	struct ice_pnetwork *pntw_list;
 	/* count of network using the pool */
 	u32 num_ntw_using_pool;
 	/* count of network requested for pool reservation */
@@ -595,6 +602,11 @@ struct job_descriptor {
 	struct cve_allocation_descriptor *cve_alloc_desc;
 	/* Graph ICE Id */
 	u8 graph_ice_id;
+	/* ICE Id when a job doesnt have a valid graph id, this ensure
+	 * that all jobs have one valid id. Either from blob or self generated.
+	 * dummy ids are always exclusive of blob graph id
+	 */
+	u8 dummy_ice_id;
 	/* Hw ICE Id. Actual ICE allocated by Driver */
 	u8 hw_ice_id;
 	/* contains mirror image of patch point for counters*/
@@ -729,8 +741,10 @@ struct execution_node {
 	enum node_type ntype;
 
 	struct cve_dle_t sch_list[EXE_INF_PRIORITY_MAX];
-	struct cve_dle_t ntw_queue[EXE_INF_PRIORITY_MAX];
+	struct cve_dle_t pntw_queue[EXE_INF_PRIORITY_MAX];
 
+	/* Parent Ntw with which this node is associated */
+	struct ice_pnetwork *pntw;
 	/* Ntw with which this node is associated */
 	struct ice_network *ntw;
 	/* Is this node queued */
@@ -743,7 +757,7 @@ struct execution_node {
 	/* This flag is bypassed when resources are reserved */
 	bool ready_to_run;
 	/* Is this node added in Ntw's queue */
-	bool in_ntw_queue;
+	bool in_pntw_queue;
 	/* ------------------- */
 
 	/* ------------------------- */
@@ -752,6 +766,140 @@ struct execution_node {
 	bool is_success;
 	/* ------------------------- */
 
+};
+
+/* Possible types of ICE allocation policy */
+enum pntw_ice_alloc_policy {
+	PNTW_ICE_ALLOC_POLICY_UNUSED = 0,
+	PNTW_ICE_ALLOC_POLICY_ANYTHING = 1,
+	PNTW_ICE_ALLOC_POLICY_DONT_CARE = 2,
+	PNTW_ICE_ALLOC_POLICY_BO = 3
+};
+
+struct pntw_ice_map {
+	enum pntw_ice_alloc_policy policy;
+	u8 hw_ice_id;
+};
+
+/* hold information about the parent network */
+struct ice_pnetwork {
+	/* stores a reference to self, should always be first member */
+	u64 pntw_id;
+	/* links to a parent network within its wq */
+	struct cve_dle_t list;
+	/* the workqueue that owns this parent network */
+	struct cve_workqueue *wq;
+	/* Is running */
+	bool pntw_running;
+	/* Current Executing Network */
+	struct ice_network *curr_ntw;
+	/* List of child networks */
+	struct ice_network *ntw_list;
+
+	/* total number of network */
+	u32 ntw_count;
+
+	/* Resource Mapped */
+	u8 resource_mapped;
+
+	/* Completion event required*/
+	u32 produce_completion;
+
+	/*Device specific domain data */
+	cve_dev_context_handle_t dev_hctx_list;
+	/* Place holder for software device context
+	 * Max entries == Jobs. Each job to have a unique dev context
+	 * to be mapped to actual ICE during execution
+	 */
+	struct dev_context *dev_ctx[MAX_CVE_DEVICES_NR];
+	/* list of custom loaded fw sections per cve device */
+	struct cve_fw_loaded_sections *loaded_cust_fw_sections;
+
+	/*Duplicate */
+	u8 num_ice;
+	/* CLOS requirements */
+	u32 clos[ICE_CLOS_MAX];
+	u32 cntr_bitmap;
+	u64 infer_buf_page_config[ICEDRV_PAGE_ALIGNMENT_MAX];
+	/* If N is the graph_cntr_id then cntr_id_map[N] is driver_cntr_id */
+	int8_t cntr_id_map[MAX_HW_COUNTER_NR];
+
+	/* SW Counter handle */
+	void *hswc;
+	/* SW counter object */
+	struct ice_swc_node swc_node;
+	struct ice_user_full_ntw *user_full_ntw;
+
+	/* ------------------------- */
+	/* Exclusively for scheduler */
+	/* ------------------------- */
+	/* List of all Infer waiting for execution */
+	struct execution_node *sch_queue[EXE_INF_PRIORITY_MAX];
+	/* Multi back to back reserve/release will be rejected */
+	/* Initialize to RELEASE */
+	enum node_type last_request_type;
+	/* Parent Network's Reservation node */
+	struct execution_node pntw_res_node;
+	/* Parent Network's Release node */
+	struct execution_node pntw_rel_node;
+	/* ------------------------- */
+
+	/****************************************/
+	u8 has_resource;
+	/* PNtw using resources are added to dg->pntw_with_resources */
+	struct cve_dle_t resource_list;
+	/* Indicates if this Network needs to reserve the resources */
+	bool res_resource;
+	struct cve_device *ice_list;
+	struct cve_hw_cntr_descriptor *cntr_list;
+	s32 cur_ice_map[MAX_CVE_DEVICES_NR];
+	u16 global_graph_id_mask;
+	struct pntw_ice_map global_ice_map[MAX_CVE_DEVICES_NR];
+	/****************************************/
+
+	/* IceDc error status*/
+	u64 icedc_err_status;
+
+	/* Ice error status*/
+	u64 ice_err_status;
+	u32 ice_error_status[MAX_CVE_DEVICES_NR];
+	s32 ice_vir_phy_map[MAX_CVE_DEVICES_NR];
+	bool reset_ntw;
+	bool reserved_on_error;
+
+	/* Shared read error status */
+	u32 shared_read_err_status;
+	u8 max_shared_distance;
+	u8 shared_read;
+
+	/* Flag to disallow fw loading after exIR */
+	u8 exIR_performed;
+
+	u64 pntw_icemask;
+	u64 pntw_cntrmask;
+
+	/* paired ICE from ICEBO requirement */
+	u8 org_pbo_req;
+	u8 temp_pbo_req;
+	u8 given_pbo_req;
+	/* single ICE from ICEBO requirement, the other ICE is free
+	 * to be allocated to other NTW
+	 */
+	u8 org_dice_req;
+	u8 temp_dice_req;
+	u8 given_dice_req;
+	/* icebo requirement type */
+	enum icebo_req_type org_icebo_req;
+	enum icebo_req_type temp_icebo_req;
+	enum icebo_req_type given_icebo_req;
+
+	/* Initialize to NULL */
+	struct execution_node *rr_node;
+
+	/* Waitqueue for resource Reservation/Release request */
+	cve_os_wait_que_t rr_wait_queue;
+
+	u8 last_done;
 };
 
 /* hold information about a network */
@@ -790,8 +938,8 @@ struct ice_network {
 	/* list of job groups within the network */
 	struct jobgroup_descriptor *jg_list;
 
-	/* the workqueue that owns this job */
-	struct cve_workqueue *wq;
+	/* reference to parent network*/
+	struct ice_pnetwork *pntw;
 
 	/* Completion event required*/
 	u32 produce_completion;
@@ -802,35 +950,17 @@ struct ice_network {
 	/*** For Ntw wide Resource allocation ***/
 	/** User inputs */
 	u8 num_ice;
-	/* CLOS requirements */
-	u32 clos[ICE_CLOS_MAX];
 	u32 cntr_bitmap;
 	/****/
 
-	/****************************************/
-	u8 has_resource;
-	/* Ntw using resources are added to dg->ntw_with_resources */
-	struct cve_dle_t resource_list;
-	/* Indicates if this Network needs to reserve the resources */
-	bool res_resource;
-	struct cve_device *ice_list;
-	struct cve_hw_cntr_descriptor *cntr_list;
-	/****************************************/
+	struct cve_device *ice_map[MAX_CVE_DEVICES_NR];
 
 	/* To keep track of paired jobs */
 	struct job_descriptor *pjob_list[MAX_CVE_DEVICES_NR];
 
-	/* For Counter book-keeping */
-	struct ntw_cntr_info cntr_info;
-
 	/* Network specific FIFO allocation */
 	struct fifo_descriptor fifo_desc[MAX_CVE_DEVICES_NR];
 
-	/* Place holder for software device context
-	 * Max entries == Jobs. Each job to have a unique dev context
-	 * to be mapped to actual ICE during execution
-	 */
-	struct dev_context *dev_ctx[MAX_CVE_DEVICES_NR];
 	/************************/
 	/* SW Counter handle */
 	void *hswc;
@@ -841,7 +971,6 @@ struct ice_network {
 	/* ICE specific swc node array */
 	void *dev_hswc[MAX_CVE_DEVICES_NR];
 	void *dev_hswc_parent;
-	u8 used_hswc_count;
 	/************************/
 
 	/* IceDc error status*/
@@ -852,7 +981,6 @@ struct ice_network {
 	u32 ice_error_status[MAX_CVE_DEVICES_NR];
 	s32 ice_vir_phy_map[MAX_CVE_DEVICES_NR];
 	bool reset_ntw;
-	bool reserved_on_error;
 
 	/* Shared read error status */
 	u32 shared_read_err_status;
@@ -868,23 +996,12 @@ struct ice_network {
 
 	/* paired ICE from ICEBO requirement */
 	u8 org_pbo_req;
-	u8 temp_pbo_req;
-	u8 given_pbo_req;
 	/* single ICE from ICEBO requirement, the other ICE is free
 	 * to be allocated to other NTW
 	 */
 	u8 org_dice_req;
-	u8 temp_dice_req;
-	u8 given_dice_req;
-	/* icebo requirement type */
 	enum icebo_req_type org_icebo_req;
-	enum icebo_req_type temp_icebo_req;
-	enum icebo_req_type given_icebo_req;
 
-	/* Network type deepsram/normal */
-	enum ice_network_type network_type;
-	u8 max_shared_distance;
-	u8 shared_read;
 	/* Last Infer that was executed */
 	struct ice_infer *curr_exe;
 	/* List of all Infer created against this Ntw */
@@ -902,39 +1019,12 @@ struct ice_network {
 	u32 ntw_surf_pp_count;
 
 	u64 ntw_icemask;
-	u64 ntw_cntrmask;
-
-	/* ------------------------- */
-	/* Exclusively for scheduler */
-	/* ------------------------- */
-	/* List of all Infer waiting for execution */
-	struct execution_node *sch_queue[EXE_INF_PRIORITY_MAX];
-	/* Multi back to back reserve/release will be rejected */
-	/* Initialize to RELEASE */
-	enum node_type last_request_type;
-	/* Network's Reservation node */
-	struct execution_node ntw_res_node;
-	/* Network's Release node */
-	struct execution_node ntw_rel_node;
-	/* ------------------------- */
-
-	/* Initialize to NULL */
-	struct execution_node *rr_node;
-
-	/* Waitqueue for resource Reservation/Release request */
-	cve_os_wait_que_t rr_wait_queue;
 
 	/* Is Counter patching required? */
 	bool patch_cntr;
 
-	/*Device specific domain data */
-	cve_dev_context_handle_t dev_hctx_list;
 
-	/* list of custom loaded fw sections per cve device */
-	struct cve_fw_loaded_sections *loaded_cust_fw_sections;
 
-	/* Flag to disallow fw loading after exIR */
-	u8 exIR_performed;
 
 	u64 infer_buf_page_config[ICEDRV_PAGE_ALIGNMENT_MAX];
 	/* Number of buffers every CreateInfer desc must send */
@@ -989,6 +1079,17 @@ struct ice_infer {
 	 */
 	u64 busy_start_time;
 };
+
+/* hold information about user buffer allocation (surface or cb) */
+struct ice_pntw_buf_info {
+	/* links to the list of the unique buffers */
+	struct cve_dle_t list;
+	/* Surface/CB/DSRAM load CB/ Reloadable CB */
+	enum ice_surface_type surface_type;
+	/* the allocation which is associated with this buffer */
+	cve_mm_allocation_t buf_alloc;
+};
+
 
 /* hold information about user buffer allocation (surface or cb) */
 struct cve_ntw_buffer {
