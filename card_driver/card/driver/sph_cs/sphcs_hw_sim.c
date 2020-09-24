@@ -198,6 +198,7 @@ static int hw_sim_dma_edit_lli(void *hw_handle, struct lli_desc *outLli, uint64_
 	NNP_ASSERT(size > 0);
 	/* Set header */
 	((union sgl_data_element *)outLli->vptr)->bytes_to_copy = size;
+	outLli->xfer_size[0] = size;
 
 	return 0;
 }

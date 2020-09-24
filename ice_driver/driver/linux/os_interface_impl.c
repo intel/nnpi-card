@@ -1943,20 +1943,22 @@ static long cve_ioctl_misc(
 			cve_os_log(CVE_LOGLEVEL_DEBUG,
 					"CVE_IOCTL_CREATE_NETWORK\n");
 			retval = cve_ds_handle_create_network(context_pid,
-					p->contextid,
+					p->context_id,
+					p->pnetwork_id,
 					&p->network,
 					&p->network.network_id);
 		}
 		break;
-	case CVE_IOCTL_DESTROY_NETWORK:
+	case ICE_IOCTL_DESTROY_PNETWORK:
 		{
-			struct cve_destroy_network *p = &kparam.destroy_network;
+			struct ice_destroy_pnetwork *p =
+				&kparam.destroy_pnetwork;
 
 			cve_os_log(CVE_LOGLEVEL_DEBUG,
-					"CVE_IOCTL_DESTROY_NETWORK\n");
-			retval = cve_ds_handle_destroy_network(context_pid,
-					p->contextid,
-					p->networkid);
+					"ICE_IOCTL_DESTROY_PNETWORK\n");
+			retval = ice_ds_destroy_pnetwork(context_pid,
+					p->context_id,
+					p->pnetwork_id);
 			break;
 		}
 	case CVE_IOCTL_CREATE_INFER:
@@ -1980,9 +1982,9 @@ static long cve_ioctl_misc(
 			cve_os_log(CVE_LOGLEVEL_DEBUG,
 					"CVE_IOCTL_REPORT_SHARED_SURFACES\n");
 			retval = cve_ds_handle_shared_surfaces(context_pid,
-					p->contextid,
-					p->networkid,
-					&p->ss_desc);
+					p->context_id,
+					p->pnetwork_id,
+					p);
 		}
 		break;
 	case CVE_IOCTL_EXECUTE_INFER:
@@ -2017,8 +2019,8 @@ static long cve_ioctl_misc(
 			cve_os_log(CVE_LOGLEVEL_DEBUG,
 					"CVE_IOCTL_MANAGE_RESOURCE\n");
 			retval = cve_ds_handle_manage_resource(context_pid,
-					p->contextid,
-					p->networkid,
+					p->context_id,
+					p->pnetwork_id,
 					&p->resource);
 			break;
 		}
@@ -2040,8 +2042,8 @@ static long cve_ioctl_misc(
 #else
 			retval = cve_ds_handle_fw_loading(
 					context_pid,
-					p->contextid,
-					p->networkid,
+					p->context_id,
+					p->pnetwork_id,
 					p->fw_image,
 					p->fw_binmap,
 					p->fw_binmap_size_bytes,
@@ -2068,8 +2070,8 @@ static long cve_ioctl_misc(
 					"CVE_IOCTL_GET_VERSION\n");
 			retval = cve_ds_get_version(
 				context_pid,
-				p->contextid,
-				p->networkid,
+				p->context_id,
+				p->pnetwork_id,
 				&p->out_versions
 				);
 		}
@@ -2093,8 +2095,20 @@ static long cve_ioctl_misc(
 					    "ICE_IOCTL_RESET_NETWORK\n");
 			retval = ice_ds_reset_network(
 					context_pid,
-					p->contextid,
-					p->networkid);
+					p->context_id,
+					p->pnetwork_id);
+		}
+		break;
+	case ICE_IOCTL_CREATE_PNETWORK:
+		{
+			struct ice_create_pnetwork *p = &kparam.create_pnetwork;
+
+			cve_os_log(CVE_LOGLEVEL_DEBUG,
+					"ICE_IOCTL_CREATE_PNETWORK\n");
+			retval = ice_ds_create_pnetwork(context_pid,
+					p->context_id,
+					&p->pnetwork,
+					&p->pnetwork.pnetwork_id);
 		}
 		break;
 	default:

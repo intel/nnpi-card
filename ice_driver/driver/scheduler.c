@@ -36,7 +36,7 @@ enum sch_status {
 /* Each scheduler queue is associated with Priority */
 static struct execution_node *sch_queue[EXE_INF_PRIORITY_MAX];
 /* Network to be deleted during next Scheduler cycle */
-static struct ice_network *sch_del_ntw;
+static struct ice_pnetwork *sch_del_pntw;
 
 int ice_sch_init(void)
 {
@@ -45,7 +45,7 @@ int ice_sch_init(void)
 	return ret;
 }
 
-static struct execution_node *__get_next_exe_node(struct ice_network *ntw)
+static struct execution_node *__get_next_exe_node(struct ice_pnetwork *pntw)
 {
 	struct execution_node *p0_head = NULL, *p1_head = NULL;
 	struct execution_node *p0_node = NULL, *p1_node = NULL;
@@ -53,11 +53,11 @@ static struct execution_node *__get_next_exe_node(struct ice_network *ntw)
 	bool p0_node_rdy = false, p1_node_rdy = false;
 
 	/* Finding next P0 node */
-	if (ntw) {
+	if (pntw) {
 
-		p0_head = ntw->sch_queue[EXE_INF_PRIORITY_0];
+		p0_head = pntw->sch_queue[EXE_INF_PRIORITY_0];
 		if (p0_head) {
-			ASSERT(ntw->res_resource);
+			ASSERT(pntw->res_resource);
 			p0_node = p0_head;
 			p0_node_rdy = true;
 		}
@@ -70,7 +70,7 @@ static struct execution_node *__get_next_exe_node(struct ice_network *ntw)
 			p0_node = p0_head;
 			do {
 				if ((p0_node->ntype == NODE_TYPE_INFERENCE) &&
-					(!p0_node->ntw->ntw_running)) {
+					(!p0_node->pntw->pntw_running)) {
 
 					p0_node_rdy = true;
 					break;
@@ -95,11 +95,11 @@ static struct execution_node *__get_next_exe_node(struct ice_network *ntw)
 	}
 
 	/* Finding next P1 node */
-	if (ntw) {
+	if (pntw) {
 
-		p1_head = ntw->sch_queue[EXE_INF_PRIORITY_1];
+		p1_head = pntw->sch_queue[EXE_INF_PRIORITY_1];
 		if (p1_head) {
-			ASSERT(ntw->res_resource);
+			ASSERT(pntw->res_resource);
 			p1_node = p1_head;
 			p1_node_rdy = true;
 		}
@@ -111,7 +111,7 @@ static struct execution_node *__get_next_exe_node(struct ice_network *ntw)
 			p1_node = p1_head;
 			do {
 				if ((p1_node->ntype == NODE_TYPE_INFERENCE) &&
-					(!p1_node->ntw->ntw_running)) {
+					(!p1_node->pntw->pntw_running)) {
 
 					p1_node_rdy = true;
 					break;
@@ -144,6 +144,7 @@ static enum sch_status __process_inf_node(struct execution_node *node)
 {
 	struct ice_infer *inf = node->inf;
 	struct ice_network *ntw = inf->ntw;
+	struct ice_pnetwork *pntw = ntw->pntw;
 	enum resource_status res_status;
 	enum sch_status status = SCH_STATUS_DONE;
 	struct cve_device_group *dg = cve_dg_get();
@@ -168,13 +169,13 @@ static enum sch_status __process_inf_node(struct execution_node *node)
 	/* TODO: Clear ntw->reset_ntw must be done by Scheduler */
 	}
 
-	res_status = ice_ds_ntw_borrow_resource(ntw);
+	res_status = ice_ds_ntw_borrow_resource(pntw);
 	if (res_status == RESOURCE_BUSY) {
 		/* Wait */
 
 		cve_os_log(CVE_LOGLEVEL_DEBUG,
-			"Inference must wait. NtwID=0x%lx, InfID=0x%lx\n",
-			(uintptr_t)ntw, (uintptr_t)inf);
+			"Inference must wait. PNTWID:0x%lx, NtwID=0x%lx, InfID=0x%lx\n",
+			(uintptr_t)pntw, (uintptr_t)ntw, (uintptr_t)inf);
 
 		status = SCH_STATUS_WAIT;
 		goto out;
@@ -183,8 +184,8 @@ static enum sch_status __process_inf_node(struct execution_node *node)
 		/* Discard */
 
 		cve_os_log(CVE_LOGLEVEL_DEBUG,
-			"Out of resource. Inference will be discarded. NtwID=0x%lx, InfID=0x%lx\n",
-			(uintptr_t)ntw, (uintptr_t)inf);
+			"Out of resource. Inference will be discarded. PNTWID:0x%lx NtwID=0x%lx, InfID=0x%lx\n",
+			(uintptr_t)pntw, (uintptr_t)ntw, (uintptr_t)inf);
 
 		ntw->curr_exe = inf;
 
@@ -208,7 +209,7 @@ static enum sch_status __process_rr_node(struct execution_node *node)
 	/* Reserve or Release as per node */
 	if (node->ntype == NODE_TYPE_RESERVE) {
 
-		res_status = ice_ds_ntw_reserve_resource(node->ntw);
+		res_status = ice_ds_ntw_reserve_resource(node->pntw);
 		if (res_status == RESOURCE_BUSY) {
 			cve_os_log(CVE_LOGLEVEL_DEBUG,
 				"Waiting for resource availability\n");
@@ -225,14 +226,14 @@ static enum sch_status __process_rr_node(struct execution_node *node)
 			node->is_success = true;
 		}
 
-		node->ntw->rr_node =  &node->ntw->ntw_res_node;
-		cve_os_wakeup(&node->ntw->rr_wait_queue);
+		node->pntw->rr_node =  &node->pntw->pntw_res_node;
+		cve_os_wakeup(&node->pntw->rr_wait_queue);
 
 	} else {
 		/* node->ntype == NODE_TYPE_RELEASE */
 
-		ASSERT(!node->ntw->ntw_running);
-		ice_ds_ntw_release_resource(node->ntw);
+		ASSERT(!node->pntw->pntw_running);
+		ice_ds_ntw_release_resource(node->pntw);
 	}
 
 	ice_lsch_del_rr_from_queue(node, false);
@@ -244,6 +245,7 @@ out:
 static void __process_destroy_network(struct ice_network *ntw)
 {
 	struct ice_infer *head, *next;
+	u32 inf_count = 0;
 
 	if (!ntw)
 		goto out;
@@ -255,75 +257,98 @@ static void __process_destroy_network(struct ice_network *ntw)
 		do {
 
 			ice_lsch_del_inf_from_queue(next, false);
-
+			inf_count++;
 			next = cve_dle_next(next, ntw_list);
 		} while (head != next);
 	}
 
-	ice_lsch_del_rr_from_queue(&ntw->ntw_res_node, false);
-	ice_lsch_del_rr_from_queue(&ntw->ntw_rel_node, false);
-
 	cve_os_log(CVE_LOGLEVEL_INFO,
-		"Descheduling. NtwId=0x%lx\n", (uintptr_t)ntw);
+		"Descheduling PNTW:0x%llx NtwId=0x%lx InferCount:%u\n",
+		ntw->pntw->pntw_id, (uintptr_t)ntw, inf_count);
 
 	ntw->reset_ntw = false;
-
-	/* All resource must be released */
-	if (ntw->res_resource)
-		ice_ds_ntw_release_resource(ntw);
-	else
-		ice_ds_ntw_return_resource(ntw);
 
 out:
 	return;
 }
+
+static void __process_pntw_del_request(struct ice_pnetwork *pntw,
+		struct ice_network **curr_sched_ntw,
+		bool *is_ntw_over)
+{
+	struct ice_network *next;
+
+	next = pntw->ntw_list;
+	do {
+		/* DestroyNetwork is requested. Remove all pending
+		 * requests from queue
+		 */
+
+		__process_destroy_network(next);
+		if (*curr_sched_ntw && (next == *curr_sched_ntw)) {
+
+			/* If this Ntw was destroyed then Sch should
+			 * not entertain this node anymore
+			 */
+			*curr_sched_ntw = NULL;
+			*is_ntw_over = false;
+		}
+
+		next = cve_dle_next(next, del_list);
+
+	} while (next != pntw->ntw_list);
+
+	ice_lsch_del_rr_from_queue(&pntw->pntw_res_node, false);
+	ice_lsch_del_rr_from_queue(&pntw->pntw_rel_node, false);
+
+	cve_os_log(CVE_LOGLEVEL_INFO,
+		"Descheduling. Parent NtwId=0x%lx\n", (uintptr_t)pntw);
+
+	pntw->reset_ntw = false;
+
+	/* All resource must be released */
+	if (pntw->res_resource)
+		ice_ds_ntw_release_resource(pntw);
+	else
+		ice_ds_ntw_return_resource(pntw);
+
+}
+
 
 /*
  * This function will definitely return the next eligible node, if exists.
  * RES/REL nodes will be executed here itself and status will be returned
  * INF nodes will try to borrow resource and return its status.
 */
-static enum sch_status __l_process_next_exe_node(struct ice_network *ntw,
+static enum sch_status __l_process_next_exe_node(struct ice_pnetwork *pntw,
 	bool is_ntw_over, struct execution_node **ret_node)
 {
 	enum sch_status status = SCH_STATUS_MAX;
 	struct execution_node *node = NULL;
-	struct ice_network *next;
+	struct ice_network *ntw = NULL;
+
+	if (pntw)
+		ntw = pntw->curr_ntw;
 
 	if (is_ntw_over) {
 		ASSERT(ntw);
 		ntw->ntw_running = false;
+		pntw->pntw_running = false;
 		ntw->curr_exe->inf_running = false;
 	}
 
-	if (sch_del_ntw) {
-
-		next = sch_del_ntw;
-		do {
-			/* DestroyNetwork is requested. Remove all pending
-			 * requests from queue
-			 */
-
-			__process_destroy_network(next);
-			if (ntw && (next == ntw)) {
-
-				/* If this Ntw was destroyed then Sch should
-				 * not entertain this node anymore
-				 */
-				ntw = NULL;
-				is_ntw_over = false;
-			}
-
-			next = cve_dle_next(next, del_list);
-
-		} while (next != sch_del_ntw);
-
-		sch_del_ntw = NULL;
+	/* Due to global lock, sch_del_pntw has always has only one entry*/
+	if (sch_del_pntw) {
+		/* DestroyNetwork is requested. Remove all pending
+		 * requests from queue
+		 */
+		__process_pntw_del_request(sch_del_pntw, &ntw, &is_ntw_over);
+		sch_del_pntw = NULL;
 	}
 
-	if (ntw && ntw->res_resource && !ntw->ntw_running) {
+	if (pntw && pntw->res_resource && !pntw->pntw_running) {
 		/* When resources are reserved, pick node from Ntw's queue */
-		node = __get_next_exe_node(ntw);
+		node = __get_next_exe_node(pntw);
 	}
 
 	if (node) {
@@ -342,26 +367,35 @@ static enum sch_status __l_process_next_exe_node(struct ice_network *ntw,
 
 	if (node) {
 
-		if (is_ntw_over && (node->ntw != ntw)) {
+		if (is_ntw_over && (node->pntw != pntw)) {
 			/* Return the resources of previous Ntw because
 			 * a different Ntw was selected for execution.
 			 */
-			ice_ds_ntw_return_resource(ntw);
+			ASSERT(pntw);
+			ice_ds_ntw_return_resource(pntw);
 		}
 	} else {
 
 		if (is_ntw_over)
-			ice_ds_ntw_return_resource(ntw);
+			ice_ds_ntw_return_resource(pntw);
 
 		goto out;
 	}
 
 	if (node->ntype == NODE_TYPE_INFERENCE) {
-
+		/* Temp assignment of Requesting Network as current network
+		 * in parent structure. If request fails, its assigned back
+		 * to NULL. If successful, reassigned again inside
+		 * if condition
+		 */
+		node->pntw->curr_ntw = node->ntw;
 		status = __process_inf_node(node);
+		node->pntw->curr_ntw = NULL;
 		if (status == SCH_STATUS_DONE) {
 			node->ntw->ntw_running = true;
+			node->pntw->pntw_running = true;
 			node->inf->inf_running = true;
+			node->pntw->curr_ntw = node->ntw;
 		}
 	} else if (node->ntype == NODE_TYPE_RESERVE) {
 
@@ -396,8 +430,8 @@ static enum sch_status __schedule_node(struct execution_node *node)
 	/* time stamp to capture start of inference for network busy time*/
 	inf->busy_start_time = trace_clock_global();
 	cve_os_log(CVE_LOGLEVEL_INFO,
-		"Scheduling Infer Request. NtwID=0x%llx, InfID=0x%lx\n",
-		ntw->network_id, (uintptr_t)inf);
+		"Scheduling Infer Request. PNTW:0x%llx NtwID=0x%llx, InfID=0x%lx\n",
+		ntw->pntw->pntw_id, ntw->network_id, (uintptr_t)inf);
 
 	/* Strictly 1 Ntw 1 JG */
 	ASSERT(ntw->num_jg == 1);
@@ -405,8 +439,8 @@ static enum sch_status __schedule_node(struct execution_node *node)
 
 	DO_TRACE(trace_icedrvExecuteNetwork(
 				SPH_TRACE_OP_STATE_START,
-				ntw->wq->context->swc_node.sw_id,
-				ntw->swc_node.parent_sw_id,
+				ntw->pntw->wq->context->swc_node.sw_id,
+				ntw->pntw->swc_node.sw_id,
 				ntw->swc_node.sw_id, ntw->network_id,
 				inf->swc_node.sw_id,
 				SPH_TRACE_OP_STATUS_ICE,
@@ -433,7 +467,7 @@ static enum sch_status __schedule_node(struct execution_node *node)
 		ntw->network_id, (uintptr_t)inf);
 
 #ifdef _DEBUG
-	head = ntw->ice_list;
+	head = ntw->pntw->ice_list;
 	next = head;
 	if (next) {
 		do {
@@ -449,19 +483,19 @@ static enum sch_status __schedule_node(struct execution_node *node)
 	return status;
 }
 
-void ice_sch_engine(struct ice_network *ntw, bool is_ntw_over)
+void ice_sch_engine(struct ice_pnetwork *pntw, bool is_ntw_over)
 {
 	enum sch_status status;
 	struct execution_node *node = NULL;
 
-	status = __l_process_next_exe_node(ntw, is_ntw_over, &node);
+	status = __l_process_next_exe_node(pntw, is_ntw_over, &node);
 
 	while (node) {
 
 		if (status == SCH_STATUS_DONE) {
 
 			if (node->ntype == NODE_TYPE_RESERVE) {
-				ice_sch_engine(node->ntw, false);
+				ice_sch_engine(node->pntw, false);
 				return;
 			} else if (node->ntype == NODE_TYPE_INFERENCE) {
 				__schedule_node(node);
@@ -483,6 +517,7 @@ bool ice_lsch_add_inf_to_queue(struct ice_infer *inf,
 {
 	bool ret = true;
 	struct ice_network *ntw = inf->ntw;
+	struct ice_pnetwork *pntw = inf->ntw->pntw;
 
 	if (inf->inf_sch_node.is_queued || inf->inf_running) {
 		ret = false;
@@ -495,37 +530,41 @@ bool ice_lsch_add_inf_to_queue(struct ice_infer *inf,
 	inf->ntw->ntw_enable_bp = enable_bp;
 
 
-	if (ntw->res_resource &&
-		(ntw->last_request_type == NODE_TYPE_RESERVE)) {
+	if (pntw->res_resource &&
+		(pntw->last_request_type == NODE_TYPE_RESERVE)) {
 
 		cve_os_log(CVE_LOGLEVEL_DEBUG,
-			"Adding Inf Node to Ntw Queue. NtwId=0x%lx, InfId=0x%lx, Pr=%d\n",
-			(uintptr_t)inf->ntw, (uintptr_t)inf,
+			"Adding Inf Node to Parent Ntw Queue. PNTW=0x%lx, NtwId=0x%lx, InfId=0x%lx, Pr=%d\n",
+			(uintptr_t)pntw,
+			(uintptr_t)inf->ntw,
+			(uintptr_t)inf,
 			inf->inf_pr);
 
 		/* These nodes will be executed when resources are reserved */
-		cve_dle_add_to_list_before(ntw->sch_queue[inf->inf_pr],
-			ntw_queue[inf->inf_pr], &inf->inf_sch_node);
+		cve_dle_add_to_list_before(ntw->pntw->sch_queue[inf->inf_pr],
+			pntw_queue[inf->inf_pr], &inf->inf_sch_node);
 
-		inf->inf_sch_node.in_ntw_queue = true;
+		inf->inf_sch_node.in_pntw_queue = true;
 	} else {
 
 		cve_os_log(CVE_LOGLEVEL_DEBUG,
-			"Adding Inf Node to Sch Queue. NtwId=0x%lx, InfId=0x%lx, Pr=%d\n",
-			(uintptr_t)inf->ntw, (uintptr_t)inf,
+			"Adding Inf Node to Sch Queue. PNTW=0x%lx, NtwId=0x%lx, InfId=0x%lx, Pr=%d\n",
+			(uintptr_t)pntw,
+			(uintptr_t)inf->ntw,
+			(uintptr_t)inf,
 			inf->inf_pr);
 
 		cve_dle_add_to_list_before(sch_queue[inf->inf_pr],
 			sch_list[inf->inf_pr], &inf->inf_sch_node);
 
-		inf->inf_sch_node.in_ntw_queue = false;
+		inf->inf_sch_node.in_pntw_queue = false;
 	}
 
 out:
 
 	if (ret) {
 
-		ice_sch_engine(ntw, false);
+		ice_sch_engine(ntw->pntw, false);
 
 #ifdef RING3_VALIDATION
 		cve_os_log(CVE_LOGLEVEL_DEBUG, "Execute ICEs\n");
@@ -541,6 +580,7 @@ bool ice_lsch_del_inf_from_queue(struct ice_infer *inf,
 {
 	bool ret = true;
 	struct ice_network *ntw = inf->ntw;
+	struct ice_pnetwork *pntw = ntw->pntw;
 
 	if (lock) {
 
@@ -554,22 +594,25 @@ bool ice_lsch_del_inf_from_queue(struct ice_infer *inf,
 
 		inf->inf_sch_node.is_queued = false;
 
-		if (inf->inf_sch_node.in_ntw_queue) {
+		if (inf->inf_sch_node.in_pntw_queue) {
 
 			cve_os_log(CVE_LOGLEVEL_DEBUG,
-				"Removing Inf Node from Ntw Queue. NtwId=0x%lx, InfId=0x%lx, Pr=%d\n",
+				"Removing Inf Node from PNtw Queue. Pntw=0x%lx NtwId=0x%lx, InfId=0x%lx, Pr=%d\n",
+				(uintptr_t)pntw,
 				(uintptr_t)inf->ntw, (uintptr_t)inf,
 				inf->inf_pr);
+
 
 			ASSERT(inf->inf_pr < EXE_INF_PRIORITY_MAX);
 
 			cve_dle_remove_from_list(
-				ntw->sch_queue[inf->inf_pr],
-				ntw_queue[inf->inf_pr], &inf->inf_sch_node);
+				pntw->sch_queue[inf->inf_pr],
+				pntw_queue[inf->inf_pr], &inf->inf_sch_node);
 		} else {
 
 			cve_os_log(CVE_LOGLEVEL_DEBUG,
-				"Removing Inf Node from Sch Queue. NtwId=0x%lx, InfId=0x%lx, Pr=%d\n",
+				"Removing Inf Node from Sch Queue. PNTW=0x%lx, NtwId=0x%lx, InfId=0x%lx, Pr=%d\n",
+				(uintptr_t)pntw,
 				(uintptr_t)inf->ntw, (uintptr_t)inf,
 				inf->inf_pr);
 
@@ -603,8 +646,8 @@ bool ice_lsch_add_rr_to_queue(struct execution_node *node)
 	if (node->ntype == NODE_TYPE_RELEASE) {
 
 		cve_os_log(CVE_LOGLEVEL_DEBUG,
-			"Adding Rel Node to Queue. NtwId=0x%lx\n",
-			(uintptr_t)node->ntw);
+			"Adding Rel Node to Queue. PNtwId=0x%lx\n",
+			(uintptr_t)node->pntw);
 
 		cve_dle_add_to_list_before(
 			sch_queue[EXE_INF_PRIORITY_0],
@@ -613,16 +656,16 @@ bool ice_lsch_add_rr_to_queue(struct execution_node *node)
 			sch_queue[EXE_INF_PRIORITY_1],
 			sch_list[EXE_INF_PRIORITY_1], node);
 		cve_dle_add_to_list_before(
-			node->ntw->sch_queue[EXE_INF_PRIORITY_0],
-			ntw_queue[EXE_INF_PRIORITY_0], node);
+			node->pntw->sch_queue[EXE_INF_PRIORITY_0],
+			pntw_queue[EXE_INF_PRIORITY_0], node);
 		cve_dle_add_to_list_before(
-			node->ntw->sch_queue[EXE_INF_PRIORITY_1],
-			ntw_queue[EXE_INF_PRIORITY_1], node);
+			node->pntw->sch_queue[EXE_INF_PRIORITY_1],
+			pntw_queue[EXE_INF_PRIORITY_1], node);
 	} else {
 
 		cve_os_log(CVE_LOGLEVEL_DEBUG,
-			"Adding Res Node to Queue. NtwId=0x%lx\n",
-			(uintptr_t)node->ntw);
+			"Adding Res Node to Queue. PNtwId=0x%lx\n",
+			(uintptr_t)node->pntw);
 
 		cve_dle_add_to_list_before(
 			sch_queue[EXE_INF_PRIORITY_0],
@@ -637,7 +680,7 @@ out:
 	 * If REL => It should first check Ntw's Queue
 	 * If RES => It will anyways pick from Sch Queue
 	 */
-	ice_sch_engine(node->ntw, false);
+	ice_sch_engine(node->pntw, false);
 
 	return ret;
 }
@@ -657,8 +700,8 @@ bool ice_lsch_del_rr_from_queue(struct execution_node *node,
 	if (node->ntype == NODE_TYPE_RELEASE) {
 
 		cve_os_log(CVE_LOGLEVEL_DEBUG,
-			"Removing Rel Node from Queue. NtwId=0x%lx\n",
-			(uintptr_t)node->ntw);
+			"Removing Rel Node from Queue. PNtwId=0x%lx\n",
+			(uintptr_t)node->pntw);
 
 		cve_dle_remove_from_list(
 			sch_queue[EXE_INF_PRIORITY_0],
@@ -667,16 +710,16 @@ bool ice_lsch_del_rr_from_queue(struct execution_node *node,
 			sch_queue[EXE_INF_PRIORITY_1],
 			sch_list[EXE_INF_PRIORITY_1], node);
 		cve_dle_remove_from_list(
-			node->ntw->sch_queue[EXE_INF_PRIORITY_0],
-			ntw_queue[EXE_INF_PRIORITY_0], node);
+			node->pntw->sch_queue[EXE_INF_PRIORITY_0],
+			pntw_queue[EXE_INF_PRIORITY_0], node);
 		cve_dle_remove_from_list(
-			node->ntw->sch_queue[EXE_INF_PRIORITY_1],
-			ntw_queue[EXE_INF_PRIORITY_1], node);
+			node->pntw->sch_queue[EXE_INF_PRIORITY_1],
+			pntw_queue[EXE_INF_PRIORITY_1], node);
 	} else {
 
 		cve_os_log(CVE_LOGLEVEL_DEBUG,
-			"Removing Res Node from Queue. NtwId=0x%lx\n",
-			(uintptr_t)node->ntw);
+			"Removing Res Node from Queue. PNtwId=0x%lx\n",
+			(uintptr_t)node->pntw);
 
 		cve_dle_remove_from_list(
 			sch_queue[EXE_INF_PRIORITY_0],
@@ -691,10 +734,10 @@ out:
 	return ret;
 }
 
-void ice_lsch_destroy_network(struct ice_network *ntw)
+void ice_lsch_destroy_pnetwork(struct ice_pnetwork *pntw)
 {
-	ASSERT(sch_del_ntw == NULL);
-	sch_del_ntw = ntw;
+	ASSERT(sch_del_pntw == NULL);
+	sch_del_pntw = pntw;
 
 	ice_sch_engine(NULL, false);
 }

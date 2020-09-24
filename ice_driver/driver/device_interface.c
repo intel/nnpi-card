@@ -296,7 +296,9 @@ int ice_di_mmu_block_entrance(struct cve_device *cve_dev)
 	reg.val = cve_os_read_mmio_32(cve_dev, offset_bytes);
 	cve_os_dev_log(CVE_LOGLEVEL_DEBUG,
 			cve_dev->dev_index,
-			"Read BLOCK_ENTRANCE bit in MMU Config Register. reg.val = 0x%08x\n",
+			"Pntw:0x%llx Ntw:0x%llx Read BLOCK_ENTRANCE bit in MMU Config Register. reg.val = 0x%08x\n",
+				cve_dev->dev_pntw_id,
+				cve_dev->dev_ntw_id,
 			reg.val);
 
 	/* validate that MMU transactions are not blocked already
@@ -352,8 +354,10 @@ int ice_di_mmu_block_entrance(struct cve_device *cve_dev)
 		} while (1);
 
 		cve_os_dev_log(CVE_LOGLEVEL_DEBUG,
-			cve_dev->dev_index,
-			"All active MMU transaction from CVE finished...!\n");
+				cve_dev->dev_index,
+				"Pntw:0x%llx Ntw:0x%llx Blocked MMU transactions\n",
+				cve_dev->dev_pntw_id,
+				cve_dev->dev_ntw_id);
 		new_block_performed = 1;
 	}
 	return new_block_performed;
@@ -374,7 +378,9 @@ void ice_di_mmu_unblock_entrance(struct cve_device *cve_dev)
 
 	cve_os_dev_log(CVE_LOGLEVEL_DEBUG,
 		cve_dev->dev_index,
-		"Allow CVE to send NEW memory transactions to MMU. reg.val = 0x%08x\n",
+		"Pntw:0x%llx Ntw:0x%llx Unblock MMU transactions reg.val = 0x%08x\n",
+		cve_dev->dev_pntw_id,
+		cve_dev->dev_ntw_id,
 		reg.val);
 }
 
@@ -484,15 +490,13 @@ static void dispatch_next_subjobs(struct di_job *job,
 	u32 db = 0;
 	u32 cbd_size = sizeof(union CVE_SHARED_CB_DESCRIPTOR);
 	cve_virtual_address_t iceva;
+	struct job_descriptor __maybe_unused *inf_job =
+		(struct job_descriptor *)job->ds_hjob;
 	struct ice_network *ntw = (struct ice_network *) dev->dev_ntw_id;
 	struct ice_infer *inf = ntw->curr_exe;
 	struct cve_device_group *dg = cve_dg_get();
 	const struct sphpb_callbacks *sphpb_cbs;
 	int ret;
-	bool throttling;
-
-	dev->is_cold_run = job->cold_run;
-
 
 	if (job->cold_run)
 		__prepare_cbdt(job, dev);
@@ -528,26 +532,6 @@ static void dispatch_next_subjobs(struct di_job *job,
 					ret);
 			}
 		}
-		if (job->cdyn_val && dev->cdyn_val != job->cdyn_val) {
-			/* For A step Throttling is disabled */
-			throttling = false;
-			if (ice_get_iccp_throttling_flag())
-				throttling = true;
-			ret = ice_iccp_license_request(dev, throttling,
-								job->cdyn_val);
-			cve_os_dev_log(CVE_LOGLEVEL_DEBUG,
-					dev->dev_index,
-					" Sending iccp license request Curr:%u Requested:%u",
-					dev->cdyn_val,
-					job->cdyn_val);
-			if (ret) {
-				cve_os_dev_log(CVE_LOGLEVEL_ERROR,
-					dev->dev_index,
-					" failed in iccp license request (%d)\n",
-					ret);
-			}
-			dev->cdyn_val = job->cdyn_val;
-		}
 		/* Cold Run */
 		if (disable_embcb) {
 			job->first_cb_desc = 1;
@@ -561,6 +545,18 @@ static void dispatch_next_subjobs(struct di_job *job,
 				dev->dev_index);
 		}
 
+		if (!dev->is_cold_run) {
+			job->first_cb_desc = 1;
+			cve_os_dev_log(CVE_LOGLEVEL_DEBUG,
+					dev->dev_index,
+				"PntwId:0x%llx NtwId:0x%llx JobId:%u GraphId:%u DummyGraphId:%u Cold Job Warm Run Skip ECB\n",
+				ntw->pntw->pntw_id,
+				ntw->network_id,
+				inf_job->id,
+				inf_job->graph_ice_id,
+				inf_job->dummy_ice_id);
+		}
+
 		job->cold_run = 0;
 
 		/* call project hook right before ringing the doorbell */
@@ -570,27 +566,39 @@ static void dispatch_next_subjobs(struct di_job *job,
 		cve_os_write_mmio_32(dev,
 				cfg_default.mmio_cbd_entries_nr_offset,
 				dev->fifo_desc->fifo.entries);
-	} else if (job->has_scb) {
-		/* Warm Run with SCB */
-		job->first_cb_desc = 2;
-
-		cve_os_log(CVE_LOGLEVEL_INFO,
-			"Warm Run (Skipping SCB)\n");
-
 	} else {
-		/* Warm run without SCB */
-		job->first_cb_desc = 1;
+		ASSERT(dev->is_cold_run == 0);
+		if (job->has_scb) {
+			/* Warm Run with SCB */
+			job->first_cb_desc = 2;
 
-		cve_os_log(CVE_LOGLEVEL_INFO,
-			"Warm Run\n");
+			cve_os_dev_log(CVE_LOGLEVEL_DEBUG,
+					dev->dev_index,
+					"PntwId:0x%llx NtwId:0x%llx JobId:%u GraphId:%u DummyGraphId:%u Warm Run (Skipping SCB)\n",
+					ntw->pntw->pntw_id, ntw->network_id,
+					inf_job->id, inf_job->graph_ice_id,
+					inf_job->dummy_ice_id);
+
+		} else {
+			/* Warm run without SCB */
+			job->first_cb_desc = 1;
+
+			cve_os_dev_log(CVE_LOGLEVEL_DEBUG,
+					dev->dev_index,
+					"PntwId:0x%llx NtwId:0x%llx JobId:%u GraphId:%u DummyGraphId:%u Warm Run\n",
+					ntw->pntw->pntw_id, ntw->network_id,
+					inf_job->id, inf_job->graph_ice_id,
+					inf_job->dummy_ice_id);
+		}
 	}
-
 	iceva += (job->first_cb_desc * cbd_size);
 	db -= job->first_cb_desc;
 
-	cve_os_log(CVE_LOGLEVEL_DEBUG,
-		"CBDT Base Address = %x, CBDT Entries = %d, Doorbell = %d\n",
-		iceva, dev->fifo_desc->fifo.entries, db);
+	cve_os_log(CVE_LOGLEVEL_INFO,
+			"PntwId:0x%llx NtwId:0x%llx JobId:%u GraphId:%u DummyGraphId:%u CBDBase:%x, CBDCount:%d Doorbell:%d\n",
+			ntw->pntw->pntw_id, ntw->network_id, inf_job->id,
+			inf_job->graph_ice_id, inf_job->dummy_ice_id,
+			iceva, dev->fifo_desc->fifo.entries, db);
 
 	/* If true => Unblock before each Doorbell */
 	if (block_mmu)
@@ -604,11 +612,6 @@ static void dispatch_next_subjobs(struct di_job *job,
 	if (inf->hswc)
 		ice_swc_counter_inc(inf->hswc,
 			ICEDRV_SWC_INFER_COUNTER_REQUEST_SENT);
-
-	cve_os_dev_log(CVE_LOGLEVEL_INFO,
-		dev->dev_index,
-		"NtwID:0x%llx Ring the doorbell\n",
-		ntw->network_id);
 
 	/* To check if break point needs to be set */
 	if (ntw->ntw_enable_bp)
@@ -720,7 +723,7 @@ void ice_di_set_shared_read_reg(struct cve_device *dev, struct ice_network *ntw,
 	}
 
 	cfg_reg.field.shared_read_enable = 1;
-	cfg_reg.field.max_shared_distance = ntw->max_shared_distance;
+	cfg_reg.field.max_shared_distance = ntw->pntw->max_shared_distance;
 	cfg_reg.field.enable_timeout = 1;
 	cfg_reg.field.timeout_threshold = SHARED_READ_TIMEOUT_THRESHOLD;
 
@@ -741,6 +744,7 @@ int set_idc_registers(struct ice_network *ntw, uint8_t lock)
 	bool all_on = true;
 	uint64_t mask = 0;
 	u64 t;
+	struct ice_pnetwork *pntw = ntw->pntw;
 
 	if (lock) {
 		ret = cve_os_lock(&dg->poweroff_dev_list_lock,
@@ -753,7 +757,7 @@ int set_idc_registers(struct ice_network *ntw, uint8_t lock)
 		}
 	}
 
-	dev = ntw->ice_list;
+	dev = pntw->ice_list;
 	do {
 		if (dev->power_state == ICE_POWER_ON) {
 
@@ -783,7 +787,7 @@ int set_idc_registers(struct ice_network *ntw, uint8_t lock)
 
 		dev = cve_dle_next(dev, owner_list);
 
-	} while (dev != ntw->ice_list);
+	} while (dev != pntw->ice_list);
 
 	if (all_on)
 		goto out;
@@ -812,7 +816,7 @@ int set_idc_registers(struct ice_network *ntw, uint8_t lock)
 				ICE_POWER_ON);
 
 			dev = cve_dle_next(dev, owner_list);
-		} while (dev != ntw->ice_list);
+		} while (dev != pntw->ice_list);
 
 		goto out;
 	}
@@ -844,7 +848,7 @@ int set_idc_registers(struct ice_network *ntw, uint8_t lock)
 				ICE_POWER_OFF);
 
 			dev = cve_dle_next(dev, owner_list);
-		} while (dev != ntw->ice_list);
+		} while (dev != pntw->ice_list);
 
 		cve_os_log_default(CVE_LOGLEVEL_ERROR,
 			"Initialization of ICEs failed. Expected=%llx, Received=%llx\n",
@@ -887,7 +891,7 @@ int set_idc_registers(struct ice_network *ntw, uint8_t lock)
 		}
 
 		dev = cve_dle_next(dev, owner_list);
-	} while (dev != ntw->ice_list);
+	} while (dev != pntw->ice_list);
 
 	/* based on the Power Enabled ICE mask, prepare an equivalent ICE
 	 * normal/error interrupt mask. This avoid reading those MMIOs
@@ -1017,7 +1021,7 @@ void cve_di_reset_device(struct cve_device *cve_dev)
 	 */
 	needs_reset = (cve_dev->di_cve_needs_reset &
 			~(CVE_DI_RESET_DUE_POWER_ON |
-			CVE_DI_RESET_DUE_NTW_SWITCH));
+			CVE_DI_RESET_DUE_PNTW_SWITCH));
 	idc_reset = (needs_reset) ? 1 : 0;
 
 	if (do_reset_device(cve_dev, idc_reset))
@@ -1027,11 +1031,13 @@ void cve_di_reset_device(struct cve_device *cve_dev)
 
 	cve_os_dev_log(CVE_LOGLEVEL_DEBUG,
 			cve_dev->dev_index,
-			"Perform Reset(%d) (needs_reset:0x%x) Reason=0x%08x, Ntw=%d, Job=%d, Timeout=%d, Power=%d Context=%d\n",
+			"Perform Reset(%d) (needs_reset:0x%x) Reason=0x%08x, PNTW=%d Ntw=%d, Job=%d, Timeout=%d, Power=%d Context=%d\n",
 			idc_reset, needs_reset,
 			cve_dev->di_cve_needs_reset,
 			((cve_dev->di_cve_needs_reset &
-				CVE_DI_RESET_DUE_NTW_SWITCH) != 0),
+			  CVE_DI_RESET_DUE_PNTW_SWITCH) != 0),
+			((cve_dev->di_cve_needs_reset &
+			  CVE_DI_RESET_DUE_NTW_SWITCH) != 0),
 			((cve_dev->di_cve_needs_reset &
 				CVE_DI_RESET_DUE_JOB_NOT_COMP) != 0),
 			((cve_dev->di_cve_needs_reset &
@@ -1381,33 +1387,33 @@ static void __calc_cb_executon_time(struct cve_device *dev,
 }
 
 /* Return ntw if counter has overflowed */
-static struct ice_network *__get_ntw_of_overflowed_cntr(int cntr_id,
+static struct ice_pnetwork *__get_pntw_of_overflowed_cntr(int cntr_id,
 		struct idc_device *dev)
 {
 	struct cve_device_group *dg = cve_dg_get();
 	u32 reg = cfg_default.bar0_mem_evctprot0_offset + (cntr_id * 32);
 	idc_regs_evctprot0_t evct_prot_reg;
-	struct ice_network *ntw = NULL;
+	struct ice_pnetwork *pntw = NULL;
 
 	/* Check overflow bit of all the counters with which a valid NTW ID
 	 * is associated.
 	 * base_addr_hw_cntr holds the base address of HW CNTR array and can be
 	 * used to get the network ID to which a given counter belongs.
 	 */
-	if (dg->base_addr_hw_cntr[cntr_id].cntr_ntw_id != INVALID_NETWORK_ID) {
+	if (dg->base_addr_hw_cntr[cntr_id].cntr_pntw_id != INVALID_NETWORK_ID) {
 		evct_prot_reg.val = cve_os_read_idc_mmio(dev->cve_dev, reg);
 		if ((evct_prot_reg.field.OVF) ||
 			ice_os_get_user_idc_intst()) {
 			/* Shouldn't we clead OVF by writing 1? */
 			cve_os_log_default(CVE_LOGLEVEL_ERROR,
 			"Error: NtwID:0x%llx Counter:%x overflow\n",
-			dg->base_addr_hw_cntr[cntr_id].cntr_ntw_id, cntr_id);
-			ntw = (struct ice_network *)
-				dg->base_addr_hw_cntr[cntr_id].cntr_ntw_id;
+			dg->base_addr_hw_cntr[cntr_id].cntr_pntw_id, cntr_id);
+			pntw = (struct ice_pnetwork *)
+				dg->base_addr_hw_cntr[cntr_id].cntr_pntw_id;
 		}
 	}
 
-	return ntw;
+	return pntw;
 }
 
 int cve_di_interrupt_handler(struct idc_device *idc_dev)
@@ -1597,6 +1603,34 @@ static inline void __read_isr_q(struct idc_device *dev,
 	*q_tail = tail;
 }
 
+static void __block_pntw(struct cve_device_group *dg,
+		union icedc_intr_status_t idc_err_status)
+{
+	struct ice_pnetwork *pntw, *pntw_head;
+
+	/* Affects all networks */
+	pntw_head = dg->pntw_with_resources;
+	pntw = pntw_head;
+
+	cve_os_log(CVE_LOGLEVEL_ERROR,
+			"Received error interrupt from IceDC\n");
+	if (!pntw)
+		goto exit;
+
+	do {
+		/* TODO: Segregate IDC error */
+		if (pntw->pntw_running)
+			ice_ds_block_network(pntw, NULL,
+					idc_err_status.val, false);
+
+
+		pntw =  cve_dle_next(pntw, list);
+	} while (pntw != pntw_head);
+
+exit:
+	return;
+}
+
 void cve_di_interrupt_handler_deferred_proc(struct idc_device *dev)
 {
 	int index, i;
@@ -1691,23 +1725,7 @@ void cve_di_interrupt_handler_deferred_proc(struct idc_device *dev)
 			idc_err_status.field.attn_err ||
 			idc_err_status.field.cntr_err) {
 
-			struct ice_network *ntw, *ntw_head;
-
-			/* Affects all networks */
-			ntw_head = dg->ntw_with_resources;
-			ntw = ntw_head;
-
-			cve_os_log(CVE_LOGLEVEL_ERROR,
-				"Received error interrupt from IceDC\n");
-
-			do {
-				/* TODO: Segregate IDC error */
-
-				ice_ds_block_network(ntw, NULL,
-					idc_err_status.val, false);
-
-				ntw = cve_dle_next(ntw, resource_list);
-			} while (ntw != ntw_head);
+			__block_pntw(dg, idc_err_status);
 
 			if (!idc_err_status.field.attn_err &&
 				!idc_err_status.field.cntr_err) {
@@ -1718,14 +1736,14 @@ void cve_di_interrupt_handler_deferred_proc(struct idc_device *dev)
 
 		} else if (idc_err_status.field.cntr_oflow_err) {
 
-			struct ice_network *ntw;
+			struct ice_pnetwork *pntw;
 
 			/* Affects all Networks that are using counter */
 			for (i = 0; i < MAX_HW_COUNTER_NR; i++) {
-				ntw = __get_ntw_of_overflowed_cntr(i, dev);
+				pntw = __get_pntw_of_overflowed_cntr(i, dev);
 
-				if (ntw)
-					ice_ds_block_network(ntw, NULL,
+				if (pntw)
+					ice_ds_block_network(pntw, NULL,
 						idc_err_status.val, false);
 			}
 		}
@@ -1766,8 +1784,14 @@ void cve_di_interrupt_handler_deferred_proc(struct idc_device *dev)
 		cve_dev->interrupts_status = 0;
 		cve_os_dev_log(CVE_LOGLEVEL_INFO,
 			index,
-			"Received interrupt[BH] from IDC. Status=0x%x\n",
-			status);
+			"IsrBH IsrStatus=0x%x PNtwId:0x%llx NtwId:0x%llx IsColdRun:%d DbCbdId:%u IdleSTime:%llu BusySTime:%llu\n",
+			status,
+			cve_dev->dev_pntw_id,
+			cve_dev->dev_ntw_id,
+			cve_dev->is_cold_run,
+			cve_dev->db_cbd_id,
+			cve_dev->idle_start_time,
+			cve_dev->busy_start_time);
 
 		/* we might enter here with status 0
 		 * this is a valid situation.
@@ -1919,7 +1943,9 @@ void cve_di_interrupt_handler_deferred_proc(struct idc_device *dev)
 
 			DO_TRACE(trace_icedrvScheduleJob(
 						SPH_TRACE_OP_STATE_BH,
-						cve_dev->dev_index, 0, 0, 0,
+						cve_dev->dev_index,
+						cve_dev->dev_ctx_id,
+						cve_dev->dev_pntw_id, 0,
 						cve_dev->dev_ntw_id, 0,
 						(void *)job->ds_hjob,
 						SPH_TRACE_OP_STATUS_FAIL,
@@ -1983,7 +2009,8 @@ end:
 
 void cve_di_dispatch_job(struct cve_device *cve_dev,
 		cve_di_job_handle_t hjob,
-		cve_di_subjob_handle_t *e_cbs)
+		cve_di_subjob_handle_t *e_cbs,
+		cve_di_subjob_handle_t *warm_dev_ecb)
 {
 	struct di_job *job = (struct di_job *)hjob;
 
@@ -2006,9 +2033,31 @@ void cve_di_dispatch_job(struct cve_device *cve_dev,
 				job);
 		job->next_subjob = 0;
 		job->remaining_subjobs_nr = job->subjobs_nr + 1;
+		cve_dev->is_cold_run = 1;
+	} else if (e_cbs == NULL && job->cold_run == 1) {
+		/* this is a special case when same warm ICE from a parent
+		 * is used to run a new infer from a new network. In this case
+		 * ecb is bypassed as device is warm but job is cold
+		 */
+		ASSERT(warm_dev_ecb);
+		add_embedded_cb_to_job(job,
+				warm_dev_ecb[GET_CB_INDEX(CVE_FW_CB1_TYPE)]);
+		job->next_subjob = 0;
+		job->remaining_subjobs_nr = job->subjobs_nr + 1;
+		cve_dev->is_cold_run = 0;
+		cve_os_dev_log(CVE_LOGLEVEL_DEBUG,
+				cve_dev->dev_index,
+				"WARM ECB was added to job:0x%p\n", job);
+
 	} else {
+		/*TODO for warm device and warm job, there is chance that
+		 * previous network has overiden the deep sram content of
+		 * current job
+		 */
+
 		/* Can only be executed during Warm run */
 		ASSERT(!job->cold_run);
+		cve_dev->is_cold_run = 0;
 
 		if (job->has_scb) {
 			job->next_subjob = 2;
@@ -2033,11 +2082,18 @@ void cve_di_do_job_db(struct cve_device *ice, cve_di_job_handle_t hjob)
 	struct di_job __maybe_unused *job = (struct di_job *)hjob;
 	struct ice_network __maybe_unused *ntw =
 		(struct ice_network *) ice->dev_ntw_id;
+	struct job_descriptor __maybe_unused *inf_job =
+		(struct job_descriptor *)job->ds_hjob;
 
 	cve_os_dev_log(CVE_LOGLEVEL_INFO,
-		ice->dev_index,
-		"NtwID:0x%llx Ring the doorbell\n",
-		ntw->network_id);
+			ice->dev_index,
+			"PntwId:0x%llx NtwID:0x%llx JobId:%u GraphId:%u DummyGraphId:%u DbCbId:%u Ring the doorbell\n",
+			ntw->pntw->pntw_id,
+			ntw->network_id,
+			inf_job->id,
+			inf_job->graph_ice_id,
+			inf_job->dummy_ice_id,
+			ice->db_cbd_id);
 
 	/* reset the TLC FIFO indexes */
 	cve_os_write_mmio_32(ice,
@@ -2050,8 +2106,8 @@ void cve_di_do_job_db(struct cve_device *ice, cve_di_job_handle_t hjob)
 	DO_TRACE(trace_icedrvScheduleJob(
 				SPH_TRACE_OP_STATE_START,
 				ice->dev_index,
-				ntw->wq->context->swc_node.sw_id,
-				ntw->swc_node.parent_sw_id,
+				ntw->pntw->wq->context->swc_node.sw_id,
+				ntw->pntw->swc_node.sw_id,
 				ntw->swc_node.sw_id, ntw->network_id,
 				ntw->curr_exe->swc_node.sw_id,
 				(void *)job->ds_hjob,
@@ -2352,21 +2408,21 @@ static int ice_trigger_cnc_control_msg(struct cve_device *dev, u32 destCbbid,
 {
 	/*triggering cnc control message using mmio of ice*/
 	u32 TLC_GENERATE_CONTROL_UCMD_REG_data;
-	u32 gp_reg_14_init_val, gp_reg_14_current_val;
-	u32 gp_reg_15_val;
-	u16 timeout = CNC_CONTROL_MSG_TIMEOUT;
-	int ret = 1;
-
+#if ENABLE_GPR_WAIT
+	u32 gp_reg_14_init_val;
+#endif
 	/*write 0x0 to GENERAL_PURPOSE_REG_15*/
 	cve_os_write_mmio_32(dev,
 		cfg_default.mmio_gp_regs_offset +
 			ICE_MMIO_GP_15_REG_ADDR_OFFSET, 0x0);
 
+#if ENABLE_GPR_WAIT
 	/*read GENERAL_PURPOSE_REG_14*/
 	gp_reg_14_init_val = cve_os_read_mmio_32(dev,
 		cfg_default.mmio_gp_regs_offset +
 			ICE_MMIO_GP_14_REG_ADDR_OFFSET);
-	gp_reg_14_current_val = gp_reg_14_init_val;
+	dev->gp_reg14_val = gp_reg_14_init_val;
+#endif
 
 	/*write control payload data */
 	cve_os_write_mmio_32(dev,
@@ -2386,22 +2442,37 @@ static int ice_trigger_cnc_control_msg(struct cve_device *dev, u32 destCbbid,
 		cfg_default.ice_tlc_hi_tlc_control_ucmd_reg_offset,
 		TLC_GENERATE_CONTROL_UCMD_REG_data);
 
+	cve_os_log(CVE_LOGLEVEL_DEBUG,
+			"Writing cdyn  @offset 0x%x  = 0x%x\n",
+			cfg_default.ice_tlc_hi_tlc_debug_reg_offset,
+			controlPayload);
+#if ENABLE_GPR_WAIT
+	dev->cdyn_requested = 1;
+	dev->tlc_reg_val = TLC_GENERATE_CONTROL_UCMD_REG_data;
+#endif
+	return 0;
+}
+
+int ice_iccp_license_ack(struct cve_device *dev)
+{
+	u32 gp_reg_15_val;
+	u32 gp_reg_14_current_val, gp_reg_14_init_val = dev->gp_reg14_val;
+	u16 timeout = CNC_CONTROL_MSG_TIMEOUT;
+	int ret = 1;
+
 	/*wait for completion:
 	 *READ GP 15 until its value reflect value written to
 	 *TLC_GENERATE_CONTROL_UCMD_REG,
 	 *READ GP 14 until its value differs from initial GP 14 val
 	 */
 
-	cve_os_log(CVE_LOGLEVEL_DEBUG,
-			"Writing cdyn  @offset 0x%x  = 0x%x\n",
-			cfg_default.ice_tlc_hi_tlc_debug_reg_offset,
-			controlPayload);
+	gp_reg_14_current_val = gp_reg_14_init_val;
 	gp_reg_15_val = cve_os_read_mmio_32(dev,
 			cfg_default.mmio_gp_regs_offset +
 			ICE_MMIO_GP_15_REG_ADDR_OFFSET);
 
 	while ((gp_reg_14_init_val == gp_reg_14_current_val) &&
-		(gp_reg_15_val != TLC_GENERATE_CONTROL_UCMD_REG_data) &&
+		(gp_reg_15_val != dev->tlc_reg_val) &&
 		(timeout)) {
 		usleep_range(10, 12);
 		timeout--;
@@ -2419,9 +2490,13 @@ static int ice_trigger_cnc_control_msg(struct cve_device *dev, u32 destCbbid,
 		ret = 0;
 	else
 		cve_os_log(CVE_LOGLEVEL_ERROR,
-				"trigger_cnc_control_message timeout\n");
+				"ice_iccp_license_ack timeout\n");
+
+	dev->cdyn_requested = 0;
+
 	return ret;
 }
+
 int ice_iccp_license_request(struct cve_device *dev, bool throttling,
 				uint16_t license_value)
 {

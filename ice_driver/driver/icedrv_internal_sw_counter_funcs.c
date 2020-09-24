@@ -62,7 +62,7 @@ static int __get_sub_ntw_swc(struct ice_network *ntw, void **swc)
 
 static int __get_full_ntw_swc(struct ice_network *ntw, void **swc)
 {
-	struct ice_user_full_ntw *user_full_ntw = ntw->user_full_ntw;
+	struct ice_user_full_ntw *user_full_ntw = ntw->pntw->user_full_ntw;
 	struct ice_swc_node swc_node;
 
 	swc_node.sw_id = user_full_ntw->sw_id;
@@ -196,7 +196,6 @@ int _destroy_context_node(struct ds_context *ctx)
 static void __update_full_ntw_info(struct ice_network *ntw,
 		struct ice_user_full_ntw *user_full_ntw)
 {
-		ntw->user_full_ntw = user_full_ntw;
 		user_full_ntw->total_ice_ntw++;
 
 		ice_swc_counter_inc(user_full_ntw->hswc,
@@ -209,10 +208,9 @@ static void __update_full_ntw_info(struct ice_network *ntw,
 static int __get_full_ntw_swc_node(struct ice_network *ntw)
 {
 	int ret = 0;
-	struct ice_swc_node *swc_node = &ntw->swc_node;
-	struct ds_context *ctx = ntw->wq->context;
+	struct ice_swc_node *swc_node = &ntw->pntw->swc_node;
+	struct ds_context *ctx = ntw->pntw->wq->context;
 	struct ice_user_full_ntw *user_full_ntw;
-	void *parent;
 
 	if (!ctx->hswc) {
 		ret = -1;
@@ -222,20 +220,40 @@ static int __get_full_ntw_swc_node(struct ice_network *ntw)
 		goto exit;
 	}
 
-	/* lookup if this full ntw node exsist*/
+	/* lookup if this parent ntw node exsist*/
 	user_full_ntw = cve_dle_lookup(ctx->user_full_ntw, list,
-			sw_id, swc_node->parent_sw_id);
+			sw_id, swc_node->sw_id);
 
-	if (user_full_ntw) {
+	if (user_full_ntw)
 		__update_full_ntw_info(ntw, user_full_ntw);
+	else
+		ret = -1;
+
+exit:
+	return ret;
+}
+
+int _create_pntw_node(struct ice_pnetwork *pntw)
+{
+	int ret = 0;
+	struct ice_swc_node *swc_node = &pntw->swc_node;
+	struct ds_context *ctx = pntw->wq->context;
+	struct ice_user_full_ntw *user_full_ntw;
+	void *parent;
+
+	if (!ctx->hswc) {
+		ret = -1;
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+				"PNtwID:0x%llx No sw entry for context\n",
+				pntw->pntw_id);
 		goto exit;
 	}
 
 	ret = __get_ctx_swc(ICEDRV_SWC_CLASS_CONTEXT, ctx, &parent);
 	if (ret < 0) {
 		cve_os_log(CVE_LOGLEVEL_ERROR,
-				"NtwID:0x%llx No sw entry for context\n",
-				ntw->network_id);
+				"PNtwID:0x%llx No sw entry for context\n",
+				pntw->pntw_id);
 		goto exit;
 	}
 
@@ -244,23 +262,24 @@ static int __get_full_ntw_swc_node(struct ice_network *ntw)
 	if (ret < 0)
 		goto exit;
 
-	user_full_ntw->sw_id = swc_node->parent_sw_id;
+	user_full_ntw->sw_id = swc_node->sw_id;
 
 	ret = ice_swc_create_node(ICEDRV_SWC_CLASS_NETWORK,
 			user_full_ntw->sw_id, parent, &user_full_ntw->hswc);
 	if (ret < 0) {
 		cve_os_log(CVE_LOGLEVEL_ERROR,
-				"Error:%d NtwID:0x%llx Unable to create SW Counter's Context node\n",
-				ret, ntw->network_id);
+				"Error:%d PNtwID:0x%llx Unable to create SW Counter's Context node\n",
+				ret, pntw->pntw_id);
 		goto error_create_node;
 	}
 
+	pntw->hswc = user_full_ntw->hswc;
+	pntw->user_full_ntw = user_full_ntw;
 	user_full_ntw->parent = parent;
 	ice_swc_counter_inc(ctx->hswc, ICEDRV_SWC_CONTEXT_COUNTER_NTW_TOTAL);
 	ice_swc_counter_inc(ctx->hswc, ICEDRV_SWC_CONTEXT_COUNTER_NTW_CURR);
 
 	cve_dle_add_to_list_before(ctx->user_full_ntw, list, user_full_ntw);
-	__update_full_ntw_info(ntw, user_full_ntw);
 
 	return ret;
 
@@ -273,13 +292,10 @@ exit:
 
 static int __put_full_ntw_swc_node(struct ice_network *ntw)
 {
-	int ret = 0;
-	struct ice_swc_node *swc_node = &ntw->swc_node;
-	struct ds_context *ctx = ntw->wq->context;
-	struct ice_user_full_ntw *user_full_ntw = ntw->user_full_ntw;
+	struct ice_user_full_ntw *user_full_ntw = ntw->pntw->user_full_ntw;
 
 	if (!user_full_ntw)
-		goto exit;
+		return -1;
 
 	user_full_ntw->total_ice_ntw--;
 	ice_swc_counter_inc(user_full_ntw->hswc,
@@ -287,18 +303,31 @@ static int __put_full_ntw_swc_node(struct ice_network *ntw)
 	ice_swc_counter_dec(user_full_ntw->hswc,
 			ICEDRV_SWC_NETWORK_COUNTER_SUB_NTW_ACTIVE);
 
+	return 0;
+}
+
+int _destroy_pntw_node(struct ice_pnetwork *pntw)
+{
+	int ret = 0;
+	struct ice_swc_node *swc_node = &pntw->swc_node;
+	struct ds_context *ctx = pntw->wq->context;
+	struct ice_user_full_ntw *user_full_ntw = pntw->user_full_ntw;
+
+	if (!user_full_ntw)
+		goto exit;
+
 	if (user_full_ntw->total_ice_ntw)
 		goto exit;
 
 	/* If user count is zero, then delete this node */
 	cve_dle_remove_from_list(ctx->user_full_ntw, list,
-			ntw->user_full_ntw);
+			pntw->user_full_ntw);
 
 	ice_swc_counter_dec(ctx->hswc, ICEDRV_SWC_CONTEXT_COUNTER_NTW_CURR);
 	ice_swc_counter_inc(ctx->hswc, ICEDRV_SWC_CONTEXT_COUNTER_NTW_DEST);
 	ret = ice_swc_destroy_node(ICEDRV_SWC_CLASS_NETWORK,
 			user_full_ntw->parent,
-			swc_node->parent_sw_id);
+			swc_node->sw_id);
 	if (ret < 0)
 		cve_os_log(CVE_LOGLEVEL_ERROR,
 				"Error:%d CTX:%p Failed to delete the ICEDRV_SWC_CLASS_CONTEXT SW Counter\n",
@@ -307,7 +336,7 @@ static int __put_full_ntw_swc_node(struct ice_network *ntw)
 	OS_FREE(user_full_ntw, sizeof(*user_full_ntw));
 
 exit:
-	ntw->user_full_ntw = NULL;
+	pntw->user_full_ntw = NULL;
 	return ret;
 }
 
@@ -317,9 +346,10 @@ static int __create_sub_ntw_node(struct ice_network *ntw)
 {
 	int ret = 0;
 	struct ice_swc_node *swc_node = &ntw->swc_node;
+	struct ice_user_full_ntw *user_full_ntw = ntw->pntw->user_full_ntw;
 	void *parent;
 
-	if (ntw->user_full_ntw) {
+	if (user_full_ntw) {
 		ret = __get_full_ntw_swc(ntw, &parent);
 		if (ret < 0) {
 			cve_os_log(CVE_LOGLEVEL_ERROR,
