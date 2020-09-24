@@ -3113,6 +3113,7 @@ put_ctx:
 	kfree(op);
 }
 
+/* NNP_IPC_H2C_OP_CHAN_SCHEDULE_COPY_SUBRES */
 void IPC_OPCODE_HANDLER(CHAN_SCHEDULE_COPY_SUBRES)(struct sphcs                 *sphcs,
 						   union h2c_ChanInferenceSchedCopySubres *cmd)
 {

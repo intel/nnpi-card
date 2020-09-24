@@ -613,24 +613,27 @@ static void __configure_partition_sz(u64 *sz_per_page_alignment,
 	u8 i = IOVA_PAGE_ALIGNMENT_32K;
 	u32 max_active_infer;
 	u64 sz, total_sz = 0, infer_sz = 1;
+	u64 per_page_sz_config[IOVA_PAGE_ALIGNMENT_MAX] = {0};
 
 	/* Calculate total size requirement for buffer in network and infer*/
 	for (; i < IOVA_PAGE_ALIGNMENT_MAX; i++) {
 
-		sz_per_page_alignment[i] = round_up_cve_pagesize(
+		per_page_sz_config[i] = round_up_cve_pagesize(
 						sz_per_page_alignment[i],
 						ICE_PAGE_SZ_256M);
-		if (sz_per_page_alignment[i] == 0)
-			sz_per_page_alignment[i] = ICE_PAGE_SZ_256M;
+		if (per_page_sz_config[i] == 0)
+			per_page_sz_config[i] = ICE_PAGE_SZ_256M;
 
 		if (infer_buf_page_config[i])
 			infer_sz += infer_buf_page_config[i];
 
-		total_sz += sz_per_page_alignment[i];
+		total_sz += per_page_sz_config[i];
 		cve_os_log(CVE_LOGLEVEL_DEBUG,
-				"sz_per_page_alignment[%d]:%llu infer_buf_page_config[%d]:%llu TotalSz:0x%llx\n",
+				"sz_per_page_alignment[%d]:%llu infer_buf_page_config[%d]:%llu per_page_sz_config[%d]:%llu TotalSz:0x%llx\n",
 				i, sz_per_page_alignment[i],
-				i, infer_buf_page_config[i], total_sz);
+				i, infer_buf_page_config[i],
+				i, per_page_sz_config[i],
+				total_sz);
 	}
 
 	/* Divide the unused VA space among the partitions used for inference*/
@@ -645,7 +648,7 @@ static void __configure_partition_sz(u64 *sz_per_page_alignment,
 		max_active_infer);
 
 	for (i = IOVA_PAGE_ALIGNMENT_32K; i < IOVA_PAGE_ALIGNMENT_MAX; i++) {
-		sz = (sz_per_page_alignment[i] +
+		sz = (per_page_sz_config[i] +
 			(infer_buf_page_config[i] * max_active_infer));
 		partition_sz_list[i] = round_up_cve_pagesize(sz,
 						ICE_PAGE_SZ_256M);
@@ -699,10 +702,16 @@ static int __configure_extended_partition_sz(
 	for (i = IOVA_PAGE_ALIGNMENT_32K; i < IOVA_PAGE_ALIGNMENT_MAX; i++) {
 
 		sz = (infer_buf_page_config[i] * max_active_infer);
-
-		partition_sz_list[i] = round_up_cve_pagesize(sz,
+		partition_sz_list[i] = round_down_cve_pagesize(sz,
 						ICE_PAGE_SZ_256M);
 		sum += partition_sz_list[i];
+		cve_os_log(CVE_LOGLEVEL_DEBUG,
+				"PID:%u PartitionSz[%d]:%llu MB, Sum:%llu\n",
+				i, i,
+				partition_sz_list[i], sum);
+
+
+
 	}
 
 	ASSERT(sum <= (ICE_VA_HIGH_TOTAL_SZ - ICE_VA_HIGH_PHY_SZ));
@@ -780,9 +789,11 @@ static void __do_mmu_config(struct cve_lin_mm_domain *domain,
 		mmu_config->pde_end_idx =
 			((mmu_config->va_end - 1)/ICE_PAGE_SZ_32M);
 		cve_os_log(CVE_LOGLEVEL_DEBUG,
-				"pa_width:%d pa_shift:%d page_shift:%d va_width:%d, page_sz:%u VaStart:0x%llx VaEnd:0x%llx\n",
-				ICE_DEFAULT_PA_WIDTH, ICE_DEFAULT_PA_SHIFT,
-				mmu_config->page_shift, ICE_DEFAULT_VA_WIDTH,
+				"DevCtxId:%u PID:%u page_shift:%d PartitionSz:%llu MB, PageSz:%u VaStart:0x%llx VaEnd:0x%llx\n",
+				domain->id, partition,
+				mmu_config->page_shift,
+				((mmu_config->va_end - mmu_config->va_start)/
+				 (1024 * 1024)),
 				mmu_config->page_sz,
 				mmu_config->va_start,
 				mmu_config->va_end);
@@ -837,10 +848,13 @@ static int __do_extended_mmu_config(struct cve_lin_mm_domain *domain,
 			(mmu_config->va_start/ICE_PAGE_SZ_32M);
 		mmu_config->pde_end_idx =
 			((mmu_config->va_end - 1)/ICE_PAGE_SZ_32M);
+
 		cve_os_log(CVE_LOGLEVEL_DEBUG,
-				"pa_width:%d pa_shift:%d page_shift:%d va_width:%d, page_sz:%u VaStart:0x%llx VaEnd:0x%llx\n",
-				ICE_DEFAULT_PA_WIDTH, ICE_DEFAULT_PA_SHIFT,
-				mmu_config->page_shift, ICE_DEFAULT_VA_WIDTH,
+				"DevCtxId:%u PID:%u page_shift:%d PartitionSz:%llu, PageSz:%u VaStart:0x%llx VaEnd:0x%llx\n",
+				domain->id, partition,
+				mmu_config->page_shift,
+				((mmu_config->va_end - mmu_config->va_start)/
+				 (1024 * 1024)),
 				mmu_config->page_sz,
 				mmu_config->va_start,
 				mmu_config->va_end);

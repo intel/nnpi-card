@@ -715,8 +715,10 @@ void inf_cmd_optimize_group_devres(struct inf_cmd_list *cmd)
 	INIT_LIST_HEAD(&sets);
 
 	/* wait for all active scheduled requests to finish */
-	wait_event(cmd->context->sched_waitq,
-		   list_empty(&cmd->context->active_seq_list));
+	if (wait_event_timeout(cmd->context->sched_waitq,
+				list_empty(&cmd->context->active_seq_list),
+				msecs_to_jiffies(60000)) == 0)
+		return;
 
 	/* build and merge devres access groups */
 	if (build_access_group_sets(cmd, &sets) != 0)

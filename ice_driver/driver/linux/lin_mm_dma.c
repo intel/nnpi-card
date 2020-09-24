@@ -393,7 +393,7 @@ static int add_sglist_to_device_page_table(struct lin_mm_allocation *alloc,
 	int nents = cve_alloc_data->dma_handle.mem_handle.sgt->nents;
 	struct cve_lin_mm_domain *adom =
 		(struct cve_lin_mm_domain *)cve_alloc_data->domain;
-	struct ice_mmu_config *mmu_config = &(adom->mmu_config[partition_id]);
+	struct ice_mmu_config *mmu_config;
 	struct scatterlist *sg = NULL;
 	u32 mapped_pages_nr = 0;
 	int retval = CVE_DEFAULT_ERROR_CODE;
@@ -402,6 +402,13 @@ static int add_sglist_to_device_page_table(struct lin_mm_allocation *alloc,
 	u64 total_size_bytes = 0;
 
 	FUNC_ENTER();
+
+	if (partition_id >= ICE_MEM_MAX_PARTITION) {
+		retval = -EINVAL;
+		goto out;
+	}
+
+	mmu_config = &(adom->mmu_config[partition_id]);
 
 	iova = VADDR_TO_IOVA(alloc->cve_vaddr, mmu_config->page_shift);
 	base_iova = iova;
@@ -738,6 +745,11 @@ static int ice_osmm_get_iceva(struct lin_mm_allocation *ntw_alloc,
 	int retval = 0;
 	os_domain_handle *hdomain = ntw_alloc->hdomain;
 
+	if (pid >= ICE_MEM_MAX_PARTITION) {
+		retval = -ENOMEM;
+		goto out;
+	}
+
 	/* allocate and update per cve per allocation data */
 	for (i = 0; i < dma_domain_array_size; i++) {
 		struct cve_lin_mm_domain *domain =
@@ -783,6 +795,11 @@ static int ice_osmm_release_iceva(struct lin_mm_allocation *alloc)
 
 	if (alloc->cve_vaddr == IDC_BAR1_COUNTERS_ADDRESS_START)
 		goto out;
+
+	if (pid >= ICE_MEM_MAX_PARTITION) {
+		retval = -EINVAL;
+		goto out;
+	}
 
 	for (i = 0; i < alloc->dma_domain_array_size; i++) {
 		struct cve_lin_mm_domain *domain =
@@ -1537,11 +1554,13 @@ void ice_osmm_domain_get_page_sz_list(os_domain_handle hdomain,
 	*page_sz_list = &domain->page_sz_reg_config_arr[0];
 }
 
-void ice_osmm_get_page_size(os_allocation_handle halloc,
-	u32 *page_sz, u8 *pid)
+void ice_osmm_get_buf_info(os_allocation_handle halloc,
+	u32 *page_sz, u8 *pid, u64 *fd)
 {
 	struct lin_mm_allocation *alloc = (struct lin_mm_allocation *)halloc;
 
 	*page_sz = alloc->page_sz;
 	*pid = alloc->buf_meta_data.partition_id;
+	if (fd)
+		*fd = alloc->fd;
 }

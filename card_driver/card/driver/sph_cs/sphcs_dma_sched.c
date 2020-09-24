@@ -991,7 +991,8 @@ int sphcs_dma_sched_start_xfer_multi(struct sphcs_dma_sched      *dmaSched,
 	int i;
 	int ret;
 
-	if (lli->num_lists == 1)
+	if (lli->num_lists == 1) {
+		NNP_ASSERT(transfer_size == lli->xfer_size[0]);
 		return sphcs_dma_sched_start_xfer(dmaSched,
 						  desc,
 						  lli->dma_addr + lli->offsets[0],
@@ -999,6 +1000,7 @@ int sphcs_dma_sched_start_xfer_multi(struct sphcs_dma_sched      *dmaSched,
 						  callback,
 						  callback_ctx,
 						  NULL, 0);
+	}
 
 	if (atomic_cmpxchg(&handle->num_xfers, 0, lli->num_lists) != 0)
 		return -EBUSY;
