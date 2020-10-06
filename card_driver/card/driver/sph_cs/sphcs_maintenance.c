@@ -40,6 +40,16 @@
 #define FPGA_FRU_BRD_PART_NO_BASE_REG  20
 #define FPGA_FRU_BRD_PART_NO_LEN        5
 #define FPGA_ASIC_STEPPING_REG         28
+// Power calibration related data
+#define FPGA_SA_PWR_ORIG_SLOPE_REG     128
+#define FPGA_SA_PWR_ORIG_OFFSET_REG    129
+#define FPGA_VCCIN_PWR_ORIG_SLOPE_REG  130
+#define FPGA_VCCIN_PWR_ORIG_OFFSET_REG 131
+#define FPGA_SA_PWR_SLOPE_REG          132
+#define FPGA_VCCIN_PWR_SLOPE_REG       133
+#define FPGA_OVERALL_PWR_OFFSET_REG    134
+#define FPGA_PWR_CALIB_HASH_BASE_REG   135
+#define FPGA_PWR_CALIB_HASH_LEN        8 // words (16bits each)
 
 static struct cdev s_cdev;
 static dev_t       s_devnum;
@@ -579,6 +589,44 @@ static const struct file_operations fpga_regs_fops = {
 	.release	= single_release,
 };
 
+static int debug_fpga_power_correction_show(struct seq_file *m, void *v)
+{
+	uint8_t i;
+
+	if (!s_fpga_client) {
+		seq_puts(m, "FPGA SMBus device not attached\n");
+		return 0;
+	}
+
+	seq_printf(m, "%hu ", i2c_smbus_read_word_data(s_fpga_client, FPGA_SA_PWR_ORIG_SLOPE_REG));
+	seq_printf(m, "%hu ", i2c_smbus_read_word_data(s_fpga_client, FPGA_SA_PWR_ORIG_OFFSET_REG));
+	seq_printf(m, "%hu ", i2c_smbus_read_word_data(s_fpga_client, FPGA_VCCIN_PWR_ORIG_SLOPE_REG));
+	seq_printf(m, "%hu ", i2c_smbus_read_word_data(s_fpga_client, FPGA_VCCIN_PWR_ORIG_OFFSET_REG));
+	seq_printf(m, "%hu ", i2c_smbus_read_word_data(s_fpga_client, FPGA_SA_PWR_SLOPE_REG));
+	seq_printf(m, "%hu ", i2c_smbus_read_word_data(s_fpga_client, FPGA_VCCIN_PWR_SLOPE_REG));
+	seq_printf(m, "%hd ", i2c_smbus_read_word_data(s_fpga_client, FPGA_OVERALL_PWR_OFFSET_REG));
+
+	for (i = FPGA_PWR_CALIB_HASH_LEN; i != 0; --i) { // Little Endian
+		seq_printf(m, "%04hx", i2c_smbus_read_word_data(s_fpga_client,
+								FPGA_PWR_CALIB_HASH_BASE_REG + i - 1));
+	}
+	seq_puts(m, "\n");
+
+	return 0;
+}
+
+static int debug_fpga_power_open(struct inode *inode, struct file *filp)
+{
+	return single_open(filp, debug_fpga_power_correction_show, inode->i_private);
+}
+
+static const struct file_operations fpga_power_fops = {
+	.open		= debug_fpga_power_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+};
+
 void sphcs_maint_init_debugfs(struct dentry *parent)
 {
 	struct dentry *regs;
@@ -593,4 +641,12 @@ void sphcs_maint_init_debugfs(struct dentry *parent)
 				   &fpga_regs_fops);
 	if (IS_ERR_OR_NULL(regs))
 		sph_log_err(START_UP_LOG, "Failed to create debugfs fpga_regs file\n");
+
+	regs = debugfs_create_file("fpga_power_correction_data",
+				   0444,
+				   parent,
+				   NULL,
+				   &fpga_power_fops);
+	if (IS_ERR_OR_NULL(regs))
+		sph_log_err(START_UP_LOG, "Failed to create debugfs fpga_power_slope_offset file\n");
 }

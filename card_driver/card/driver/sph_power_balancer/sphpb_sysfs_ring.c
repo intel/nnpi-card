@@ -122,7 +122,7 @@ static ssize_t show_ring_entry(struct kobject *kobj,
 	return 0;
 }
 
-/* Function to show ring Min/Max Frequency */
+/* Function to store ring Min/Max Frequency */
 static ssize_t store_ring_entry(struct kobject *kobj,
 				struct kobj_attribute *attr,
 				const char *buf, size_t count)

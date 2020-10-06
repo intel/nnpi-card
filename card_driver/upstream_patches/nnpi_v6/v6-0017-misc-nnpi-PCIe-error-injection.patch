@@ -1,0 +1,377 @@
+From d889963cbc8543b460d906c56d89ac74f629d870 Mon Sep 17 00:00:00 2001
+From: Guy Zadicario <guy.zadicario@intel.com>
+Date: Fri, 3 Apr 2020 10:12:52 +0300
+Subject: [PATCH v6 17/19] misc: nnpi: PCIe error injection
+
+This patch adds the following sysfs attribute file:
+/sys/class/nnpi/nnpi%d/pcie_inject
+
+That allows controlling device debug registers to generate various PCIe
+errors which is usefull for error handling debugging.
+
+The following strings can be written to that attribute file:
+corr - will set up the device to generate corractable pcie error on next
+       DMA transaction issued by the card.
+uncorr - will set up the device to generate uncorractable pcie error on next
+       DMA transaction issued by the card.
+fatal - will set up the device to generate fatal-uncorractable pcie error on next
+       DMA transaction issued by the card.
+none - restore any error injection and AER masks (which was set if error injection was used).
+
+Signed-off-by: Guy Zadicario <guy.zadicario@intel.com>
+Reviewed-by: Vaibhav Agarwal <vaibhav.agarwal@intel.com>
+---
+ drivers/misc/intel-nnpi/device_sysfs.c |  41 +++++++
+ drivers/misc/intel-nnpi/pcie.c         | 207 +++++++++++++++++++++++++++++++++
+ drivers/misc/intel-nnpi/pcie.h         |  10 ++
+ 3 files changed, 258 insertions(+)
+
+diff --git a/drivers/misc/intel-nnpi/device_sysfs.c b/drivers/misc/intel-nnpi/device_sysfs.c
+index d1cbe97..f9c9fa6 100644
+--- a/drivers/misc/intel-nnpi/device_sysfs.c
++++ b/drivers/misc/intel-nnpi/device_sysfs.c
+@@ -709,6 +709,46 @@ static ssize_t ucecc_threshold_show(struct device           *dev,
+ }
+ static DEVICE_ATTR_RW(ucecc_threshold);
+ 
++static ssize_t pcie_inject_store(struct device           *dev,
++				 struct device_attribute *attr,
++				 const char              *buf,
++				 size_t                   count)
++{
++	struct nnp_device *nnpdev;
++	u32 pcie_err_type;
++	int ret;
++
++	nnpdev = (struct nnp_device *)dev_get_drvdata(dev);
++	if (!nnpdev)
++		return -EINVAL;
++
++	if (!nnpdev->hw_ops || !nnpdev->hw_ops->error_inject)
++		return -EFAULT;
++
++	if (!strncmp(buf, "corr", 4))
++		pcie_err_type = NNP_PCIE_INJECT_CORR;
++	else if (!strncmp(buf, "uncorr", 6))
++		pcie_err_type = NNP_PCIE_INJECT_UNCORR;
++	else if (!strncmp(buf, "fatal", 5))
++		pcie_err_type = NNP_PCIE_INJECT_UNCORR_FATAL;
++	else if (!strncmp(buf, "none", 4))
++		pcie_err_type = NNP_PCIE_INJECT_RESTORE;
++	else
++		return -EINVAL;
++
++	/*
++	 * Setup h/w layer to generate the requested error
++	 * on the next dma transaction
++	 */
++	ret = nnpdev->hw_ops->error_inject(nnpdev->hw_handle,
++					   pcie_err_type);
++	if (ret)
++		return ret;
++
++	return count;
++}
++static DEVICE_ATTR_WO(pcie_inject);
++
+ static ssize_t crashlog_size_show(struct device           *dev,
+ 				  struct device_attribute *attr,
+ 				  char                    *buf)
+@@ -845,6 +885,7 @@ static ssize_t corr_counters_show(struct device           *dev,
+ 	&dev_attr_channels.attr,
+ 	&dev_attr_cecc_threshold.attr,
+ 	&dev_attr_ucecc_threshold.attr,
++	&dev_attr_pcie_inject.attr,
+ 	&dev_attr_crashlog_size.attr,
+ 	&dev_attr_post_code.attr,
+ 	&dev_attr_bios_flash_progress.attr,
+diff --git a/drivers/misc/intel-nnpi/pcie.c b/drivers/misc/intel-nnpi/pcie.c
+index 2b2888d..77db46d 100644
+--- a/drivers/misc/intel-nnpi/pcie.c
++++ b/drivers/misc/intel-nnpi/pcie.c
+@@ -37,6 +37,16 @@
+ #define USE_64BIT_MMIO
+ #endif
+ 
++/* error injection debug feature registers */
++#define NNP_RAS_DES_VSEC_ID   0x2
++#define EINJ_ENABLE_REG_OFF       0x30
++#define EINJ_ENABLE_REG_CRC_ERR  BIT(0)
++#define EINJ_ENABLE_REG_SEQ_ERR  BIT(1)
++#define EINJ_ENABLE_REG_DUP_ERR  BIT(5)
++#define EINJ_ENABLE_REG_TLP_ERR  BIT(6)
++
++#define EINJ0_CRC_REG_OFF         0x34
++
+ static const char nnp_driver_name[] = "nnp_pcie";
+ static const struct nnpdrv_device_hw_callbacks *s_nnp_callbacks;
+ 
+@@ -83,7 +93,11 @@ struct nnp_pci_device {
+ 	struct nnp_hw_device_info device_info;
+ 	struct nnp_memdesc mmio;
+ 	struct nnp_memdesc mem_bar;
++	int             ras_des_off;
+ 	int             aer_pos;
++	u32             aer_cor_mask;
++	u32             aer_uncor_mask;
++	u32             aer_uncor_severity;
+ 
+ 	spinlock_t      irq_lock; /* protects cmdq_free_slots calculation */
+ 	u64             response_buf[ELBI_RESPONSE_FIFO_DEPTH];
+@@ -870,6 +884,140 @@ static int nnp_get_membar_addr(void *hw_handle,
+ 	return 0;
+ }
+ 
++static int nnp_error_inject(void *hw_handle,
++			    int   err_type)
++{
++	struct nnp_pci_device *nnp_pci = (struct nnp_pci_device *)hw_handle;
++	u32 inj_enable = 0;
++
++	if (nnp_pci->ras_des_off == 0)
++		return -EFAULT;
++
++	switch (err_type) {
++	case NNP_PCIE_INJECT_RESTORE:
++		pci_write_config_dword(nnp_pci->pdev,
++				       nnp_pci->aer_pos + PCI_ERR_COR_MASK,
++				       nnp_pci->aer_cor_mask);
++		pci_write_config_dword(nnp_pci->pdev,
++				       nnp_pci->aer_pos + PCI_ERR_UNCOR_MASK,
++				       nnp_pci->aer_uncor_mask);
++		pci_write_config_dword(nnp_pci->pdev,
++				       nnp_pci->aer_pos + PCI_ERR_UNCOR_SEVER,
++				       nnp_pci->aer_uncor_severity);
++		break;
++	case NNP_PCIE_INJECT_CORR:
++		/* unmask all corrected errors */
++		pci_write_config_dword(nnp_pci->pdev,
++				       nnp_pci->aer_pos + PCI_ERR_COR_MASK,
++				       0x0);
++		/* mask all corrected errors */
++		pci_write_config_dword(nnp_pci->pdev,
++				       nnp_pci->aer_pos + PCI_ERR_UNCOR_MASK,
++				       0xffffffff);
++		/* set completion timeout error to be non-fatal error */
++		pci_write_config_dword(nnp_pci->pdev,
++				       nnp_pci->aer_pos + PCI_ERR_UNCOR_SEVER,
++				       (nnp_pci->aer_uncor_severity &
++					~(PCI_ERR_UNC_COMP_TIME)));
++		break;
++	case NNP_PCIE_INJECT_UNCORR:
++		/* mask all corrected errors */
++		pci_write_config_dword(nnp_pci->pdev,
++				       nnp_pci->aer_pos + PCI_ERR_COR_MASK,
++				       0xffffffff);
++		/* unmask completion timeout error */
++		pci_write_config_dword(nnp_pci->pdev,
++				       nnp_pci->aer_pos + PCI_ERR_UNCOR_MASK,
++				       (nnp_pci->aer_uncor_mask &
++					~(PCI_ERR_UNC_COMP_TIME)));
++		/* set completion timeout error to be non-fatal error */
++		pci_write_config_dword(nnp_pci->pdev,
++				       nnp_pci->aer_pos + PCI_ERR_UNCOR_SEVER,
++				       (nnp_pci->aer_uncor_severity &
++					~(PCI_ERR_UNC_COMP_TIME)));
++		break;
++	case NNP_PCIE_INJECT_UNCORR_FATAL:
++		/* mask all corrected errors */
++		pci_write_config_dword(nnp_pci->pdev,
++				       nnp_pci->aer_pos + PCI_ERR_COR_MASK,
++				       0xffffffff);
++		/* unmask completion timeout error */
++		pci_write_config_dword(nnp_pci->pdev,
++				       nnp_pci->aer_pos + PCI_ERR_UNCOR_MASK,
++				       (nnp_pci->aer_uncor_mask &
++					~(PCI_ERR_UNC_COMP_TIME)));
++		/* set completion timeout error to be fatal error */
++		pci_write_config_dword(nnp_pci->pdev,
++				       nnp_pci->aer_pos + PCI_ERR_UNCOR_SEVER,
++				       (nnp_pci->aer_uncor_severity |
++					PCI_ERR_UNC_COMP_TIME));
++		break;
++	default:
++		return -EFAULT;
++	}
++
++	if (err_type != NNP_PCIE_INJECT_RESTORE) {
++		/*
++		 * insert new TLP with ECRC error - will cause completion
++		 * timeout error
++		 */
++		inj_enable = EINJ_ENABLE_REG_CRC_ERR;
++
++		nnp_dev_info(nnp_pci->dev, GENERAL_LOG,
++			     "Injecting %s PCIe error\n",
++			     (err_type == NNP_PCIE_INJECT_CORR ? "corrected" :
++			      err_type == NNP_PCIE_INJECT_UNCORR ?
++			      "uncorrected" : "uncorrected-fatal"));
++		if (err_type != NNP_PCIE_INJECT_CORR) {
++			pci_write_config_word(nnp_pci->pdev,
++					      nnp_pci->ras_des_off +
++					      EINJ0_CRC_REG_OFF,
++					      0x3 << 8 | 1);
++		} else {
++			pci_write_config_word(nnp_pci->pdev,
++					      nnp_pci->ras_des_off +
++					      EINJ0_CRC_REG_OFF,
++					      0x4 << 8 | 1);
++		}
++	} else {
++		nnp_dev_info(nnp_pci->dev, GENERAL_LOG,
++			     "Restoring pcie error masks\n");
++	}
++
++#ifdef DEBUG
++	{
++		u32 cor_mask, uncor_mask, uncor_sev;
++
++		pci_read_config_dword(nnp_pci->pdev,
++				      nnp_pci->aer_pos + PCI_ERR_COR_MASK,
++				      &cor_mask);
++		pci_read_config_dword(nnp_pci->pdev,
++				      nnp_pci->aer_pos + PCI_ERR_UNCOR_MASK,
++				      &uncor_mask);
++		pci_read_config_dword(nnp_pci->pdev,
++				      nnp_pci->aer_pos + PCI_ERR_UNCOR_SEVER,
++				      &uncor_sev);
++
++		nnp_dev_debug(nnp_pci->pdev, GENERAL_LOG,
++			      "inj_enable = %d\n", inj_enable);
++		nnp_dev_debug(nnp_pci->pdev, GENERAL_LOG,
++			      "corr_mask = 0x%x\n", cor_mask);
++		nnp_dev_debug(nnp_pci->pdev, GENERAL_LOG,
++			      "uncorr_mask = 0x%x ComplTO%c\n", uncor_mask,
++			      (uncor_mask & PCI_ERR_UNC_COMP_TIME) ? '+' : '-');
++		nnp_dev_debug(nnp_pci->pdev, GENERAL_LOG,
++			      "uncorr_sever = 0x%x ComplTO%c\n", uncor_sev,
++			      (uncor_sev & PCI_ERR_UNC_COMP_TIME) ? '+' : '-');
++	}
++#endif
++
++	pci_write_config_word(nnp_pci->pdev,
++			      nnp_pci->ras_des_off + EINJ_ENABLE_REG_OFF,
++			      inj_enable);
++
++	return 0;
++}
++
+ static dma_addr_t nnp_get_host_doorbell_addr(void *hw_handle)
+ {
+ 	struct nnp_pci_device *nnp_pci = (struct nnp_pci_device *)hw_handle;
+@@ -887,6 +1035,7 @@ static dma_addr_t nnp_get_host_doorbell_addr(void *hw_handle)
+ 	.get_postcode = nnp_get_postcode,
+ 	.get_bios_flash_progress = nnp_get_bios_flash_progress,
+ 	.get_membar_addr = nnp_get_membar_addr,
++	.error_inject = nnp_error_inject,
+ 	.get_host_doorbell_addr = nnp_get_host_doorbell_addr,
+ 	.prepare_bios_update = nnp_prepare_bios_update
+ };
+@@ -1188,6 +1337,31 @@ static void nnp_fini_pci_device(struct nnp_pci_device *nnp_pci)
+ 	pci_disable_device(nnp_pci->pdev);
+ }
+ 
++static void find_ras_des_cap(struct nnp_pci_device *nnp_pci)
++{
++	int vsec = 0;
++	u16 val;
++
++	/* find vendor-specific capability matches RAS_DES */
++	do {
++		nnp_pci->ras_des_off =
++			pci_find_next_ext_capability(nnp_pci->pdev,
++						     vsec,
++						     PCI_EXT_CAP_ID_VNDR);
++		if (nnp_pci->ras_des_off) {
++			pci_read_config_word(nnp_pci->pdev,
++					     nnp_pci->ras_des_off + 0x4,
++					     &val);
++			if (val == NNP_RAS_DES_VSEC_ID)
++				break;
++		}
++	} while (nnp_pci->ras_des_off);
++
++	if (!nnp_pci->ras_des_off)
++		nnp_dev_err(nnp_pci->dev, START_UP_LOG,
++			    "failed to find RAS DES vendor-specific capability - pcie error injection will not be available!!\n");
++}
++
+ static int nnp_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
+ {
+ 	struct nnp_pci_device *nnp_pci = NULL;
+@@ -1248,6 +1422,28 @@ static int nnp_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
+ 		goto do_exit;
+ 	}
+ 
++	/* Initialize aer masks and severity settings */
++	nnp_pci->aer_pos = pci_find_ext_capability(pdev, PCI_EXT_CAP_ID_ERR);
++	if (!nnp_pci->aer_pos) {
++		rc = -EFAULT;
++		nnp_dev_err(nnp_pci->dev, START_UP_LOG,
++			    "Device does not have AER extension? Is it possible?\n");
++		goto do_exit;
++	}
++
++	pci_read_config_dword(nnp_pci->pdev,
++			      nnp_pci->aer_pos + PCI_ERR_COR_MASK,
++			      &nnp_pci->aer_cor_mask);
++	pci_read_config_dword(nnp_pci->pdev,
++			      nnp_pci->aer_pos + PCI_ERR_UNCOR_MASK,
++			      &nnp_pci->aer_uncor_mask);
++	pci_read_config_dword(nnp_pci->pdev,
++			      nnp_pci->aer_pos + PCI_ERR_UNCOR_SEVER,
++			      &nnp_pci->aer_uncor_severity);
++
++	/* find vendor-specific capability for error injection */
++	find_ras_des_cap(nnp_pci);
++
+ 	/*
+ 	 * Take refcount to the device which will be released only when
+ 	 * nnpi_pci struct is freed
+@@ -1281,6 +1477,17 @@ static void nnp_remove(struct pci_dev *pdev)
+ 	if (nnp_pci->initted)
+ 		nnp_mmio_write(nnp_pci, ELBI_PCI_HOST_DOORBELL_VALUE, 0);
+ 
++	/* restore device aer mask and severity settings */
++	pci_write_config_dword(nnp_pci->pdev,
++			       nnp_pci->aer_pos + PCI_ERR_COR_MASK,
++			       nnp_pci->aer_cor_mask);
++	pci_write_config_dword(nnp_pci->pdev,
++			       nnp_pci->aer_pos + PCI_ERR_UNCOR_MASK,
++			       nnp_pci->aer_uncor_mask);
++	pci_write_config_dword(nnp_pci->pdev,
++			       nnp_pci->aer_pos + PCI_ERR_UNCOR_SEVER,
++			       nnp_pci->aer_uncor_severity);
++
+ 	nnp_fini_pci_device(nnp_pci);
+ 	s_nnp_callbacks->destroy_nnp_device(nnp_pci->nnpdev);
+ 
+diff --git a/drivers/misc/intel-nnpi/pcie.h b/drivers/misc/intel-nnpi/pcie.h
+index 8667483..3c0fc4f 100644
+--- a/drivers/misc/intel-nnpi/pcie.h
++++ b/drivers/misc/intel-nnpi/pcie.h
+@@ -38,6 +38,8 @@ struct nnpdrv_device_hw_ops {
+ 			       void **out_vaddr,
+ 			       size_t  *out_len);
+ 	void (*prepare_bios_update)(void *hw_handle, bool is_cancel);
++	int (*error_inject)(void *hw_handle,
++			    int   err_type);
+ 	dma_addr_t (*get_host_doorbell_addr)(void *hw_handle);
+ };
+ 
+@@ -79,4 +81,12 @@ struct nnpdrv_device_hw_callbacks {
+ #define NNP_PCIE_PERMANENT_FAILURE 3
+ #define NNP_PCIE_LINK_RETRAIN_REQUIRED 4
+ 
++/*
++ * Possible values for 'err_type' argument of error_inject function
++ */
++#define NNP_PCIE_INJECT_RESTORE           0
++#define NNP_PCIE_INJECT_CORR              1
++#define NNP_PCIE_INJECT_UNCORR            2
++#define NNP_PCIE_INJECT_UNCORR_FATAL      3
++
+ #endif
+-- 
+1.8.3.1
+

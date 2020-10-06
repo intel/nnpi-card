@@ -151,6 +151,8 @@ int sphpb_mng_request_ice_dvfs_values(struct sphpb_pb *sphpb,
 				      uint16_t ring_divisor,
 				      uint8_t ice_ratio);
 
+int set_ddr_freq(struct sphpb_pb *sphpb, int qclk);
+
 /* sysfs interfaces */
 int sphpb_iccp_table_sysfs_init(struct sphpb_pb *sphpb);
 void sphpb_iccp_table_sysfs_deinit(struct sphpb_pb *sphpb);
@@ -167,7 +169,11 @@ void sphpb_icebo_sysfs_deinit(struct sphpb_pb *sphpb);
 int sphpb_power_overshoot_sysfs_init(struct sphpb_pb *sphpb);
 void sphpb_power_overshoot_sysfs_deinit(struct sphpb_pb *sphpb);
 
+int sphpb_ddr_freq_sysfs_init(struct sphpb_pb *sphpb);
+void sphpb_ddr_freq_sysfs_deinit(struct sphpb_pb *sphpb);
 
+int sphpb_imon_conf_sysfs_init(struct sphpb_pb *sphpb);
+void sphpb_imon_conf_sysfs_deinit(struct sphpb_pb *sphpb);
 
 
 
