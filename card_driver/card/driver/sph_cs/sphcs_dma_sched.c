@@ -18,6 +18,7 @@
 #include "nnp_debug.h"
 #include "sphcs_trace.h"
 #include "sphcs_sw_counters.h"
+#include "sphcs_cs.h"
 
 #define SPHCS_NUM_OF_DMA_RETRIES 3
 #define SPHCH_DMA_CHANNEL_0 BIT(0)
@@ -150,7 +151,7 @@ enum SPHCS_DMA_ENGINE_STATE {
 
 struct reset_work {
 	struct work_struct work;
-	void (*reset)(void *hw_handle);
+	int (*reset)(void *hw_handle);
 	void *hw_handle;
 };
 
@@ -204,10 +205,29 @@ static void reset_handler(struct work_struct *work)
 	struct reset_work *reset_work = container_of(work, struct reset_work, work);
 	struct spcs_dma_direction_info *dir_info = container_of(reset_work, struct spcs_dma_direction_info, reset_work);
 	unsigned long flags;
+	int ret;
 
 	wait_for_completion(&dir_info->dma_engine_idle);
 
-	reset_work->reset(reset_work->hw_handle);
+	ret = reset_work->reset(reset_work->hw_handle);
+	if (ret == 1)
+		sphcs_send_event_report(g_the_sphcs,
+					NNP_IPC_DMA_HANG_DETECTED,
+					ret,
+					NULL,
+					-1,
+					-1);
+
+	else if (ret == 2)
+		sphcs_send_event_report(g_the_sphcs,
+					NNP_IPC_FATAL_DMA_HANG_DETECTED,
+					ret,
+					NULL,
+					-1,
+					-1);
+
+	if (ret < 0 || ret > 1)
+		return;
 
 	sph_log_err(EXECUTE_COMMAND_LOG, "DMA failed - reset issued\n");
 
@@ -362,7 +382,8 @@ static int start_request(struct sphcs_dma_sched *dmaSched,
 			ret = dmaSched->hw_ops->start_xfer_c2h(dmaSched->hw_handle,
 							       hw_channel,
 							       convert_dma_sched_prio_to_hw(req->priority),
-							       req->src);
+							       req->src,
+							       req->transfer_size);
 		}
 		break;
 	case SPHCS_DMA_DIRECTION_HOST_TO_CARD:
@@ -377,7 +398,8 @@ static int start_request(struct sphcs_dma_sched *dmaSched,
 			ret = dmaSched->hw_ops->start_xfer_h2c(dmaSched->hw_handle,
 							       hw_channel,
 							       convert_dma_sched_prio_to_hw(req->priority),
-							       req->src);
+							       req->src,
+							       req->transfer_size);
 		}
 		break;
 	}
@@ -991,7 +1013,8 @@ int sphcs_dma_sched_start_xfer_multi(struct sphcs_dma_sched      *dmaSched,
 	int i;
 	int ret;
 
-	if (lli->num_lists == 1)
+	if (lli->num_lists == 1) {
+		NNP_ASSERT(transfer_size == lli->xfer_size[0]);
 		return sphcs_dma_sched_start_xfer(dmaSched,
 						  desc,
 						  lli->dma_addr + lli->offsets[0],
@@ -999,6 +1022,7 @@ int sphcs_dma_sched_start_xfer_multi(struct sphcs_dma_sched      *dmaSched,
 						  callback,
 						  callback_ctx,
 						  NULL, 0);
+	}
 
 	if (atomic_cmpxchg(&handle->num_xfers, 0, lli->num_lists) != 0)
 		return -EBUSY;
@@ -1243,7 +1267,7 @@ static int debug_direction_show(struct seq_file *m, void *v)
 		if (dir_info->hw_channels.busy_mask & BIT(i)) {
 			const struct sphcs_dma_req *req = dir_info->hw_channels.inflight_req[i];
 
-			seq_printf(m, "\tchan%d: busy req=0x%lx xfer_size=0x%llx pri=%u status=%u flags=0x%x serial=%u spurious=%u\n",
+			seq_printf(m, "\tchan%d: busy req=0x%lx xfer_size=%llu pri=%u status=%u flags=0x%x serial=%u spurious=%u\n",
 				   i,
 				   (uintptr_t)req,
 				   req->transfer_size,

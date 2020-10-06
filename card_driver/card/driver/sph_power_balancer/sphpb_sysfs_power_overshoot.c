@@ -3,22 +3,8 @@
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  ********************************************/
-#include <linux/init.h>
-#include <linux/kernel.h>
 #include <linux/sysfs.h>
-#include <linux/slab.h>
-#include <linux/mm.h>
-#include <linux/device.h>
-#include <linux/module.h>
 #include <linux/kobject.h>
-#include <linux/file.h>
-#include <linux/fs.h>
-#include <linux/spinlock.h>
-#include <linux/mutex.h>
-#include <linux/anon_inodes.h>
-#include <linux/uaccess.h>
-#include <linux/fcntl.h>
-#include <asm/msr.h>
 #include "sph_log.h"
 #include "sphpb.h"
 
@@ -82,4 +68,3 @@ void sphpb_power_overshoot_sysfs_deinit(struct sphpb_pb *sphpb)
 	/* Remove ring files config kobject */
 	sysfs_remove_group(sphpb->kobj, &power_overshoot_attr_group);
 }
-

@@ -196,3 +196,85 @@ int set_sagv_freq(enum BIOS_SAGV_CONFIG_POLICIES qclk,
 				  data.value,
 				  NULL);
 }
+
+union mailbox_vr_imon_config {
+	struct {
+		u32 imon_offset : 16; //fixed point S7.8
+		u32 imon_slope  : 16; //fixed point U1.15
+	};
+	u32 value;
+};
+
+int get_imon_sa_calib_config(uint16_t *imon_offset, //fixed point S7.8
+			     uint16_t *imon_slope_factor)  //fixed point U1.15
+{
+	union mailbox_vr_imon_config data;
+	int ret;
+
+	ret = write_bios_mailbox(MAILBOX_BIOS_CMD_VR_IMON_CALIBRATION,
+				 BIOS_IMON_CALIBRATION_SA_READ_SUBCOMMAND,
+				 0,
+				 0,
+				 &data.value);
+	if (unlikely(ret < 0))
+		return ret;
+
+	if (imon_offset != NULL)
+		*imon_offset = data.imon_offset;
+	if (imon_slope_factor != NULL)
+		*imon_slope_factor = data.imon_slope;
+
+	return 0;
+}
+
+int set_imon_sa_calib_config(uint16_t imon_offset, //fixed point S7.8
+			     uint16_t imon_slope_factor)  //fixed point U1.15
+{
+	union mailbox_vr_imon_config data = {
+		.imon_offset = imon_offset,
+		.imon_slope  = imon_slope_factor
+	};
+
+	return write_bios_mailbox(MAILBOX_BIOS_CMD_VR_IMON_CALIBRATION,
+				  BIOS_IMON_CALIBRATION_SA_WRITE_SUBCOMMAND,
+				  0,
+				  data.value,
+				  NULL);
+}
+
+int get_imon_vccin_calib_config(uint16_t *imon_offset, //fixed point S7.8
+				uint16_t *imon_slope)  //fixed point U1.15
+{
+	union mailbox_vr_imon_config data;
+	int ret;
+
+	ret = write_bios_mailbox(MAILBOX_BIOS_CMD_VR_IMON_CALIBRATION,
+				 BIOS_IMON_CALIBRATION_VCCIN_READ_SUBCOMMAND,
+				 0,
+				 0,
+				 &data.value);
+	if (unlikely(ret < 0))
+		return ret;
+
+	if (imon_offset != NULL)
+		*imon_offset = data.imon_offset;
+	if (imon_slope != NULL)
+		*imon_slope = data.imon_slope;
+
+	return 0;
+}
+
+int set_imon_vccin_calib_config(uint16_t imon_offset, //fixed point S7.8
+				uint16_t imon_slope)  //fixed point U1.15
+{
+	union mailbox_vr_imon_config data = {
+		.imon_offset = imon_offset,
+		.imon_slope  = imon_slope
+	};
+
+	return write_bios_mailbox(MAILBOX_BIOS_CMD_VR_IMON_CALIBRATION,
+				  BIOS_IMON_CALIBRATION_VCCIN_WRITE_SUBCOMMAND,
+				  0,
+				  data.value,
+				  NULL);
+}
