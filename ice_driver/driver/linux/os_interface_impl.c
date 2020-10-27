@@ -717,7 +717,11 @@ int cve_os_write_user_memory_32(u32 *user_addr, u32 val)
 /* memory allocation */
 #ifdef ENABLE_MEM_DETECT
 struct ice_drv_memleak *g_leak_list;
+struct ice_drv_memleak *g_leak_list_dma;
+struct ice_drv_memleak *g_leak_list_sg;
 u32 mem_leak_count;
+u32 mem_leak_count_dma;
+u32 mem_leak_count_sg;
 #endif
 
 int __cve_os_malloc_zero(size_t size_bytes, void **out_ptr)
@@ -1104,8 +1108,30 @@ int __cve_os_alloc_dma_sg(struct cve_device *cve_dev,
 	out_dma_handle->mem_type = CVE_MEMORY_TYPE_KERNEL_SG;
 	out_dma_handle->mem_handle.sgt = sgt;
 	out_dma_handle->priv = (void *)priv_data;
+	out_dma_handle->persistent = 0;
+	out_dma_handle->persistent_node = NULL;
 
 	ret = 0;
+
+#ifdef ENABLE_MEM_DETECT
+	if (enable_ice_drv_memleak && sgt->sgl) {
+		struct ice_drv_memleak *leak;
+
+		leak = kzalloc(sizeof(struct ice_drv_memleak), GFP_KERNEL);
+		if (leak) {
+			leak->caller_fn = __builtin_return_address(0);
+			leak->caller_fn2 = __builtin_return_address(1);
+			leak->va = sgt->sgl;
+			leak->size = actual_size;
+			cve_dle_add_to_list_before(g_leak_list_sg, list, leak);
+		} else {
+			cve_os_log(CVE_LOGLEVEL_ERROR,
+			   "##failed in allocating memory for book keeping\n");
+		}
+		mem_leak_count_sg++;
+	}
+#endif
+
 	goto out;
 
 failed_to_map_sg:
@@ -1129,6 +1155,22 @@ void __cve_os_free_dma_sg(struct cve_device *cve_dev,
 	struct sg_table *sgt = dma_handle->mem_handle.sgt;
 	struct cve_dma_handle_private_data *priv_data =
 			(struct cve_dma_handle_private_data *)dma_handle->priv;
+
+#ifdef ENABLE_MEM_DETECT
+	if (enable_ice_drv_memleak) {
+		struct ice_drv_memleak *leak;
+
+		leak = cve_dle_lookup(g_leak_list_sg, list, va, sgt->sgl);
+		if (leak) {
+			cve_dle_remove_from_list(g_leak_list_sg, list, leak);
+			kfree(leak);
+			mem_leak_count_sg--;
+		} else {
+			cve_os_log(CVE_LOGLEVEL_ERROR,
+			   "##FATAL VA:0x%p not allocated\n", sgt->sgl);
+		}
+	}
+#endif
 
 	/* unmap the sg that was already mapped to device */
 	dma_unmap_sg(to_cve_os_device(cve_dev)->dev,
@@ -1455,6 +1497,8 @@ int __cve_os_alloc_dma_contig(struct cve_device *cve_dev,
 				((1 << ICE_DEFAULT_PAGE_SHIFT) - 1)));
 
 	out_dma_handle->mem_type = CVE_MEMORY_TYPE_KERNEL_CONTIG;
+	out_dma_handle->persistent = 0;
+	out_dma_handle->persistent_node = NULL;
 
 	cve_os_log(CVE_LOGLEVEL_DEBUG,
 			"allocate dma_addr = %pad, virtual = %p, size = %d\n",
@@ -1462,6 +1506,25 @@ int __cve_os_alloc_dma_contig(struct cve_device *cve_dev,
 			&(out_dma_handle->mem_handle.dma_address),
 			*out_vaddr,
 			size);
+
+#ifdef ENABLE_MEM_DETECT
+	if (enable_ice_drv_memleak && *out_vaddr) {
+		struct ice_drv_memleak *leak;
+
+		leak = kzalloc(sizeof(struct ice_drv_memleak), GFP_KERNEL);
+		if (leak) {
+			leak->caller_fn = __builtin_return_address(0);
+			leak->caller_fn2 = __builtin_return_address(1);
+			leak->va = *out_vaddr;
+			leak->size = size;
+			cve_dle_add_to_list_before(g_leak_list_dma, list, leak);
+		} else {
+			cve_os_log(CVE_LOGLEVEL_ERROR,
+			   "##failed in allocating memory for book keeping\n");
+		}
+		mem_leak_count_dma++;
+	}
+#endif
 
 out:
 	FUNC_LEAVE();
@@ -1480,6 +1543,22 @@ void __cve_os_free_dma_contig(struct cve_device *cve_dev,
 #else
 	if (aligned)
 		size += (1 << ICE_DEFAULT_PAGE_SHIFT);
+
+#ifdef ENABLE_MEM_DETECT
+	if (enable_ice_drv_memleak) {
+		struct ice_drv_memleak *leak;
+
+		leak = cve_dle_lookup(g_leak_list_dma, list, va, vaddr);
+		if (leak) {
+			cve_dle_remove_from_list(g_leak_list_dma, list, leak);
+			kfree(leak);
+			mem_leak_count_dma--;
+		} else {
+			cve_os_log(CVE_LOGLEVEL_ERROR,
+			   "##FATAL VA:0x%p not allocated\n", vaddr);
+		}
+	}
+#endif
 
 	dmam_free_coherent(to_cve_os_device(cve_dev)->dev,
 			size,
@@ -1657,6 +1736,21 @@ int cve_probe_common(struct cve_os_device *linux_device, int dev_ind)
 		}
 	}
 
+	dg = cve_dg_get();
+	if (!dg) {
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+			"Could not find valid device group pointer\n");
+		goto out;
+	}
+
+	retval = ice_dg_alloc_fw_mem_cache_nodes(&dg->fw_mem_cache);
+	if (retval != 0) {
+		cve_os_log_default(CVE_LOGLEVEL_ERROR,
+				"ice_dg_alloc_fw_mem_cache_nodes failed %d\n",
+				retval);
+		goto out;
+	}
+
 	retval = init_ice_poweroff_sysfs();
 	if (retval != 0) {
 		cve_os_log_default(CVE_LOGLEVEL_ERROR,
@@ -1672,12 +1766,6 @@ int cve_probe_common(struct cve_os_device *linux_device, int dev_ind)
 	}
 
 	/* register with power balancer */
-	dg = cve_dg_get();
-	if (!dg) {
-		cve_os_log(CVE_LOGLEVEL_ERROR,
-			"Could not find valid device group pointer\n");
-		goto out;
-	}
 
 	dg->sphmb.idc_mailbox_base = NULL;
 	retval = sphpb_map_idc_mailbox_base_registers(&dg->sphmb);
@@ -1799,13 +1887,20 @@ term_sysfsCall:
 	term_ice_poweroff_sysfs();
 
 	/* release memory for any custom firmware cached globally */
-	cve_os_log(CVE_LOGLEVEL_DEBUG,
+	cve_os_log(CVE_LOGLEVEL_INFO,
 			"UnMapping cached f/w 0x%p MD5:%s\n",
 			dg->loaded_cust_fw_sections,
 			dg->loaded_cust_fw_sections->md5_str);
 
 	if (dg)
 		cve_fw_unload(NULL, dg->loaded_cust_fw_sections);
+
+	ret = ice_dg_free_fw_mem_cache_nodes(&dg->fw_mem_cache);
+	if (ret != 0) {
+		cve_os_log_default(CVE_LOGLEVEL_ERROR,
+				"ice_dg_alloc_fw_mem_cache_nodes failed %d\n",
+				ret);
+	}
 
 	active_ice = (~g_icemask) & VALID_ICE_MASK;
 	while (active_ice) {
@@ -2241,37 +2336,53 @@ cleanup_swc:
 #ifdef ENABLE_MEM_DETECT
 static void __dump_leak(void)
 {
-	struct ice_drv_memleak *head = g_leak_list;
+	struct ice_drv_memleak *head[] = {g_leak_list, g_leak_list_sg,
+							g_leak_list_dma};
 	struct ice_drv_memleak *curr = NULL;
 	struct ice_drv_memleak *next = NULL;
-	int is_last = 0;
+	int is_last = 0, index = 0;
 
 	if (!enable_ice_drv_memleak)
 		return;
 
 	cve_os_log(CVE_LOGLEVEL_INFO,
-				"LEAKCOUNT:%u\n", mem_leak_count);
-	/* try to destroy all networks within this workqueue */
-	if (head == NULL)
-		return;
-
-	curr = head;
-	do {
-		next = cve_dle_next(curr, list);
-
-		if (next == curr)
-			is_last = 1;
-
-		cve_os_log(CVE_LOGLEVEL_INFO,
-			    "VA:0x%p size:%d Caller:%pS, Caller's caller:%pS\n",
-				curr->va, curr->size, curr->caller_fn,
-				curr->caller_fn2);
-		cve_dle_remove_from_list(g_leak_list, list, curr);
+				"LEAKCOUNT in OS_ALLOC_ZERO:%u OS_ALLOC_DMA_SG:%u OS_ALLOC_DMA_CONTIG:%u\n",
+				mem_leak_count, mem_leak_count_sg,
+				mem_leak_count_dma);
 
 
-		if (!is_last)
-			curr = cve_dle_next(curr, list);
-	} while (!is_last && curr);
+	for (index = 0; index < 3; index++) {
+
+		if (head[index] == NULL)
+			continue;
+
+		if (index == 0)
+			cve_os_log(CVE_LOGLEVEL_INFO,
+					"List of leak pointers in OS_ALLOC_ZERO\n");
+		else if (index == 1)
+			cve_os_log(CVE_LOGLEVEL_INFO,
+					"List of leak pointers in OS_ALLOC_DMA_SG\n");
+		else
+			cve_os_log(CVE_LOGLEVEL_INFO,
+					"List of leak pointers in OS_ALLOC_DMA_CONTIG\n");
+
+		curr = head[index];
+		do {
+			next = cve_dle_next(curr, list);
+
+			if (next == curr)
+				is_last = 1;
+
+			cve_os_log(CVE_LOGLEVEL_INFO,
+					"VA:0x%p size:%d Caller:%pS, Caller's caller:%pS\n",
+					curr->va, curr->size, curr->caller_fn,
+					curr->caller_fn2);
+			cve_dle_remove_from_list(head[index], list, curr);
+
+			if (!is_last)
+				curr = cve_dle_next(curr, list);
+		} while (!is_last && curr);
+	}
 }
 #endif
 

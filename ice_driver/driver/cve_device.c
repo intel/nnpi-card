@@ -134,6 +134,8 @@ int cve_device_init(struct cve_device *dev, int index, u64 pe_value)
 	dev->cdyn_requested = 0;
 	dev->tlc_reg_val = 0;
 
+	ice_reset_prev_reg_config(&dev->prev_reg_config);
+
 	/* success */
 	return 0;
 
@@ -191,5 +193,21 @@ void ice_dev_set_power_state(struct cve_device *dev,
 
 out:
 	return;
+}
+
+void ice_reset_prev_reg_config(struct ice_reg_stored_config *pconfig)
+{
+	ice_memset_s(pconfig->mmu_config_md5,
+		sizeof(pconfig->mmu_config_md5[0]) * ICEDRV_MD5_MAX_SIZE, 0,
+		sizeof(pconfig->mmu_config_md5[0]) * ICEDRV_MD5_MAX_SIZE);
+
+	ice_memset_s(pconfig->page_sz_reg,
+		sizeof(pconfig->page_sz_reg[0]) *
+			ICE_PAGE_SZ_CONFIG_REG_COUNT,
+		0xDEADBEEF,
+		sizeof(pconfig->page_sz_reg[0]) *
+			ICE_PAGE_SZ_CONFIG_REG_COUNT);
+
+	pconfig->cbd_entries_nr = 0xDEADBEEF;
 }
 

@@ -374,6 +374,7 @@ void ice_di_mmu_unblock_entrance(struct cve_device *cve_dev)
 	reg.val = cve_os_read_mmio_32(cve_dev, offset_bytes);
 	/* allow CVE to send NEW memory transactions to MMU */
 	reg.field.BLOCK_ENTRANCE = 0;
+	reg.field.ATU_WITH_LARGER_LINEAR_ADDRESS = 0xf;
 	cve_os_write_mmio_32(cve_dev, offset_bytes, reg.val);
 
 	cve_os_dev_log(CVE_LOGLEVEL_DEBUG,
@@ -562,10 +563,15 @@ static void dispatch_next_subjobs(struct di_job *job,
 		/* call project hook right before ringing the doorbell */
 		project_hook_dispatch_new_job(dev, ntw);
 
-		/** Configure CBDT entry size only for cold run*/
-		cve_os_write_mmio_32(dev,
+		if (dev->prev_reg_config.cbd_entries_nr !=
+			cfg_default.mmio_cbd_entries_nr_offset) {
+			/** Configure CBDT entry size only for cold run*/
+			cve_os_write_mmio_32(dev,
 				cfg_default.mmio_cbd_entries_nr_offset,
 				dev->fifo_desc->fifo.entries);
+			dev->prev_reg_config.cbd_entries_nr =
+				cfg_default.mmio_cbd_entries_nr_offset;
+		}
 	} else {
 		ASSERT(dev->is_cold_run == 0);
 		if (job->has_scb) {
@@ -1011,43 +1017,105 @@ int unset_idc_registers_multi(u32 icemask, uint8_t lock)
 	return 0;
 }
 
-void cve_di_reset_device(struct cve_device *cve_dev)
+void cve_di_reset_device(struct ice_network *ntw)
 {
 	uint8_t idc_reset;
 	uint32_t needs_reset;
+	struct cve_device *cve_dev;
+	uint64_t value, mask = 0;
+	int retval = 0;
+	struct cve_device_group *dg = g_cve_dev_group_list;
+	struct ice_pnetwork *pntw = ntw->pntw;
 
-	/* Do not perform IDC reset for this ICE if
-	 * it was just powered on
-	 */
-	needs_reset = (cve_dev->di_cve_needs_reset &
-			~(CVE_DI_RESET_DUE_POWER_ON |
-			CVE_DI_RESET_DUE_PNTW_SWITCH));
-	idc_reset = (needs_reset) ? 1 : 0;
+	cve_dev = pntw->ice_list;
+	do {
+		/* Do not perform IDC reset for this ICE if
+		 * it was just powered on
+		 */
+		needs_reset = (cve_dev->di_cve_needs_reset &
+				~(CVE_DI_RESET_DUE_POWER_ON |
+				CVE_DI_RESET_DUE_PNTW_SWITCH));
+		idc_reset = (needs_reset) ? 1 : 0;
 
-	if (do_reset_device(cve_dev, idc_reset))
-		cve_os_dev_log_default(CVE_LOGLEVEL_ERROR,
+		if (idc_reset)
+			mask |= (1ULL << (cve_dev->dev_index + 4));
+
+		cve_dev = cve_dle_next(cve_dev, owner_list);
+	} while (cve_dev != pntw->ice_list);
+
+	value = mask;
+
+	if (mask) {
+		cve_os_log(CVE_LOGLEVEL_DEBUG, "Performing IDC Reset\n");
+
+		retval = cve_os_lock(&dg->poweroff_dev_list_lock,
+				CVE_INTERRUPTIBLE);
+		if (retval != 0) {
+			cve_os_log_default(CVE_LOGLEVEL_ERROR,
+					"Error:%d PowerOff Lock not acquired\n",
+					retval);
+			return;
+		}
+
+		cve_os_write_idc_mmio(cve_dev,
+			cfg_default.bar0_mem_icerst_offset, value);
+
+		/* Check if ICEs are Ready */
+		/* Driver is not yet sure how long to wait for ICERDY */
+		__wait_for_ice_rdy(cve_dev, value, mask,
+					cfg_default.bar0_mem_icerdy_offset);
+		if ((value & mask) != mask) {
+			cve_os_log_default(CVE_LOGLEVEL_ERROR,
+				"Resetting of ICEs failed. Expected=%llx, Received=%llx\n",
+				mask, value);
+			goto unlock;
+		}
+
+		cve_os_unlock(&dg->poweroff_dev_list_lock);
+	}
+
+	cve_dev = pntw->ice_list;
+	do {
+		if (!cve_di_get_device_reset_flag(cve_dev)) {
+			cve_dev = cve_dle_next(cve_dev, owner_list);
+			continue;
+		}
+
+		needs_reset = (cve_dev->di_cve_needs_reset &
+				~(CVE_DI_RESET_DUE_POWER_ON |
+				CVE_DI_RESET_DUE_PNTW_SWITCH));
+		idc_reset = (needs_reset) ? 1 : 0;
+
+		do_reset_device(cve_dev, idc_reset);
+
+		cve_os_dev_log(CVE_LOGLEVEL_DEBUG,
 				cve_dev->dev_index,
-				"Encountered an error to perform a device reset\n");
+				"Perform Reset(%d) (needs_reset:0x%x) Reason=0x%08x, PNTW=%d Ntw=%d, Job=%d, Timeout=%d, Power=%d Context=%d\n",
+				idc_reset, needs_reset,
+				cve_dev->di_cve_needs_reset,
+				((cve_dev->di_cve_needs_reset &
+				  CVE_DI_RESET_DUE_PNTW_SWITCH) != 0),
+				((cve_dev->di_cve_needs_reset &
+				  CVE_DI_RESET_DUE_NTW_SWITCH) != 0),
+				((cve_dev->di_cve_needs_reset &
+					CVE_DI_RESET_DUE_JOB_NOT_COMP) != 0),
+				((cve_dev->di_cve_needs_reset &
+					CVE_DI_RESET_DUE_TIME_OUT) != 0),
+				((cve_dev->di_cve_needs_reset &
+					CVE_DI_RESET_DUE_POWER_ON) != 0),
+				((cve_dev->di_cve_needs_reset &
+					CVE_DI_RESET_DUE_CTX_SWITCH) != 0));
 
-	cve_os_dev_log(CVE_LOGLEVEL_DEBUG,
-			cve_dev->dev_index,
-			"Perform Reset(%d) (needs_reset:0x%x) Reason=0x%08x, PNTW=%d Ntw=%d, Job=%d, Timeout=%d, Power=%d Context=%d\n",
-			idc_reset, needs_reset,
-			cve_dev->di_cve_needs_reset,
-			((cve_dev->di_cve_needs_reset &
-			  CVE_DI_RESET_DUE_PNTW_SWITCH) != 0),
-			((cve_dev->di_cve_needs_reset &
-			  CVE_DI_RESET_DUE_NTW_SWITCH) != 0),
-			((cve_dev->di_cve_needs_reset &
-				CVE_DI_RESET_DUE_JOB_NOT_COMP) != 0),
-			((cve_dev->di_cve_needs_reset &
-				CVE_DI_RESET_DUE_TIME_OUT) != 0),
-			((cve_dev->di_cve_needs_reset &
-				CVE_DI_RESET_DUE_POWER_ON) != 0),
-			((cve_dev->di_cve_needs_reset &
-				CVE_DI_RESET_DUE_CTX_SWITCH) != 0));
+		if (cve_dev->di_cve_needs_reset & ~CVE_DI_RESET_DUE_PNTW_SWITCH)
+			ice_reset_prev_reg_config(&cve_dev->prev_reg_config);
 
-	cve_dev->di_cve_needs_reset = 0;
+		cve_dev = cve_dle_next(cve_dev, owner_list);
+	} while (cve_dev != pntw->ice_list);
+
+	return;
+
+unlock:
+	cve_os_unlock(&dg->poweroff_dev_list_lock);
 }
 
 static inline void di_enable_interrupts(struct cve_device *cve_dev)
@@ -2374,8 +2442,12 @@ u8 ice_di_is_driver_active(void)
 	return is_driver_active;
 }
 
+/* address mode is set along with MMU unblock on silicon. For ring3,
+ * its done seperatly due to a different flow of MMU unblock
+ */
 void ice_di_set_mmu_address_mode(struct cve_device *ice)
 {
+#ifdef RING3_VALIDATION
 	union ice_mmu_inner_mem_mmu_config_t reg;
 	u32 offset_bytes = cfg_default.mmu_base + cfg_default.mmu_cfg_offset;
 
@@ -2387,6 +2459,7 @@ void ice_di_set_mmu_address_mode(struct cve_device *ice)
 		reg.field.ATU_WITH_LARGER_LINEAR_ADDRESS = 0x0;
 #endif
 	cve_os_write_mmio_32(ice, offset_bytes, reg.val);
+#endif
 }
 
 u8 ice_di_is_cold_run(cve_di_job_handle_t hjob)
@@ -2697,3 +2770,36 @@ void ice_di_config_mmu_regs(struct cve_device *ice, u32 *reg_list,
 		cve_os_write_mmio_32(ice, offset, reg_list[(2 * i) + 1]);
 	}
 }
+
+#ifndef RING3_VALIDATION
+void ice_di_job_info_print(struct seq_file *m,
+					struct jobgroup_descriptor *jobgroup)
+{
+	struct job_descriptor *job;
+	struct di_job *djob;
+	struct sub_job *subjob;
+	int i, j, commands_nr;
+
+	job = jobgroup->jobs;
+
+	for (i = 0; i < jobgroup->submitted_jobs_nr; i++) {
+		commands_nr = 0;
+		djob = (struct di_job *)job->di_hjob;
+		seq_printf(m, "sub jobs = %d\tallocated subjobs = %d\tremaining sub jobs = %d",
+			djob->subjobs_nr,
+			djob->allocated_subjobs_nr,
+			djob->remaining_subjobs_nr);
+
+		for (j = 0; j < djob->subjobs_nr; j++) {
+			subjob = &djob->sub_jobs[j];
+			commands_nr += subjob->cb.commands_nr;
+		}
+
+		seq_printf(m, "\tTotal Commands = %d\n",
+					commands_nr);
+
+		/* increment the next dispatch pointer */
+		job = cve_dle_next(job, list);
+	}
+}
+#endif
