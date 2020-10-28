@@ -1,0 +1,169 @@
+From 83fd1a0a93255d5f93ebe2c520e2a7cd30f0887b Mon Sep 17 00:00:00 2001
+From: Guy Zadicario <guy.zadicario@intel.com>
+Date: Fri, 3 Apr 2020 09:21:01 +0300
+Subject: [PATCH v7 12/17] misc: nnpi: enable/disable device for new inference
+ applicatoins use
+
+This add the following sysfs attribute in /sys/class/nnpi/nnpi%d/:
+
+enable - writing 0/1 will enable/disable the device for new inference
+         context creation.
+         writing "abort" will disable the device and notify all inference
+         applications to exit.
+
+Signed-off-by: Guy Zadicario <guy.zadicario@intel.com>
+Reviewed-by: Vaibhav Agarwal <vaibhav.agarwal@intel.com>
+---
+ Documentation/ABI/testing/sysfs-driver-intel_nnpi |  9 +++
+ drivers/misc/intel-nnpi/device.c                  | 14 +++++
+ drivers/misc/intel-nnpi/device.h                  |  6 ++
+ drivers/misc/intel-nnpi/device_sysfs.c            | 70 +++++++++++++++++++++++
+ 4 files changed, 99 insertions(+)
+
+diff --git a/Documentation/ABI/testing/sysfs-driver-intel_nnpi b/Documentation/ABI/testing/sysfs-driver-intel_nnpi
+index 0a978b0..ce2175b 100644
+--- a/Documentation/ABI/testing/sysfs-driver-intel_nnpi
++++ b/Documentation/ABI/testing/sysfs-driver-intel_nnpi
+@@ -1,3 +1,12 @@
++What:           /sys/class/nnpi/nnpi<n>/enable
++Date:           Sep 2020
++Kernelversion:  5.9
++Contact:        guy.zadicario@intel.com
++Description:    Enable state of the device for inference application
++                usage. Writing 0/1 will disable/enable the device,
++                Writing "abort" will disable the device and will
++                notify all inference applications to exit.
++
+ What:           /sys/class/nnpi/nnpi<n>/boot_image
+ Date:           Sep 2020
+ Kernelversion:  5.9
+diff --git a/drivers/misc/intel-nnpi/device.c b/drivers/misc/intel-nnpi/device.c
+index f208753..719996b 100644
+--- a/drivers/misc/intel-nnpi/device.c
++++ b/drivers/misc/intel-nnpi/device.c
+@@ -1619,3 +1619,17 @@ void nnpdrv_device_put(struct nnp_device *nnpdev)
+ {
+ 	kref_put(&nnpdev->ref, release_nnp_device);
+ }
++
++void nnpdrv_device_disable(struct nnp_device *nnpdev)
++{
++	spin_lock(&nnpdev->lock);
++	nnpdev->state &= ~(NNP_DEVICE_CARD_ENABLED);
++	spin_unlock(&nnpdev->lock);
++}
++
++void nnpdrv_device_enable(struct nnp_device *nnpdev)
++{
++	spin_lock(&nnpdev->lock);
++	nnpdev->state |= NNP_DEVICE_CARD_ENABLED;
++	spin_unlock(&nnpdev->lock);
++}
+diff --git a/drivers/misc/intel-nnpi/device.h b/drivers/misc/intel-nnpi/device.h
+index 41dab36..0b3db05 100644
+--- a/drivers/misc/intel-nnpi/device.h
++++ b/drivers/misc/intel-nnpi/device.h
+@@ -218,4 +218,10 @@ static inline int nnpdrv_msg_scheduler_queue_add_msg(
+ 
+ struct nnpdrv_cmd_chan *nnpdrv_device_find_channel(struct nnp_device *nnpdev,
+ 						   u16             protocol_id);
++void nnpdrv_submit_device_event_to_channels(struct nnp_device *nnpdev,
++					    union c2h_event_report *event_msg,
++					    bool                   force);
++void nnpdrv_device_disable(struct nnp_device *nnpdev);
++void nnpdrv_device_enable(struct nnp_device *nnpdev);
++
+ #endif
+diff --git a/drivers/misc/intel-nnpi/device_sysfs.c b/drivers/misc/intel-nnpi/device_sysfs.c
+index 3932002..7dae46f 100644
+--- a/drivers/misc/intel-nnpi/device_sysfs.c
++++ b/drivers/misc/intel-nnpi/device_sysfs.c
+@@ -16,8 +16,77 @@
+ #include <linux/slab.h>
+ #include <linux/sysfs.h>
+ #include "cmd_chan.h"
++#include "ipc_c2h_events.h"
+ #include "nnp_inbound_mem.h"
+ 
++static ssize_t enable_show(struct device           *dev,
++			   struct device_attribute *attr,
++			   char                    *buf)
++{
++	struct nnp_device *nnpdev;
++
++	nnpdev = (struct nnp_device *)dev_get_drvdata(dev);
++	if (!nnpdev)
++		return -EINVAL;
++
++	if ((nnpdev->state & NNP_DEVICE_CARD_ENABLED) != 0)
++		buf[0] = '1';
++	else
++		buf[0] = '0';
++	buf[1] = '\n';
++
++	return 2;
++}
++
++static ssize_t enable_store(struct device           *dev,
++			    struct device_attribute *attr,
++			    const char              *buf,
++			    size_t                   count)
++{
++	struct nnp_device *nnpdev;
++	bool en = false;
++	bool do_abort = false;
++
++	nnpdev = (struct nnp_device *)dev_get_drvdata(dev);
++	if (!nnpdev)
++		return -EINVAL;
++
++	if (sysfs_streq(buf, "abort")) {
++		do_abort = true;
++	} else if (strtobool(buf, &en)) {
++		return -EINVAL;
++	}
++
++	if (en) {
++		nnpdrv_device_enable(nnpdev);
++	} else {
++		/*
++		 * This will make (nnpdev->state & NNP_DEVICE_ACTIVE_MASK) be false
++		 * and will prevent creating new inference capable command channels
++		 */
++		nnpdrv_device_disable(nnpdev);
++
++		if (do_abort) {
++			union c2h_event_report abort_req;
++
++			/*
++			 * send notification to all applications to
++			 * abort using the device
++			 */
++			abort_req.value = 0;
++			abort_req.opcode = NNP_IPC_C2H_OP_EVENT_REPORT;
++			abort_req.event_code = NNP_IPC_ABORT_REQUEST;
++
++			nnpdrv_submit_device_event_to_channels(nnpdev,
++							       &abort_req,
++							       true);
++		}
++	}
++
++	return count;
++}
++static DEVICE_ATTR_RW(enable);
++
+ static ssize_t boot_image_show(struct device           *dev,
+ 			       struct device_attribute *attr,
+ 			       char                    *buf)
+@@ -691,6 +760,7 @@ static ssize_t corr_counters_show(struct device           *dev,
+ static DEVICE_ATTR_RO(corr_counters);
+ 
+ static struct attribute *nnp_dev_attrs[] = {
++	&dev_attr_enable.attr,
+ 	&dev_attr_boot_image.attr,
+ 	&dev_attr_total_unprotected_mem.attr,
+ 	&dev_attr_total_protected_mem.attr,
+-- 
+1.8.3.1
+

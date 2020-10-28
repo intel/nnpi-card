@@ -189,4 +189,75 @@ void ice_dg_release_this_ice(struct cve_device *dev);
 void ice_dg_return_this_ice(struct ice_pnetwork *ntw,
 		struct cve_device *dev);
 
+int ice_dg_free_fw_mem_cache_nodes(struct ice_fw_mem_cache *fw_mem_cache);
+int ice_dg_alloc_fw_mem_cache_nodes(struct ice_fw_mem_cache *fw_mem_cache);
+
+int __ice_dg_check_free_cached_mem(u32 size);
+int __ice_dg_get_cached_mem(u32 size, struct cve_dma_handle *dma_handle);
+int __ice_dg_put_cached_mem(struct cve_dma_handle *dma_handle);
+int __ice_dg_return_cached_mem(struct ice_pnetwork *pntw);
+int __ice_dg_find_matching_fw(struct ice_pnetwork *pntw, u8 *md5,
+		struct cve_fw_loaded_sections **out_node);
+
+#ifndef RING3_VALIDATION
+
+
+#define ice_dg_check_free_cached_mem(size) ({ \
+	int ret = __ice_dg_check_free_cached_mem(size); \
+	ret; \
+})
+
+#define ice_dg_get_cached_mem(size, dma_handle) ({ \
+	int ret = __ice_dg_get_cached_mem(size, dma_handle); \
+	ret; \
+})
+
+#define ice_dg_put_cached_mem(dma_handle) ({ \
+	int ret = __ice_dg_put_cached_mem(dma_handle); \
+	ret; \
+})
+
+#define ice_dg_return_cached_mem(pntw) ({ \
+	int ret = __ice_dg_return_cached_mem(pntw); \
+	ret; \
+})
+
+#define ice_dg_find_matching_fw(pntw, md5, out_node) ({ \
+	int ret = __ice_dg_find_matching_fw(pntw, md5, out_node); \
+	ret; \
+})
+
+#else
+
+#define ice_dg_check_free_cached_mem(size) ({ \
+	int ret = -1; \
+	ret; \
+})
+
+#define ice_dg_get_cached_mem(size, dma_handle) ({ \
+	int ret = -1; \
+	ret; \
+})
+
+#define ice_dg_put_cached_mem(dma_handle) ({ \
+	int ret = 0; \
+	ret; \
+})
+
+#define ice_dg_return_cached_mem(pntw) ({ \
+	int ret = 0; \
+	ret; \
+})
+
+#define ice_dg_find_matching_fw(pntw, md5, out_node) ({ \
+	int ret = -1; \
+	ret; \
+})
+
+#endif
+
+
+
+
+
 #endif /* CVE_DEVICE_GROUP_H_ */

@@ -47,7 +47,8 @@ struct inf_sched_params {
 	uint8_t  priority; /* 0 == normal, 1 == high */
 	uint8_t  debugOn : 1;
 	uint8_t  collectInfo : 1;
-	uint8_t  reserved : 6;
+	uint8_t  hwtraceEnabled : 1;
+	uint8_t  reserved : 5;
 };
 
 /* Max size of daemon command - including the header */

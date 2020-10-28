@@ -60,6 +60,15 @@ struct cve_fw_section_descriptor {
  * Each "cve_fw_loaded_sections" describes one fw type
  * (according to fw_binary_type enumerator)
  */
+struct ice_fw_owner_info {
+	/* pointer to the network using this f/w copy */
+	void *user;
+	/* pointer to the f/w structure managing this f/w copy */
+	void *owner_fw;
+	/* linked list of all networks using this f/w */
+	struct cve_dle_t owner_list;
+};
+
 #define __MD5_MAX_SZ 16
 struct cve_fw_loaded_sections {
 	struct cve_dle_t list;
@@ -74,6 +83,11 @@ struct cve_fw_loaded_sections {
 	/* md5 sum of the image	 */
 	u8 md5[__MD5_MAX_SZ];
 	char md5_str[(__MD5_MAX_SZ * 2) + 1];
+	u32 user_count;
+	/* latest time stamp when this node was used by a network */
+	u64 last_used;
+	u8 cached_mem_used;
+	struct ice_fw_owner_info *owners;
 };
 
 /*
@@ -85,6 +99,8 @@ struct cve_fw_mapped_sections {
 	struct cve_dle_t list;
 	/* structure that describes corresponding fw loaded in memory */
 	struct cve_fw_loaded_sections *cve_fw_loaded;
+	/* structure that describes base fw loaded in memory */
+	struct cve_fw_loaded_sections *base_fw_loaded;
 	/* array of DMA handles
 	 * The DMA handle can be either the same as the one inside the
 	 * cve_fw_loaded_sections->dma_handles if the section is marked

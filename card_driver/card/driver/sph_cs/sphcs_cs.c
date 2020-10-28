@@ -212,11 +212,17 @@ struct sphcs_cmd_chan *sphcs_find_channel(struct sphcs *sphcs, uint16_t protocol
 	return NULL;
 }
 
-static struct sphcs_cmd_chan *find_and_remove_chan(struct sphcs *sphcs, uint16_t protocol_id)
+static struct sphcs_cmd_chan *find_and_remove_chan(struct sphcs *sphcs, uint16_t protocol_id, u8 *channel_created)
 {
 	struct sphcs_cmd_chan *iter, *chan = NULL;
 
 	NNP_SPIN_LOCK_BH(&sphcs->lock_bh);
+	if (channel_created)
+		*channel_created = sphcs->channel_created[protocol_id];
+	if (sphcs->channel_created[protocol_id] == 0) {
+		NNP_SPIN_UNLOCK_BH(&sphcs->lock_bh);
+		return NULL;
+	}
 	hash_for_each_possible(sphcs->cmd_chan_hash,
 			       iter,
 			       hash_node,
@@ -228,6 +234,8 @@ static struct sphcs_cmd_chan *find_and_remove_chan(struct sphcs *sphcs, uint16_t
 
 	if (unlikely(chan != NULL))
 		hash_del(&chan->hash_node);
+
+	sphcs->channel_created[protocol_id] = 0;
 
 	NNP_SPIN_UNLOCK_BH(&sphcs->lock_bh);
 
@@ -290,25 +298,19 @@ static void channel_op_work_handler(struct work_struct *work)
 	struct sphcs *sphcs = g_the_sphcs;
 	struct sphcs_cmd_chan *chan;
 	uint8_t event;
-	enum event_val val = NNP_IPC_NO_ERROR;
+	int val = 0;
 
 	if (op->cmd.destroy) {
 		destroy_removed_chan(op->chan);
 		goto done;
-	}
-	chan = sphcs_find_channel(sphcs, op->cmd.protocol_id);
-	if (unlikely(chan != NULL)) {
-		sphcs_cmd_chan_put(chan);
-		event = NNP_IPC_CREATE_CHANNEL_FAILED;
-		val = NNP_IPC_ALREADY_EXIST;
-		sph_log_err(CREATE_COMMAND_LOG, "Should never happen. Create chan(id=%hu) failed, already exist.\n", op->cmd.protocol_id);
-		goto send_error;
 	}
 
 	val = sphcs_cmd_chan_create(op->cmd.protocol_id,
 				    op->cmd.uid,
 				    op->cmd.privileged ? true : false,
 				    &chan);
+	if (unlikely(val == -1))
+		goto done;
 	if (unlikely(val != NNP_IPC_NO_ERROR)) {
 		event = NNP_IPC_CREATE_CHANNEL_FAILED;
 		goto send_error;
@@ -349,14 +351,28 @@ static void IPC_OPCODE_HANDLER(CHANNEL_OP)(
 
 	work->cmd.value = cmd->value;
 	if (cmd->destroy) {
-		work->chan = find_and_remove_chan(sphcs, cmd->protocol_id);
+		u8 channel_created = 0;
+
+		work->chan = find_and_remove_chan(sphcs, cmd->protocol_id, &channel_created);
 		if (unlikely(work->chan == NULL)) {
 			kfree(work);
-			event = NNP_IPC_DESTROY_CHANNEL_FAILED;
-			val = NNP_IPC_NO_SUCH_CHANNEL;
-			sph_log_err(CREATE_COMMAND_LOG, "Destroy chan(id=%hu) failed, no such chan.\n", cmd->protocol_id);
+			event = channel_created ? NNP_IPC_CHANNEL_DESTROYED : NNP_IPC_DESTROY_CHANNEL_FAILED;
+			val = channel_created ? 0 : NNP_IPC_NO_SUCH_CHANNEL;
+			if (channel_created == 0)
+				sph_log_err(CREATE_COMMAND_LOG, "Destroy chan(id=%hu) failed, no such chan.\n", cmd->protocol_id);
 			goto send_error;
 		}
+	} else {
+		NNP_SPIN_LOCK_BH(&sphcs->lock_bh);
+		if (sphcs->channel_created[cmd->protocol_id] == 1) {
+			NNP_SPIN_UNLOCK_BH(&sphcs->lock_bh);
+			event = NNP_IPC_CREATE_CHANNEL_FAILED;
+			val = NNP_IPC_ALREADY_EXIST;
+			kfree(work);
+			goto send_error;
+		}
+		sphcs->channel_created[cmd->protocol_id] = 1;
+		NNP_SPIN_UNLOCK_BH(&sphcs->lock_bh);
 	}
 
 	INIT_WORK(&work->work, channel_op_work_handler);
@@ -932,6 +948,17 @@ static int sphcs_create_sphcs(void                           *hw_handle,
 		}
 	}
 
+	sphcs->kobj = kobject_create_and_add("sphcs", kernel_kobj);
+	if (unlikely(sphcs->kobj == NULL)) {
+		sph_log_err(START_UP_LOG, "sphcs kobj creation failed");
+		ret = -ENOMEM;
+		goto free_p2p_heap;
+	}
+
+	ret = sphcs_fpga_power_sysfs_init(sphcs->kobj);
+	if (unlikely(ret < 0))
+		goto rm_kobj;
+
 	sphcs->debugfs_dir = debugfs_create_dir("sphcs", NULL);
 	if (IS_ERR_OR_NULL(sphcs->debugfs_dir)) {
 		sph_log_info(START_UP_LOG, "Failed to create debugfs dir - debugfs will not be used\n");
@@ -941,7 +968,7 @@ static int sphcs_create_sphcs(void                           *hw_handle,
 	ret = dma_page_pool_create(sphcs->hw_device, 128, &sphcs->dma_page_pool);
 	if (ret < 0) {
 		sph_log_err(START_UP_LOG, "Failed to create dma page pool\n");
-		goto free_p2p_heap;
+		goto rm_fpga_power_sysfs;
 	}
 
 	dma_page_pool_init_debugfs(sphcs->dma_page_pool,
@@ -1068,6 +1095,8 @@ static int sphcs_create_sphcs(void                           *hw_handle,
 	spin_lock_init(&sphcs->lock_bh);
 	hash_init(sphcs->cmd_chan_hash);
 
+	memset(sphcs->channel_created, 0, sizeof(sphcs->channel_created));
+
 	*out_sphcs = sphcs;
 	*out_dmaSched = sphcs->dmaSched;
 	g_the_sphcs = sphcs;
@@ -1144,6 +1173,10 @@ free_net_dma_pool:
 	dma_page_pool_destroy(sphcs->net_dma_page_pool);
 free_dma_pool:
 	dma_page_pool_destroy(sphcs->dma_page_pool);
+rm_fpga_power_sysfs:
+	sphcs_fpga_power_sysfs_deinit(sphcs->kobj);
+rm_kobj:
+	kobject_put(sphcs->kobj);
 free_p2p_heap:
 	sphcs_remove_p2p_heap();
 free_mem:
@@ -1165,6 +1198,7 @@ void sphcs_host_doorbell_value_changed(struct sphcs *sphcs,
 				       u32           doorbell_value)
 {
 	uint32_t host_drv_state = (doorbell_value & NNP_HOST_DRV_STATE_MASK) >> NNP_HOST_DRV_STATE_SHIFT;
+	int ret;
 
 	sph_log_debug(GENERAL_LOG, "Got host doorbell value 0x%x\n", doorbell_value);
 
@@ -1191,7 +1225,15 @@ void sphcs_host_doorbell_value_changed(struct sphcs *sphcs,
 		/* host connected - safe to initialize DMA engine now
 		 * as we probably allowed for bus master operations
 		 */
-		sphcs->hw_ops->dma.init_dma_engine(sphcs->hw_handle);
+		ret = sphcs->hw_ops->dma.init_dma_engine(sphcs->hw_handle);
+		if (unlikely(ret < 0)) {
+			sphcs_send_event_report(g_the_sphcs,
+						NNP_IPC_FATAL_DMA_HANG_DETECTED,
+						ret,
+						NULL,
+						-1,
+						-1);
+		}
 	}
 }
 
@@ -1227,6 +1269,8 @@ static int sphcs_destroy_sphcs(struct sphcs *sphcs)
 	sphcs_deinit_th_driver();
 	g_the_sphcs = NULL;
 	debugfs_remove_recursive(sphcs->debugfs_dir);
+	sphcs_fpga_power_sysfs_deinit(sphcs->kobj);
+	kobject_put(sphcs->kobj);
 #ifdef HW_LAYER_SPH
 	sysfs_remove_link(&THIS_MODULE->mkobj.kobj, "pci");
 #endif

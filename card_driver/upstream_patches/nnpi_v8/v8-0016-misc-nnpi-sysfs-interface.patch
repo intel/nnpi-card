@@ -1,0 +1,1257 @@
+From 2373545c5a7ce828ca2b7cb184d870e39ee60d5d Mon Sep 17 00:00:00 2001
+From: Guy Zadicario <guy.zadicario@intel.com>
+Date: Wed, 1 Apr 2020 10:31:18 +0300
+Subject: [PATCH v8 16/22] misc: nnpi: sysfs interface
+
+This adds per NNP-I device sysfs access to device state and attributes.
+Also, added notification on device boot state change events.
+
+The following attributes are all under /sys/class/nnpi/nnpi%d/ (%d is
+logical device number)
+
+Read only attributes:
+post_code - device bios boot post code
+bios_flash_progress - flash progress in percent when device bios flash is
+                      in progress
+ice_units - number of computing ICE units on the device
+bios_version - device bios version string
+image_version - the boot image version the device was booting with
+board_name - device board name string
+board_part_num - device part number string
+board_serial_num - device serial number string
+active_contexts_num - number of active inference contexts active on device
+fpga_revision - version of FPGA image
+total_protected_mem - total size of ECC protected DRAM on device in KB
+total_unprotected_mem - total size of unprotected DRAM on device in KB
+protocol_version - device s/w stack command protocol version
+card_stepping - device Silicon stepping
+boot_state - string identifying device boot state
+boot_fail_reason - string describing device boot fail reason
+card_state - string describing the device active state
+crashlog_size - size of device crash log
+crashlog - dump the device crash log if available
+uncorr_counters - device uncorrected errors counters
+corr_counters - device corrected errors counters
+
+Read-Write attibutes:
+boot_image - show or strore boot image firmware name to use on next device
+             reset.
+fw_update_completion - show if new firmware has been staged on the device
+      which require device reset.
+      storing allows the device to be cold-reset and start using the new
+      firmware.
+cecc_threshold - show or store the corrected-ecc error inform threshold
+ucecc_threshold - show or store the uncorrected-ecc error inform threshold
+
+Signed-off-by: Guy Zadicario <guy.zadicario@intel.com>
+Reviewed-by: Vaibhav Agarwal <vaibhav.agarwal@intel.com>
+---
+ Documentation/ABI/testing/sysfs-driver-intel_nnpi | 159 +++++
+ drivers/misc/intel-nnpi/Makefile                  |   2 +-
+ drivers/misc/intel-nnpi/device.c                  |  55 +-
+ drivers/misc/intel-nnpi/device_chardev.c          |   8 +
+ drivers/misc/intel-nnpi/device_sysfs.c            | 762 ++++++++++++++++++++++
+ drivers/misc/intel-nnpi/device_sysfs.h            |  15 +
+ drivers/misc/intel-nnpi/pcie.c                    |  49 ++
+ drivers/misc/intel-nnpi/pcie.h                    |   3 +
+ 8 files changed, 1049 insertions(+), 4 deletions(-)
+ create mode 100644 drivers/misc/intel-nnpi/device_sysfs.c
+ create mode 100644 drivers/misc/intel-nnpi/device_sysfs.h
+
+diff --git a/Documentation/ABI/testing/sysfs-driver-intel_nnpi b/Documentation/ABI/testing/sysfs-driver-intel_nnpi
+index ce8b68d..3c29a88 100644
+--- a/Documentation/ABI/testing/sysfs-driver-intel_nnpi
++++ b/Documentation/ABI/testing/sysfs-driver-intel_nnpi
+@@ -3,3 +3,162 @@ Date:           Sep 2020
+ Kernelversion:  5.11
+ Contact:        guy.zadicario@intel.com
+ Description:    Total size in bytes of all allocated NNP-I host resources.
++
++What:           /sys/class/nnpi/nnpi<n>/boot_image
++Date:           Sep 2020
++Kernelversion:  5.11
++Contact:        guy.zadicario@intel.com
++Description:    Name of boot image firmware filename that will be used
++                on next device reset. Default is intel/nnpi/disk.img
++
++What:           /sys/class/nnpi/nnpi<n>/total_unprotected_mem
++Date:           Sep 2020
++Kernelversion:  5.11
++Contact:        guy.zadicario@intel.com
++Description:    Total of non-ecc-protected DRAM on device, in KB units
++
++What:           /sys/class/nnpi/nnpi<n>/total_protected_mem
++Date:           Sep 2020
++Kernelversion:  5.11
++Contact:        guy.zadicario@intel.com
++Description:    Total of ecc-protected DRAM on device, in KB units
++
++What:           /sys/class/nnpi/nnpi<n>/protocol_version
++Date:           Sep 2020
++Kernelversion:  5.11
++Contact:        guy.zadicario@intel.com
++Description:    A version string describing the version of the device
++                command protocol version.
++
++What:           /sys/class/nnpi/nnpi<n>/cecc_threshold
++Date:           Sep 2020
++Kernelversion:  5.11
++Contact:        guy.zadicario@intel.com
++Description:    Threshold value specifying how many device corrected ECC
++                errors should occur before informing uevent of the error.
++
++What:           /sys/class/nnpi/nnpi<n>/ucecc_threshold
++Date:           Sep 2020
++Kernelversion:  5.11
++Contact:        guy.zadicario@intel.com
++Description:    Threshold value specifying how many device un-corrected ECC
++                errors should occur before informing uevent of the error.
++
++What:           /sys/class/nnpi/nnpi<n>/crashlog_size
++Date:           Sep 2020
++Kernelversion:  5.11
++Contact:        guy.zadicario@intel.com
++Description:    Size of device crash log. zero if no device crash log exist.
++
++What:           /sys/class/nnpi/nnpi<n>/crashlog
++Date:           Sep 2020
++Kernelversion:  5.11
++Contact:        guy.zadicario@intel.com
++Description:    Binary attribute containing the device crash log content.
++
++What:           /sys/class/nnpi/nnpi<n>/post_code
++Date:           Sep 2020
++Kernelversion:  5.11
++Contact:        guy.zadicario@intel.com
++Description:    Device boot stage post code, updated by device BIOS during device boot.
++
++What:           /sys/class/nnpi/nnpi<n>/flash_progress
++Date:           Sep 2020
++Kernelversion:  5.11
++Contact:        guy.zadicario@intel.com
++Description:    Device bios flash progress in percent. Valid only when device BIOS flash
++                is in progress.
++
++What:           /sys/class/nnpi/nnpi<n>/fw_update_completion
++Date:           Sep 2020
++Kernelversion:  5.11
++Contact:        guy.zadicario@intel.com
++Description:    Shows 0/1 indicating if device has completed a firmware update and
++                and requires device cold-reset to start use the new firmware.
++                Writing "go" to this attribute will flag the device it may reset for
++                completing the update. PCIe link may go down!
++
++What:           /sys/class/nnpi/nnpi<n>/ice_units
++Date:           Sep 2020
++Kernelversion:  5.11
++Contact:        guy.zadicario@intel.com
++Description:    Number of ICE units on the device.
++
++What:           /sys/class/nnpi/nnpi<n>/bios_version
++Date:           Sep 2020
++Kernelversion:  5.11
++Contact:        guy.zadicario@intel.com
++Description:    Device BIOS version string
++
++What:           /sys/class/nnpi/nnpi<n>/image_version
++Date:           Sep 2020
++Kernelversion:  5.11
++Contact:        guy.zadicario@intel.com
++Description:    version string of the boot image used to boot the device.
++
++What:           /sys/class/nnpi/nnpi<n>/board_name
++Date:           Sep 2020
++Kernelversion:  5.11
++Contact:        guy.zadicario@intel.com
++Description:    Device board type name
++
++What:           /sys/class/nnpi/nnpi<n>/board_part_num
++Date:           Sep 2020
++Kernelversion:  5.11
++Contact:        guy.zadicario@intel.com
++Description:    Device part number string
++
++What:           /sys/class/nnpi/nnpi<n>/board_serial_num
++Date:           Sep 2020
++Kernelversion:  5.11
++Contact:        guy.zadicario@intel.com
++Description:    Device serial number string
++
++What:           /sys/class/nnpi/nnpi<n>/active_contexts_num
++Date:           Sep 2020
++Kernelversion:  5.11
++Contact:        guy.zadicario@intel.com
++Description:    Number of active inference contexts running
++
++What:           /sys/class/nnpi/nnpi<n>/fpga_revision
++Date:           Sep 2020
++Kernelversion:  5.11
++Contact:        guy.zadicario@intel.com
++Description:    Device FPGA revision number
++
++What:           /sys/class/nnpi/nnpi<n>/card_stepping
++Date:           Sep 2020
++Kernelversion:  5.11
++Contact:        guy.zadicario@intel.com
++Description:    Device processor stepping
++
++What:           /sys/class/nnpi/nnpi<n>/boot_state
++Date:           Sep 2020
++Kernelversion:  5.11
++Contact:        guy.zadicario@intel.com
++Description:    Device boot state string, describing device boot
++                stage or "Ready" when boot completed.
++
++What:           /sys/class/nnpi/nnpi<n>/boot_fail_reason
++Date:           Sep 2020
++Kernelversion:  5.11
++Contact:        guy.zadicario@intel.com
++Description:    Device boot failure reason string.
++
++What:           /sys/class/nnpi/nnpi<n>/card_state
++Date:           Sep 2020
++Kernelversion:  5.11
++Contact:        guy.zadicario@intel.com
++Description:    Device operational state string.
++
++What:           /sys/class/nnpi/nnpi<n>/uncorr_counters
++Date:           Sep 2020
++Kernelversion:  5.11
++Contact:        guy.zadicario@intel.com
++Description:    Dumps counters of various device uncorrected errors.
++
++What:           /sys/class/nnpi/nnpi<n>/corr_counters
++Date:           Sep 2020
++Kernelversion:  5.11
++Contact:        guy.zadicario@intel.com
++Description:    Dumps counters of various device corrected errors.
+diff --git a/drivers/misc/intel-nnpi/Makefile b/drivers/misc/intel-nnpi/Makefile
+index 4cc16f54..631850b 100644
+--- a/drivers/misc/intel-nnpi/Makefile
++++ b/drivers/misc/intel-nnpi/Makefile
+@@ -8,6 +8,6 @@ obj-m	:= intel_nnpidrv.o
+ 
+ intel_nnpidrv-y := nnpdrv_main.o pcie.o device.o msg_scheduler.o \
+ 		   hostres.o host_chardev.o nnp_user.o bootimage.o \
+-                   device_chardev.o cmd_chan.o
++                   device_chardev.o cmd_chan.o device_sysfs.o
+ 
+ ccflags-y += -I$(srctree)/$(src)/ipc_include
+diff --git a/drivers/misc/intel-nnpi/device.c b/drivers/misc/intel-nnpi/device.c
+index e09a5c8..d5d0a0c 100644
+--- a/drivers/misc/intel-nnpi/device.c
++++ b/drivers/misc/intel-nnpi/device.c
+@@ -21,6 +21,7 @@
+ #include "bootimage.h"
+ #include "cmd_chan.h"
+ #include "device_chardev.h"
++#include "device_sysfs.h"
+ #include "host_chardev.h"
+ #include "ipc_c2h_events.h"
+ #include "nnp_boot_defs.h"
+@@ -275,11 +276,14 @@ static void nnpdrv_destroy_all_channels(struct nnp_device *nnpdev)
+ static void nnpdrv_device_inform_event(struct nnp_device     *nnpdev,
+ 				       union c2h_event_report *event)
+ {
+-	/* 5 == largest uevent below has 4 envs + 1 NULL terminator */
+-	char *event_env[5];
++	/* 6 == largest uevent below has 5 envs + 1 NULL terminator */
++	char *event_env[6];
+ 	int num_env = 0;
+ 	int i;
+ 	bool below_threshold = false;
++	const char *boot_state;
++	const char *state;
++	const char *fail_reason;
+ 
+ 	/*
+ 	 * some events needs to be informed only every time a configured
+@@ -379,6 +383,22 @@ static void nnpdrv_device_inform_event(struct nnp_device     *nnpdev,
+ 			kasprintf(GFP_KERNEL, "NNPI_THERMAL_TRIP_DIR=%s",
+ 				  (event->obj_id_2 >= event->obj_id ?
+ 				   "up" : "down"));
++	} else if (event->event_code == NNP_IPC_DEVICE_STATE_CHANGED) {
++		nnpdrv_device_sysfs_get_state_strings(nnpdev,
++						      &state,
++						      &boot_state,
++						      &fail_reason);
++		event_env[num_env++] =
++			kasprintf(GFP_KERNEL, "NNPI_EVENT=state");
++		event_env[num_env++] =
++			kasprintf(GFP_KERNEL, "NNPI_ERROR_CLASS=no_error");
++		event_env[num_env++] =
++			kasprintf(GFP_KERNEL, "NNPI_STATE=%s", state);
++		event_env[num_env++] =
++			kasprintf(GFP_KERNEL, "NNPI_BOOT_STATE=%s", boot_state);
++		event_env[num_env++] =
++			kasprintf(GFP_KERNEL,
++				  "NNPI_FAIL_REASON=%s", fail_reason);
+ 	} else if (event->event_code == NNP_IPC_ERROR_DRAM_ECC_CORRECTABLE) {
+ 		event_env[num_env++] =
+ 			kasprintf(GFP_KERNEL, "NNPI_EVENT=dram_ecc_error");
+@@ -1040,6 +1060,7 @@ void nnpdrv_device_set_boot_state(struct nnp_device *nnpdev, u32 mask)
+ 	bool becomes_ready = false;
+ 	union h2c_setup_crash_dump_msg setup_crash_dump_msg;
+ 	union h2c_setup_sys_info_page sys_info_page_msg;
++	union c2h_event_report  state_changed_event;
+ 	int ret;
+ 
+ 	/*
+@@ -1062,6 +1083,19 @@ void nnpdrv_device_set_boot_state(struct nnp_device *nnpdev, u32 mask)
+ 
+ 	pr_debug("device state change 0x%x --> 0x%x\n", prev_state, state);
+ 
++	/*
++	 * Report the state change event to management API clients.
++	 * Do not report SYSINFO_READY state, this is an "internal" state
++	 */
++	if (state != NNP_DEVICE_BOOT_SYSINFO_READY) {
++		state_changed_event.value = 0;
++		state_changed_event.opcode = NNP_IPC_C2H_OP_EVENT_REPORT;
++		state_changed_event.event_code = NNP_IPC_DEVICE_STATE_CHANGED;
++		state_changed_event.obj_id = state & 0xffff;
++		state_changed_event.obj_id_2 = (state >> 16) & 0xffff;
++		nnpdrv_device_inform_event(nnpdev, &state_changed_event);
++	}
++
+ 	/* unload boot image if boot started or failed */
+ 	if (nnpdev->boot_image_loaded &&
+ 	    (((state & NNP_DEVICE_BOOT_STARTED) &&
+@@ -1303,6 +1337,7 @@ static void doorbell_changed_handler(struct work_struct *work)
+ 	u32 doorbell_val = req->val;
+ 	struct nnp_device *nnpdev = req->nnpdev;
+ 	union h2c_query_version_msg msg;
++	union c2h_event_report  state_changed_event;
+ 
+ 	nnpdev->card_doorbell_val = doorbell_val;
+ 
+@@ -1367,7 +1402,16 @@ static void doorbell_changed_handler(struct work_struct *work)
+ 			spin_lock(&nnpdev->lock);
+ 			nnpdev->state = 0;
+ 			nnpdev->bios_system_info_valid = false;
++			nnpdev->card_sys_info_valid = false;
+ 			spin_unlock(&nnpdev->lock);
++
++			state_changed_event.value = 0;
++			state_changed_event.opcode =
++				NNP_IPC_C2H_OP_EVENT_REPORT;
++			state_changed_event.event_code =
++				NNP_IPC_DEVICE_STATE_CHANGED;
++			nnpdrv_device_inform_event(nnpdev,
++						   &state_changed_event);
+ 			break;
+ 		default:
+ 			break;
+@@ -1421,8 +1465,13 @@ void nnpdrv_device_destroy(struct nnp_device *nnpdev, bool prepare_only)
+ {
+ 	struct completion completion;
+ 
+-	if (prepare_only)
++	if (prepare_only) {
++		/* BAR2 can no longer be accessed */
++		spin_lock(&nnpdev->lock);
++		nnpdev->inbound_mem = NULL;
++		spin_unlock(&nnpdev->lock);
+ 		return;
++	}
+ 
+ 	pr_debug("Destroying NNP-I device %u\n", nnpdev->id);
+ 
+diff --git a/drivers/misc/intel-nnpi/device_chardev.c b/drivers/misc/intel-nnpi/device_chardev.c
+index 307bc3fb..82b4cc6 100644
+--- a/drivers/misc/intel-nnpi/device_chardev.c
++++ b/drivers/misc/intel-nnpi/device_chardev.c
+@@ -17,6 +17,7 @@
+ #include <uapi/misc/intel_nnpi.h>
+ #include "cmd_chan.h"
+ #include "device_chardev.h"
++#include "device_sysfs.h"
+ #include "ipc_c2h_events.h"
+ 
+ static dev_t       devnum;
+@@ -708,12 +709,19 @@ int nnpdev_device_chardev_create(struct nnp_device *nnpdev)
+ 		return PTR_ERR(nnpdev->dev);
+ 	}
+ 
++	ret = nnpdrv_device_sysfs_init(nnpdev);
++	if (ret) {
++		device_destroy(class, MKDEV(MAJOR(devnum), nnpdev->id));
++		return ret;
++	}
++
+ 	return 0;
+ }
+ 
+ void nnpdev_device_chardev_destroy(struct nnp_device *nnpdev)
+ {
+ 	if (nnpdev) {
++		nnpdrv_device_sysfs_fini(nnpdev);
+ 		device_destroy(class, MKDEV(MAJOR(devnum), nnpdev->id));
+ 		cdev_del(&nnpdev->cdev);
+ 	}
+diff --git a/drivers/misc/intel-nnpi/device_sysfs.c b/drivers/misc/intel-nnpi/device_sysfs.c
+new file mode 100644
+index 0000000..fdb3bad
+--- /dev/null
++++ b/drivers/misc/intel-nnpi/device_sysfs.c
+@@ -0,0 +1,762 @@
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++/********************************************
++ * Copyright (C) 2019-2020 Intel Corporation
++ ********************************************/
++
++#define pr_fmt(fmt)   KBUILD_MODNAME ": %s, " fmt, __func__
++
++#include "device_sysfs.h"
++#include <linux/delay.h>
++#include <linux/dev_printk.h>
++#include <linux/device.h>
++#include <linux/init.h>
++#include <linux/kernel.h>
++#include <linux/kobject.h>
++#include <linux/slab.h>
++#include <linux/sysfs.h>
++#include "cmd_chan.h"
++#include "nnp_inbound_mem.h"
++
++static ssize_t boot_image_show(struct device           *dev,
++			       struct device_attribute *attr,
++			       char                    *buf)
++{
++	struct nnp_device *nnpdev;
++
++	nnpdev = dev_get_drvdata(dev);
++	if (!nnpdev)
++		return -EINVAL;
++
++	return sprintf(buf, "%s\n", nnpdev->reset_boot_image_path);
++}
++
++static ssize_t boot_image_store(struct device           *dev,
++				struct device_attribute *attr,
++				const char              *buf,
++				size_t                  count)
++{
++	struct nnp_device *nnpdev;
++
++	nnpdev = dev_get_drvdata(dev);
++	if (!nnpdev)
++		return -EINVAL;
++
++	strncpy(nnpdev->reset_boot_image_path, buf, PATH_MAX - 1);
++	nnpdev->reset_boot_image_path[PATH_MAX - 1] = '\0';
++
++	return count;
++}
++static DEVICE_ATTR_RW(boot_image);
++
++void nnpdrv_device_sysfs_get_state_strings(struct nnp_device *nnpdev,
++					   const char **state,
++					   const char **boot_state,
++					   const char **fail_reason)
++{
++	/* Find Boot State */
++	if (!boot_state)
++		goto find_fail_reason;
++
++	if (nnpdev->state & NNP_DEVICE_ERROR_MASK)
++		*boot_state = "failed";
++	else if (nnpdev->state & NNP_DEVICE_CARD_READY)
++		*boot_state = "Ready";
++	else if (nnpdev->state & NNP_DEVICE_CARD_DRIVER_READY)
++		*boot_state = "Driver Ready";
++	else if (nnpdev->state & NNP_DEVICE_BOOT_STARTED)
++		*boot_state = "Boot Started";
++	else if (nnpdev->state & NNP_DEVICE_BIOS_UPDATE_STARTED)
++		*boot_state = "Bios Update Started";
++	else if (nnpdev->state & (NNP_DEVICE_BOOT_BIOS_READY |
++				  NNP_DEVICE_BOOT_RECOVERY_BIOS_READY |
++				  NNP_DEVICE_BOOT_SYSINFO_READY))
++		*boot_state = nnpdev->is_recovery_bios ?
++					"Recovery Bios Ready" : "Bios Ready";
++	else
++		*boot_state = "Unknown";
++
++find_fail_reason:
++	if (!fail_reason)
++		goto find_state;
++
++	/* Find failure Reason*/
++	if (nnpdev->state & NNP_DEVICE_FAILED_VERSION)
++		*fail_reason = "version Mismatch";
++	else if (nnpdev->state & NNP_DEVICE_CAPSULE_EXPECTED)
++		*fail_reason = "Bios Update Required";
++	else if (nnpdev->state & NNP_DEVICE_CAPSULE_FAILED)
++		*fail_reason = "Bios Update Failed";
++	else if (nnpdev->state & NNP_DEVICE_CURRUPTED_BOOT_IMAGE)
++		*fail_reason = "Boot/Capsule image verification Failed";
++	else if (nnpdev->state & NNP_DEVICE_BOOT_FAILED)
++		*fail_reason = "Boot failed";
++	else if (nnpdev->state & NNP_DEVICE_HOST_DRIVER_ERROR)
++		*fail_reason = "Driver Error";
++	else if (nnpdev->state & NNP_DEVICE_KERNEL_CRASH)
++		*fail_reason = "OS Crash";
++	else if (nnpdev->state & NNP_DEVICE_CARD_IN_RESET)
++		*fail_reason = "Reset in progress";
++	else if (nnpdev->state & NNP_DEVICE_FATAL_MCE_ERROR)
++		*fail_reason = "Fatal MCE Error";
++	else if (nnpdev->state & NNP_DEVICE_FATAL_DRAM_ECC_ERROR)
++		*fail_reason = "Fatal DRAM ECC Error";
++	else if (nnpdev->state & NNP_DEVICE_FATAL_ICE_ERROR)
++		*fail_reason = "Fatal ICE execution error";
++	else if (nnpdev->state & NNP_DEVICE_FATAL_DMA_ERROR)
++		*fail_reason = "Fatal DMA hang error";
++	else if (nnpdev->state & NNP_DEVICE_HANG)
++		*fail_reason = "Device Not Responding (Hang)";
++	else
++		*fail_reason = "None";
++
++find_state:
++	if (!state)
++		return;
++
++	/* find device state */
++	if (nnpdev->state & NNP_DEVICE_ERROR_MASK) {
++		*state = "failed";
++	} else if ((nnpdev->state & NNP_DEVICE_ACTIVE_MASK) ==
++		 NNP_DEVICE_ACTIVE_MASK) {
++		*state = "Active";
++	} else if ((nnpdev->state & NNP_DEVICE_CARD_READY) &&
++		 !(nnpdev->state & NNP_DEVICE_CARD_ENABLED)) {
++		if (nnpdev->num_active_contexts)
++			*state = "Disabled";
++		else
++			*state = "Disabled and Idle";
++	} else {
++		*state = "Unknown";
++	}
++}
++
++static ssize_t post_code_show(struct device   *dev,
++			      struct device_attribute *attr,
++			      char                    *buf)
++{
++	struct nnp_device *nnpdev;
++
++	nnpdev = dev_get_drvdata(dev);
++	if (!nnpdev)
++		return -EINVAL;
++
++	return sprintf(buf, "0x%04x\n", nnp_get_postcode(nnpdev->nnp_pci));
++}
++static DEVICE_ATTR_RO(post_code);
++
++static ssize_t bios_flash_progress_show(struct device   *dev,
++					struct device_attribute *attr,
++					char                    *buf)
++{
++	struct nnp_device *nnpdev;
++
++	nnpdev = dev_get_drvdata(dev);
++	if (!nnpdev)
++		return -EINVAL;
++
++	return sprintf(buf, "%03d %%\n",
++		       nnp_get_bios_flash_progress(nnpdev->nnp_pci));
++}
++static DEVICE_ATTR_RO(bios_flash_progress);
++
++static ssize_t fw_update_completion_store(struct device           *dev,
++					  struct device_attribute *attr,
++					  const char              *buf,
++					  size_t                  count)
++{
++	struct nnp_device *nnpdev;
++	int rc;
++
++	nnpdev = dev_get_drvdata(dev);
++	if (!nnpdev || count < 3)
++		return -EINVAL;
++
++	if (!sysfs_streq(buf, "go"))
++		return -EINVAL;
++
++	rc = nnp_fw_update_complete(nnpdev->nnp_pci, true);
++	if (rc < 0)
++		return rc;
++
++	return count;
++}
++
++static ssize_t fw_update_completion_show(struct device   *dev,
++					 struct device_attribute *attr,
++					 char                    *buf)
++{
++	struct nnp_device *nnpdev;
++	int needed;
++
++	nnpdev = dev_get_drvdata(dev);
++	if (!nnpdev)
++		return -EINVAL;
++
++	needed = nnp_fw_update_complete(nnpdev->nnp_pci, false);
++	if (needed < 0)
++		return needed;
++
++	return sprintf(buf, "%d\n", needed);
++}
++static DEVICE_ATTR_RW(fw_update_completion);
++
++static ssize_t ice_units_show(struct device   *dev,
++			      struct device_attribute *attr,
++			      char                    *buf)
++{
++	struct nnp_device *nnpdev;
++
++	nnpdev = dev_get_drvdata(dev);
++	if (!nnpdev)
++		return -EINVAL;
++
++	return sprintf(buf, "%d\n", nnpdev->num_ice_devices);
++}
++static DEVICE_ATTR_RO(ice_units);
++
++static ssize_t bios_version_show(struct device   *dev,
++				 struct device_attribute *attr,
++				 char                    *buf)
++{
++	struct nnp_device *nnpdev;
++	ssize_t ret;
++
++	nnpdev = dev_get_drvdata(dev);
++	if (!nnpdev)
++		return -EINVAL;
++
++	if (nnpdev->card_sys_info_valid &&
++	    nnpdev->card_sys_info->bios_version[0] != '\0')
++		ret = sprintf(buf, "%s\n", nnpdev->card_sys_info->bios_version);
++	else if (nnpdev->bios_system_info_valid && nnpdev->bios_system_info)
++		ret = sprintf(buf, "%s\n", nnpdev->bios_version_str);
++
++	return ret;
++}
++static DEVICE_ATTR_RO(bios_version);
++
++static ssize_t image_version_show(struct device   *dev,
++				  struct device_attribute *attr,
++				  char                    *buf)
++{
++	struct nnp_device *nnpdev;
++
++	nnpdev = dev_get_drvdata(dev);
++	if (!nnpdev)
++		return -EINVAL;
++
++	if (!nnpdev->card_sys_info_valid)
++		return 0;
++
++	return sprintf(buf, "%s\n", nnpdev->card_sys_info->image_version);
++}
++static DEVICE_ATTR_RO(image_version);
++
++static ssize_t board_name_show(struct device   *dev,
++			       struct device_attribute *attr,
++			       char                    *buf)
++{
++	struct nnp_device *nnpdev;
++
++	nnpdev = dev_get_drvdata(dev);
++	if (!nnpdev)
++		return -EINVAL;
++
++	if (!nnpdev->card_sys_info_valid)
++		return 0;
++
++	return sprintf(buf, "%s\n", nnpdev->card_sys_info->board_name);
++}
++static DEVICE_ATTR_RO(board_name);
++
++static ssize_t board_part_num_show(struct device   *dev,
++				   struct device_attribute *attr,
++				   char                    *buf)
++{
++	struct nnp_device *nnpdev;
++
++	nnpdev = dev_get_drvdata(dev);
++	if (!nnpdev)
++		return -EINVAL;
++
++	if (!nnpdev->card_sys_info_valid)
++		return 0;
++
++	return sprintf(buf, "%s\n", nnpdev->card_sys_info->brd_part_no);
++}
++static DEVICE_ATTR_RO(board_part_num);
++
++static ssize_t board_serial_num_show(struct device   *dev,
++				     struct device_attribute *attr,
++				     char                    *buf)
++{
++	struct nnp_device *nnpdev;
++
++	nnpdev = dev_get_drvdata(dev);
++	if (!nnpdev)
++		return -EINVAL;
++
++	if (!nnpdev->card_sys_info_valid)
++		return 0;
++
++	return sprintf(buf, "%s\n", nnpdev->card_sys_info->prd_serial);
++}
++static DEVICE_ATTR_RO(board_serial_num);
++
++static ssize_t active_contexts_num_show(struct device   *dev,
++					struct device_attribute *attr,
++					char                    *buf)
++{
++	struct nnp_device *nnpdev;
++
++	nnpdev = dev_get_drvdata(dev);
++	if (!nnpdev)
++		return -EINVAL;
++
++	return sprintf(buf, "%u\n", nnpdev->num_active_contexts);
++}
++static DEVICE_ATTR_RO(active_contexts_num);
++
++static ssize_t fpga_revision_show(struct device   *dev,
++				  struct device_attribute *attr,
++				  char                    *buf)
++{
++	struct nnp_device *nnpdev;
++
++	nnpdev = dev_get_drvdata(dev);
++	if (!nnpdev)
++		return -EINVAL;
++
++	if (!nnpdev->card_sys_info_valid)
++		return 0;
++
++	return sprintf(buf, "%u\n", nnpdev->card_sys_info->fpga_rev);
++}
++static DEVICE_ATTR_RO(fpga_revision);
++
++static ssize_t card_stepping_show(struct device   *dev,
++				  struct device_attribute *attr,
++				  char                    *buf)
++{
++	struct nnp_device *nnpdev;
++
++	nnpdev = dev_get_drvdata(dev);
++	if (!nnpdev)
++		return -EINVAL;
++
++	if (!nnpdev->card_sys_info_valid)
++		return 0;
++
++	return sprintf(buf, "%d\n", nnpdev->card_sys_info->stepping);
++}
++static DEVICE_ATTR_RO(card_stepping);
++
++static ssize_t boot_state_show(struct device   *dev,
++			       struct device_attribute *attr,
++			       char                    *buf)
++{
++	struct nnp_device *nnpdev;
++	const char *boot_state;
++
++	nnpdev = dev_get_drvdata(dev);
++	if (!nnpdev)
++		return -EINVAL;
++
++	/* Find State strings*/
++	nnpdrv_device_sysfs_get_state_strings(nnpdev, NULL, &boot_state, NULL);
++
++	return sprintf(buf, "%s\n", boot_state);
++}
++static DEVICE_ATTR_RO(boot_state);
++
++static ssize_t boot_fail_reason_show(struct device   *dev,
++				     struct device_attribute *attr,
++				     char                    *buf)
++{
++	struct nnp_device *nnpdev;
++	const char *fail_reason;
++
++	nnpdev = dev_get_drvdata(dev);
++	if (!nnpdev)
++		return -EINVAL;
++
++	/* Find State strings*/
++	nnpdrv_device_sysfs_get_state_strings(nnpdev, NULL, NULL, &fail_reason);
++
++	return sprintf(buf, "%s\n", fail_reason);
++}
++static DEVICE_ATTR_RO(boot_fail_reason);
++
++static ssize_t card_state_show(struct device   *dev,
++			       struct device_attribute *attr,
++			       char                    *buf)
++{
++	struct nnp_device *nnpdev;
++	const char *state;
++
++	nnpdev = dev_get_drvdata(dev);
++	if (!nnpdev)
++		return -EINVAL;
++
++	/* Find State strings*/
++	nnpdrv_device_sysfs_get_state_strings(nnpdev, &state, NULL, NULL);
++
++	return sprintf(buf, "%s\n", state);
++}
++static DEVICE_ATTR_RO(card_state);
++
++static ssize_t total_unprotected_mem_show(struct device           *dev,
++					  struct device_attribute *attr,
++					  char                    *buf)
++{
++	struct nnp_device *nnpdev;
++	ssize_t ret;
++
++	nnpdev = dev_get_drvdata(dev);
++	if (!nnpdev)
++		return -EINVAL;
++
++	if (nnpdev->card_sys_info_valid)
++		ret = sprintf(buf, "%lld\n",
++			      nnpdev->card_sys_info->total_unprotected_memory);
++	else
++		ret = sprintf(buf, "0\n");
++
++	return ret;
++}
++static DEVICE_ATTR_RO(total_unprotected_mem);
++
++static ssize_t total_protected_mem_show(struct device           *dev,
++					struct device_attribute *attr,
++					char                    *buf)
++{
++	struct nnp_device *nnpdev;
++	ssize_t ret;
++
++	nnpdev = dev_get_drvdata(dev);
++	if (!nnpdev)
++		return -EINVAL;
++
++	if (nnpdev->card_sys_info_valid)
++		ret = sprintf(buf, "%lld\n",
++				nnpdev->card_sys_info->total_ecc_memory);
++	else
++		ret = sprintf(buf, "0\n");
++
++	return ret;
++}
++static DEVICE_ATTR_RO(total_protected_mem);
++
++static ssize_t protocol_version_show(struct device           *dev,
++				     struct device_attribute *attr,
++				     char                    *buf)
++{
++	struct nnp_device *nnpdev;
++
++	nnpdev = dev_get_drvdata(dev);
++	if (!nnpdev)
++		return -EINVAL;
++
++	return sprintf(buf, "%d.%d.%d\n",
++			 NNP_VERSION_MAJOR(nnpdev->protocol_version),
++			 NNP_VERSION_MINOR(nnpdev->protocol_version),
++			 NNP_VERSION_DOT(nnpdev->protocol_version));
++}
++static DEVICE_ATTR_RO(protocol_version);
++
++static ssize_t cecc_threshold_store(struct device           *dev,
++				    struct device_attribute *attr,
++				    const char              *buf,
++				    size_t                  count)
++{
++	struct nnp_device *nnpdev;
++	unsigned long val;
++
++	nnpdev = dev_get_drvdata(dev);
++	if (!nnpdev)
++		return -EINVAL;
++
++	if (kstrtoul(buf, 0, &val) < 0)
++		return -EINVAL;
++
++	nnpdev->correctable_ecc_threshold = val;
++	nnpdev->correctable_ecc_counter = 0;
++
++	return count;
++}
++
++static ssize_t cecc_threshold_show(struct device           *dev,
++				   struct device_attribute *attr,
++				   char                    *buf)
++{
++	struct nnp_device *nnpdev;
++
++	nnpdev = dev_get_drvdata(dev);
++	if (!nnpdev)
++		return -EINVAL;
++
++	return sprintf(buf, "%lu\n", nnpdev->correctable_ecc_threshold);
++}
++static DEVICE_ATTR_RW(cecc_threshold);
++
++static ssize_t ucecc_threshold_store(struct device           *dev,
++				     struct device_attribute *attr,
++				     const char              *buf,
++				     size_t                  count)
++{
++	struct nnp_device *nnpdev;
++	unsigned long val;
++
++	nnpdev = dev_get_drvdata(dev);
++	if (!nnpdev)
++		return -EINVAL;
++
++	if (kstrtoul(buf, 0, &val) < 0)
++		return -EINVAL;
++
++	nnpdev->uncorrectable_ecc_threshold = val;
++	nnpdev->uncorrectable_ecc_counter = 0;
++
++	return count;
++}
++
++static ssize_t ucecc_threshold_show(struct device           *dev,
++				    struct device_attribute *attr,
++				    char                    *buf)
++{
++	struct nnp_device *nnpdev;
++
++	nnpdev = dev_get_drvdata(dev);
++	if (!nnpdev)
++		return -EINVAL;
++
++	return sprintf(buf, "%lu\n", nnpdev->uncorrectable_ecc_threshold);
++}
++static DEVICE_ATTR_RW(ucecc_threshold);
++
++/**
++ * crashlog_dump() - prints crashlog size or crashlog content to buf
++ * @nnpdev: the device
++ * @dump_content: if true prints the dump content, otherwise prints dump size
++ * @buf: output buffer
++ * @offset: offset in crashdump content to read, ignored if @dump_content is false
++ * @count: size of output buffer
++ *
++ * Return: number of bytes copied to @buf
++ */
++static ssize_t crashlog_dump(struct nnp_device *nnpdev,
++			     bool              dump_content,
++			     char              *buf,
++			     loff_t            offset,
++			     size_t            count)
++{
++	void *vaddr;
++	u32 dump_size = 0;
++	ssize_t ret;
++
++	spin_lock(&nnpdev->lock);
++
++	if (nnpdev->host_crash_dump.dump_size) {
++		dump_size = nnpdev->host_crash_dump.dump_size;
++		vaddr = nnpdev->host_crash_dump.vaddr;
++	} else if (nnpdev->inbound_mem &&
++		   nnpdev->inbound_mem->magic == NNP_INBOUND_MEM_MAGIC &&
++		   nnpdev->inbound_mem->crash_dump_size) {
++		dump_size = nnpdev->inbound_mem->crash_dump_size;
++		vaddr = nnpdev->inbound_mem->crash_dump;
++	} else if (dump_content) {
++		vaddr = "crashlog empty\n";
++		dump_size = strlen(vaddr);
++	}
++
++	if (!dump_content)
++		ret = scnprintf(buf, count, "%u\n", dump_size);
++	else if (dump_size > 0)
++		ret = memory_read_from_buffer(buf,
++					      count,
++					      &offset,
++					      vaddr,
++					      dump_size);
++	else
++		ret = 0;
++
++	spin_unlock(&nnpdev->lock);
++
++	return ret;
++}
++
++static ssize_t crashlog_size_show(struct device           *dev,
++				  struct device_attribute *attr,
++				  char                    *buf)
++{
++	struct nnp_device *nnpdev;
++
++	nnpdev = dev_get_drvdata(dev);
++	if (!nnpdev)
++		return -EINVAL;
++
++	return crashlog_dump(nnpdev, false, buf, 0, PAGE_SIZE);
++}
++static DEVICE_ATTR_RO(crashlog_size);
++
++static ssize_t uncorr_counters_show(struct device           *dev,
++				    struct device_attribute *attr,
++				    char                    *buf)
++{
++	struct nnp_device *nnpdev;
++	ssize_t ret;
++
++	nnpdev = dev_get_drvdata(dev);
++	if (!nnpdev)
++		return -EINVAL;
++
++	ret = scnprintf(buf, PAGE_SIZE, "os_crashed: %lu\n",
++			nnpdev->counters.uncorr.os_crashed);
++	ret += scnprintf(&buf[ret], PAGE_SIZE - ret, "ecc_nonfatal: %lu\n",
++			 nnpdev->counters.uncorr.ecc_nonfatal);
++	ret += scnprintf(&buf[ret], PAGE_SIZE - ret, "ecc_fatal: %lu\n",
++			 nnpdev->counters.uncorr.ecc_fatal);
++	ret += scnprintf(&buf[ret], PAGE_SIZE - ret, "dram_ecc_nonfatal: %lu\n",
++			 nnpdev->counters.uncorr.dram_ecc_nonfatal);
++	ret += scnprintf(&buf[ret], PAGE_SIZE - ret, "dram_ecc_fatal: %lu\n",
++			 nnpdev->counters.uncorr.dram_ecc_fatal);
++	ret += scnprintf(&buf[ret], PAGE_SIZE - ret, "mce_nonfatal: %lu\n",
++			 nnpdev->counters.uncorr.mce_nonfatal);
++	ret += scnprintf(&buf[ret], PAGE_SIZE - ret, "mce_fatal: %lu\n",
++			 nnpdev->counters.uncorr.mce_fatal);
++	ret += scnprintf(&buf[ret], PAGE_SIZE - ret, "dma_hang_nonfatal: %lu\n",
++			 nnpdev->counters.uncorr.dma_hang_nonfatal);
++	ret += scnprintf(&buf[ret], PAGE_SIZE - ret, "dma_hang_fatal: %lu\n",
++			 nnpdev->counters.uncorr.dma_hang_fatal);
++
++	return ret;
++}
++static DEVICE_ATTR_RO(uncorr_counters);
++
++static ssize_t corr_counters_show(struct device           *dev,
++				  struct device_attribute *attr,
++				  char                    *buf)
++{
++	struct nnp_device *nnpdev;
++	ssize_t ret;
++
++	nnpdev = dev_get_drvdata(dev);
++	if (!nnpdev)
++		return -EINVAL;
++
++	ret = scnprintf(buf, PAGE_SIZE, "ecc: %lu\n",
++			nnpdev->counters.corr.ecc);
++	ret += scnprintf(&buf[ret], PAGE_SIZE - ret, "dram_ecc: %lu\n",
++			 nnpdev->counters.corr.dram_ecc);
++
++	return ret;
++}
++static DEVICE_ATTR_RO(corr_counters);
++
++static struct attribute *nnp_dev_attrs[] = {
++	&dev_attr_boot_image.attr,
++	&dev_attr_total_unprotected_mem.attr,
++	&dev_attr_total_protected_mem.attr,
++	&dev_attr_protocol_version.attr,
++	&dev_attr_cecc_threshold.attr,
++	&dev_attr_ucecc_threshold.attr,
++	&dev_attr_crashlog_size.attr,
++	&dev_attr_post_code.attr,
++	&dev_attr_bios_flash_progress.attr,
++	&dev_attr_fw_update_completion.attr,
++	&dev_attr_ice_units.attr,
++	&dev_attr_bios_version.attr,
++	&dev_attr_image_version.attr,
++	&dev_attr_board_name.attr,
++	&dev_attr_board_part_num.attr,
++	&dev_attr_board_serial_num.attr,
++	&dev_attr_active_contexts_num.attr,
++	&dev_attr_fpga_revision.attr,
++	&dev_attr_card_stepping.attr,
++	&dev_attr_boot_state.attr,
++	&dev_attr_boot_fail_reason.attr,
++	&dev_attr_card_state.attr,
++	&dev_attr_uncorr_counters.attr,
++	&dev_attr_corr_counters.attr,
++	NULL
++};
++
++static struct attribute_group nnp_dev_attrs_grp = {
++		.attrs = nnp_dev_attrs
++};
++
++static ssize_t crashlog_read(struct file *filp,
++			     struct kobject *kobj,
++			     struct bin_attribute *attr,
++			     char *buf,
++			     loff_t offset,
++			     size_t count)
++{
++	struct device *dev = kobj_to_dev(kobj);
++	struct nnp_device *nnpdev;
++
++	nnpdev = dev_get_drvdata(dev);
++	if (!nnpdev)
++		return -EINVAL;
++
++	return crashlog_dump(nnpdev, true, buf, offset, count);
++}
++
++static const struct bin_attribute crashlog_attr = {
++	.attr = {
++		.name = "crashlog",
++		.mode = 0400
++	},
++	.size = NNP_CRASH_DUMP_SIZE,
++	.read = crashlog_read,
++	.write = NULL,
++	.mmap = NULL,
++	.private = (void *)0
++};
++
++int nnpdrv_device_sysfs_init(struct nnp_device *nnpdev)
++{
++	int ret;
++
++	if (!nnpdev || !nnpdev->dev)
++		return -EINVAL;
++
++	ret = sysfs_create_group(&nnpdev->dev->kobj, &nnp_dev_attrs_grp);
++	if (ret)
++		return ret;
++
++	/* set crashlog attributes be accessible by root only */
++	ret = sysfs_chmod_file(&nnpdev->dev->kobj,
++			       &dev_attr_crashlog_size.attr, 0400);
++	if (ret)
++		return ret;
++
++	ret = device_create_bin_file(nnpdev->dev, &crashlog_attr);
++	if (ret)
++		goto fail_bin;
++
++	ret = sysfs_create_link(&nnpdev->dev->kobj,
++				&nnpdev->nnp_pci->pdev->dev.kobj,
++				"device");
++	if (ret)
++		goto fail_link;
++
++	return 0;
++
++fail_link:
++	device_remove_bin_file(nnpdev->dev, &crashlog_attr);
++fail_bin:
++	sysfs_remove_group(&nnpdev->dev->kobj, &nnp_dev_attrs_grp);
++	return ret;
++}
++
++void nnpdrv_device_sysfs_fini(struct nnp_device *nnpdev)
++{
++	if (!nnpdev || !nnpdev->dev)
++		return;
++
++	device_remove_bin_file(nnpdev->dev, &crashlog_attr);
++	sysfs_remove_link(&nnpdev->dev->kobj, "device");
++	sysfs_remove_group(&nnpdev->dev->kobj, &nnp_dev_attrs_grp);
++}
+diff --git a/drivers/misc/intel-nnpi/device_sysfs.h b/drivers/misc/intel-nnpi/device_sysfs.h
+new file mode 100644
+index 0000000..20133df
+--- /dev/null
++++ b/drivers/misc/intel-nnpi/device_sysfs.h
+@@ -0,0 +1,15 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++
++/********************************************
++ * Copyright (C) 2019-2020 Intel Corporation
++ ********************************************/
++
++#include "device.h"
++
++void nnpdrv_device_sysfs_get_state_strings(struct nnp_device *nnpdev,
++					   const char **state,
++					   const char **boot_state,
++					   const char **fail_reason);
++
++int nnpdrv_device_sysfs_init(struct nnp_device *nnpdev);
++void nnpdrv_device_sysfs_fini(struct nnp_device *nnpdev);
+diff --git a/drivers/misc/intel-nnpi/pcie.c b/drivers/misc/intel-nnpi/pcie.c
+index b0be3f4..c2f9937 100644
+--- a/drivers/misc/intel-nnpi/pcie.c
++++ b/drivers/misc/intel-nnpi/pcie.c
+@@ -409,6 +409,55 @@ int nnp_set_host_doorbell_value(struct nnp_pci_device *nnp_pci, u32 value)
+ 	return 0;
+ }
+ 
++u32 nnp_get_postcode(struct nnp_pci_device *nnp_pci)
++{
++	u32 val;
++
++	/* bios post-code is reported in CPU_STATUS_0 register */
++	val = nnp_mmio_read(nnp_pci, ELBI_CPU_STATUS_0);
++
++	return val;
++}
++
++u32 nnp_get_bios_flash_progress(struct nnp_pci_device *nnp_pci)
++{
++	u32 val;
++
++	/* bios flash progress is reported in CPU_STATUS_1 register */
++	val = nnp_mmio_read(nnp_pci, ELBI_CPU_STATUS_1);
++
++	return val;
++}
++
++int nnp_fw_update_complete(struct nnp_pci_device *nnp_pci, bool start)
++{
++	u32 card_state;
++	u32 host_db_val;
++	bool need;
++
++	card_state = nnp_mmio_read(nnp_pci, ELBI_CPU_STATUS_2);
++	need = (FIELD_GET(ELBI_CPU_STATUS_2_FLR_MODE_MASK, card_state) == 1);
++
++	/* return 0 if fw update complete flow is not required */
++	if (!need)
++		return 0;
++
++	/* just return required state if not requested to act */
++	if (!start)
++		return 1;
++
++	/*
++	 * flag the device it may start firmware update completion.
++	 * NOTE: PCIe link may drop during this flow!
++	 */
++	host_db_val = nnp_mmio_read(nnp_pci, ELBI_PCI_HOST_DOORBELL_VALUE);
++	host_db_val |= NNP_HOST_DRV_REQUEST_SELF_RESET_MASK;
++	nnp_mmio_write(nnp_pci, ELBI_PCI_HOST_DOORBELL_VALUE, host_db_val);
++
++	/* required and started */
++	return 1;
++}
++
+ int nnp_get_membar_addr(struct nnp_pci_device *nnp_pci,
+ 			phys_addr_t           *out_phy_addr,
+ 			void                  **out_vaddr,
+diff --git a/drivers/misc/intel-nnpi/pcie.h b/drivers/misc/intel-nnpi/pcie.h
+index f991767..f4c272c 100644
+--- a/drivers/misc/intel-nnpi/pcie.h
++++ b/drivers/misc/intel-nnpi/pcie.h
+@@ -101,6 +101,9 @@ int nnp_cmdq_write_mesg(struct nnp_pci_device *nnp_pci,
+ 			u64 *msg, u32 size, u64 *timed_wait);
+ int nnp_cmdq_flush(struct nnp_pci_device *nnp_pci);
+ int nnp_set_host_doorbell_value(struct nnp_pci_device *nnp_pci, u32 value);
++u32 nnp_get_postcode(struct nnp_pci_device *nnp_pci);
++u32 nnp_get_bios_flash_progress(struct nnp_pci_device *nnp_pci);
++int nnp_fw_update_complete(struct nnp_pci_device *nnp_pci, bool start);
+ int nnp_get_membar_addr(struct nnp_pci_device *nnp_pci,
+ 			phys_addr_t           *out_phy_addr,
+ 			void                  **out_vaddr,
+-- 
+1.8.3.1
+

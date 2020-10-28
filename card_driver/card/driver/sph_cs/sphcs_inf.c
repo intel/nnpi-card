@@ -760,19 +760,21 @@ static long sphcs_inf_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 			} else {
 				sph_log_debug(GENERAL_LOG, "Context %u was tried to be attached more than once\n", context_id);
 			}
+			// put for find_and_get_context
 			inf_context_put(context);
 			return ret;
 		}
-		inf_context_put(context);
-
-		f->private_data = context;
-
 		sphcs_send_event_report(g_the_sphcs,
 					NNP_IPC_CREATE_CONTEXT_SUCCESS,
 					0,
 					context->chan->respq,
 					context_id,
 					-1);
+
+		// put for find_and_get_context
+		inf_context_put(context);
+
+		f->private_data = context;
 
 		sph_log_debug(GENERAL_LOG, "Context %u attached\n", context_id);
 
@@ -3248,13 +3250,17 @@ static void handle_sched_cmdlist(struct inf_cmd_list *cmdlist,
 					req->priority = 1;
 					++k;
 				}
-				req->cpylst->cur_sizes[params[j].cpy_idx] = params[j].size;
+				NNP_ASSERT(params[j].size <= req->cpylst->devreses[params[j].cpy_idx]->size);
+				req->cpylst->cur_sizes[params[j].cpy_idx] = params[j].size <= req->cpylst->devreses[params[j].cpy_idx]->size ?
+									    params[j].size : req->cpylst->devreses[params[j].cpy_idx]->size;
 				req->size -= req->cpylst->sizes[params[j].cpy_idx];
-				req->size += params[j].size;
+				req->size += req->cpylst->cur_sizes[params[j].cpy_idx];
 				break;
 			case CMDLIST_CMD_COPY:
 				req->priority = params[j].priority;
-				req->size = params[j].size;
+				NNP_ASSERT(params[j].size <= req->copy->devres->size);
+				req->size = params[j].size <= req->copy->devres->size ?
+					    params[j].size : req->copy->devres->size;
 				break;
 			case CMDLIST_CMD_INFREQ:
 				req->sched_params_is_null = params[j].sched_params_is_null;
@@ -4323,7 +4329,6 @@ static int sched_status_show(struct seq_file *m, void *v)
 	struct inf_context *context;
 	struct inf_req_sequence *seq;
 	struct inf_exec_req *req;
-	unsigned long flags;
 	u64 curr_time;
 	int i;
 	int num_contexts = 0;
@@ -4337,7 +4342,7 @@ static int sched_status_show(struct seq_file *m, void *v)
 	NNP_SPIN_LOCK_BH(&inf_data->lock_bh);
 	hash_for_each(inf_data->context_hash, i, context, hash_node) {
 		num_contexts++;
-		NNP_SPIN_LOCK_IRQSAVE(&context->sync_lock_irq, flags);
+		NNP_SPIN_LOCK(&context->lock);
 		if (!context->attached || context->destroyed || context->runtime_detach_sent)
 			seq_printf(m, "Context %d attach state: attached=%d destroyed=%d runtime_detach_sent=%d\n",
 				   context->protocol_id,
@@ -4382,7 +4387,7 @@ static int sched_status_show(struct seq_file *m, void *v)
 				}
 			}
 		}
-		NNP_SPIN_UNLOCK_IRQRESTORE(&context->sync_lock_irq, flags);
+		NNP_SPIN_UNLOCK(&context->lock);
 	}
 	NNP_SPIN_UNLOCK_BH(&inf_data->lock_bh);
 
@@ -4485,7 +4490,6 @@ static int ids_map_trace_show(struct seq_file *m, void *v)
 	struct inf_req *infreq;
 	struct inf_cmd_list *cmd;
 	struct sphcs_hostres_map *hostres_map;
-	unsigned long flags;
 	uint32_t num_contexts = 0, num_copies = 0, num_cmds = 0, num_devres = 0, num_devnets = 0, num_infreqs = 0, num_hostres_map = 0;
 
 	if (!g_the_sphcs)
@@ -4498,7 +4502,7 @@ static int ids_map_trace_show(struct seq_file *m, void *v)
 		DO_TRACE(trace_ids_map(SPH_TRACE_INF_CONTEXT, context->protocol_id, 0, 0, context->user_handle));
 
 
-		NNP_SPIN_LOCK_IRQSAVE(&context->sync_lock_irq, flags);
+		NNP_SPIN_LOCK(&context->lock);
 		hash_for_each(context->cmd_hash, j, cmd, hash_node) {
 			num_cmds++;
 			DO_TRACE(trace_ids_map(SPH_TRACE_INF_COMMAND_LIST, context->protocol_id, cmd->protocol_id, 0, cmd->user_handle));
@@ -4526,7 +4530,7 @@ static int ids_map_trace_show(struct seq_file *m, void *v)
 			num_hostres_map++;
 			DO_TRACE(trace_ids_map(SPH_TRACE_INF_HOSTRES, context->protocol_id, hostres_map->protocol_id, 0, hostres_map->user_handle));
 		}
-		NNP_SPIN_UNLOCK_IRQRESTORE(&context->sync_lock_irq, flags);
+		NNP_SPIN_UNLOCK(&context->lock);
 	}
 	NNP_SPIN_UNLOCK_BH(&inf_data->lock_bh);
 

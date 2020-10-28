@@ -20,6 +20,7 @@
 #include "nnp_elbi.h"
 #include "nnp_debug.h"
 #include "sph_log.h"
+#include "periodic_timer.h"
 #include "nnp_time.h"
 #include "sphcs_hw_utils.h"
 #include "sphcs_sw_counters.h"
@@ -154,6 +155,19 @@
 /* Amount of mapped memory - 64 MB */
 #define MAPPED_MEMORY_SIZE (64ULL << 20)
 
+static int dma_timeout_secs;
+static bool dma_rd_hang;
+static bool dma_wr_hang;
+
+
+/* 200 MB/s is minimum b/w expected */
+#define MIN_TRANSFER_BW_PER_SECOND (200 * (1 << 20))
+#define DMA_HANG_DETECTOR_MAX_TRANSFER_SIZE_PER_TIMEOUT (dma_timeout_secs * MIN_TRANSFER_BW_PER_SECOND)
+#define H2C_HANG_DETECTOR_MASK  ((1 << NUM_H2C_CHANNELS) - 1)
+#define C2H_HANG_DETECTOR_MASK  (((1 << NUM_C2H_CHANNELS) - 1) << NUM_H2C_CHANNELS)
+#define DMA_RESET_MAX_RETRIES 5
+#define DEFAULT_DMA_HANG_INTERVAL 3
+
 static const char nnp_driver_name[] = "nnp_pcie";
 static struct sphcs_pcie_callbacks *s_callbacks;
 
@@ -170,6 +184,11 @@ module_param(dma_lli_split,  int, 0600);
 
 static int dma_lli_min_split = 20;
 module_param(dma_lli_min_split,  int, 0600);
+
+//Interrupt disable for dma r/w channels
+//1 - disable read , 2 - disable write , 3 -disable w/r
+static int dma_disable_interrupt;
+module_param(dma_disable_interrupt, int, 0644);
 
 /* interrupt mask bits we enable and handle at interrupt level */
 static u32 s_host_status_int_mask =
@@ -195,7 +214,10 @@ static enum {
 
 struct sph_dma_channel {
 	u64   usTime;
-	u32   in_progress;
+	u64   sentRequests;
+	u64   completeRequests;
+	u64   lastRequest;
+	u64   in_progress; //current transfer size;
 };
 
 struct nnp_pci_device {
@@ -221,10 +243,14 @@ struct nnp_pci_device {
 
 	u32               host_doorbell_val;
 	u32               card_doorbell_val;
+	u32		  dma_hang_detector_counter;
 
 	bool              bus_master_en;
 
+	struct periodic_timer      dma_hang_detection_periodic_timer;
+	uint64_t dma_hang_detection_periodic_timer_data_handler;
 	spinlock_t      dma_lock_irq;
+	spinlock_t	dma_hang_detection_lock_bh;
 
 	struct sph_dma_channel h2c_channels[NUM_H2C_CHANNELS];
 	struct sph_dma_channel c2h_channels[NUM_C2H_CHANNELS];
@@ -528,14 +554,14 @@ static void read_dma_regs(struct nnp_pci_device *nnp_pci,
 	NNP_SPIN_UNLOCK_IRQRESTORE(&nnp_pci->dma_lock_irq, flags);
 }
 
-static ssize_t dump_dma_regs(int chan_idx, u32 sw_in_progress, struct dma_chan_regs_t *chan_regs, char *buf, ssize_t bufsize)
+static ssize_t dump_dma_regs(int chan_idx, u64 sw_in_progress, struct dma_chan_regs_t *chan_regs, char *buf, ssize_t bufsize)
 {
 	ssize_t ret = 0;
 	uint32_t channel_status;
 
 	channel_status = (chan_regs->control1 & DMA_CTRL_CHANNEL_STATUS_MASK) >> DMA_CTRL_CHANNEL_STATUS_OFF;
 
-	ret += snprintf(&buf[ret], bufsize - ret, "   %d: sw_in_progress=%u ", chan_idx, sw_in_progress);
+	ret += snprintf(&buf[ret], bufsize - ret, "   %d: sw_in_progress=%llu ", chan_idx, sw_in_progress);
 
 	switch (channel_status) {
 	case DMA_CTRL_CHANNEL_STATUS_RUNNING:
@@ -659,6 +685,11 @@ static ssize_t sph_show_dma_regs(struct device *dev,
 
 static DEVICE_ATTR(dma_regs, 0444, sph_show_dma_regs, NULL);
 
+static inline void sphcs_nnp_dma_abort_h2c(struct nnp_pci_device *nnp_pci);
+static inline void sphcs_nnp_dma_reset_h2c(struct nnp_pci_device *nnp_pci);
+static inline void sphcs_nnp_dma_abort_c2h(struct nnp_pci_device *nnp_pci);
+static inline void sphcs_nnp_dma_reset_c2h(struct nnp_pci_device *nnp_pci);
+
 static ssize_t sph_store_dma_abort(struct device *dev,
 				   struct device_attribute *attr,
 				   const char *buf, size_t count)
@@ -667,7 +698,7 @@ static ssize_t sph_store_dma_abort(struct device *dev,
 	struct nnp_pci_device *nnp_pci;
 	unsigned long val;
 	u32 chan_status;
-	u32 recovery_action;
+	u32 recovery_action = SPHCS_RA_NONE;
 	struct sph_dma_channel h2c_channels[NUM_H2C_CHANNELS];
 	struct sph_dma_channel c2h_channels[NUM_C2H_CHANNELS];
 	u32 cnt = 0;
@@ -683,30 +714,49 @@ static ssize_t sph_store_dma_abort(struct device *dev,
 	if (kstrtoul(buf, 0, &val) < 0)
 		return -EINVAL;
 
-	if (val > 3)
+	if (val > 5)
 		return -EINVAL;
 
 	chan_status = (val > 0 ? SPHCS_DMA_STATUS_FAILED : SPHCS_DMA_STATUS_DONE);
-	recovery_action = (val - 1); //1=>SPHCS_RA_NONE 2=>SPHCS_RA_RETRY_DMA 3=>SPHCS_RA_RESET_DMA
+	if (val > 0 && val < 4)
+		recovery_action = 1<<(val - 1); //1=>SPHCS_RA_NONE 2=>SPHCS_RA_RETRY_DMA 4=>SPHCS_RA_RESET_DMA
 
 	memcpy(h2c_channels, nnp_pci->h2c_channels, sizeof(h2c_channels));
 	memcpy(c2h_channels, nnp_pci->c2h_channels, sizeof(c2h_channels));
 
 	for (i = 0; i < NUM_H2C_CHANNELS; i++)
 		if (h2c_channels[i].in_progress) {
-			sph_log_info(DMA_LOG, "Forcing dma completion for h2c channel#%d status=%d recovery=%d in_progress=%u,%u\n",
+			cnt++;
+			if (val == 4) { // Abort all in hang DMA engine and exit
+				sphcs_nnp_dma_abort_h2c(nnp_pci);
+				sph_log_info(DMA_LOG, "Aborted all for h2c DMA\n");
+				break;
+			} else if (val == 5) { // Reset hang DMA engine and exit
+				sphcs_nnp_dma_reset_h2c(nnp_pci);
+				sph_log_info(DMA_LOG, "h2c DMA engine was reset\n");
+				break;
+			}
+			sph_log_info(DMA_LOG, "Forcing dma completion for h2c channel#%d status=%d recovery=%d in_progress=%llu,%llu\n",
 				     i, chan_status, recovery_action, h2c_channels[i].in_progress, nnp_pci->h2c_channels[i].in_progress);
 			nnp_pci->h2c_channels[i].in_progress = 0;
-			cnt++;
 			s_callbacks->dma.h2c_xfer_complete_int(nnp_pci->dmaSched, i, chan_status, recovery_action, 0);
 		}
 
 	for (i = 0; i < NUM_C2H_CHANNELS; i++)
 		if (c2h_channels[i].in_progress) {
-			sph_log_info(DMA_LOG, "Forcing dma completion for c2h channel#%d status=%d recovery=%d in_progress=%u,%u\n",
+			cnt++;
+			if (val == 4) { // Abort all in hang DMA engine and exit
+				sphcs_nnp_dma_abort_c2h(nnp_pci);
+				sph_log_info(DMA_LOG, "Aborted all for c2h DMA\n");
+				break;
+			} else if  (val == 5) { // Reset hang DMA engine and exit
+				sphcs_nnp_dma_reset_c2h(nnp_pci);
+				sph_log_info(DMA_LOG, "c2h DMA engine was reset\n");
+				break;
+			}
+			sph_log_info(DMA_LOG, "Forcing dma completion for c2h channel#%d status=%d recovery=%d in_progress=%llu,%llu\n",
 				     i, chan_status, recovery_action, c2h_channels[i].in_progress, nnp_pci->c2h_channels[i].in_progress);
 			nnp_pci->c2h_channels[i].in_progress = 0;
-			cnt++;
 			s_callbacks->dma.c2h_xfer_complete_int(nnp_pci->dmaSched, i, chan_status, recovery_action, 0);
 		}
 
@@ -717,6 +767,202 @@ static ssize_t sph_store_dma_abort(struct device *dev,
 }
 
 static DEVICE_ATTR(dma_abort, 0200, NULL, sph_store_dma_abort);
+
+static u8 nnp_is_dma_hanged(struct nnp_pci_device *nnp_pci)
+{
+	u8 error_mask = 0;
+	u32 i;
+
+	for (i = 0; i < NUM_H2C_CHANNELS; i++) {
+		u64 diff = nnp_pci->h2c_channels[i].sentRequests - nnp_pci->h2c_channels[i].completeRequests;
+
+		if (diff == 0) {
+			NNP_ASSERT(nnp_pci->h2c_channels[i].in_progress == 0);
+			continue;
+		}
+		if (diff >= 1) {
+			NNP_ASSERT(diff == 1);
+			if (nnp_pci->h2c_channels[i].lastRequest == nnp_pci->h2c_channels[i].sentRequests) {
+				if (nnp_pci->h2c_channels[i].in_progress <= DMA_HANG_DETECTOR_MAX_TRANSFER_SIZE_PER_TIMEOUT) {
+					sph_log_err(GENERAL_LOG, "Dma read channel %d hang detected\n", i);
+					error_mask |= 0x1 << i;
+				} else {
+					nnp_pci->h2c_channels[i].in_progress -= DMA_HANG_DETECTOR_MAX_TRANSFER_SIZE_PER_TIMEOUT;
+				}
+			}
+		}
+
+		nnp_pci->h2c_channels[i].lastRequest = nnp_pci->h2c_channels[i].sentRequests;
+	}
+
+	for (i = 0; i < NUM_C2H_CHANNELS; i++) {
+		u64 diff = nnp_pci->c2h_channels[i].sentRequests - nnp_pci->c2h_channels[i].completeRequests;
+
+		if (diff == 0) {
+			NNP_ASSERT(nnp_pci->c2h_channels[i].in_progress == 0);
+			continue;
+		}
+		if (diff >= 1) {
+			NNP_ASSERT(diff == 1);
+			if (nnp_pci->c2h_channels[i].lastRequest == nnp_pci->c2h_channels[i].sentRequests) {
+				if (nnp_pci->c2h_channels[i].in_progress <= DMA_HANG_DETECTOR_MAX_TRANSFER_SIZE_PER_TIMEOUT) {
+					sph_log_err(GENERAL_LOG, "Dma write channel %d hang detected\n", i);
+					error_mask |= 0x1 << (i + NUM_H2C_CHANNELS);
+				} else {
+					nnp_pci->c2h_channels[i].in_progress -= DMA_HANG_DETECTOR_MAX_TRANSFER_SIZE_PER_TIMEOUT;
+				}
+			}
+		}
+
+		nnp_pci->c2h_channels[i].lastRequest = nnp_pci->c2h_channels[i].sentRequests;
+	}
+
+	return error_mask;
+}
+
+static u32 pre_complete_channel_dma_xfer(struct sph_dma_channel *channel)
+{
+	u64 usTime = 0;
+
+	NNP_ASSERT(channel->in_progress != 0);
+	if (channel->usTime != 0)
+		usTime = nnp_time_us() - channel->usTime;
+	channel->in_progress = 0;
+	channel->completeRequests++;
+
+	return usTime;
+}
+
+static void nnp_dma_hang_detection(void *ctx)
+{
+	struct nnp_pci_device *nnp_pci = (struct nnp_pci_device *)ctx;
+	u8 i, error_mask = 0;
+	u32 h2c_time[NUM_H2C_CHANNELS];
+	u32 c2h_time[NUM_C2H_CHANNELS];
+
+	NNP_SPIN_LOCK_BH(&nnp_pci->dma_hang_detection_lock_bh);
+	error_mask = nnp_is_dma_hanged(nnp_pci);
+
+	if (error_mask & H2C_HANG_DETECTOR_MASK) {
+		sph_log_err(GENERAL_LOG, "Dma read channels hang detected!!! reset dma engine\n");
+		dma_rd_hang = true;
+		for (i = 0; i < NUM_H2C_CHANNELS; i++) {
+			if (error_mask & (1 << i))
+				h2c_time[i] = pre_complete_channel_dma_xfer(&nnp_pci->h2c_channels[i]);
+		}
+	}
+	if (error_mask & C2H_HANG_DETECTOR_MASK) {
+		sph_log_err(GENERAL_LOG, "Dma write channels hang detected!!! reset dma engine\n");
+		dma_wr_hang = true;
+		for (i = 0; i < NUM_C2H_CHANNELS; i++) {
+			if (error_mask & (1 << (i + NUM_H2C_CHANNELS)))
+				c2h_time[i] = pre_complete_channel_dma_xfer(&nnp_pci->c2h_channels[i]);
+		}
+	}
+	NNP_SPIN_UNLOCK_BH(&nnp_pci->dma_hang_detection_lock_bh);
+
+	if (error_mask & H2C_HANG_DETECTOR_MASK) {
+		for (i = 0; i < NUM_H2C_CHANNELS; i++) {
+			/* send int upstream */
+			if ((error_mask & (1 << i)) && nnp_pci->dmaSched != NULL)
+				s_callbacks->dma.h2c_xfer_complete_int(nnp_pci->dmaSched, i, SPHCS_DMA_STATUS_FAILED, SPHCS_RA_RESET_DMA, h2c_time[i]);
+		}
+	}
+	if (error_mask & C2H_HANG_DETECTOR_MASK) {
+		for (i = 0; i < NUM_C2H_CHANNELS; i++) {
+			/* send int upstream */
+			if ((error_mask & (1 << (i + NUM_H2C_CHANNELS))) && nnp_pci->dmaSched != NULL)
+				s_callbacks->dma.c2h_xfer_complete_int(nnp_pci->dmaSched, i, SPHCS_DMA_STATUS_FAILED, SPHCS_RA_RESET_DMA, c2h_time[i]);
+		}
+	}
+}
+
+static int set_dma_timeout_timer(struct nnp_pci_device *nnp_pci,
+				 int                    timeout_secs)
+{
+	struct periodic_timer_data timer_data;
+	int i;
+
+	if (dma_timeout_secs) {
+		periodic_timer_remove_data(&nnp_pci->dma_hang_detection_periodic_timer,
+					   nnp_pci->dma_hang_detection_periodic_timer_data_handler);
+		periodic_timer_delete(&nnp_pci->dma_hang_detection_periodic_timer);
+	}
+
+	NNP_SPIN_LOCK_BH(&nnp_pci->dma_hang_detection_lock_bh);
+	dma_timeout_secs = timeout_secs;
+	for (i = 0; i < NUM_H2C_CHANNELS; i++)
+		nnp_pci->h2c_channels[i].lastRequest = nnp_pci->h2c_channels[i].sentRequests - 1;
+	for (i = 0; i < NUM_C2H_CHANNELS; i++)
+		nnp_pci->c2h_channels[i].lastRequest = nnp_pci->c2h_channels[i].sentRequests - 1;
+	NNP_SPIN_UNLOCK_BH(&nnp_pci->dma_hang_detection_lock_bh);
+
+	if (!dma_timeout_secs) {
+		sph_log_info(DMA_LOG, "DMA Hang detector timer has stopped\n");
+		return 0;
+	}
+
+	nnp_pci->dma_hang_detection_periodic_timer.timer_interval_ms = dma_timeout_secs * 1000;
+	periodic_timer_init(&nnp_pci->dma_hang_detection_periodic_timer, NULL);
+	timer_data.timer_callback = nnp_dma_hang_detection;
+	timer_data.timer_callback_ctx = (void *)nnp_pci;
+
+	nnp_pci->dma_hang_detection_periodic_timer_data_handler =
+		periodic_timer_add_data(&nnp_pci->dma_hang_detection_periodic_timer,
+					&timer_data);
+
+	if (unlikely(nnp_pci->dma_hang_detection_periodic_timer_data_handler == 0)) {
+		sph_log_err(DMA_LOG, "Failed to start DMA Hang detector timer\n");
+		periodic_timer_delete(&nnp_pci->dma_hang_detection_periodic_timer);
+		dma_timeout_secs = 0;
+		return -EFAULT;
+	}
+
+	sph_log_info(DMA_LOG, "Started DMA Hang detector timer which runs each %d seconds\n", dma_timeout_secs);
+
+	return 0;
+}
+
+static ssize_t sph_show_dma_timeout(struct device *dev,
+				    struct device_attribute *attr, char *buf)
+{
+	struct pci_dev *pdev = to_pci_dev(dev);
+	struct nnp_pci_device *nnp_pci;
+
+	nnp_pci = pci_get_drvdata(pdev);
+	if (!nnp_pci)
+		return -EINVAL;
+
+	return sprintf(buf, "%u\n", dma_timeout_secs);
+}
+
+static ssize_t sph_store_dma_timeout(struct device *dev,
+				     struct device_attribute *attr,
+				     const char *buf, size_t count)
+{
+	struct pci_dev *pdev = to_pci_dev(dev);
+	struct nnp_pci_device *nnp_pci;
+	unsigned long val;
+	int rc;
+
+	nnp_pci = pci_get_drvdata(pdev);
+	if (!nnp_pci)
+		return -ENODEV;
+
+	if (kstrtoul(buf, 0, &val) < 0)
+		return -EINVAL;
+
+	if (val == dma_timeout_secs)
+		return count;
+
+	rc = set_dma_timeout_timer(nnp_pci, val);
+	if (rc < 0)
+		return rc;
+
+	return count;
+}
+
+static DEVICE_ATTR(dma_timeout, 0644, sph_show_dma_timeout, sph_store_dma_timeout);
 
 static void nnp_process_commands(struct nnp_pci_device *nnp_pci)
 {
@@ -829,23 +1075,40 @@ static void sph_warm_reset(void)
 	}
 }
 
-static void handle_dma_interrupt(struct nnp_pci_device *nnp_pci, u32 dma_read_status, u32 dma_write_status)
+static inline void handle_dma_interrupt(struct nnp_pci_device *nnp_pci)
 {
-	u32 recovery_action;
+	u64 dma_status;
+	u32 dma_read_status, dma_write_status;
+	u32 h2c_time[NUM_H2C_CHANNELS];
+	u32 c2h_time[NUM_C2H_CHANNELS];
+	u8 h2c_chan_status[NUM_H2C_CHANNELS] = {0};
+	u8 c2h_chan_status[NUM_C2H_CHANNELS] = {0};
+	u8 h2c_recovery_action[NUM_H2C_CHANNELS] = {0};
+	u8 c2h_recovery_action[NUM_C2H_CHANNELS] = {0};
 	int i;
 
+	NNP_SPIN_LOCK_BH(&nnp_pci->dma_hang_detection_lock_bh);
+	dma_status = atomic64_xchg(&nnp_pci->dma_status, 0);
+	if (dma_status == 0) {
+		NNP_SPIN_UNLOCK_BH(&nnp_pci->dma_hang_detection_lock_bh);
+		return;
+	}
+	dma_read_status = (u32)(dma_status & 0xffffffff);
+	dma_write_status = (u32)((dma_status >> 32) & 0xffffffff);
+
+
 	/* handle h2c (READ channels) */
-	if (dma_read_status) {
+	if ((dma_disable_interrupt & 1) != 0) {
+		sph_log_info(DMA_LOG, "Disable interrupt for read channels\n");
+	} else if (dma_read_status) {
 		u32 mask;
 
 		for (i = 0; i < NUM_H2C_CHANNELS; i++) {
-			u32 chan_status = 0;
-
 			/* If DMA successfully completed */
 			mask = DMA_SET_CHAN_BIT(i, DMA_RD_DONE_INT_STATUS_OFF);
 			if (dma_read_status & mask) {
-				chan_status = SPHCS_DMA_STATUS_DONE;
-				recovery_action = SPHCS_RA_NONE;
+				h2c_chan_status[i] = SPHCS_DMA_STATUS_DONE;
+				h2c_recovery_action[i] = SPHCS_RA_NONE;
 			} else {
 				/* If error occurred */
 				mask = DMA_SET_CHAN_BIT(i, DMA_RD_ABORT_INT_STATUS_OFF);
@@ -857,91 +1120,91 @@ static void handle_dma_interrupt(struct nnp_pci_device *nnp_pci, u32 dma_read_st
 					status_hi = nnp_mmio_read(nnp_pci,
 								  DMA_READ_ERR_STATUS_HIGH_OFF);
 
-					chan_status = SPHCS_DMA_STATUS_FAILED;
+					h2c_chan_status[i] = SPHCS_DMA_STATUS_FAILED;
 
 					/* If Fatal error occurred */
 					if ((status_lo & DMA_SET_CHAN_BIT(i, DMA_RD_APP_WRITE_ERR_OFF)) ||
 							(status_lo & DMA_SET_CHAN_BIT(i, DMA_RD_LLE_FETCH_ERR_OFF)) ||
 							(status_hi & DMA_SET_CHAN_BIT(i, DMA_RD_DATA_POISIONING_OFF)))
-						recovery_action = SPHCS_RA_RESET_DMA;
+						h2c_recovery_action[i] = SPHCS_RA_RESET_DMA;
 					else if (!no_dma_retries)
-						recovery_action = SPHCS_RA_RETRY_DMA;
+						h2c_recovery_action[i] = SPHCS_RA_RETRY_DMA;
 					else
-						recovery_action = SPHCS_RA_NONE;
+						h2c_recovery_action[i] = SPHCS_RA_NONE;
 
 					sph_log_err(DMA_LOG, "DMA error on read ch %d (no_dma_retries=%d) recovery=%s, status_hi=0x%x status_lo=0x%x\n",
 						    i,
 						    no_dma_retries,
-						    recovery_action == SPHCS_RA_RESET_DMA ? "reset" :
-						    recovery_action == SPHCS_RA_RETRY_DMA ? "retry" : "none",
+						    h2c_recovery_action[i] == SPHCS_RA_RESET_DMA ? "reset" :
+						    h2c_recovery_action[i] == SPHCS_RA_RETRY_DMA ? "retry" : "none",
 						    status_hi,
 						    status_lo);
 				}
 			}
 
-			if (chan_status) {
-				u64  usTime = (u64)0x0;
-
-				if (nnp_pci->h2c_channels[i].usTime != 0)
-					usTime = nnp_time_us() - nnp_pci->h2c_channels[i].usTime;
-
-				/* send int upstream */
-				if (nnp_pci->dmaSched)
-					s_callbacks->dma.h2c_xfer_complete_int(nnp_pci->dmaSched, i, chan_status, recovery_action, (u32)usTime);
-
-				nnp_pci->h2c_channels[i].in_progress = 0;
+			if (h2c_chan_status[i] != 0) {
+				if (nnp_pci->h2c_channels[i].in_progress != 0)
+					h2c_time[i] = pre_complete_channel_dma_xfer(&nnp_pci->h2c_channels[i]);
+				else
+					h2c_chan_status[i] = 0;
 			}
 		}
 	}
-
 	/* handle c2h (WRITE channels) */
-	if (dma_write_status) {
+	if ((dma_disable_interrupt & 2) != 0) {
+		sph_log_info(DMA_LOG, "Disable interrupt for write channels\n");
+	} else if (dma_write_status) {
 		u32 mask;
 
 		for (i = 0; i < NUM_C2H_CHANNELS; i++) {
-			u32 chan_status = 0;
-
 			mask = DMA_SET_CHAN_BIT(i, DMA_WR_DONE_INT_STATUS_OFF);
 			if (dma_write_status & mask) {
-				chan_status = SPHCS_DMA_STATUS_DONE;
-				recovery_action = SPHCS_RA_NONE;
+				c2h_chan_status[i] = SPHCS_DMA_STATUS_DONE;
+				c2h_recovery_action[i] = SPHCS_RA_NONE;
 			} else {
 
 				mask = DMA_SET_CHAN_BIT(i, DMA_WR_ABORT_INT_STATUS_OFF);
 				if (dma_write_status & mask) {
 					u32 status;
 
-					chan_status = SPHCS_DMA_STATUS_FAILED;
+					c2h_chan_status[i] = SPHCS_DMA_STATUS_FAILED;
 
 					status = nnp_mmio_read(nnp_pci,
 							       DMA_WRITE_ERR_STATUS_OFF);
 
 					if ((status & DMA_SET_CHAN_BIT(i, DMA_WR_APP_READ_ERR_OFF)) ||
 							(status & DMA_SET_CHAN_BIT(i, DMA_WR_LLE_FETCH_ERR_OFF)))
-						recovery_action = SPHCS_RA_RESET_DMA;
+						c2h_recovery_action[i] = SPHCS_RA_RESET_DMA;
 					else
-						recovery_action = SPHCS_RA_NONE;
+						c2h_recovery_action[i] = SPHCS_RA_NONE;
 
 					sph_log_err(DMA_LOG, "DMA error on write ch %d recovery=%s, status=0x%x\n",
 						    i,
-						    recovery_action == SPHCS_RA_RESET_DMA ? "reset" : "none",
+						    c2h_recovery_action[i] == SPHCS_RA_RESET_DMA ? "reset" : "none",
 						    status);
 				}
 			}
 
 
-			if (chan_status) {
-				u64 usTime = (u64)0x0;
-
-				if (nnp_pci->c2h_channels[i].usTime > 0)
-					usTime = nnp_time_us() - nnp_pci->c2h_channels[i].usTime;
-
-				/* send int upstream */
-				if (nnp_pci->dmaSched)
-					s_callbacks->dma.c2h_xfer_complete_int(nnp_pci->dmaSched, i, chan_status, recovery_action, (u32)usTime);
-
-				nnp_pci->c2h_channels[i].in_progress = 0;
+			if (c2h_chan_status[i] != 0) {
+				if (nnp_pci->c2h_channels[i].in_progress != 0)
+					c2h_time[i] = pre_complete_channel_dma_xfer(&nnp_pci->c2h_channels[i]);
+				else
+					c2h_chan_status[i] = 0;
 			}
+		}
+	}
+	NNP_SPIN_UNLOCK_BH(&nnp_pci->dma_hang_detection_lock_bh);
+	if (dma_read_status != 0 && nnp_pci->dmaSched != NULL) {
+		for (i = 0; i < NUM_H2C_CHANNELS; ++i) {
+			if (h2c_chan_status[i] != 0)
+				s_callbacks->dma.h2c_xfer_complete_int(nnp_pci->dmaSched, i, h2c_chan_status[i], h2c_recovery_action[i], h2c_time[i]);
+		}
+	}
+	if (dma_write_status != 0 && nnp_pci->dmaSched != NULL) {
+		for (i = 0; i < NUM_C2H_CHANNELS; ++i) {
+			if (c2h_chan_status[i] != 0)
+				s_callbacks->dma.c2h_xfer_complete_int(nnp_pci->dmaSched, i, c2h_chan_status[i], c2h_recovery_action[i], c2h_time[i]);
 		}
 	}
 }
@@ -966,7 +1229,6 @@ static void read_and_clear_dma_status(struct nnp_pci_device *nnp_pci, u32 *dma_r
 			       DMA_WRITE_INT_CLEAR_OFF,
 			       *dma_write_status);
 }
-
 
 static irqreturn_t interrupt_handler(int irq, void *data)
 {
@@ -1112,7 +1374,6 @@ static irqreturn_t interrupt_handler(int irq, void *data)
 static irqreturn_t threaded_interrupt_handler(int irq, void *data)
 {
 	struct nnp_pci_device *nnp_pci = (struct nnp_pci_device *)data;
-	u64 dma_status;
 
 	if (atomic_xchg(&nnp_pci->doorbell_changed, 0))
 		s_callbacks->host_doorbell_value_changed(nnp_pci->sphcs,
@@ -1121,12 +1382,7 @@ static irqreturn_t threaded_interrupt_handler(int irq, void *data)
 	if (atomic_xchg(&nnp_pci->new_command, 0))
 		nnp_process_commands(nnp_pci);
 
-	dma_status = atomic64_xchg(&nnp_pci->dma_status, 0);
-	if (dma_status != 0) {
-		handle_dma_interrupt(nnp_pci,
-				     (u32)(dma_status & 0xffffffff),
-				     (u32)((dma_status >> 32) & 0xffffffff));
-	}
+	handle_dma_interrupt(nnp_pci);
 
 	return IRQ_HANDLED;
 }
@@ -1266,29 +1522,165 @@ end:
 	return rc;
 }
 
-static void sphcs_nnp_reset_wr_dma_engine(void *hw_handle)
+static inline void sphcs_nnp_dma_abort_c2h(struct nnp_pci_device *nnp_pci)
 {
-	struct nnp_pci_device *nnp_pci = (struct nnp_pci_device *)hw_handle;
+	uint8_t i;
 
+	for (i = 0; i < NUM_C2H_CHANNELS; ++i) {
+		nnp_pci->c2h_channels[i].completeRequests = 0;
+		nnp_pci->c2h_channels[i].lastRequest = 0;
+		nnp_pci->c2h_channels[i].sentRequests = 0;
+		nnp_mmio_write(nnp_pci,
+			DMA_WRITE_DOORBELL_OFF,
+			BIT(DMA_DOORBELL_STOP_OFF) | i);
+	}
+}
+
+static inline void sphcs_nnp_dma_reset_c2h(struct nnp_pci_device *nnp_pci)
+{
 	nnp_mmio_write(nnp_pci, DMA_WRITE_ENGINE_EN_OFF, 0);
 	udelay(5);
 	nnp_mmio_write(nnp_pci, DMA_WRITE_ENGINE_EN_OFF, 1);
 }
 
-static void sphcs_nnp_reset_rd_dma_engine(void *hw_handle)
+static int sphcs_nnp_reset_wr_dma_engine(void *hw_handle)
 {
 	struct nnp_pci_device *nnp_pci = (struct nnp_pci_device *)hw_handle;
+	uint8_t i, n;
+	uint32_t status;
+	bool reset_succeeded;
 
+	if (dma_disable_interrupt == 3)
+		dma_disable_interrupt = 1;
+	else if (dma_disable_interrupt == 2)
+		dma_disable_interrupt = 0;
+
+	for (n = 0; n < DMA_RESET_MAX_RETRIES; ++n) {
+		sphcs_nnp_dma_abort_c2h(nnp_pci);
+		udelay(15);
+
+		sphcs_nnp_dma_reset_c2h(nnp_pci);
+
+		udelay(5);
+		reset_succeeded = true;
+		for (i = 0; i < NUM_C2H_CHANNELS; ++i) {
+			status = nnp_mmio_read(nnp_pci, DMA_CH_CONTROL1_OFF_WRCH(i));
+			status = (status & DMA_CTRL_CHANNEL_STATUS_MASK) >> DMA_CTRL_CHANNEL_STATUS_OFF;
+			if (status != DMA_CTRL_CHANNEL_STATUS_HALTED &&
+			    status != DMA_CTRL_CHANNEL_STATUS_STOPPED) {
+				reset_succeeded = false;
+				break;
+			}
+		}
+		if (reset_succeeded)
+			break;
+	}
+
+	if (!reset_succeeded) {
+		s_flr_mode = SPH_FLR_MODE_COLD;
+
+		nnp_mmio_write(nnp_pci,
+			       ELBI_CPU_STATUS_2,
+			       s_flr_mode);
+
+		// Update interrupt mask is not needed,
+		// as flr should not be received, when in cold mode
+		return dma_wr_hang ? 2 : -EBADE;
+	}
+
+	if (dma_wr_hang) {
+		NNP_SPIN_LOCK_BH(&nnp_pci->dma_hang_detection_lock_bh);
+		atomic64_and((u64)0xffffffff, &nnp_pci->dma_status);
+		NNP_SPIN_UNLOCK_BH(&nnp_pci->dma_hang_detection_lock_bh);
+		dma_wr_hang = 0;
+		return 1;
+	}
+
+	return 0;
+}
+
+static inline void sphcs_nnp_dma_abort_h2c(struct nnp_pci_device *nnp_pci)
+{
+	uint8_t i;
+
+	for (i = 0; i < NUM_H2C_CHANNELS; ++i) {
+		nnp_pci->h2c_channels[i].completeRequests = 0;
+		nnp_pci->h2c_channels[i].lastRequest = 0;
+		nnp_pci->h2c_channels[i].sentRequests = 0;
+		nnp_mmio_write(nnp_pci,
+			DMA_READ_DOORBELL_OFF,
+			BIT(DMA_DOORBELL_STOP_OFF) | i);
+	}
+}
+
+static inline void sphcs_nnp_dma_reset_h2c(struct nnp_pci_device *nnp_pci)
+{
 	nnp_mmio_write(nnp_pci, DMA_READ_ENGINE_EN_OFF, 0);
 	udelay(5);
 	nnp_mmio_write(nnp_pci, DMA_READ_ENGINE_EN_OFF, 1);
+}
+
+static int sphcs_nnp_reset_rd_dma_engine(void *hw_handle)
+{
+	struct nnp_pci_device *nnp_pci = (struct nnp_pci_device *)hw_handle;
+	uint8_t i, n;
+	uint32_t status;
+	bool reset_succeeded;
+
+	if (dma_disable_interrupt == 3)
+		dma_disable_interrupt = 2;
+	else if (dma_disable_interrupt == 1)
+		dma_disable_interrupt = 0;
+
+	for (n = 0; n < DMA_RESET_MAX_RETRIES; ++n) {
+		sphcs_nnp_dma_abort_h2c(nnp_pci);
+		udelay(15);
+
+		sphcs_nnp_dma_reset_h2c(nnp_pci);
+
+		udelay(5);
+		reset_succeeded = true;
+		for (i = 0; i < NUM_H2C_CHANNELS; ++i) {
+			status = nnp_mmio_read(nnp_pci, DMA_CH_CONTROL1_OFF_RDCH(i));
+			status = (status & DMA_CTRL_CHANNEL_STATUS_MASK) >> DMA_CTRL_CHANNEL_STATUS_OFF;
+			if (status != DMA_CTRL_CHANNEL_STATUS_HALTED &&
+			    status != DMA_CTRL_CHANNEL_STATUS_STOPPED) {
+				reset_succeeded = false;
+				break;
+			}
+		}
+		if (reset_succeeded)
+			break;
+	}
+
+	if (!reset_succeeded) {
+		s_flr_mode = SPH_FLR_MODE_COLD;
+
+		nnp_mmio_write(nnp_pci,
+			       ELBI_CPU_STATUS_2,
+			       s_flr_mode);
+
+		// Update interrupt mask is not needed,
+		// as flr should not be received, when in cold mode
+		return dma_rd_hang ? 2 : -EBADE;
+	}
+
+	if (dma_rd_hang) {
+		NNP_SPIN_LOCK_BH(&nnp_pci->dma_hang_detection_lock_bh);
+		atomic64_and(((u64)0xffffffff) << 32, &nnp_pci->dma_status);
+		NNP_SPIN_UNLOCK_BH(&nnp_pci->dma_hang_detection_lock_bh);
+		dma_rd_hang = false;
+		return 1;
+	}
+
+	return 0;
 }
 
 static int sphcs_sph_init_dma_engine(void *hw_handle)
 {
 	struct nnp_pci_device *nnp_pci = (struct nnp_pci_device *)hw_handle;
 	u32 mask;
-	int i;
+	int i, ret;
 	uint32_t reg;
 
 	/* initalization read channels */
@@ -1350,8 +1742,12 @@ static int sphcs_sph_init_dma_engine(void *hw_handle)
 		       mask);
 
 	/* enable DMA engine */
-	sphcs_nnp_reset_rd_dma_engine(hw_handle);
-	sphcs_nnp_reset_wr_dma_engine(hw_handle);
+	ret = sphcs_nnp_reset_rd_dma_engine(hw_handle);
+	if (unlikely(ret < 0))
+		return ret;
+	ret = sphcs_nnp_reset_wr_dma_engine(hw_handle);
+	if (unlikely(ret < 0))
+		return ret;
 
 	return 0;
 }
@@ -1685,7 +2081,8 @@ static inline void sphcs_sph_dma_set_ch_weights(struct nnp_pci_device *nnp_pci, 
 int sphcs_sph_dma_start_xfer_h2c(void      *hw_handle,
 				 int        channel,
 				 u32        priority,
-				 dma_addr_t lli_addr)
+				 dma_addr_t lli_addr,
+				 u64	    size)
 {
 	struct nnp_pci_device *nnp_pci = (struct nnp_pci_device *)hw_handle;
 
@@ -1730,7 +2127,8 @@ int sphcs_sph_dma_start_xfer_h2c(void      *hw_handle,
 		nnp_pci->h2c_channels[channel].usTime = 0;
 
 	/* start the channel */
-	nnp_pci->h2c_channels[channel].in_progress = 1;
+	nnp_pci->h2c_channels[channel].in_progress = size;
+	nnp_pci->h2c_channels[channel].sentRequests++;
 	nnp_mmio_write(nnp_pci,
 		       DMA_READ_DOORBELL_OFF,
 		       channel);
@@ -1741,7 +2139,8 @@ int sphcs_sph_dma_start_xfer_h2c(void      *hw_handle,
 int sphcs_sph_dma_start_xfer_c2h(void      *hw_handle,
 				 int        channel,
 				 u32        priority,
-				 dma_addr_t lli_addr)
+				 dma_addr_t lli_addr,
+				 u64	    size)
 {
 	struct nnp_pci_device *nnp_pci = (struct nnp_pci_device *)hw_handle;
 
@@ -1786,7 +2185,8 @@ int sphcs_sph_dma_start_xfer_c2h(void      *hw_handle,
 		nnp_pci->c2h_channels[channel].usTime = 0;
 
 	/* start the channel */
-	nnp_pci->c2h_channels[channel].in_progress = 1;
+	nnp_pci->c2h_channels[channel].in_progress = size;
+	nnp_pci->c2h_channels[channel].sentRequests++;
 	nnp_mmio_write(nnp_pci,
 		       DMA_WRITE_DOORBELL_OFF,
 		       channel);
@@ -1843,6 +2243,7 @@ int sphcs_sph_dma_start_xfer_h2c_single(void      *hw_handle,
 
 	/* start the channel */
 	nnp_pci->h2c_channels[channel].in_progress = size;
+	nnp_pci->h2c_channels[channel].sentRequests++;
 	nnp_mmio_write(nnp_pci,
 		       DMA_READ_DOORBELL_OFF,
 		       channel);
@@ -1899,6 +2300,7 @@ int sphcs_sph_dma_start_xfer_c2h_single(void      *hw_handle,
 
 	/* start the channel */
 	nnp_pci->c2h_channels[channel].in_progress = size;
+	nnp_pci->c2h_channels[channel].sentRequests++;
 	nnp_mmio_write(nnp_pci,
 		       DMA_WRITE_DOORBELL_OFF,
 		       channel);
@@ -2253,6 +2655,7 @@ static int nnp_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 	spin_lock_init(&nnp_pci->respq_lock);
 	spin_lock_init(&nnp_pci->irq_lock);
 	spin_lock_init(&nnp_pci->dma_lock_irq);
+	spin_lock_init(&nnp_pci->dma_hang_detection_lock_bh);
 
 	/* done setting up the device, create the upper level sphcs object */
 	rc = s_callbacks->create_sphcs(nnp_pci,
@@ -2306,6 +2709,17 @@ static int nnp_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 		goto free_interrupts;
 	}
 
+	rc = device_create_file(nnp_pci->dev, &dev_attr_dma_timeout);
+	if (rc) {
+		sph_log_err(START_UP_LOG, "Failed to create attr rc=%d", rc);
+		device_remove_file(nnp_pci->dev, &dev_attr_dma_abort);
+		device_remove_file(nnp_pci->dev, &dev_attr_dma_regs);
+		device_remove_file(nnp_pci->dev, &dev_attr_gen3_eq_pset_req_vec);
+		device_remove_file(nnp_pci->dev, &dev_attr_link_width);
+		device_remove_file(nnp_pci->dev, &dev_attr_flr_mode);
+		goto free_interrupts;
+	}
+
 
 	/* update bus master state - enable DMA if bus master is set */
 	set_bus_master_state(nnp_pci);
@@ -2338,6 +2752,8 @@ static int nnp_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 #ifdef ULT
 	nnp_init_debugfs(nnp_pci);
 #endif
+
+	set_dma_timeout_timer(nnp_pci, DEFAULT_DMA_HANG_INTERVAL);
 
 	sph_log_debug(START_UP_LOG, "nnp_pcie probe done.\n");
 
@@ -2372,6 +2788,7 @@ static void nnp_remove(struct pci_dev *pdev)
 	device_remove_file(nnp_pci->dev, &dev_attr_gen3_eq_pset_req_vec);
 	device_remove_file(nnp_pci->dev, &dev_attr_dma_regs);
 	device_remove_file(nnp_pci->dev, &dev_attr_dma_abort);
+	device_remove_file(nnp_pci->dev, &dev_attr_dma_timeout);
 
 #ifdef ULT
 	debugfs_remove_recursive(s_debugfs_dir);
@@ -2393,6 +2810,11 @@ static void nnp_remove(struct pci_dev *pdev)
 		       UINT_MAX);
 
 	nnp_free_interrupts(nnp_pci, pdev);
+	if (dma_timeout_secs) {
+		periodic_timer_remove_data(&nnp_pci->dma_hang_detection_periodic_timer,
+					   nnp_pci->dma_hang_detection_periodic_timer_data_handler);
+		periodic_timer_delete(&nnp_pci->dma_hang_detection_periodic_timer);
+	}
 	iounmap(nnp_pci->mmio.va);
 	pci_release_regions(pdev);
 	pci_disable_device(pdev);

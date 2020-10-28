@@ -220,6 +220,14 @@ static int __get_full_ntw_swc_node(struct ice_network *ntw)
 		goto exit;
 	}
 
+	if (!ntw->pntw->hswc) {
+		ret = -1;
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+				"NtwID:0x%llx No sw entry for parent network\n",
+				ntw->network_id);
+		goto exit;
+	}
+
 	/* lookup if this parent ntw node exsist*/
 	user_full_ntw = cve_dle_lookup(ctx->user_full_ntw, list,
 			sw_id, swc_node->sw_id);

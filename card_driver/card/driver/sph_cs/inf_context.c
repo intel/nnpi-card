@@ -127,20 +127,20 @@ freeCtx:
 
 int inf_context_runtime_attach(struct inf_context *context)
 {
-	NNP_SPIN_LOCK(&context->lock);
-	if (unlikely(context->attached != 0)) {
-		NNP_SPIN_UNLOCK(&context->lock);
-		return -EBUSY;
-	}
 	NNP_SPIN_LOCK_BH(&g_the_sphcs->inf_data->lock_bh);
 	if (unlikely(context->destroyed)) {
 		NNP_SPIN_UNLOCK_BH(&g_the_sphcs->inf_data->lock_bh);
-		NNP_SPIN_UNLOCK(&context->lock);
 		return -EPERM;
 	}
+	NNP_SPIN_LOCK(&context->lock);
+	if (unlikely(context->attached != 0)) {
+		NNP_SPIN_UNLOCK(&context->lock);
+		NNP_SPIN_UNLOCK_BH(&g_the_sphcs->inf_data->lock_bh);
+		return -EBUSY;
+	}
 	context->attached = 1;
-	NNP_SPIN_UNLOCK_BH(&g_the_sphcs->inf_data->lock_bh);
 	NNP_SPIN_UNLOCK(&context->lock);
+	NNP_SPIN_UNLOCK_BH(&g_the_sphcs->inf_data->lock_bh);
 
 	/* Take kref, dedicated to runtime */
 	inf_context_get(context);

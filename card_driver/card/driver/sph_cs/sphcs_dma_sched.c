@@ -18,6 +18,7 @@
 #include "nnp_debug.h"
 #include "sphcs_trace.h"
 #include "sphcs_sw_counters.h"
+#include "sphcs_cs.h"
 
 #define SPHCS_NUM_OF_DMA_RETRIES 3
 #define SPHCH_DMA_CHANNEL_0 BIT(0)
@@ -140,7 +141,6 @@ struct spch_dma_hw_channels {
 	u32 busy_mask;
 	struct sphcs_dma_req *inflight_req[SPHCS_DMA_NUM_HW_CHANNELS];
 	u32 spurious[SPHCS_DMA_NUM_HW_CHANNELS];
-	spinlock_t lock_irq;
 };
 
 enum SPHCS_DMA_ENGINE_STATE {
@@ -150,7 +150,7 @@ enum SPHCS_DMA_ENGINE_STATE {
 
 struct reset_work {
 	struct work_struct work;
-	void (*reset)(void *hw_handle);
+	int (*reset)(void *hw_handle);
 	void *hw_handle;
 };
 
@@ -198,23 +198,45 @@ struct sphcs_dma_req {
 	unsigned char user_data[1]; /* actual array size is varible - must be last member */
 };
 
+static void do_schedule(struct sphcs_dma_sched *dmaSched,
+			enum sphcs_dma_direction direction);
 
 static void reset_handler(struct work_struct *work)
 {
 	struct reset_work *reset_work = container_of(work, struct reset_work, work);
 	struct spcs_dma_direction_info *dir_info = container_of(reset_work, struct spcs_dma_direction_info, reset_work);
 	unsigned long flags;
+	int ret;
 
 	wait_for_completion(&dir_info->dma_engine_idle);
 
-	reset_work->reset(reset_work->hw_handle);
+	ret = reset_work->reset(reset_work->hw_handle);
+	if (ret == 1)
+		sphcs_send_event_report(g_the_sphcs,
+					NNP_IPC_DMA_HANG_DETECTED,
+					ret,
+					NULL,
+					-1,
+					-1);
 
-	sph_log_err(EXECUTE_COMMAND_LOG, "DMA failed - reset issued\n");
+	else if (ret == 2)
+		sphcs_send_event_report(g_the_sphcs,
+					NNP_IPC_FATAL_DMA_HANG_DETECTED,
+					ret,
+					NULL,
+					-1,
+					-1);
+
+	sph_log_err(DMA_LOG, "DMA failed - reset issued, reset returned with ret:%d\n", ret);
+
+	if (ret < 0 || ret > 1)
+		return;
 
 	/* enable DMA engine */
 	NNP_SPIN_LOCK_IRQSAVE(&dir_info->lock_irq, flags);
 	dir_info->dma_engine_state = SPHCS_DMA_ENGINE_STATE_ENABLED;
 	NNP_SPIN_UNLOCK_IRQRESTORE(&dir_info->lock_irq, flags);
+	do_schedule(g_the_sphcs->dmaSched, dir_info - g_the_sphcs->dmaSched->direction);
 }
 
 /* MACROS */
@@ -236,33 +258,24 @@ static void reset_handler(struct work_struct *work)
 
 /* free hw channel request */
 
-void free_dma_hw_channel(struct sphcs_dma_sched *dmaSched,
-			 enum sphcs_dma_direction direction,
-			 u32 channel)
+static inline void free_dma_hw_channel_locked(struct sphcs_dma_sched *dmaSched,
+					      enum sphcs_dma_direction direction,
+					      u32 channel)
 {
-	unsigned long flags;
-
-	NNP_SPIN_LOCK_IRQSAVE(&(DMA_HW_CHANNEL(dmaSched, direction).lock_irq), flags);
-
 	DMA_HW_CHANNEL(dmaSched, direction).busy_mask &= ~(0x1 << channel);
 	DMA_HW_CHANNEL(dmaSched, direction).inflight_req[channel] = NULL;
-
-	NNP_SPIN_UNLOCK_IRQRESTORE(&(DMA_HW_CHANNEL(dmaSched, direction).lock_irq), flags);
 }
 
 /* check if there is a free hw channel for dma, if so, it will be reserved for current request */
 
-bool select_available_dma_hw_channel(struct sphcs_dma_sched *dmaSched,
-				     enum sphcs_dma_direction direction,
-				     u32 queueChannelMask,
-				     u32 *selectedChannel,
-				     struct sphcs_dma_req *req)
+static inline bool select_available_dma_hw_channel_locked(struct sphcs_dma_sched *dmaSched,
+							  enum sphcs_dma_direction direction,
+							  u32 queueChannelMask,
+							  u32 *selectedChannel,
+							  struct sphcs_dma_req *req)
 {
-	unsigned long flags;
 	u32 assign_dma_channel_mask = 0x0;
 	bool ret = false;
-
-	NNP_SPIN_LOCK_IRQSAVE(&(DMA_HW_CHANNEL(dmaSched, direction).lock_irq), flags);
 
 	assign_dma_channel_mask = (queueChannelMask & ~(DMA_HW_CHANNEL(dmaSched, direction).busy_mask));
 
@@ -275,26 +288,21 @@ bool select_available_dma_hw_channel(struct sphcs_dma_sched *dmaSched,
 		DMA_HW_CHANNEL(dmaSched, direction).busy_mask |= 0x1 << *selectedChannel;
 	}
 
-	NNP_SPIN_UNLOCK_IRQRESTORE(&(DMA_HW_CHANNEL(dmaSched, direction).lock_irq), flags);
-
 	return ret;
 }
 
 /* check if we have an infligh request with the same serial channel value */
 /* if serialChannel is set to 0 - function will return false */
 
-bool is_serial_channel_in_use(struct sphcs_dma_sched *dmaSched,
-			      enum sphcs_dma_direction direction,
-			      u32 serialChannel)
+static inline bool is_serial_channel_in_use(struct sphcs_dma_sched *dmaSched,
+					    enum sphcs_dma_direction direction,
+					    u32 serialChannel)
 {
-	unsigned long flags;
 	u32 dma_channel_mask = 0x0;
 	bool ret = false;
 
 	if (serialChannel == 0)
 		return false;
-
-	NNP_SPIN_LOCK_IRQSAVE(&(DMA_HW_CHANNEL(dmaSched, direction).lock_irq), flags);
 
 	dma_channel_mask = (DMA_HW_CHANNEL(dmaSched, direction).busy_mask);
 
@@ -308,8 +316,6 @@ bool is_serial_channel_in_use(struct sphcs_dma_sched *dmaSched,
 
 		dma_channel_mask &= ~(1 << channel);
 	}
-
-	NNP_SPIN_UNLOCK_IRQRESTORE(&(DMA_HW_CHANNEL(dmaSched, direction).lock_irq), flags);
 
 	return ret;
 }
@@ -362,7 +368,8 @@ static int start_request(struct sphcs_dma_sched *dmaSched,
 			ret = dmaSched->hw_ops->start_xfer_c2h(dmaSched->hw_handle,
 							       hw_channel,
 							       convert_dma_sched_prio_to_hw(req->priority),
-							       req->src);
+							       req->src,
+							       req->transfer_size);
 		}
 		break;
 	case SPHCS_DMA_DIRECTION_HOST_TO_CARD:
@@ -377,7 +384,8 @@ static int start_request(struct sphcs_dma_sched *dmaSched,
 			ret = dmaSched->hw_ops->start_xfer_h2c(dmaSched->hw_handle,
 							       hw_channel,
 							       convert_dma_sched_prio_to_hw(req->priority),
-							       req->src);
+							       req->src,
+							       req->transfer_size);
 		}
 		break;
 	}
@@ -432,8 +440,9 @@ static void do_schedule(struct sphcs_dma_sched *dmaSched,
 					} else {
 						break;
 					}
+				} else {
+					NNP_SPIN_UNLOCK_IRQRESTORE(&high_q->lock_irq, queue_flags);
 				}
-				NNP_SPIN_UNLOCK_IRQRESTORE(&high_q->lock_irq, queue_flags);
 			}
 			/* lock current queue */
 			NNP_SPIN_LOCK_IRQSAVE(&q->lock_irq, queue_flags);
@@ -476,11 +485,11 @@ static void do_schedule(struct sphcs_dma_sched *dmaSched,
 
 
 				/* check for available hw channel for submitting a request */
-				if (!select_available_dma_hw_channel(dmaSched,
-								     direction,
-								     q->allowed_hw_channels,
-								     &hw_channel,
-								     req)) {
+				if (!select_available_dma_hw_channel_locked(dmaSched,
+									    direction,
+									    q->allowed_hw_channels,
+									    &hw_channel,
+									    req)) {
 					/* if no available channels for request - break current queue request processing and proceed to next queue check */
 					q->wait_ticks++;
 					break;
@@ -517,21 +526,10 @@ static void do_schedule(struct sphcs_dma_sched *dmaSched,
 	}
 }
 
-static bool is_dma_engine_idle(struct sphcs_dma_sched *dmaSched,
-			       enum sphcs_dma_direction dir)
+static inline bool is_dma_engine_idle_locked(struct sphcs_dma_sched *dmaSched,
+					     enum sphcs_dma_direction dir)
 {
-	unsigned long flags;
-	u32 busy_mask;
-
-	NNP_SPIN_LOCK_IRQSAVE(&(DMA_HW_CHANNEL(dmaSched, dir).lock_irq), flags);
-	busy_mask = DMA_HW_CHANNEL(dmaSched, dir).busy_mask;
-	NNP_SPIN_UNLOCK_IRQRESTORE(&(DMA_HW_CHANNEL(dmaSched, dir).lock_irq), flags);
-
-	if (busy_mask != 0)
-		return false;
-	else
-		return true;
-
+	return DMA_HW_CHANNEL(dmaSched, dir).busy_mask == 0;
 }
 
 int sphcs_dma_sched_create(struct sphcs *sphcs,
@@ -583,9 +581,6 @@ int sphcs_dma_sched_create(struct sphcs *sphcs,
 
 		/* reset busy hw channels mask */
 		DMA_HW_CHANNEL(dmaSched, direction_index).busy_mask = 0x0;
-
-		/* dma hw channel spin lock init */
-		spin_lock_init(&DMA_HW_CHANNEL(dmaSched, direction_index).lock_irq);
 
 		/* initialize priority request queues */
 		for (idxPriority = 0; idxPriority < SPHCS_DMA_NUM_PRIORITIES; idxPriority++) {
@@ -1084,8 +1079,6 @@ static int sphcs_dma_sched_xfer_complete_int(struct sphcs_dma_sched *dmaSched,
 		req->status = status;
 		req->timeUS = xferTimeUS;
 
-		free_dma_hw_channel(dmaSched, req->direction, channel);
-
 		if (NNP_SW_GROUP_IS_ENABLE(g_nnp_sw_counters, SPHCS_SW_COUNTERS_GROUP_DMA)) {
 			switch (dma_direction) {
 			case SPHCS_DMA_DIRECTION_HOST_TO_CARD:
@@ -1103,13 +1096,18 @@ static int sphcs_dma_sched_xfer_complete_int(struct sphcs_dma_sched *dmaSched,
 			}
 		}
 
+		if (req->priority == SPHCS_DMA_PRIORITY_HIGH)
+			atomic_dec(&DMA_DIRECTION_INFO(dmaSched, dma_direction).active_high_priority_transactions);
+
+		NNP_SPIN_LOCK_IRQSAVE(&(DMA_DIRECTION_INFO(dmaSched, dma_direction).lock_irq), flags);
+
+		free_dma_hw_channel_locked(dmaSched, req->direction, channel);
+
 		dir_info = DMA_DIRECTION_INFO_PTR(dmaSched, dma_direction);
 
 		if ((recovery_action == SPHCS_RA_RESET_DMA) ||
 				(req->retry_counter == SPHCS_NUM_OF_DMA_RETRIES &&
 				recovery_action == SPHCS_RA_RETRY_DMA)) {
-
-			NNP_SPIN_LOCK_IRQSAVE(&(DMA_DIRECTION_INFO(dmaSched, dma_direction).lock_irq), flags);
 
 			/* If DMA engine isn't already disabled*/
 			if (dir_info->dma_engine_state != SPHCS_DMA_ENGINE_STATE_DISABLING) {
@@ -1122,18 +1120,15 @@ static int sphcs_dma_sched_xfer_complete_int(struct sphcs_dma_sched *dmaSched,
 				INIT_WORK(&dir_info->reset_work.work, reset_handler);
 				schedule_work(&dir_info->reset_work.work);
 			}
-
-			NNP_SPIN_UNLOCK_IRQRESTORE(&(DMA_DIRECTION_INFO(dmaSched, dma_direction).lock_irq), flags);
 		} else {
-			if (req->priority == SPHCS_DMA_PRIORITY_HIGH)
-				atomic_dec(&DMA_DIRECTION_INFO(dmaSched, dma_direction).active_high_priority_transactions);
+			NNP_SPIN_UNLOCK_IRQRESTORE(&(DMA_DIRECTION_INFO(dmaSched, dma_direction).lock_irq), flags);
 			do_schedule(dmaSched, req->direction);
+			NNP_SPIN_LOCK_IRQSAVE(&(DMA_DIRECTION_INFO(dmaSched, dma_direction).lock_irq), flags);
 		}
 
 		/* Once all channels of the DMA engine are idle and DMA engine recovery flow has been started  */
-		NNP_SPIN_LOCK_IRQSAVE(&(DMA_DIRECTION_INFO(dmaSched, dma_direction).lock_irq), flags);
 		if ((dir_info->dma_engine_state == SPHCS_DMA_ENGINE_STATE_DISABLING) &&
-				(is_dma_engine_idle(dmaSched, dma_direction)))
+				(is_dma_engine_idle_locked(dmaSched, dma_direction)))
 			complete(&dir_info->dma_engine_idle);
 		NNP_SPIN_UNLOCK_IRQRESTORE(&(DMA_DIRECTION_INFO(dmaSched, dma_direction).lock_irq), flags);
 
@@ -1245,7 +1240,7 @@ static int debug_direction_show(struct seq_file *m, void *v)
 		if (dir_info->hw_channels.busy_mask & BIT(i)) {
 			const struct sphcs_dma_req *req = dir_info->hw_channels.inflight_req[i];
 
-			seq_printf(m, "\tchan%d: busy req=0x%lx xfer_size=0x%llx pri=%u status=%u flags=0x%x serial=%u spurious=%u\n",
+			seq_printf(m, "\tchan%d: busy req=0x%lx xfer_size=%llu pri=%u status=%u flags=0x%x serial=%u spurious=%u\n",
 				   i,
 				   (uintptr_t)req,
 				   req->transfer_size,

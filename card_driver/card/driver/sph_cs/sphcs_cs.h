@@ -27,6 +27,8 @@
 struct inf_data;
 struct sphcs_cmd_chan;
 
+#define MAX_NUM_CHANNELS (1 << NNP_IPC_CHANNEL_BITS)
+
 struct sphcs {
 	void          *hw_handle;
 	struct device *hw_device;
@@ -51,6 +53,8 @@ struct sphcs {
 	struct notifier_block mce_notifier;
 	struct delayed_work init_delayed_reset;
 
+	u8 channel_created[MAX_NUM_CHANNELS];
+
 	union nnp_inbound_mem     *inbound_mem;
 	size_t inbound_mem_size;
 	dma_addr_t inbound_mem_dma_addr;
@@ -61,6 +65,7 @@ struct sphcs {
 	spinlock_t lock_bh;
 	DECLARE_HASHTABLE(cmd_chan_hash, 6);
 
+	struct kobject             *kobj;
 	struct dentry              *debugfs_dir;
 	struct sphcs_hwtrace_data	hw_tracing;
 };

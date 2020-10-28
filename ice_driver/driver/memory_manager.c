@@ -1352,6 +1352,12 @@ int ice_mm_patch_cntrs(struct cve_ntw_buffer *buf_list,
 	ASSERT(head_des != NULL);
 
 	do {
+		if (next_des->pp_desc.patch_point_type ==
+						ICE_PP_TYPE_CNTR_NOTIFY_ADDR) {
+			next_des = cve_dle_next(next_des, list);
+			continue;
+		}
+
 		buf_idx = next_des->pp_desc.patching_buf_index;
 		cb_buf_info = &buf_list[buf_idx];
 
@@ -1386,9 +1392,6 @@ int ice_mm_patch_cntrs(struct cve_ntw_buffer *buf_list,
 				"ERROR:%d __patch_surface() failed\n", ret);
 			goto out;
 		}
-
-		cve_mm_set_dirty_cache(cb_buf_info->ntw_buf_alloc);
-		cve_mm_sync_mem_to_dev(cb_buf_info->ntw_buf_alloc, dev);
 
 		next_des = cve_dle_next(next_des, list);
 	} while (head_des != next_des);
