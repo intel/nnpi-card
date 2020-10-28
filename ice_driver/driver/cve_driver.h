@@ -305,6 +305,8 @@ struct cve_job {
 	__u64 mmu_cfg_list;
 	/* num registers in mmu_cfg_list */
 	__u32 num_mmu_cfg_regs;
+	/* MD5 sum of mmu config regs */
+	__u8 md5[ICEDRV_MD5_MAX_SIZE];
 };
 
 struct cve_job_group {

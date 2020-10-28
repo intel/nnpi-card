@@ -1,0 +1,887 @@
+From 60eaf9ab426d3cda70191a38bbc66c90cc4b5cd6 Mon Sep 17 00:00:00 2001
+From: Guy Zadicario <guy.zadicario@intel.com>
+Date: Wed, 1 Apr 2020 08:21:47 +0300
+Subject: [PATCH v9 14/22] misc: nnpi: Mapping host resources to device channel
+
+This patch add IOCTLs to /dev/nnpi%d device to map and unmap host
+resource to the channel. The mapping gets a uniqueue ID and the
+page table of the host resource is transferred to the device, later
+commands to the device can reference the resource by the channel ID
+and map ID.
+
+There is special interface to map host resources which serve as
+host-to-card and card-to-host ring buffers. That results in the same
+host resource mapping except that the mapping is referenced by the
+ring-buffer direction and index (up to two for each direction) instead
+of by map ID.
+
+Signed-off-by: Guy Zadicario <guy.zadicario@intel.com>
+Reviewed-by: Vaibhav Agarwal <vaibhav.agarwal@intel.com>
+---
+ drivers/misc/intel-nnpi/cmd_chan.c       |  91 +++++++
+ drivers/misc/intel-nnpi/cmd_chan.h       |  41 +++
+ drivers/misc/intel-nnpi/device.c         |  50 ++++
+ drivers/misc/intel-nnpi/device_chardev.c | 413 +++++++++++++++++++++++++++++++
+ include/uapi/misc/intel_nnpi.h           | 111 +++++++++
+ 5 files changed, 706 insertions(+)
+
+diff --git a/drivers/misc/intel-nnpi/cmd_chan.c b/drivers/misc/intel-nnpi/cmd_chan.c
+index 09c3deb..29c3f1f 100644
+--- a/drivers/misc/intel-nnpi/cmd_chan.c
++++ b/drivers/misc/intel-nnpi/cmd_chan.c
+@@ -337,6 +337,11 @@ int nnpdrv_cmd_chan_create(struct nnp_device *nnpdev, int host_fd, u32 weight,
+ 	init_waitqueue_head(&cmd_chan->resp_waitq);
+ 	spin_lock_init(&cmd_chan->resp_lock_bh);
+ 
++	spin_lock_init(&cmd_chan->lock);
++	mutex_init(&cmd_chan->mutex);
++	ida_init(&cmd_chan->hostres_map_ida);
++	hash_init(cmd_chan->hostres_hash);
++
+ 	/*
+ 	 * Add channel to the channel hash
+ 	 */
+@@ -370,6 +375,9 @@ static void nnpdrv_cmd_chan_release(struct kref *kref)
+ {
+ 	struct nnpdrv_cmd_chan *cmd_chan;
+ 	struct nnp_device *nnpdev;
++	struct chan_hostres_map *hostres_map;
++	struct hlist_node *tmp;
++	int i;
+ 
+ 	cmd_chan = container_of(kref, struct nnpdrv_cmd_chan, ref);
+ 	nnpdev = cmd_chan->nnpdev;
+@@ -388,6 +396,24 @@ static void nnpdrv_cmd_chan_release(struct kref *kref)
+ 	ida_simple_remove(&cmd_chan->nnpdev->cmd_chan_ida,
+ 			  cmd_chan->chan_id);
+ 
++	/*
++	 * destroy all host resource maps
++	 */
++	hash_for_each_safe(cmd_chan->hostres_hash, i,
++			   tmp, hostres_map, hash_node) {
++		hash_del(&hostres_map->hash_node);
++		ida_simple_remove(&cmd_chan->hostres_map_ida, hostres_map->id);
++		nnpdrv_hostres_unmap_device(hostres_map->hostres, nnpdev);
++		kfree(hostres_map);
++	}
++
++	ida_destroy(&cmd_chan->hostres_map_ida);
++
++	for (i = 0; i < NNP_IPC_MAX_CHANNEL_RB; i++) {
++		nnpdrv_cmd_chan_set_ringbuf(cmd_chan, true, i, NULL);
++		nnpdrv_cmd_chan_set_ringbuf(cmd_chan, false, i, NULL);
++	}
++
+ 	if (cmd_chan->fd < 0)
+ 		fput(cmd_chan->host_file);
+ 
+@@ -548,3 +574,68 @@ int nnpdrv_cmd_chan_add_response(struct nnpdrv_cmd_chan *cmd_chan, u64 *hw_msg,
+ 
+ 	return 0;
+ }
++
++int nnpdrv_cmd_chan_set_ringbuf(struct nnpdrv_cmd_chan *chan, bool h2c,
++				unsigned int id,
++				struct nnpdrv_host_resource *hostres)
++{
++	if (id >= NNP_IPC_MAX_CHANNEL_RB)
++		return -EINVAL;
++
++	if (h2c) {
++		if (chan->h2c_rb_hostres[id])
++			nnpdrv_hostres_unmap_device(chan->h2c_rb_hostres[id],
++						    chan->nnpdev);
++		chan->h2c_rb_hostres[id] = hostres;
++	} else {
++		if (chan->c2h_rb_hostres[id])
++			nnpdrv_hostres_unmap_device(chan->c2h_rb_hostres[id],
++						    chan->nnpdev);
++		chan->c2h_rb_hostres[id] = hostres;
++	}
++
++	return 0;
++}
++
++struct chan_hostres_map *nnpdrv_cmd_chan_find_map(struct nnpdrv_cmd_chan *chan,
++						  u16 map_id)
++{
++	struct chan_hostres_map *hostres_map;
++
++	spin_lock(&chan->lock);
++	hash_for_each_possible(chan->hostres_hash, hostres_map, hash_node,
++			       map_id)
++		if (hostres_map->id == map_id) {
++			spin_unlock(&chan->lock);
++			return hostres_map;
++		}
++	spin_unlock(&chan->lock);
++
++	return NULL;
++}
++
++int nnpdrv_chan_unmap_hostres(struct nnpdrv_cmd_chan *chan, u16 map_id)
++{
++	struct chan_hostres_map *hostres_map;
++	bool found = false;
++
++	spin_lock(&chan->lock);
++	hash_for_each_possible(chan->hostres_hash, hostres_map, hash_node,
++			       map_id)
++		if (hostres_map->id == map_id) {
++			found = true;
++			hash_del(&hostres_map->hash_node);
++			ida_simple_remove(&chan->hostres_map_ida,
++					  hostres_map->id);
++			break;
++		}
++	spin_unlock(&chan->lock);
++
++	if (!found)
++		return -ENXIO;
++
++	nnpdrv_hostres_unmap_device(hostres_map->hostres, chan->nnpdev);
++	kfree(hostres_map);
++
++	return 0;
++}
+diff --git a/drivers/misc/intel-nnpi/cmd_chan.h b/drivers/misc/intel-nnpi/cmd_chan.h
+index 5580fa2..3094436 100644
+--- a/drivers/misc/intel-nnpi/cmd_chan.h
++++ b/drivers/misc/intel-nnpi/cmd_chan.h
+@@ -13,9 +13,12 @@
+ #include <linux/hashtable.h>
+ #include <linux/kref.h>
+ #include <linux/list.h>
++#include <linux/mutex.h>
++#include <linux/spinlock.h>
+ #include <linux/spinlock.h>
+ #include <linux/wait.h>
+ #include "device.h"
++#include "hostres.h"
+ #include "ipc_protocol.h"
+ #include "nnp_user.h"
+ 
+@@ -41,9 +44,17 @@
+  * @resp_lock_bh: protects accesses to @respq and @destroyed
+  * @destroyed: a state indicating that the channel should be not-yet-exist on
+  *             the device.
++ * @mutex: protects card synchronous operations which modify @event_msg
++ * @hostres_map_ida: generate ipc ids for hostres mapping
++ * @lock: protects @hostres_hash, @hostres_map_ida
++ * @hostres_hash: hash table to store all host resource mapping, key is ipc id
+  * @resp_waitq: waitqueue used for waiting for response messages be available.
+  * @respq: circular buffer object that receive response messages from device.
+  * @respq_buf: buffer space allocated for circular response buffer.
++ * @h2c_rb_hostres: host resource used for each host-to-card ring buffer
++ *                  There may be up to 2 such ring buffers, both can be NULL.
++ * @c2h_rb_hostres: host resource used for each card-to-host ring buffer
++ *                  There may be up to 2 such ring buffers, both can be NULL.
+  */
+ struct nnpdrv_cmd_chan {
+ 	struct kref            ref;
+@@ -63,8 +74,31 @@ struct nnpdrv_cmd_chan {
+ 	bool              destroyed;
+ 
+ 	spinlock_t        resp_lock_bh; /* protects @respq, @destroyed */
++	struct mutex      mutex;
++	struct ida        hostres_map_ida;
++	spinlock_t        lock; /* protects @hostres_hash, @hostres_map_ida */
++	DECLARE_HASHTABLE(hostres_hash, 6);
++
+ 	struct circ_buf   respq;
+ 	char             *respq_buf;
++
++	struct nnpdrv_host_resource *h2c_rb_hostres[NNP_IPC_MAX_CHANNEL_RB];
++	struct nnpdrv_host_resource *c2h_rb_hostres[NNP_IPC_MAX_CHANNEL_RB];
++};
++
++/**
++ * struct chan_hostres_map - holds host resource mapping to channel
++ *
++ * @id: ipc map id of the mapping
++ * @hash_node: node to include this mapping in @hostres_hash of nnpdrv_cmd_chan
++ * @hostres: the mapped host resource
++ * @event_msg: device response to the map create request
++ */
++struct chan_hostres_map {
++	u16 id;
++	struct hlist_node           hash_node;
++	struct nnpdrv_host_resource *hostres;
++	union c2h_event_report      event_msg;
+ };
+ 
+ #define chan_broken(chan) ((chan)->card_critical_error.event_code)
+@@ -85,4 +119,11 @@ int nnpdrv_cmd_chan_create(struct nnp_device *nnpdev, int host_fd, u32 weight,
+ int nnpdrv_cmd_chan_add_response(struct nnpdrv_cmd_chan *cmd_chan,
+ 				 u64 *hw_msg, u32 size);
+ 
++int nnpdrv_cmd_chan_set_ringbuf(struct nnpdrv_cmd_chan *chan, bool h2c,
++				unsigned int id,
++				struct nnpdrv_host_resource *hostres);
++
++struct chan_hostres_map *nnpdrv_cmd_chan_find_map(struct nnpdrv_cmd_chan *chan,
++						  u16 map_id);
++int nnpdrv_chan_unmap_hostres(struct nnpdrv_cmd_chan *chan, u16 map_id);
+ #endif
+diff --git a/drivers/misc/intel-nnpi/device.c b/drivers/misc/intel-nnpi/device.c
+index 32c9d85..96cd28f 100644
+--- a/drivers/misc/intel-nnpi/device.c
++++ b/drivers/misc/intel-nnpi/device.c
+@@ -309,6 +309,41 @@ static void handle_channel_create_response(struct nnp_device *nnpdev,
+ 	wake_up_all(&nnpdev->waitq);
+ }
+ 
++static void handle_channel_map_hostres(struct nnp_device *nnpdev,
++				       union c2h_event_report *event_msg)
++{
++	struct nnpdrv_cmd_chan *cmd_chan;
++	struct chan_hostres_map *hostres_map;
++
++	cmd_chan = nnpdrv_find_channel(nnpdev, event_msg->obj_id);
++	if (!cmd_chan)
++		return;
++
++	hostres_map = nnpdrv_cmd_chan_find_map(cmd_chan, event_msg->obj_id_2);
++	if (!hostres_map)
++		goto put_chan;
++
++	hostres_map->event_msg.value = event_msg->value;
++	wake_up_all(&nnpdev->waitq);
++
++put_chan:
++	nnpdrv_cmd_chan_put(cmd_chan);
++}
++
++static void handle_channel_unmap_hostres(struct nnp_device *nnpdev,
++					 union c2h_event_report *event_msg)
++{
++	struct nnpdrv_cmd_chan *cmd_chan;
++
++	cmd_chan = nnpdrv_find_channel(nnpdev, event_msg->obj_id);
++	if (!cmd_chan)
++		return;
++
++	nnpdrv_chan_unmap_hostres(cmd_chan, event_msg->obj_id_2);
++
++	nnpdrv_cmd_chan_put(cmd_chan);
++}
++
+ static void handle_channel_destroy(struct nnp_device *nnpdev,
+ 				   union c2h_event_report *event_msg)
+ {
+@@ -350,8 +385,14 @@ static void nnpdrv_process_device_event(struct nnp_device *nnpdev,
+ 		switch (event_msg->event_code) {
+ 		case NNP_IPC_CREATE_CHANNEL_SUCCESS:
+ 		case NNP_IPC_CREATE_CHANNEL_FAILED:
++		case NNP_IPC_CHANNEL_SET_RB_SUCCESS:
++		case NNP_IPC_CHANNEL_SET_RB_FAILED:
+ 			handle_channel_create_response(nnpdev, event_msg);
+ 			break;
++		case NNP_IPC_CHANNEL_MAP_HOSTRES_SUCCESS:
++		case NNP_IPC_CHANNEL_MAP_HOSTRES_FAILED:
++			handle_channel_map_hostres(nnpdev, event_msg);
++			break;
+ 		case NNP_IPC_DESTROY_CHANNEL_FAILED:
+ 			dev_err(&nnpdev->nnp_pci->pdev->dev,
+ 				"Channel destroyed failed channel %d val %d\n",
+@@ -360,6 +401,15 @@ static void nnpdrv_process_device_event(struct nnp_device *nnpdev,
+ 		case NNP_IPC_CHANNEL_DESTROYED:
+ 			handle_channel_destroy(nnpdev, event_msg);
+ 			break;
++		case NNP_IPC_CHANNEL_UNMAP_HOSTRES_FAILED:
++			dev_dbg(&nnpdev->nnp_pci->pdev->dev,
++				"Channel hostres unmap failed on device channel %d map %d val %d\n",
++				event_msg->obj_id, event_msg->obj_id_2,
++				event_msg->event_val);
++			fallthrough;
++		case NNP_IPC_CHANNEL_UNMAP_HOSTRES_SUCCESS:
++			handle_channel_unmap_hostres(nnpdev, event_msg);
++			break;
+ 		default:
+ 			dev_err(&nnpdev->nnp_pci->pdev->dev,
+ 				"Unknown event received - %u\n",
+diff --git a/drivers/misc/intel-nnpi/device_chardev.c b/drivers/misc/intel-nnpi/device_chardev.c
+index dcb2b9f..990bce4 100644
+--- a/drivers/misc/intel-nnpi/device_chardev.c
++++ b/drivers/misc/intel-nnpi/device_chardev.c
+@@ -8,6 +8,7 @@
+ 
+ #include <linux/cdev.h>
+ #include <linux/device.h>
++#include <linux/dma-noncoherent.h>
+ #include <linux/init.h>
+ #include <linux/kernel.h>
+ #include <linux/module.h>
+@@ -88,6 +89,7 @@ static long create_channel(struct device_client_info *cinfo, void __user *arg,
+ 	long ret = 0;
+ 	unsigned int io_size = sizeof(req);
+ 
++	/* only single size structure is currently supported */
+ 	if (size != io_size)
+ 		return -EINVAL;
+ 
+@@ -183,6 +185,7 @@ static long create_channel(struct device_client_info *cinfo, void __user *arg,
+ 	} else if (chan->event_msg.event_code ==
+ 		   NNP_IPC_CREATE_CHANNEL_FAILED) {
+ 		req.o_errno = event_val_to_nnp_error(chan->event_msg.event_val);
++		ret = 0;
+ 		if (!nnpdrv_cmd_chan_set_destroyed(chan))
+ 			nnpdrv_cmd_chan_put(chan);
+ 		goto done;
+@@ -210,6 +213,406 @@ static long create_channel(struct device_client_info *cinfo, void __user *arg,
+ 	return ret;
+ }
+ 
++static int send_rb_op(struct nnpdrv_cmd_chan *chan,
++		      union h2c_channel_data_ringbuf_op *msg, __u32 *o_errno)
++{
++	int ret = -EPIPE;
++
++	mutex_lock(&chan->mutex);
++	chan->event_msg.value = 0;
++
++	if (!is_card_fatal_drv_event(chan->card_critical_error.event_code))
++		ret = nnpdrv_queue_msg(chan->nnpdev->public_cmdq, msg->value);
++
++	if (ret < 0)
++		goto done;
++
++	ret = wait_event_interruptible(chan->nnpdev->waitq,
++				       chan->event_msg.value != 0 ||
++				       chan_drv_fatal(chan));
++	if (chan->event_msg.value == 0) {
++		if (ret < 0) {
++			ret = -EINTR;
++		} else {
++			*o_errno = NNPER_DEVICE_ERROR;
++			ret = 0;
++		}
++		goto done;
++	} else if (chan->event_msg.event_code ==
++		   NNP_IPC_CHANNEL_SET_RB_FAILED) {
++		*o_errno = event_val_to_nnp_error(chan->event_msg.event_val);
++		ret = 0;
++	}
++
++done:
++	mutex_unlock(&chan->mutex);
++	return ret;
++}
++
++static long create_channel_data_ringbuf(struct device_client_info *cinfo,
++					void __user *arg, unsigned int size)
++{
++	struct nnp_device *nnpdev = cinfo->nnpdev;
++	struct ioctl_nnpi_create_channel_data_ringbuf req;
++	struct nnpdrv_cmd_chan *chan = NULL;
++	struct user_hostres *hostres_entry = NULL;
++	struct nnpdrv_host_resource *hostres;
++	union h2c_channel_data_ringbuf_op msg;
++	struct nnp_user_info *nnp_user = NULL;
++	dma_addr_t page_list;
++	u32 total_chunks;
++	int ret;
++	unsigned int io_size = sizeof(req);
++
++	/* only single size structure is currently supported */
++	if (size != io_size)
++		return -EINVAL;
++
++	ret = copy_from_user(&req, arg, io_size);
++	if (ret != 0)
++		return -EFAULT;
++
++	if (req.i_hostres_handle >= INT_MAX)
++		return -EINVAL;
++
++	/* we have one bit in ipc protocol for ringbuf id for each direction */
++	if (req.i_id > 1)
++		return -EINVAL;
++
++	/* o_errno must be cleared on entry */
++	if (req.o_errno)
++		return -EINVAL;
++
++	chan = nnpdrv_find_channel(nnpdev, req.i_channel_id);
++	if (!chan) {
++		req.o_errno = NNPER_NO_SUCH_CHANNEL;
++		goto do_exit;
++	}
++
++	nnp_user = chan->nnp_user;
++	mutex_lock(&nnp_user->mutex);
++	hostres_entry = idr_find(&nnp_user->idr,
++				 (int)req.i_hostres_handle);
++	if (!hostres_entry) {
++		req.o_errno = NNPER_NO_SUCH_RESOURCE;
++		mutex_unlock(&nnp_user->mutex);
++		goto put_chan;
++	}
++
++	hostres = hostres_entry->hostres;
++
++	/* check the resource fit the direction */
++	if ((req.i_h2c && !nnpdrv_hostres_is_input(hostres)) ||
++	    (!req.i_h2c && !nnpdrv_hostres_is_output(hostres))) {
++		req.o_errno = NNPER_INCOMPATIBLE_RESOURCES;
++		mutex_unlock(&nnp_user->mutex);
++		goto put_chan;
++	}
++
++	ret = nnpdrv_hostres_map_device(hostres, nnpdev, false, &page_list,
++					&total_chunks);
++	if (ret != 0) {
++		ret = -EFAULT;
++		mutex_unlock(&nnp_user->mutex);
++		goto put_chan;
++	}
++
++	/*
++	 * Its OK to release the mutex here and let other
++	 * thread destroy the hostres handle as we already
++	 * mapped it (which ref counted)
++	 */
++	mutex_unlock(&nnp_user->mutex);
++
++	msg.opcode = NNP_IPC_H2C_OP_CHANNEL_RB_OP;
++	msg.chan_id = chan->chan_id;
++	msg.h2c = req.i_h2c ? 1 : 0;
++	msg.rb_id = req.i_id;
++	msg.destroy = 0;
++	msg.host_ptr = NNP_IPC_DMA_ADDR_TO_PFN(page_list);
++
++	ret = send_rb_op(chan, &msg, &req.o_errno);
++	if (ret || req.o_errno)
++		goto err_hostres_map;
++
++	ret = nnpdrv_cmd_chan_set_ringbuf(chan, req.i_h2c, req.i_id, hostres);
++
++	if (ret == 0)
++		goto put_chan;
++
++err_hostres_map:
++	nnpdrv_hostres_unmap_device(hostres, chan->nnpdev);
++put_chan:
++	nnpdrv_cmd_chan_put(chan);
++do_exit:
++	if (copy_to_user(arg, &req, io_size) != 0)
++		return -EFAULT;
++
++	return ret;
++}
++
++static long destroy_channel_data_ringbuf(struct device_client_info *cinfo,
++					 void __user *arg, unsigned int size)
++{
++	struct nnp_device *nnpdev = cinfo->nnpdev;
++	struct ioctl_nnpi_destroy_channel_data_ringbuf req;
++	struct nnpdrv_cmd_chan *chan;
++	union h2c_channel_data_ringbuf_op msg;
++	int ret;
++	unsigned int io_size = sizeof(req);
++
++	/* only single size structure is currently supported */
++	if (size != io_size)
++		return -EINVAL;
++
++	ret = copy_from_user(&req, arg, io_size);
++	if (ret != 0)
++		return -EFAULT;
++
++	/* we have one bit in ipc protocol for ringbuf id for each direction */
++	if (req.i_id > 1)
++		return -EINVAL;
++
++	/* o_errno must be cleared on entry */
++	if (req.o_errno)
++		return -EINVAL;
++
++	chan = nnpdrv_find_channel(nnpdev, req.i_channel_id);
++	if (!chan) {
++		req.o_errno = NNPER_NO_SUCH_CHANNEL;
++		goto done;
++	}
++
++	msg.opcode = NNP_IPC_H2C_OP_CHANNEL_RB_OP;
++	msg.chan_id = chan->chan_id;
++	msg.h2c = req.i_h2c ? 1 : 0;
++	msg.rb_id = req.i_id;
++	msg.destroy = 1;
++	msg.host_ptr = 0;
++
++	ret = send_rb_op(chan, &msg, &req.o_errno);
++	if (ret || req.o_errno)
++		goto put_chan;
++
++	ret = nnpdrv_cmd_chan_set_ringbuf(chan, req.i_h2c, req.i_id, NULL);
++
++put_chan:
++	nnpdrv_cmd_chan_put(chan);
++done:
++	if (copy_to_user(arg, &req, io_size) != 0)
++		return -EFAULT;
++
++	return ret;
++}
++
++static long map_hostres(struct device_client_info *cinfo,
++			void __user *arg, unsigned int size)
++{
++	struct nnp_device *nnpdev = cinfo->nnpdev;
++	struct ioctl_nnpi_channel_map_hostres req;
++	struct nnpdrv_cmd_chan *chan = NULL;
++	struct user_hostres *hostres_entry = NULL;
++	struct nnpdrv_host_resource *hostres;
++	union h2c_channel_hostres_op msg;
++	struct nnp_user_info *nnp_user = NULL;
++	struct chan_hostres_map *hostres_map = NULL;
++	dma_addr_t page_list;
++	u32 total_chunks;
++	int map_id;
++	int ret = 0;
++	unsigned int io_size = sizeof(req);
++	const struct dma_map_ops *ops;
++
++	/* only single size structure is currently supported */
++	if (size != io_size)
++		return -EINVAL;
++
++	if (copy_from_user(&req, arg, io_size))
++		return -EFAULT;
++
++	if (req.i_hostres_handle >= INT_MAX)
++		return -EINVAL;
++
++	req.o_errno = 0;
++
++	chan = nnpdrv_find_channel(nnpdev, req.i_channel_id);
++	if (!chan) {
++		req.o_errno = NNPER_NO_SUCH_CHANNEL;
++		goto do_exit;
++	}
++
++	nnp_user = chan->nnp_user;
++	mutex_lock(&nnp_user->mutex);
++	hostres_entry = idr_find(&nnp_user->idr,
++				 (int)req.i_hostres_handle);
++	if (!hostres_entry) {
++		req.o_errno = NNPER_NO_SUCH_RESOURCE;
++		mutex_unlock(&nnp_user->mutex);
++		goto put_chan;
++	}
++	hostres = hostres_entry->hostres;
++
++	hostres_map = kzalloc(sizeof(*hostres_map), GFP_KERNEL);
++	if (!hostres_map) {
++		req.o_errno = ENOMEM;
++		mutex_unlock(&nnp_user->mutex);
++		goto put_chan;
++	}
++
++	map_id = -1;
++	spin_lock(&chan->lock);
++	ret = ida_simple_get(&chan->hostres_map_ida, 0, U16_MAX, GFP_KERNEL);
++	if (ret < 0) {
++		req.o_errno = ENOMEM;
++		ret = 0;
++		spin_unlock(&chan->lock);
++		mutex_unlock(&nnp_user->mutex);
++		goto err_map;
++	}
++	map_id = ret;
++	spin_unlock(&chan->lock);
++
++	ret = nnpdrv_hostres_map_device(hostres, nnpdev, false, &page_list,
++					&total_chunks);
++	if (ret != 0) {
++		ret = -EFAULT;
++		mutex_unlock(&nnp_user->mutex);
++		goto err_ida;
++	}
++
++	/*
++	 * Its OK to release the mutex here and let other
++	 * thread destroy the hostres handle as we already
++	 * mapped it (which ref counted)
++	 */
++	mutex_unlock(&nnp_user->mutex);
++
++	msg.opcode = NNP_IPC_H2C_OP_CHANNEL_HOSTRES_OP;
++	msg.chan_id = chan->chan_id;
++	msg.hostres_id = (u16)map_id;
++	msg.unmap = 0;
++	msg.host_ptr = NNP_IPC_DMA_ADDR_TO_PFN(page_list);
++
++	hostres_map->event_msg.value = 0;
++	hostres_map->id = (u16)map_id;
++	hostres_map->hostres = hostres;
++
++	spin_lock(&chan->lock);
++	hash_add(chan->hostres_hash,
++		 &hostres_map->hash_node,
++		 hostres_map->id);
++	spin_unlock(&chan->lock);
++
++	ret = -EPIPE;
++	if (!chan_drv_fatal(chan))
++		ret = nnpdrv_queue_msg(chan->cmdq, msg);
++	if (ret < 0) {
++		req.o_errno = NNPER_DEVICE_ERROR;
++		ret = 0;
++		goto err_hostres_map;
++	}
++
++	ret = wait_event_interruptible(nnpdev->waitq,
++				       hostres_map->event_msg.value != 0 ||
++				       chan_drv_fatal(chan));
++
++	if (hostres_map->event_msg.value == 0) {
++		if (ret < 0) {
++			ret = -EINTR;
++		} else {
++			req.o_errno = NNPER_DEVICE_ERROR;
++			ret = 0;
++		}
++		goto err_hostres_map;
++	} else if (hostres_map->event_msg.event_code ==
++		   NNP_IPC_CHANNEL_MAP_HOSTRES_FAILED) {
++		req.o_errno =
++		  event_val_to_nnp_error(hostres_map->event_msg.event_val);
++		ret = 0;
++		goto err_hostres_map;
++	} else if (ret) {
++		goto err_hostres_map;
++	}
++
++	ops = get_dma_ops(&nnpdev->nnp_pci->pdev->dev);
++	if (!ops)
++		req.o_sync_needed =
++			!dev_is_dma_coherent(&nnpdev->nnp_pci->pdev->dev);
++	else
++		req.o_sync_needed = (ops->sync_sg_for_cpu ? 1 : 0);
++
++	req.o_map_id = (u16)map_id;
++
++	goto put_chan;
++
++err_hostres_map:
++	nnpdrv_chan_unmap_hostres(chan, (u16)map_id);
++err_ida:
++	spin_lock(&chan->lock);
++	ida_simple_remove(&chan->hostres_map_ida, map_id);
++	spin_unlock(&chan->lock);
++err_map:
++	kfree(hostres_map);
++put_chan:
++	nnpdrv_cmd_chan_put(chan);
++do_exit:
++	if (copy_to_user(arg, &req, io_size))
++		ret = -EFAULT;
++
++	return ret;
++}
++
++static long unmap_hostres(struct device_client_info *cinfo, void __user *arg,
++			  unsigned int size)
++{
++	struct nnp_device *nnpdev = cinfo->nnpdev;
++	struct ioctl_nnpi_channel_unmap_hostres req;
++	struct nnpdrv_cmd_chan *chan = NULL;
++	struct chan_hostres_map *hostres_map;
++	union h2c_channel_hostres_op msg;
++	long ret;
++	unsigned int io_size = sizeof(req);
++
++	/* only single size structure is currently supported */
++	if (size != io_size)
++		return -EINVAL;
++
++	ret = copy_from_user(&req, arg, io_size);
++	if (ret != 0)
++		return -EFAULT;
++
++	/* o_errno must be cleared on entry */
++	if (req.o_errno)
++		return -EINVAL;
++
++	chan = nnpdrv_find_channel(nnpdev, req.i_channel_id);
++	if (!chan) {
++		req.o_errno = NNPER_NO_SUCH_CHANNEL;
++		goto done;
++	}
++
++	hostres_map = nnpdrv_cmd_chan_find_map(chan, req.i_map_id);
++	if (!hostres_map) {
++		req.o_errno = NNPER_NO_SUCH_HOSTRES_MAP;
++		goto put_chan;
++	}
++
++	msg.opcode = NNP_IPC_H2C_OP_CHANNEL_HOSTRES_OP;
++	msg.chan_id = chan->chan_id;
++	msg.hostres_id = req.i_map_id;
++	msg.unmap = 1;
++
++	ret = nnpdrv_queue_msg(chan->cmdq, msg);
++
++put_chan:
++	nnpdrv_cmd_chan_put(chan);
++done:
++	if (copy_to_user(arg, &req, io_size) != 0)
++		return -EFAULT;
++
++	return ret;
++}
++
+ static long nnpdrv_device_ioctl(struct file *f, unsigned int cmd,
+ 				unsigned long arg)
+ {
+@@ -228,6 +631,16 @@ static long nnpdrv_device_ioctl(struct file *f, unsigned int cmd,
+ 	switch (ioc_nr) {
+ 	case _IOC_NR(IOCTL_NNPI_DEVICE_CREATE_CHANNEL):
+ 		return create_channel(client, (void __user *)arg, size);
++	case _IOC_NR(IOCTL_NNPI_DEVICE_CREATE_CHANNEL_RB):
++		return create_channel_data_ringbuf(client,
++						   (void __user *)arg, size);
++	case _IOC_NR(IOCTL_NNPI_DEVICE_DESTROY_CHANNEL_RB):
++		return destroy_channel_data_ringbuf(client,
++						    (void __user *)arg, size);
++	case _IOC_NR(IOCTL_NNPI_DEVICE_CHANNEL_MAP_HOSTRES):
++		return map_hostres(client, (void __user *)arg, size);
++	case _IOC_NR(IOCTL_NNPI_DEVICE_CHANNEL_UNMAP_HOSTRES):
++		return unmap_hostres(client, (void __user *)arg, size);
+ 	default:
+ 		dev_err(client->nnpdev->dev,
+ 			"Unsupported device IOCTL 0x%x\n", cmd);
+diff --git a/include/uapi/misc/intel_nnpi.h b/include/uapi/misc/intel_nnpi.h
+index 1a01aa4..b1a3c63 100644
+--- a/include/uapi/misc/intel_nnpi.h
++++ b/include/uapi/misc/intel_nnpi.h
+@@ -159,6 +159,43 @@ struct nnpdrv_ioctl_destroy_hostres {
+ 	_IOWR('D', 0, struct ioctl_nnpi_create_channel)
+ 
+ /**
++ * IOCTL_NNPI_DEVICE_CREATE_CHANNEL_RB:
++ *
++ * A request to create a data ring buffer for a command channel object.
++ * This is used to transfer data together with command to the device.
++ * A device command may include a data size fields which indicate how much data
++ * has pushed into that ring-buffer object.
++ */
++#define IOCTL_NNPI_DEVICE_CREATE_CHANNEL_RB   \
++	_IOWR('D', 1, struct ioctl_nnpi_create_channel_data_ringbuf)
++
++/**
++ * IOCTL_NNPI_DEVICE_DESTROY_CHANNEL_RB:
++ *
++ * A request to destoy a data ring buffer allocated for a command channel.
++ */
++#define IOCTL_NNPI_DEVICE_DESTROY_CHANNEL_RB  \
++	_IOWR('D', 2, struct ioctl_nnpi_destroy_channel_data_ringbuf)
++
++/**
++ * IOCTL_NNPI_DEVICE_CHANNEL_MAP_HOSTRES:
++ *
++ * A request to map a host resource to a command channel object.
++ * Device commands can include "map id" of this mapping for referencing
++ * a host resource.
++ */
++#define IOCTL_NNPI_DEVICE_CHANNEL_MAP_HOSTRES \
++	_IOWR('D', 3, struct ioctl_nnpi_channel_map_hostres)
++
++/**
++ * IOCTL_NNPI_DEVICE_CHANNEL_UNMAP_HOSTRES:
++ *
++ * A request to unmap a host resource previously mapped to a command channel.
++ */
++#define IOCTL_NNPI_DEVICE_CHANNEL_UNMAP_HOSTRES \
++	_IOWR('D', 4, struct ioctl_nnpi_channel_unmap_hostres)
++
++/**
+  * struct ioctl_nnpi_create_channel - IOCTL_NNPI_DEVICE_CREATE_CHANNEL payload
+  * @i_weight: controls how much command submission bandwidth this channel will
+  *            get comparing to other channels. This value defines how much
+@@ -191,6 +228,80 @@ struct ioctl_nnpi_create_channel {
+ 	__u16    o_channel_id;
+ };
+ 
++/**
++ * struct ioctl_nnpi_create_channel_data_ringbuf
++ * @i_hostres_handle: handle of a host resource which will be used to hold
++ *         the ring-buffer content.
++ * @i_channel_id: command channel id.
++ * @i_id: id of the ring buffer object (can be 0 or 1).
++ * @i_h2c: non-zero if this ring-buffer is for command submission use,
++ *         otherwise it is for responses.
++ * @o_errno: On input, must be set to 0.
++ *           On output, 0 on success, one of the NNPERR_* error codes on error.
++ *
++ * this is the payload for IOCTL_NNPI_DEVICE_CREATE_CHANNEL_RB ioctl
++ */
++struct ioctl_nnpi_create_channel_data_ringbuf {
++	__u64 i_hostres_handle;
++	__u32 i_channel_id;
++	__u32 i_id;
++	__u32 i_h2c;
++	__u32 o_errno;
++};
++
++/**
++ * struct ioctl_nnpi_destroy_channel_data_ringbuf
++ * @i_channel_id: command channel id.
++ * @i_id: id of the ring buffer object (can be 0 or 1).
++ * @i_h2c: true if this ring-buffer is for command submission use,
++ *         otherwise it is for responses.
++ * @o_errno: On input, must be set to 0.
++ *           On output, 0 on success, one of the NNPERR_* error codes on error.
++ *
++ * this is the payload for IOCTL_NNPI_DEVICE_DESTROY_CHANNEL_RB ioctl
++ */
++struct ioctl_nnpi_destroy_channel_data_ringbuf {
++	__u32 i_channel_id;
++	__u32 i_id;
++	__u32 i_h2c;
++	__u32 o_errno;
++};
++
++/**
++ * struct ioctl_nnpi_channel_map_hostres
++ * @i_hostres_handle: handle of a host resource to be mapped
++ * @i_channel_id: command channel id.
++ * @o_map_id: returns unique id of the mapping
++ * @o_sync_needed: returns non-zero if LOCK/UNLOCK_HOST_RESOURCE ioctls
++ *            needs to be used before/after accessing the resource from cpu.
++ * @o_errno: On input, must be set to 0.
++ *           On output, 0 on success, one of the NNPERR_* error codes on error.
++ *
++ * this is the payload for IOCTL_NNPI_DEVICE_CHANNEL_MAP_HOSTRES ioctl
++ */
++struct ioctl_nnpi_channel_map_hostres {
++	__u64 i_hostres_handle;
++	__u32 i_channel_id;
++	__u32 o_map_id;
++	__u32 o_sync_needed;
++	__u32 o_errno;
++};
++
++/**
++ * ioctl_nnpi_channel_unmap_hostres
++ * @i_channel_id: command channel id.
++ * @i_map_id: mapping id
++ * @o_errno: On input, must be set to 0.
++ *           On output, 0 on success, one of the NNPERR_* error codes on error.
++ *
++ * This is the payload for IOCTL_NNPI_DEVICE_CHANNEL_UNMAP_HOSTRES ioctl
++ */
++struct ioctl_nnpi_channel_unmap_hostres {
++	__u32 i_channel_id;
++	__u32 i_map_id;
++	__u32 o_errno;
++};
++
+ /****************************************************************
+  * Error code values - errors returned in o_errno fields of
+  * above structures.
+-- 
+1.8.3.1
+

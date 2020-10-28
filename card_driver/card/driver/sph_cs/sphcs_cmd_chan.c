@@ -23,6 +23,7 @@ int sphcs_cmd_chan_create(uint16_t                protocol_id,
 	struct sphcs_cmd_chan *cmd_chan;
 	struct sphcs_cmd_chan *iter;
 	bool found = false;
+	int ret = 0;
 
 	cmd_chan = kzalloc(sizeof(struct sphcs_cmd_chan), GFP_KERNEL);
 	if (unlikely(cmd_chan == NULL)) {
@@ -88,19 +89,26 @@ int sphcs_cmd_chan_create(uint16_t                protocol_id,
 	// Add channel to the channel hash - if protocol ID not already exist
 	//
 	NNP_SPIN_LOCK_BH(&g_the_sphcs->lock_bh);
-	hash_for_each_possible(g_the_sphcs->cmd_chan_hash,
-			       iter,
-			       hash_node,
-			       protocol_id)
-		if (iter->protocol_id == protocol_id) {
-			found = true;
-			break;
-		}
+	if (g_the_sphcs->channel_created[protocol_id] == 0) {
+		ret = -1;
+		sph_log_info(CREATE_COMMAND_LOG, "create chan(id=%hu) canceled\n", protocol_id);
+		found = true;
+	} else {
+		hash_for_each_possible(g_the_sphcs->cmd_chan_hash,
+				       iter,
+				       hash_node,
+				       protocol_id)
+			if (iter->protocol_id == protocol_id) {
+				ret = -1;
+				found = true;
+				break;
+			}
 
-	if (!found)
-		hash_add(g_the_sphcs->cmd_chan_hash,
-			 &cmd_chan->hash_node,
-			 cmd_chan->protocol_id);
+		if (!found)
+			hash_add(g_the_sphcs->cmd_chan_hash,
+				 &cmd_chan->hash_node,
+				 cmd_chan->protocol_id);
+	}
 	NNP_SPIN_UNLOCK_BH(&g_the_sphcs->lock_bh);
 
 	if (found) {
@@ -109,7 +117,7 @@ int sphcs_cmd_chan_create(uint16_t                protocol_id,
 		destroy_workqueue(cmd_chan->wq);
 		sphcs_destroy_response_queue(g_the_sphcs, cmd_chan->respq);
 		kfree(cmd_chan);
-		return NNP_IPC_ALREADY_EXIST;
+		return ret;
 	}
 
 	*out_cmd_chan = cmd_chan;
@@ -447,6 +455,7 @@ static void channel_rb_op_work_handler(struct work_struct *work)
 	kfree(op);
 }
 
+/* NNP_IPC_H2C_OP_CHANNEL_RB_OP */
 void IPC_OPCODE_HANDLER(CHANNEL_RB_OP)(
 			struct sphcs        *sphcs,
 			union h2c_channel_data_ringbuf_op *cmd)

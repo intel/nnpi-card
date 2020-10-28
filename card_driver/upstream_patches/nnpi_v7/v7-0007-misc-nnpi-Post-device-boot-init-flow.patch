@@ -1,0 +1,574 @@
+From fdfc413533cb549da1573d0660a1a1b93f6e69e9 Mon Sep 17 00:00:00 2001
+From: Guy Zadicario <guy.zadicario@intel.com>
+Date: Tue, 31 Mar 2020 09:17:51 +0300
+Subject: [PATCH v7 07/17] misc: nnpi: Post device boot init flow
+
+This patch adds initial communication with the NNP-I device
+after the device boot has finished.
+
+The following flow must complete to ensure the device is fully initialized
+and active, The flow begins when the card boot state in doorbell register
+is "Card Driver Ready":
+1) Host send a Queryversion command to the device
+2) Device replies with booted payload and protocol version.
+3) Host validate version competability and set host driver state appropiatley.
+   Flow continue only if version check has passed.
+4) Host send "Setup crashdump" command to the device which passes an allocated
+   DMA buffer on host which the card will fill with crashdump info when the
+   device get into some fatal error event.
+   Note that on a crash event, the device will copy the crashdump log to both this
+   DMA buffer as well to memory accessible through BAR2.
+5) Host send "SysInfoSetup" command to the device with an address of DMA page address
+   on host. Device fills the page with static card system information and replies back
+   that the sysinfo data is filled.
+
+The DMA pages mentioned above are allocated during device creation and freed during device
+removal.
+
+For handling the above flow, this patch also implemented the nnpdrv_device_process_messages
+function which is called from the "pci" layer from bottom-half context when responses arrived
+in the h/w response queue. This function handles all responses from the device based on
+an opcode field attached to each response.
+
+Signed-off-by: Guy Zadicario <guy.zadicario@intel.com>
+Reviewed-by: Vaibhav Agarwal <vaibhav.agarwal@intel.com>
+---
+ drivers/misc/intel-nnpi/device.c | 371 ++++++++++++++++++++++++++++++++++++++-
+ drivers/misc/intel-nnpi/device.h |  35 ++++
+ 2 files changed, 402 insertions(+), 4 deletions(-)
+
+diff --git a/drivers/misc/intel-nnpi/device.c b/drivers/misc/intel-nnpi/device.c
+index ddc4b52..ea01f05 100644
+--- a/drivers/misc/intel-nnpi/device.c
++++ b/drivers/misc/intel-nnpi/device.c
+@@ -67,6 +67,214 @@ void nnpdrv_device_fini(void)
+ 	ida_destroy(&dev_ida);
+ }
+ 
++static void process_query_version_reply(struct work_struct *work)
++{
++	struct query_version_work *query_version_work;
++	struct nnp_device *nnpdev;
++	u32 protocol_version;
++	u32 card_boot_state;
++
++	query_version_work =
++		container_of(work, struct query_version_work, work);
++	nnpdev = container_of(query_version_work, struct nnp_device, query_version_work);
++	protocol_version = NNP_IPC_PROTOCOL_VERSION;
++	card_boot_state = (nnpdev->card_doorbell_val &
++		       NNP_CARD_BOOT_STATE_MASK) >> NNP_CARD_BOOT_STATE_SHIFT;
++
++	pr_debug("Got DriverReady message, ipcProtocolVer=%d.%d.%d chan_protocol_ver=%d.%d.%d\n",
++		 NNP_VERSION_MAJOR(query_version_work->protocol_version),
++		 NNP_VERSION_MINOR(query_version_work->protocol_version),
++		 NNP_VERSION_DOT(query_version_work->protocol_version),
++		 NNP_VERSION_MAJOR(query_version_work->chan_protocol_version),
++		 NNP_VERSION_MINOR(query_version_work->chan_protocol_version),
++		 NNP_VERSION_DOT(query_version_work->chan_protocol_version));
++
++	nnpdev->protocol_version =
++		query_version_work->protocol_version;
++	nnpdev->chan_protocol_version =
++		query_version_work->chan_protocol_version;
++
++	if (NNP_VERSION_MAJOR(query_version_work->protocol_version) !=
++	    NNP_VERSION_MAJOR(protocol_version) ||
++	    NNP_VERSION_MINOR(query_version_work->protocol_version) !=
++	    NNP_VERSION_MINOR(protocol_version) ||
++	    query_version_work->chan_resp_op_size == 0) {
++		pr_err("Mismatch driver version !!!\n");
++		pr_err("Card driver protocol version %d.%d.%d\n",
++		       NNP_VERSION_MAJOR(query_version_work->protocol_version),
++		       NNP_VERSION_MINOR(query_version_work->protocol_version),
++		       NNP_VERSION_DOT(query_version_work->protocol_version));
++		pr_err("Host driver protocol version %d.%d.%d\n",
++			NNP_VERSION_MAJOR(protocol_version),
++			NNP_VERSION_MINOR(protocol_version),
++			NNP_VERSION_DOT(protocol_version));
++		pr_err("Card channel response opcode size vec 0x%llx\n",
++		       query_version_work->chan_resp_op_size);
++		nnpdrv_device_set_boot_state(nnpdev,
++					     NNP_DEVICE_FAILED_VERSION);
++		/* set host driver state in doorbell register */
++		nnp_set_host_doorbell_value(
++					nnpdev->hw_handle,
++					NNP_HOST_DRV_STATE_VERSION_ERROR <<
++					NNP_HOST_DRV_STATE_SHIFT);
++	} else if (card_boot_state == NNP_CARD_BOOT_STATE_DRV_READY) {
++		nnpdrv_device_set_boot_state(nnpdev,
++					     NNP_DEVICE_CARD_DRIVER_READY);
++	} else if (card_boot_state == NNP_CARD_BOOT_STATE_CARD_READY) {
++		/* Card driver finished initialization */
++		pr_info("========== Card %u Driver is up and working ==========\n",
++			nnpdev->id);
++
++		nnpdrv_device_set_boot_state(nnpdev,
++					     NNP_DEVICE_CARD_DRIVER_READY |
++					     NNP_DEVICE_CARD_READY |
++					     NNP_DEVICE_CARD_ENABLED);
++	}
++
++	query_version_work->running = false;
++}
++
++static void queue_query_version_reply_work(struct nnp_device *nnpdev,
++					   u16                protocol_ver,
++					   u16            chan_protocol_ver,
++					   u64                chan_resp_op_size,
++					   u64                chan_cmd_op_size)
++{
++	/*
++	 * This should not happen, but if it does, just ignore the message
++	 * There is no fear in race condition on "running" flag as only
++	 * single version reply message should be processed after each
++	 * device reset.
++	 */
++	if (nnpdev->query_version_work.running)
++		return;
++
++	nnpdev->query_version_work.running = true;
++	nnpdev->query_version_work.protocol_version = protocol_ver;
++	nnpdev->query_version_work.chan_protocol_version = chan_protocol_ver;
++	nnpdev->query_version_work.chan_resp_op_size = chan_resp_op_size;
++	nnpdev->query_version_work.chan_cmd_op_size = chan_cmd_op_size;
++
++	queue_work(nnpdev->wq, &nnpdev->query_version_work.work);
++}
++
++static int handle_query_version_reply(struct nnp_device         *nnpdev,
++				      const void                *msgbuf,
++				      int                        avail_qwords)
++{
++	const union c2h_query_version_reply_msg *msg = msgbuf;
++	int msg_qwords = sizeof(*msg) / sizeof(u64);
++
++	if (avail_qwords < msg_qwords)
++		return 0;
++
++	queue_query_version_reply_work(nnpdev,
++				       msg->protocolversion,
++				       msg->chan_protocol_ver,
++				       0, 0);
++
++	return msg_qwords;
++}
++
++static int handle_query_version_reply2(struct nnp_device         *nnpdev,
++				       const void                *msgbuf,
++				       int                        avail_qwords)
++{
++	const union c2h_query_version_reply2_msg *msg = msgbuf;
++	int msg_qwords = sizeof(*msg) / sizeof(u64);
++
++	if (avail_qwords < msg_qwords)
++		return 0;
++
++	queue_query_version_reply_work(nnpdev,
++				       msg->protocolversion,
++				       msg->chan_protocol_ver,
++				       msg->chan_resp_op_size,
++				       0);
++
++	return msg_qwords;
++}
++
++static int handle_query_version_reply3(struct nnp_device         *nnpdev,
++				       const void                *msgbuf,
++				       int                        avail_qwords)
++{
++	const union c2h_query_version_reply3_msg *msg = msgbuf;
++	int msg_qwords = sizeof(*msg) / sizeof(u64);
++
++	if (avail_qwords < msg_qwords)
++		return 0;
++
++	queue_query_version_reply_work(nnpdev,
++				       msg->protocolversion,
++				       msg->chan_protocol_ver,
++				       msg->chan_resp_op_size,
++				       msg->chan_cmd_op_size);
++
++	return msg_qwords;
++}
++
++/*
++ * handle_bios_protocol - process a message from HWQ coming from bios.
++ * bios protocol may have different size messages.
++ * avail_size is the number of 64-bit units available from the msg pointer
++ * if the message size is larger, the function should return 0 and do not
++ * processthe message, otherwise the function should process the message
++ * and return the actual processed message size (in 64-bit units).
++ */
++static int handle_bios_protocol(struct nnp_device         *nnpdev,
++				const void                *msgbuf,
++				int                        avail_qwords)
++{
++	const union nnp_bios_ipc_header *msg = msgbuf;
++
++	/* The +1 is because size field does not include header */
++	int msg_qwords = DIV_ROUND_UP(msg->size, 8) + 1;
++
++	if (msg_qwords > avail_qwords)
++		return 0;
++
++	pr_err("Got bios message msg_type=%u\n", msg->msg_type);
++
++	return msg_qwords;
++}
++
++static int handle_sys_info(struct nnp_device         *nnpdev,
++			   const void                *msgbuf,
++			   int                        avail_qwords)
++{
++	const  union c2h_sys_info *msg = msgbuf;
++	int msg_qwords = sizeof(*msg) / sizeof(u64);
++
++	if (avail_qwords < msg_qwords)
++		return 0;
++
++	/*
++	 * this should never be NULL at that stage,
++	 * we test it for safety to protect against buggy device
++	 * which send us this message before time.
++	 */
++	if (!nnpdev->card_sys_info)
++		return msg_qwords;
++
++	nnpdev->card_sys_info_valid = true;
++	nnpdev->num_ice_devices = hweight32(nnpdev->card_sys_info->ice_mask);
++
++	return msg_qwords;
++}
++
++typedef int (*response_handler)(struct nnp_device *nnpdev,
++				const void        *msgbuf,
++				int                avail_qwords);
++
++static response_handler resp_handlers[NNP_IPC_C2H_OPCODE_LAST + 1] = {
++	[NNP_IPC_C2H_OP_QUERY_VERSION_REPLY] = handle_query_version_reply,
++	[NNP_IPC_C2H_OP_QUERY_VERSION_REPLY2] = handle_query_version_reply2,
++	[NNP_IPC_C2H_OP_QUERY_VERSION_REPLY3] = handle_query_version_reply3,
++	[NNP_IPC_C2H_OP_SYS_INFO] = handle_sys_info,
++	[NNP_IPC_C2H_OP_BIOS_PROTOCOL] = handle_bios_protocol
++};
++
+ /**
+  * nnpdrv_device_process_messages - process response messages from nnpi device
+  *
+@@ -83,7 +291,75 @@ void nnpdrv_device_process_messages(struct nnp_device *nnpdev,
+ 				    u64               *hw_msg,
+ 				    unsigned int       hw_nof_msg)
+ {
+-	/* placeholder - will be filled in later patches */
++	int j = 0;
++	u64 *msg;
++	unsigned int nof_msg;
++	bool fatal_protocol_error = false;
++
++	/* ignore any response if protocol error detected */
++	if ((nnpdev->state & NNP_DEVICE_PROTOCOL_ERROR) != 0)
++		return;
++
++	/*
++	 * if we have pending messages from previous round
++	 * copy the new messages to the pending list and process
++	 * the pending list.
++	 * otherwise process the messages reveived from hw directly
++	 */
++	if (nnpdev->response_num_msgs > 0) {
++		if (WARN_ON_ONCE(hw_nof_msg + nnpdev->response_num_msgs >=
++				 NNP_DEVICE_RESPONSE_BUFFER_LEN))
++			return; /* prevent buffer overrun */
++
++		memcpy(&nnpdev->response_buf[nnpdev->response_num_msgs],
++		       hw_msg, hw_nof_msg * sizeof(u64));
++		msg = nnpdev->response_buf;
++		nof_msg = nnpdev->response_num_msgs + hw_nof_msg;
++	} else {
++		msg = hw_msg;
++		nof_msg = hw_nof_msg;
++	}
++
++	/*
++	 * loop for each message
++	 */
++	do {
++		int op_code =
++			((union c2h_query_version_reply_msg *)&msg[j])->opcode;
++		int msg_size = 0;
++		int partial_msg = 0;
++		response_handler handler = resp_handlers[op_code];
++
++		/* dispatch the message request */
++		if (!handler) {
++			/* Should not happen! */
++			pr_err("Unknown response opcode received %d (0x%llx)\n",
++			       op_code, msg[j]);
++			fatal_protocol_error = true;
++			partial_msg = true;
++		} else {
++			msg_size = (*handler)(nnpdev, &msg[j], (nof_msg - j));
++			partial_msg = (msg_size == 0);
++		}
++
++		/* exit the loop if not a full sized message arrived */
++		if (partial_msg)
++			break;
++
++		j += msg_size;
++	} while (j < nof_msg);
++
++	/*
++	 * if unprocessed messages left, copy it to the pending messages buffer
++	 * for the next time
++	 */
++	if (j < nof_msg) {
++		memcpy(&nnpdev->response_buf[0], &msg[j],
++		       (nof_msg - j) * sizeof(u64));
++		nnpdev->response_num_msgs = nof_msg - j;
++	} else {
++		nnpdev->response_num_msgs = 0;
++	}
+ }
+ 
+ static int cmdq_sched_handler(u64 *msg, int size, void *hw_data)
+@@ -174,7 +450,9 @@ static void build_bios_version_string(struct nnp_device *nnpdev)
+ void nnpdrv_device_set_boot_state(struct nnp_device *nnpdev, u32 mask)
+ {
+ 	u32 state, prev_state;
++	union h2c_setup_crash_dump_msg setup_crash_dump_msg;
+ 	bool becomes_ready = false;
++	union h2c_setup_sys_info_page sys_info_page_msg;
+ 	int ret;
+ 
+ 	/*
+@@ -268,6 +546,41 @@ void nnpdrv_device_set_boot_state(struct nnp_device *nnpdev, u32 mask)
+ 			pr_err("Unexpected error while loading boot image. rc=%d\n",
+ 			       ret);
+ 	}
++
++	/* Handle transition to active state */
++	if (((state & NNP_DEVICE_CARD_DRIVER_READY) ||
++	     (state & NNP_DEVICE_CARD_READY)) &&
++	    !(prev_state & NNP_DEVICE_CARD_DRIVER_READY) &&
++	    !(prev_state & NNP_DEVICE_CARD_READY)) {
++		u64 membar_addr;
++		void *membar_vaddr;
++
++		/* set host driver state to "Driver ready" */
++		nnp_set_host_doorbell_value(nnpdev->hw_handle,
++			NNP_HOST_DRV_STATE_READY << NNP_HOST_DRV_STATE_SHIFT);
++
++		/* send crash dump memory address */
++		setup_crash_dump_msg.opcode = NNP_IPC_H2C_OP_SETUP_CRASH_DUMP;
++		setup_crash_dump_msg.dma_addr =
++			NNP_IPC_DMA_ADDR_TO_PFN(
++				nnpdev->host_crash_dump.dma_addr);
++
++		nnp_get_membar_addr(nnpdev->hw_handle,
++				    &membar_addr,
++				    &membar_vaddr,
++				    NULL);
++		setup_crash_dump_msg.membar_addr = membar_addr;
++		nnpdev->inbound_mem = (union nnp_inbound_mem *)membar_vaddr;
++
++		nnpdrv_queue_msg(nnpdev->public_cmdq, setup_crash_dump_msg);
++
++		/* send system info dma page address to card */
++		sys_info_page_msg.value = 0;
++		sys_info_page_msg.opcode = NNP_IPC_H2C_OP_SETUP_SYS_INFO_PAGE;
++		sys_info_page_msg.dma_addr =
++			NNP_IPC_DMA_ADDR_TO_PFN(nnpdev->card_sys_info_dma_addr);
++		nnpdrv_queue_msg(nnpdev->public_cmdq, sys_info_page_msg);
++	}
+ }
+ 
+ /**
+@@ -343,24 +656,50 @@ struct nnp_device *nnpdrv_device_create(struct nnp_pci_device        *hw_handle,
+ 		goto err_cmdq;
+ 	}
+ 
++	/* setup crash dump memory */
++	nnpdev->host_crash_dump.vaddr = dma_alloc_coherent(
++					nnpdev->hw_device_info->hw_device,
++					1lu << (NNP_PAGE_SHIFT +
++						NNP_CRASH_DUMP_SIZE_PAGE_ORDER),
++					&nnpdev->host_crash_dump.dma_addr,
++					GFP_KERNEL);
++
++	if (!nnpdev->host_crash_dump.vaddr) {
++		pr_err("Failed to allocate crash dump buffer\n");
++		goto err_wq;
++	}
++
+ 	/* setup memory for bios system info */
+ 	nnpdev->bios_system_info = dma_alloc_coherent(
+ 					nnpdev->hw_device_info->hw_device,
+-					NNP_PAGE_SIZE,
++					2 * NNP_PAGE_SIZE,
+ 					&nnpdev->bios_system_info_dma_addr,
+ 					GFP_KERNEL);
+ 	if (!nnpdev->bios_system_info) {
+ 		pr_err("Failed to allocate system info buffer\n");
+-		goto err_wq;
++		goto err_crash_dump;
+ 	}
+ 
++	nnpdev->card_sys_info_dma_addr = nnpdev->bios_system_info_dma_addr +
++					 NNP_PAGE_SIZE;
++	nnpdev->card_sys_info =
++		(struct nnp_sys_info *)((uintptr_t)nnpdev->bios_system_info +
++					NNP_PAGE_SIZE);
++
+ 	kref_init(&nnpdev->ref);
+ 	spin_lock_init(&nnpdev->lock);
++	INIT_WORK(&nnpdev->query_version_work.work, process_query_version_reply);
+ 
+ 	pr_debug("Created NNP-I device %u\n", nnpdev->id);
+ 
+ 	return nnpdev;
+ 
++err_crash_dump:
++	dma_free_coherent(nnpdev->hw_device_info->hw_device,
++			  1lu << (NNP_PAGE_SHIFT +
++			  NNP_CRASH_DUMP_SIZE_PAGE_ORDER),
++			  nnpdev->host_crash_dump.vaddr,
++			  nnpdev->host_crash_dump.dma_addr);
+ err_wq:
+ 	destroy_workqueue(nnpdev->wq);
+ err_cmdq:
+@@ -392,6 +731,7 @@ static void doorbell_changed_handler(struct work_struct *work)
+ 	u32 error_state;
+ 	u32 doorbell_val = req->val;
+ 	struct nnp_device *nnpdev = req->nnpdev;
++	union h2c_query_version_msg msg;
+ 
+ 	nnpdev->card_doorbell_val = doorbell_val;
+ 
+@@ -443,6 +783,24 @@ static void doorbell_changed_handler(struct work_struct *work)
+ 		case NNP_CARD_BOOT_STATE_BIOS_FLASH_STARTED:
+ 			nnpdrv_device_set_boot_state(nnpdev,
+ 						NNP_DEVICE_BIOS_UPDATE_STARTED);
++			break;
++		case NNP_CARD_BOOT_STATE_DRV_READY:
++		case NNP_CARD_BOOT_STATE_CARD_READY:
++			pr_debug("send query version to card");
++
++			msg.value = 0;
++			msg.opcode = NNP_IPC_H2C_OP_QUERY_VERSION;
++			if (nnpdrv_queue_msg(nnpdev->public_cmdq, msg) ||
++			    msg_scheduler_queue_flush(nnpdev->public_cmdq))
++				pr_err("Query version msg error\n");
++			break;
++		case NNP_CARD_BOOT_STATE_NOT_READY:
++			/* card is down reset the device boot and error state */
++			spin_lock(&nnpdev->lock);
++			nnpdev->state = 0;
++			nnpdev->bios_system_info_valid = false;
++			spin_unlock(&nnpdev->lock);
++			break;
+ 		default:
+ 			break;
+ 		}
+@@ -531,7 +889,12 @@ static void nnpdrv_free_device(struct work_struct *work)
+ 	pr_debug("Freeing NNP-I device %u\n", nnpdev->id);
+ 
+ 	dma_free_coherent(nnpdev->hw_device_info->hw_device,
+-			  NNP_PAGE_SIZE,
++			1 << (NNP_PAGE_SHIFT + NNP_CRASH_DUMP_SIZE_PAGE_ORDER),
++			nnpdev->host_crash_dump.vaddr,
++			nnpdev->host_crash_dump.dma_addr);
++
++	dma_free_coherent(nnpdev->hw_device_info->hw_device,
++			  2 * NNP_PAGE_SIZE,
+ 			  nnpdev->bios_system_info,
+ 			  nnpdev->bios_system_info_dma_addr);
+ 
+diff --git a/drivers/misc/intel-nnpi/device.h b/drivers/misc/intel-nnpi/device.h
+index 2a8c6f4..c1f5f5b 100644
+--- a/drivers/misc/intel-nnpi/device.h
++++ b/drivers/misc/intel-nnpi/device.h
+@@ -14,6 +14,7 @@
+ #include <linux/workqueue.h>
+ #include "ipc_protocol.h"
+ #include "msg_scheduler.h"
++#include "nnp_inbound_mem.h"
+ #include "pcie.h"
+ 
+ #define NNP_MAX_DEVS		256
+@@ -55,6 +56,23 @@
+ #define NNP_DEVICE_CURRUPTED_BOOT_IMAGE BIT(30)
+ #define NNP_DEVICE_ERROR_MASK        GENMASK(31, 16)
+ 
++#define NNP_DEVICE_RESPONSE_BUFFER_LEN  32
++
++struct host_crash_dump {
++	void *vaddr;
++	dma_addr_t dma_addr;
++	u32 dump_size;
++};
++
++struct query_version_work {
++	struct work_struct work;
++	u64 chan_resp_op_size;
++	u64 chan_cmd_op_size;
++	u16 protocol_version;
++	u16 chan_protocol_version;
++	bool running;
++};
++
+ struct nnp_device {
+ 	struct kref    ref;
+ 	struct nnp_pci_device             *hw_handle;
+@@ -63,9 +81,12 @@ struct nnp_device {
+ 	spinlock_t     lock; /* protects boot state */
+ 	struct completion *release_completion;
+ 	struct work_struct free_work;
++	struct query_version_work query_version_work;
+ 
++	struct host_crash_dump host_crash_dump;
+ 	struct msg_scheduler       *cmdq_sched;
+ 	struct msg_scheduler_queue *public_cmdq;
++	union nnp_inbound_mem  *inbound_mem;
+ 
+ 	int            id;
+ 	char           name[DEVICE_NAME_LEN];
+@@ -73,13 +94,23 @@ struct nnp_device {
+ 	u32            boot_image_loaded;
+ 	char         reset_boot_image_path[NNP_DEVICE_MAX_BOOT_IMAGE_PATH_SIZE];
+ 
++	u64            response_buf[NNP_DEVICE_RESPONSE_BUFFER_LEN];
++	u32            response_num_msgs;
++
+ 	dma_addr_t                  bios_system_info_dma_addr;
+ 	struct nnp_c2h_system_info *bios_system_info;
+ 	char                        bios_version_str[NNP_BIOS_VERSION_LEN];
+ 	bool                        bios_system_info_valid;
++	dma_addr_t                  card_sys_info_dma_addr;
++	struct nnp_sys_info        *card_sys_info;
++	bool                        card_sys_info_valid;
+ 
++	unsigned int   num_ice_devices;
+ 	u32            state;
+ 	u32            curr_boot_state;
++	unsigned short protocol_version;
++	unsigned short chan_protocol_version;
++	unsigned int   num_active_contexts;
+ 	u32            card_doorbell_val;
+ };
+ 
+@@ -99,6 +130,10 @@ static inline int nnpdrv_msg_scheduler_queue_add_msg(
+ 	return msg_scheduler_queue_add_msg(queue, msg, size);
+ }
+ 
++#define nnpdrv_queue_msg(q, m) \
++	nnpdrv_msg_scheduler_queue_add_msg((q), (u64 *)&(m), \
++					   sizeof((m)) / sizeof(u64))
++
+ int nnpdrv_device_get(struct nnp_device *nnpdev);
+ void nnpdrv_device_put(struct nnp_device *nnpdev);
+ 
+-- 
+1.8.3.1
+

@@ -1,0 +1,645 @@
+From e06bde29342b8016c3dfb8fcf5ce9e2bca80ba5f Mon Sep 17 00:00:00 2001
+From: Guy Zadicario <guy.zadicario@intel.com>
+Date: Tue, 21 Apr 2020 14:15:00 +0300
+Subject: [PATCH v9 10/22] misc: nnpi: command channel object
+
+This adds a "command channel" object which is a two-directional
+communication channel with the device. Each channel holds a queue of
+commands to device which gets scheduled for submission by the message
+scheduler and a ring-buffer to hold response messages from the device.
+Each channel has a 10-bit unique id, each command and response message
+includes the channel id, when a response message is arrived from device it
+get copied to the ring-buffer of the targeted channel.
+
+The interface for consuming responses from the ring-buffer and writing
+command messages into the channel's command queue will be added in next
+commit. This commit only adds the channel creation code and response
+message routing to targeted channel.
+
+When creating a "command channel", the user should give an open file
+descriptor to the /dev/nnpi_host device, this file descriptor associate the
+channel with particular "nnp_user" object. The channel can only reference
+host resources created by that "user".
+
+Signed-off-by: Guy Zadicario <guy.zadicario@intel.com>
+Reviewed-by: Vaibhav Agarwal <vaibhav.agarwal@intel.com>
+---
+ drivers/misc/intel-nnpi/Makefile   |   3 +-
+ drivers/misc/intel-nnpi/cmd_chan.c | 249 +++++++++++++++++++++++++++++++++++++
+ drivers/misc/intel-nnpi/cmd_chan.h |  76 +++++++++++
+ drivers/misc/intel-nnpi/device.c   | 102 +++++++++++++++
+ drivers/misc/intel-nnpi/device.h   |  24 +++-
+ 5 files changed, 451 insertions(+), 3 deletions(-)
+ create mode 100644 drivers/misc/intel-nnpi/cmd_chan.c
+ create mode 100644 drivers/misc/intel-nnpi/cmd_chan.h
+
+diff --git a/drivers/misc/intel-nnpi/Makefile b/drivers/misc/intel-nnpi/Makefile
+index c153e7b..745ab04 100644
+--- a/drivers/misc/intel-nnpi/Makefile
++++ b/drivers/misc/intel-nnpi/Makefile
+@@ -7,6 +7,7 @@
+ obj-m	:= intel_nnpidrv.o
+ 
+ intel_nnpidrv-y := nnpdrv_main.o pcie.o device.o msg_scheduler.o \
+-		   hostres.o host_chardev.o nnp_user.o bootimage.o
++		   hostres.o host_chardev.o nnp_user.o bootimage.o \
++                   cmd_chan.o
+ 
+ ccflags-y += -I$(srctree)/$(src)/ipc_include
+diff --git a/drivers/misc/intel-nnpi/cmd_chan.c b/drivers/misc/intel-nnpi/cmd_chan.c
+new file mode 100644
+index 0000000..a7fdc97
+--- /dev/null
++++ b/drivers/misc/intel-nnpi/cmd_chan.c
+@@ -0,0 +1,249 @@
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++/*
++ * Copyright (C) 2019-2020 Intel Corporation
++ */
++
++#define pr_fmt(fmt)   KBUILD_MODNAME ": " fmt
++
++#include "cmd_chan.h"
++#include <linux/anon_inodes.h>
++#include <linux/dev_printk.h>
++#include <linux/file.h>
++#include <linux/kernel.h>
++#include <linux/slab.h>
++#include "host_chardev.h"
++#include "ipc_protocol.h"
++
++#define RESPQ_BUF_SIZE    2048   /* must be power of 2 */
++
++#define USER_MIN_OPCODE (NNP_IPC_C2H_OPCODE_LAST + 1)
++
++static inline int respq_free_bytes(struct nnpdrv_cmd_chan *chan)
++{
++	return CIRC_SPACE(chan->respq.head, chan->respq.tail, RESPQ_BUF_SIZE);
++}
++
++static inline void respq_push(struct nnpdrv_cmd_chan *chan, char *buf,
++			      int count)
++{
++	char *dst = chan->respq.buf + chan->respq.head;
++	int t = CIRC_SPACE_TO_END(chan->respq.head, chan->respq.tail,
++				  RESPQ_BUF_SIZE);
++
++	if (t >= count) {
++		memcpy(dst, buf, count);
++	} else {
++		memcpy(dst, buf, t);
++		memcpy(chan->respq.buf, buf + t, count - t);
++	}
++	chan->respq.head = (chan->respq.head + count) & (RESPQ_BUF_SIZE - 1);
++}
++
++static inline void respq_pop(struct nnpdrv_cmd_chan *chan, char *buf, int count)
++{
++	char *src = chan->respq.buf + chan->respq.tail;
++	int t = CIRC_CNT_TO_END(chan->respq.head, chan->respq.tail,
++				  RESPQ_BUF_SIZE);
++
++	if (t >= count) {
++		memcpy(buf, src, count);
++	} else {
++		memcpy(buf, src, t);
++		memcpy(buf + t, chan->respq.buf, count - t);
++	}
++	chan->respq.tail = (chan->respq.tail + count) & (RESPQ_BUF_SIZE - 1);
++}
++
++/**
++ * nnpdrv_cmd_chan_create() - creates a command channel object
++ * @nnpdev: the device
++ * @host_fd: opened file descriptor to "/dev/nnpi_host"
++ * @weight: message queue weight in message scheduler for this channel
++ * @min_id: minimum range for allocating ipc channel id for that channel
++ * @max_id: maximum range for allocating ipc channel id for that channel
++ * @get_device_events: true if this channel needs to receive device-level
++ *                     responses (not originated to specific channel).
++ * @out_cmd_chan: returns a pointer to the created command channel object.
++ *
++ * This function create a "command channel" and assign it a unique id within
++ * the range [@min_id..@max_id]. channels in id range 0-255 are assumed to be
++ * used for inference related operations and have slightly special semantics.
++ */
++int nnpdrv_cmd_chan_create(struct nnp_device *nnpdev, int host_fd, u32 weight,
++			   unsigned int min_id, unsigned int max_id,
++			   bool get_device_events,
++			   struct nnpdrv_cmd_chan **out_cmd_chan)
++{
++	struct nnpdrv_cmd_chan *cmd_chan;
++	int chan_id;
++	int ret;
++	unsigned int max_proto_id = BIT(NNP_IPC_CHANNEL_BITS) - 1;
++
++	if (min_id > max_proto_id)
++		return -EINVAL;
++	if (max_id > max_proto_id)
++		max_id = max_proto_id;
++	if (max_id < min_id)
++		return -EINVAL;
++
++	ret = ida_simple_get(&nnpdev->cmd_chan_ida, min_id, max_id, GFP_KERNEL);
++	if (ret < 0)
++		return ret;
++	chan_id = ret;
++
++	cmd_chan = kzalloc(sizeof(*cmd_chan), GFP_KERNEL);
++	if (!cmd_chan) {
++		ret = -ENOMEM;
++		goto err_ida;
++	}
++
++	cmd_chan->respq_buf = kmalloc(RESPQ_BUF_SIZE, GFP_KERNEL);
++	if (!cmd_chan->respq_buf) {
++		ret = -ENOMEM;
++		goto err_alloc;
++	}
++	cmd_chan->respq.buf = cmd_chan->respq_buf;
++
++	cmd_chan->host_file = nnpdrv_host_file_get(host_fd);
++	if (!cmd_chan->host_file) {
++		ret = -EINVAL;
++		goto err_respq;
++	}
++
++	cmd_chan->cmdq = msg_sched_queue_create(nnpdev->cmdq_sched, weight);
++	if (!cmd_chan->cmdq) {
++		ret = -ENOMEM;
++		goto err_file_get;
++	}
++
++	kref_init(&cmd_chan->ref);
++	cmd_chan->chan_id = chan_id;
++	nnpdrv_device_get(nnpdev);
++	cmd_chan->nnpdev = nnpdev;
++	cmd_chan->get_device_events = get_device_events;
++
++	cmd_chan->nnp_user = cmd_chan->host_file->private_data;
++	nnp_user_get(cmd_chan->nnp_user);
++
++	init_waitqueue_head(&cmd_chan->resp_waitq);
++	spin_lock_init(&cmd_chan->resp_lock_bh);
++
++	/*
++	 * Add channel to the channel hash
++	 */
++	spin_lock(&nnpdev->lock);
++	hash_add(nnpdev->cmd_chan_hash, &cmd_chan->hash_node,
++		 cmd_chan->chan_id);
++
++	/*
++	 * Channel with id <= 255 is an inference context channel
++	 */
++	if (cmd_chan->chan_id <= 255)
++		nnpdev->num_active_contexts++;
++	spin_unlock(&nnpdev->lock);
++
++	*out_cmd_chan = cmd_chan;
++
++	return 0;
++
++err_file_get:
++	fput(cmd_chan->host_file);
++err_respq:
++	kfree(cmd_chan->respq_buf);
++err_alloc:
++	kfree(cmd_chan);
++err_ida:
++	ida_simple_remove(&nnpdev->cmd_chan_ida, chan_id);
++	return ret;
++}
++
++static void nnpdrv_cmd_chan_release(struct kref *kref)
++{
++	struct nnpdrv_cmd_chan *cmd_chan;
++	struct nnp_device *nnpdev;
++
++	cmd_chan = container_of(kref, struct nnpdrv_cmd_chan, ref);
++	nnpdev = cmd_chan->nnpdev;
++
++	msg_sched_queue_sync(cmd_chan->cmdq);
++	msg_sched_queue_destroy(cmd_chan->cmdq);
++
++	spin_lock(&nnpdev->lock);
++	hash_del(&cmd_chan->hash_node);
++	/*
++	 * Channel with id <= 255 is an inference context channel
++	 */
++	if (cmd_chan->chan_id <= 255)
++		nnpdev->num_active_contexts--;
++	spin_unlock(&nnpdev->lock);
++	ida_simple_remove(&cmd_chan->nnpdev->cmd_chan_ida,
++			  cmd_chan->chan_id);
++
++	nnp_user_put(cmd_chan->nnp_user);
++
++	kfree(cmd_chan->respq_buf);
++	kfree(cmd_chan);
++
++	nnpdrv_device_put(nnpdev);
++}
++
++bool nnpdrv_cmd_chan_get(struct nnpdrv_cmd_chan *cmd_chan)
++{
++	int ret;
++
++	ret = kref_get_unless_zero(&cmd_chan->ref);
++	return ret != 0;
++}
++
++int nnpdrv_cmd_chan_put(struct nnpdrv_cmd_chan *cmd_chan)
++{
++	return kref_put(&cmd_chan->ref, nnpdrv_cmd_chan_release);
++}
++
++/**
++ * nnpdrv_cmd_chan_add_response() - adds a response message targeting this channel
++ * @cmd_chan: the command channel object
++ * @hw_msg: response message arrived from device
++ * @size: size in bytes of the response
++ *
++ * This function is being called when a response message arrived from the device
++ * which is targeted for a specific command channel object.
++ * The function puts the response message in a ring buffer and will later be
++ * consumed by user through a call to read(2) on the channel file descriptor.
++ * The function is called from bottom-half.
++ *
++ * Return: error code or zero on success.
++ */
++int nnpdrv_cmd_chan_add_response(struct nnpdrv_cmd_chan *cmd_chan, u64 *hw_msg,
++				 u32 size)
++{
++	spin_lock_bh(&cmd_chan->resp_lock_bh);
++
++	/* do we have space for the message in the current ring buffer? */
++	if (respq_free_bytes(cmd_chan) < (size + sizeof(u32))) {
++		spin_unlock_bh(&cmd_chan->resp_lock_bh);
++
++		/*
++		 * This should never happen in normal system operation since
++		 * the ring-buffer is way big than will ever needed.
++		 * We will get here only if the user application sleeps for
++		 * a *very* long time without draining the responses, only
++		 * that application will get affected in this case.
++		 */
++		dev_err(&cmd_chan->nnpdev->nnp_pci->pdev->dev,
++			"Response queue full for channel %d losing response!\n",
++			cmd_chan->chan_id);
++		return -ENOMEM;
++	}
++
++	/* push the response message to the ring buffer */
++	respq_push(cmd_chan, (u8 *)&size, sizeof(u32));
++	respq_push(cmd_chan, (u8 *)hw_msg, size);
++
++	spin_unlock_bh(&cmd_chan->resp_lock_bh);
++
++	wake_up_all(&cmd_chan->resp_waitq);
++
++	return 0;
++}
+diff --git a/drivers/misc/intel-nnpi/cmd_chan.h b/drivers/misc/intel-nnpi/cmd_chan.h
+new file mode 100644
+index 0000000..eb1d754
+--- /dev/null
++++ b/drivers/misc/intel-nnpi/cmd_chan.h
+@@ -0,0 +1,76 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++
++/*
++ * Copyright (C) 2019-2020 Intel Corporation
++ */
++
++#ifndef NNPDRV_CMD_CHAN_H
++#define NNPDRV_CMD_CHAN_H
++
++#include <linux/atomic.h>
++#include <linux/circ_buf.h>
++#include <linux/fs.h>
++#include <linux/hashtable.h>
++#include <linux/kref.h>
++#include <linux/list.h>
++#include <linux/spinlock.h>
++#include <linux/wait.h>
++#include "device.h"
++#include "ipc_protocol.h"
++#include "nnp_user.h"
++
++/**
++ * struct nnpdev_cmd_chan - structure object for user<->device communication
++ * @ref: refcount for this object
++ * @nnpdev: the device
++ * @chan_id: the ipc channel id for this channel
++ * @hash_node: node to include this object in list of channels
++ *             hash is in (cmd_chan_hash in nnp_device).
++ * @event_msg: ipc event response received from device during create channel
++ * @card_critical_error: last critical event report received from device
++ * @get_device_events: true if device-level events received from device should
++ *                     be sent over this channel to user.
++ * @cmdq: message queue added to msg_scheduler, for user commands to be sent
++ *        to the device.
++ * @host_file: reference to opened "/dev/nnpi_host" object which defines the
++ *             nnp_user object this channel connects to.
++ * @nnp_user: the nnp_user this channel belongs to.
++ *             the channel can reference host resources created by this
++ *             nnp_user object.
++ * @resp_lock_bh: protects @respq
++ * @resp_waitq: waitqueue used for waiting for response messages be available.
++ * @respq: circular buffer object that receive response messages from device.
++ * @respq_buf: buffer space allocated for circular response buffer.
++ */
++struct nnpdrv_cmd_chan {
++	struct kref            ref;
++	struct nnp_device      *nnpdev;
++	u16                    chan_id;
++	struct hlist_node      hash_node;
++	union c2h_event_report event_msg;
++	union c2h_event_report card_critical_error;
++	bool                   get_device_events;
++
++	struct msg_sched_queue     *cmdq;
++	struct file                *host_file;
++	struct nnp_user_info       *nnp_user;
++
++	wait_queue_head_t resp_waitq;
++
++	spinlock_t        resp_lock_bh; /* protects respq modifications */
++	struct circ_buf   respq;
++	char             *respq_buf;
++};
++
++int nnpdrv_cmd_chan_create(struct nnp_device *nnpdev, int host_fd, u32 weight,
++			   unsigned int min_id, unsigned int max_id,
++			   bool get_device_events,
++			   struct nnpdrv_cmd_chan **out_cmd_chan);
++
++bool nnpdrv_cmd_chan_get(struct nnpdrv_cmd_chan *cmd_chan);
++int nnpdrv_cmd_chan_put(struct nnpdrv_cmd_chan *cmd_chan);
++
++int nnpdrv_cmd_chan_add_response(struct nnpdrv_cmd_chan *cmd_chan,
++				 u64 *hw_msg, u32 size);
++
++#endif
+diff --git a/drivers/misc/intel-nnpi/device.c b/drivers/misc/intel-nnpi/device.c
+index 74d003d..b8fca93 100644
+--- a/drivers/misc/intel-nnpi/device.c
++++ b/drivers/misc/intel-nnpi/device.c
+@@ -19,6 +19,7 @@
+ #include <linux/wait.h>
+ #include <linux/workqueue.h>
+ #include "bootimage.h"
++#include "cmd_chan.h"
+ #include "host_chardev.h"
+ #include "nnp_boot_defs.h"
+ #include "pcie.h"
+@@ -26,6 +27,8 @@
+ static unsigned int num_devices;
+ static DEFINE_MUTEX(device_num_mutex);
+ 
++#define BITS_PER_U64 (sizeof(u64) * 8)
++
+ static int nnpdrv_first_device_init(void)
+ {
+ 	int ret = 0;
+@@ -104,6 +107,9 @@ static void process_query_version_reply(struct work_struct *work)
+ 	u32 protocol_version;
+ 	u32 card_boot_state;
+ 	u32 val;
++	u64 chan_resp_op_size;
++	u64 chan_cmd_op_size;
++	int i;
+ 
+ 	query_version_work =
+ 		container_of(work, struct query_version_work, work);
+@@ -113,6 +119,18 @@ static void process_query_version_reply(struct work_struct *work)
+ 	card_boot_state = FIELD_GET(NNP_CARD_BOOT_STATE_MASK,
+ 				    nnpdev->card_doorbell_val);
+ 
++	chan_resp_op_size = query_version_work->chan_resp_op_size;
++	for (i = 0; i < BITS_PER_U64 / 2; i++) {
++		nnpdev->ipc_chan_resp_op_size[i] = (chan_resp_op_size & 0x3);
++		chan_resp_op_size >>= 2;
++	}
++
++	chan_cmd_op_size = query_version_work->chan_cmd_op_size;
++	for (i = 0; i < BITS_PER_U64 / 2; i++) {
++		nnpdev->ipc_chan_cmd_op_size[i] = (chan_cmd_op_size & 0x3);
++		chan_cmd_op_size >>= 2;
++	}
++
+ 	nnpdev->protocol_version =
+ 		query_version_work->protocol_version;
+ 	nnpdev->chan_protocol_version =
+@@ -192,6 +210,25 @@ static int handle_bios_protocol(struct nnp_device *nnpdev, const void *msgbuf,
+ 	return msg_qwords;
+ }
+ 
++struct nnpdrv_cmd_chan *nnpdrv_find_channel(struct nnp_device *nnpdev,
++					    u16 chan_id)
++{
++	struct nnpdrv_cmd_chan *cmd_chan;
++
++	spin_lock(&nnpdev->lock);
++	hash_for_each_possible(nnpdev->cmd_chan_hash, cmd_chan, hash_node,
++			       chan_id)
++		if (cmd_chan->chan_id == chan_id) {
++			if (!nnpdrv_cmd_chan_get(cmd_chan))
++				break;
++			spin_unlock(&nnpdev->lock);
++			return cmd_chan;
++		}
++	spin_unlock(&nnpdev->lock);
++
++	return NULL;
++}
++
+ static int handle_sys_info(struct nnp_device *nnpdev, const void *msgbuf,
+ 			   int avail_qwords)
+ {
+@@ -224,6 +261,48 @@ typedef int (*response_handler)(struct nnp_device *nnpdev, const void *msgbuf,
+ 	[NNP_IPC_C2H_OP_BIOS_PROTOCOL] = handle_bios_protocol
+ };
+ 
++static int dispatch_chan_message(struct nnp_device *nnpdev, u64 *hw_msg,
++				 u32 size)
++{
++	int op_code = ((union c2h_chan_msg_header *)hw_msg)->opcode;
++	int chan_id = ((union c2h_chan_msg_header *)hw_msg)->chan_id;
++	struct nnpdrv_cmd_chan *chan;
++	int msg_size = 0;
++
++	if (op_code < 32 || op_code > 63) {
++		/* Should not happen! */
++		dev_err(&nnpdev->nnp_pci->pdev->dev,
++			"chan response opcode out-of-range received %d (0x%llx)\n",
++			op_code, *hw_msg);
++		return -EINVAL;
++	}
++
++	msg_size = nnpdev->ipc_chan_resp_op_size[op_code - 32];
++	if (msg_size == 0) {
++		/* Should not happen! */
++		dev_err(&nnpdev->nnp_pci->pdev->dev,
++			"Unknown response chan opcode received %d (0x%llx)\n",
++			op_code, *hw_msg);
++		return -EINVAL;
++	}
++
++	if (size < msg_size)
++		return -EFAULT;
++
++	chan = nnpdrv_find_channel(nnpdev, chan_id);
++	if (!chan) {
++		dev_err(&nnpdev->nnp_pci->pdev->dev,
++			"Got response for invalid channel chan_id=%d 0x%llx\n",
++			chan_id, *hw_msg);
++		return msg_size;
++	}
++
++	nnpdrv_cmd_chan_add_response(chan, hw_msg, msg_size * 8);
++	nnpdrv_cmd_chan_put(chan);
++
++	return msg_size;
++}
++
+ /**
+  * nnpdrv_device_process_messages() - process response messages from nnpi device
+  * @nnpdev: The nnp device
+@@ -242,6 +321,7 @@ void nnpdrv_device_process_messages(struct nnp_device *nnpdev, u64 *hw_msg,
+ 	u64 *msg;
+ 	unsigned int nof_msg;
+ 	bool fatal_protocol_error = false;
++	int ret;
+ 
+ 	/* ignore any response if protocol error detected */
+ 	if ((nnpdev->state & NNP_DEVICE_PROTOCOL_ERROR) != 0)
+@@ -277,6 +357,22 @@ void nnpdrv_device_process_messages(struct nnp_device *nnpdev, u64 *hw_msg,
+ 		int partial_msg = 0;
+ 		response_handler handler = resp_handlers[op_code];
+ 
++		/* opcodes above OP_BIOS_PROTOCOL are routed to a channel */
++		if (op_code > NNP_IPC_C2H_OP_BIOS_PROTOCOL) {
++			ret = dispatch_chan_message(nnpdev, &msg[j],
++						    (nof_msg - j));
++			if (ret > 0) {
++				j += ret;
++			} else {
++				if (ret == -EFAULT)
++					partial_msg = true;
++				else
++					fatal_protocol_error = true;
++				break;
++			}
++			continue;
++		}
++
+ 		/* dispatch the message request */
+ 		if (!handler) {
+ 			/* Should not happen! */
+@@ -565,6 +661,11 @@ struct nnp_device *nnpdrv_device_create(struct nnp_pci_device *nnp_pci)
+ 	nnpdev->id = ret;
+ 
+ 	nnpdev->nnp_pci = nnp_pci;
++	nnpdev->num_ice_devices = 0;
++	nnpdev->protocol_version = 0;
++
++	ida_init(&nnpdev->cmd_chan_ida);
++	hash_init(nnpdev->cmd_chan_hash);
+ 
+ 	ret = nnpdrv_first_device_init();
+ 	if (ret)
+@@ -832,6 +933,7 @@ static void nnpdrv_free_device(struct work_struct *work)
+ 	msg_sched_destroy(nnpdev->cmdq_sched);
+ 
+ 	ida_simple_remove(&dev_ida, nnpdev->id);
++	ida_destroy(&nnpdev->cmd_chan_ida);
+ 	kfree(nnpdev);
+ 
+ 	/*
+diff --git a/drivers/misc/intel-nnpi/device.h b/drivers/misc/intel-nnpi/device.h
+index 45daae1..0dd83bb 100644
+--- a/drivers/misc/intel-nnpi/device.h
++++ b/drivers/misc/intel-nnpi/device.h
+@@ -7,7 +7,9 @@
+ #ifndef _NNPDRV_DEVICE_H
+ #define _NNPDRV_DEVICE_H
+ 
++#include <linux/cdev.h>
+ #include <linux/completion.h>
++#include <linux/hashtable.h>
+ #include <linux/idr.h>
+ #include <linux/kernel.h>
+ #include <linux/kref.h>
+@@ -89,12 +91,14 @@ struct query_version_work {
+  * @wq: singlethread workqueue for processing device's response messages.
+  * @image_wait_node: list node to include this device is a list of devices
+  *                   waiting for the same boot image to be loaded from disk.
+- * @lock: protects accesses to @state and @inbound_mem
++ * @lock: protects accesses to @state, @inbound_mem and @cmd_chan_hash
+  * @is_recovery_bios: true if device has booted from the recovery bios flash
+  * @boot_image_loaded: true if boot image load has started
+  * @reset_boot_image_path: boot image to load on next device reset.
+  * @response_buf: buffer of device response messages arrived from "pci" layer.
+  * @response_num_msgs: number of qwords available in @response_buf
++ * @cmd_chan_ida: allocate channel ids to be used in ipc protocol.
++ * @cmd_chan_hash: maps command channel id to its struct pointer.
+  * @bios_system_info_dma_addr: dma page allocated for bios system info.
+  * @bios_system_info: virtual pointer to bios system info page
+  * @bios_version_str: the device's started bios version string
+@@ -113,6 +117,9 @@ struct query_version_work {
+  * @host_crash_dump: allocated dma page info to host device crash dump
+  * @query_version_work: work struct used to schedule processing of version
+  *                      reply response message arrived from device.
++ * @ipc_chan_resp_op_size: holds response size for each possible channel
++ *                         response.
++ * @ipc_chan_cmd_op_size: holds command size for each possible channel command.
+  */
+ struct nnp_device {
+ 	struct kref            ref;
+@@ -128,7 +135,11 @@ struct nnp_device {
+ 
+ 	struct workqueue_struct *wq;
+ 	struct list_head        image_wait_node;
+-	spinlock_t     lock; /* protects accesses to @state and @inbound_mem */
++	/*
++	 * protects accesses to @state, @inbound_mem,
++	 * @cmd_chan_hash
++	 */
++	spinlock_t     lock;
+ 	bool           is_recovery_bios;
+ 	bool           boot_image_loaded;
+ 	char         reset_boot_image_path[PATH_MAX];
+@@ -136,6 +147,9 @@ struct nnp_device {
+ 	u64            response_buf[NNP_DEVICE_RESPONSE_BUFFER_LEN];
+ 	unsigned int   response_num_msgs;
+ 
++	struct ida cmd_chan_ida;
++	DECLARE_HASHTABLE(cmd_chan_hash, 6);
++
+ 	dma_addr_t                  bios_system_info_dma_addr;
+ 	struct nnp_c2h_system_info  *bios_system_info;
+ 	char                        bios_version_str[NNP_BIOS_VERSION_LEN];
+@@ -154,6 +168,9 @@ struct nnp_device {
+ 
+ 	struct host_crash_dump    host_crash_dump;
+ 	struct query_version_work query_version_work;
++
++	u8   ipc_chan_resp_op_size[32];
++	u8   ipc_chan_cmd_op_size[32];
+ };
+ 
+ void nnpdrv_device_module_init(void);
+@@ -175,4 +192,7 @@ static inline int nnpdrv_msg_sched_queue_add_msg(struct msg_sched_queue *queue,
+ 
+ void nnpdrv_set_boot_state(struct nnp_device *nnpdev, u32 mask);
+ 
++struct nnpdrv_cmd_chan *nnpdrv_find_channel(struct nnp_device *nnpdev,
++					    u16 chan_id);
++
+ #endif
+-- 
+1.8.3.1
+

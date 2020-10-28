@@ -1,0 +1,1248 @@
+From 1bca8f43e7604416743d1555ff396403268a0ec4 Mon Sep 17 00:00:00 2001
+From: Guy Zadicario <guy.zadicario@intel.com>
+Date: Mon, 30 Mar 2020 08:48:32 +0300
+Subject: [PATCH v9 04/22] misc: nnpi: host resource implementation
+
+This patch adds the "host resource" implementation,
+The interface is well described in the header file hostres.h
+
+The host resource is a memory object that can be mapped to dma address
+space of one or more NNP-I devices as well as mapped to user space.
+
+There are three interfaces to create three different types of such resources
+nnpdrv_hostres_create - allocate memory pages for the new resource.
+nnpdrv_hostres_dma_buf_create - create host resource attached to existing
+                                dma-buf object.
+nnpdrv_hostres_create_usermem - create host resource mapped to user-space
+                                allocated memory.
+
+There are interfaces to map/unmap the resource to both device access and
+to user space.
+
+Those interfaces will be called from user-space through character device
+that will be added on the next commit. The user-space use these host
+resources for transferring inference network weights as well as input/output
+data to/from the device.
+
+It is also being called from the device boot flow (on a later commit), the
+device boot image is loaded into such host resource, the device BIOS then
+DMA it to device space and boots.
+
+Signed-off-by: Guy Zadicario <guy.zadicario@intel.com>
+Reviewed-by: Vaibhav Agarwal <vaibhav.agarwal@intel.com>
+---
+ Documentation/ABI/testing/sysfs-driver-intel_nnpi |   5 +
+ drivers/misc/intel-nnpi/Makefile                  |   3 +-
+ drivers/misc/intel-nnpi/hostres.c                 | 915 ++++++++++++++++++++++
+ drivers/misc/intel-nnpi/hostres.h                 | 239 ++++++
+ drivers/misc/intel-nnpi/pcie.h                    |   1 +
+ 5 files changed, 1162 insertions(+), 1 deletion(-)
+ create mode 100644 Documentation/ABI/testing/sysfs-driver-intel_nnpi
+ create mode 100644 drivers/misc/intel-nnpi/hostres.c
+ create mode 100644 drivers/misc/intel-nnpi/hostres.h
+
+diff --git a/Documentation/ABI/testing/sysfs-driver-intel_nnpi b/Documentation/ABI/testing/sysfs-driver-intel_nnpi
+new file mode 100644
+index 0000000..ce8b68d
+--- /dev/null
++++ b/Documentation/ABI/testing/sysfs-driver-intel_nnpi
+@@ -0,0 +1,5 @@
++What:           /sys/class/nnpi_host/nnpi_host/total_hostres_size
++Date:           Sep 2020
++Kernelversion:  5.11
++Contact:        guy.zadicario@intel.com
++Description:    Total size in bytes of all allocated NNP-I host resources.
+diff --git a/drivers/misc/intel-nnpi/Makefile b/drivers/misc/intel-nnpi/Makefile
+index db4b0af..c0f5f2f 100644
+--- a/drivers/misc/intel-nnpi/Makefile
++++ b/drivers/misc/intel-nnpi/Makefile
+@@ -6,6 +6,7 @@
+ 
+ obj-m	:= intel_nnpidrv.o
+ 
+-intel_nnpidrv-y := nnpdrv_main.o pcie.o device.o msg_scheduler.o
++intel_nnpidrv-y := nnpdrv_main.o pcie.o device.o msg_scheduler.o \
++		   hostres.o
+ 
+ ccflags-y += -I$(srctree)/$(src)/ipc_include
+diff --git a/drivers/misc/intel-nnpi/hostres.c b/drivers/misc/intel-nnpi/hostres.c
+new file mode 100644
+index 0000000..1eff129
+--- /dev/null
++++ b/drivers/misc/intel-nnpi/hostres.c
+@@ -0,0 +1,915 @@
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++/*
++ * Copyright (C) 2019-2020 Intel Corporation
++ */
++
++#define pr_fmt(fmt)   KBUILD_MODNAME ": " fmt
++
++#include "hostres.h"
++#include <linux/atomic.h>
++#include <linux/dma-buf.h>
++#include <linux/err.h>
++#include <linux/jiffies.h>
++#include <linux/module.h>
++#include <linux/pagemap.h>
++#include <linux/printk.h>
++#include <linux/sched.h>
++#include <linux/sched/mm.h>
++#include <linux/slab.h>
++#include <linux/sort.h>
++#include <linux/vmalloc.h>
++#include <linux/wait.h>
++#include "ipc_protocol.h"
++
++/**
++ * struct dev_mapping - mapping information of host resource to one device
++ * @ref: kref for that mapping object
++ * @res: pointer to the host resource
++ * @dev: the device the resource is mapped to
++ * @dir: dma direction mask possible for this mapping
++ * @sgt: scatter table of host resource pages in memory
++ * @dma_chain_sgt: sg_table of dma_chain blocks (see description below).
++ * @dma_chain_order: order used to allocate scatterlist of @dma_chain_sgt.
++ * @node: list head to attach this object to a list of mappings
++ * @dma_att: dma-buf attachment in case the resource created from dma-buf,
++ *           if it is not a dma-buf resource, this will remain NULL.
++ *
++ * This structure holds mapping information of one host resource to one
++ * NNP-I device. @sgt is the sg_table describes the dma addresses of the
++ * resource chunks.
++ *
++ * Explenation of @dma_chain_sgt:
++ * When mapping a host memory resource for NNP-I device access, we need to send
++ * the dma page table of the resource to the device. The device uses this page
++ * table when programming its DMA engine to read/write the host resource.
++ *
++ * The format of that page table is a chain of continuous dma buffers, each
++ * starts with a 24 bytes header (struct dma_chain_header, defined in
++ * ipc_protocol.h) followed by 8 bytes entries, each describe a continuous
++ * block of the resource (struct dma_chain_entry, defined in ipc_procol.h).
++ *
++ * The header of the chain has a pointer to the next buffer in the chain for
++ * the case where multiple dma blocks are required to describe the
++ * entire resource. The address of the first block in the chain is sent to
++ * the device, the device then fetch the entire chain when the resource is
++ * mapped.
++ * @dma_chain_sgt is an sg_table of memory mapped to the device and initialized
++ * with the resource page table in thw above described format.
++ */
++struct dev_mapping {
++	struct kref                 ref;
++	struct nnpdrv_host_resource *res;
++	struct device               *dev;
++	enum dma_data_direction     dir;
++	struct sg_table             *sgt;
++	struct sg_table             dma_chain_sgt;
++	unsigned int                dma_chain_order;
++	struct list_head            node;
++	struct dma_buf_attachment   *dma_att;
++};
++
++/**
++ * struct nnpdrv_host_resource - structure for host memory resource object
++ * @ref: kref for that mapping object
++ * @size: size of the memory resource, in bytes
++ * @devices: list of devices this resource is mapped to (list of dev_mapping)
++ * @lock: protects fields modifications in this structure.
++ * @dir: specify if the resource can be copied to/from a device, or both.
++ * @external_buf: true if the memory of the resource is attachment to dma-buf
++ *                object, created by another entity.
++ * @user_memory_buf: true if the memory of the resource was allocated by user
++ *                   space.
++ * @start_offset: relavent only when user_memory_buf is true, 0 otherwise.
++ *                holds the offset within the first pinned page where resource
++ *                memory starts.
++ * @pinned_mm: mm object used to pin the resource memory. valid only when
++ *             user_memory_buf is true.
++ * @pages: array of resource memory pages. valid only when external_buf is false.
++ * @n_pages: size of pages array, valid only when external_buf is false.
++ * @buf: pointer to attached dma-buf object, valid only when external_buf is true.
++ */
++struct nnpdrv_host_resource {
++	struct kref       ref;
++	size_t            size;
++	struct list_head  devices;
++	spinlock_t        lock; /* protects fields in this struct */
++	enum dma_data_direction dir;
++
++	bool              external_buf;
++	bool              user_memory_buf;
++	unsigned int      start_offset;
++	struct mm_struct *pinned_mm;
++
++	union {
++		struct {
++			struct page **pages;
++			unsigned int n_pages;
++		};
++		struct {
++			struct dma_buf *buf;
++		};
++	};
++};
++
++/* Static asserts */
++static_assert(NENTS_PER_PAGE >= 1,
++	      "There should be place for at least 1 DMA chunk addr in every DMA chain page");
++
++/*
++ * Since host resources are pinned for their entire lifetime, it
++ * is useful to monitor the total size of NNP-I host resources
++ * allocated in the system.
++ */
++static atomic64_t total_hostres_size;
++
++/* Really destroys host resource, when all references to it were released */
++static void release_hostres(struct kref *kref)
++{
++	struct nnpdrv_host_resource *r =
++		container_of(kref, struct nnpdrv_host_resource, ref);
++	unsigned int i;
++
++	if (r->external_buf) {
++		dma_buf_put(r->buf);
++		kfree(r);
++		return;
++	}
++
++	if (!r->user_memory_buf) {
++		for (i = 0; i < r->n_pages; i++)
++			__free_page(r->pages[i]);
++		kvfree(r->pages);
++	} else {
++		release_pages(r->pages, r->n_pages);
++		account_locked_vm(r->pinned_mm, r->n_pages, false);
++		mmdrop(r->pinned_mm);
++		kvfree(r->pages);
++	}
++
++	atomic64_sub(r->size, &total_hostres_size);
++
++	kfree(r);
++}
++
++int nnpdrv_hostres_get(struct nnpdrv_host_resource *res)
++{
++	return kref_get_unless_zero(&res->ref);
++};
++
++void nnpdrv_hostres_put(struct nnpdrv_host_resource *res)
++{
++	kref_put(&res->ref, release_hostres);
++}
++
++/* Really destroys mapping to device, when refcount is zero */
++static void release_mapping(struct kref *kref)
++{
++	struct dev_mapping *m = container_of(kref, struct dev_mapping, ref);
++
++	dma_unmap_sgtable(m->dev, &m->dma_chain_sgt, DMA_TO_DEVICE, 0);
++	sgl_free_order(m->dma_chain_sgt.sgl, m->dma_chain_order);
++
++	if (m->res->external_buf) {
++		dma_buf_unmap_attachment(m->dma_att, m->sgt, m->res->dir);
++		dma_buf_detach(m->res->buf, m->dma_att);
++	} else {
++		dma_unmap_sg(m->dev, m->sgt->sgl,
++			     m->sgt->orig_nents, m->res->dir);
++		sg_free_table(m->sgt);
++		kfree(m->sgt);
++	}
++
++	spin_lock(&m->res->lock);
++	list_del(&m->node);
++	spin_unlock(&m->res->lock);
++
++	nnpdrv_hostres_put(m->res);
++
++	kfree(m);
++}
++
++/* Increase reference count to mapping to the specific device */
++static inline int mapping_get(struct dev_mapping *m)
++{
++	return kref_get_unless_zero(&m->ref);
++};
++
++/* Decrease reference count to mapping to the specific device
++ * and destroy it, if reference count is decreased to zero
++ */
++static inline void mapping_put(struct dev_mapping *m)
++{
++	kref_put(&m->ref, release_mapping);
++}
++
++/* Compare callback function for sort, to compare 2 pages */
++static int cmp_pfn(const void *p1, const void *p2)
++{
++	uintptr_t pfn1 = page_to_pfn(*(const struct page **)p1);
++	uintptr_t pfn2 = page_to_pfn(*(const struct page **)p2);
++
++	if (pfn1 > pfn2)
++		return 1;
++	else if (pfn1 == pfn2)
++		return 0;
++
++	return -1;
++}
++
++static struct nnpdrv_host_resource *alloc_hostres(size_t size,
++						  enum dma_data_direction dir)
++{
++	struct nnpdrv_host_resource *r;
++
++	r = kzalloc(sizeof(*r), GFP_KERNEL);
++	if (!r)
++		return r;
++
++	kref_init(&r->ref);
++	spin_lock_init(&r->lock);
++	r->dir = dir;
++	r->size = size;
++	INIT_LIST_HEAD(&r->devices);
++
++	return r;
++}
++
++int nnpdrv_hostres_create(size_t size, enum dma_data_direction dir,
++			  struct nnpdrv_host_resource **out_resource)
++{
++	int err;
++	struct nnpdrv_host_resource *r;
++	unsigned int i;
++
++	if (!out_resource || size == 0 || dir == DMA_NONE)
++		return -EINVAL;
++
++	r = alloc_hostres(size, dir);
++	if (!r)
++		return -ENOMEM;
++
++	r->user_memory_buf = false;
++	r->external_buf = false;
++
++	/*
++	 * In this place actual pages are allocated of PAGE_SIZE and not
++	 * NNP_PAGE_SIZE, This list will be used for sg_alloc_table
++	 */
++	r->n_pages = DIV_ROUND_UP(size, PAGE_SIZE);
++	r->pages = kvmalloc_array(r->n_pages, sizeof(struct page *),
++				  GFP_KERNEL);
++	if (IS_ERR_OR_NULL(r->pages)) {
++		pr_err("failed to vmalloc %zu bytes array\n",
++		       (r->n_pages * sizeof(struct page *)));
++		err = -ENOMEM;
++		goto free_res;
++	}
++
++	for (i = 0; i < r->n_pages; i++) {
++		r->pages[i] = alloc_page(GFP_KERNEL | __GFP_COMP);
++		if (!r->pages[i]) {
++			pr_err("failed to alloc page%u\n", i);
++			err = -ENOMEM;
++			goto free_pages;
++		}
++	}
++	/* adjacent pages can be joined to 1 chunk */
++	sort(r->pages, r->n_pages, sizeof(r->pages[0]), cmp_pfn, NULL);
++
++	atomic64_add(size, &total_hostres_size);
++
++	*out_resource = r;
++	return 0;
++
++free_pages:
++	for (i = 0; i < r->n_pages; i++) {
++		if (!r->pages[i])
++			break;
++		__free_page(r->pages[i]);
++	}
++	kvfree(r->pages);
++free_res:
++	kfree(r);
++	return err;
++}
++
++int nnpdrv_hostres_create_usermem(void __user *user_ptr, size_t size,
++				  enum dma_data_direction dir,
++				  struct nnpdrv_host_resource **out_resource)
++{
++	int err;
++	struct nnpdrv_host_resource *r;
++	unsigned int pinned_pages = 0;
++	uintptr_t user_addr = (uintptr_t)user_ptr;
++	int gup_flags;
++
++	if (!out_resource || size == 0 || dir == DMA_NONE)
++		return -EINVAL;
++
++	/* restrict for 4 byte alignment - is this enough? */
++	if ((user_addr & 0x3) != 0)
++		return -EINVAL;
++
++	if (!access_ok(user_ptr, size))
++		return -EFAULT;
++
++	r = alloc_hostres(size, dir);
++	if (!r)
++		return -ENOMEM;
++
++	r->user_memory_buf = true;
++	r->external_buf = false;
++
++	r->start_offset = offset_in_page(user_addr);
++	user_addr &= PAGE_MASK;
++
++	/*
++	 * In this place actual pages are allocated of PAGE_SIZE and not
++	 * NNP_PAGE_SIZE, This list will be used for sg_alloc_table
++	 */
++	r->n_pages = DIV_ROUND_UP(size + r->start_offset, PAGE_SIZE);
++	r->pages = kvmalloc_array(r->n_pages, sizeof(struct page *), GFP_KERNEL);
++	if (IS_ERR_OR_NULL(r->pages)) {
++		pr_err("failed to vmalloc %zu bytes array\n",
++		       (r->n_pages * sizeof(struct page *)));
++		err = -ENOMEM;
++		goto free_res;
++	}
++
++	err = account_locked_vm(current->mm, r->n_pages, true);
++	if (err)
++		goto free_pages;
++
++	gup_flags = (dir == DMA_TO_DEVICE ||
++		     dir == DMA_BIDIRECTIONAL) ? FOLL_WRITE : 0;
++
++	/*
++	 * The host resource is being re-used for multiple DMA
++	 * transfers for streaming data into the device.
++	 * In most situations will live long term.
++	 */
++	gup_flags |= FOLL_LONGTERM;
++
++	do {
++		int n = pin_user_pages(user_addr + pinned_pages * PAGE_SIZE,
++				       r->n_pages - pinned_pages, gup_flags,
++				       &r->pages[pinned_pages], NULL);
++		if (n < 0) {
++			err = -ENOMEM;
++			goto unaccount;
++		}
++
++		pinned_pages += n;
++	} while (pinned_pages < r->n_pages);
++
++	r->pinned_mm = current->mm;
++	mmgrab(r->pinned_mm);
++
++	atomic64_add(size, &total_hostres_size);
++
++	*out_resource = r;
++	return 0;
++
++unaccount:
++	account_locked_vm(current->mm, r->n_pages, false);
++free_pages:
++	release_pages(r->pages, pinned_pages);
++	kvfree(r->pages);
++free_res:
++	kfree(r);
++	return err;
++}
++
++int nnpdrv_hostres_dma_buf_create(int dma_buf_fd, enum dma_data_direction dir,
++				  struct nnpdrv_host_resource **out_resource)
++{
++	int err;
++	struct nnpdrv_host_resource *r;
++	struct dma_buf *dmabuf;
++
++	if (!out_resource || dma_buf_fd < 0 || dir == DMA_NONE)
++		return -EINVAL;
++
++	dmabuf = dma_buf_get(dma_buf_fd);
++	err = PTR_ERR_OR_ZERO(dmabuf);
++	if (err < 0)
++		/*
++		 * EBADF in case of dma_buf_fd is not fd;
++		 * EINVAL in case dma_buf_fd is fd, but not of dma_buf
++		 * in any case report invalid value
++		 */
++		return -EINVAL;
++
++	r = alloc_hostres(dmabuf->size, dir);
++	if (!r) {
++		dma_buf_put(dmabuf);
++		return -ENOMEM;
++	}
++
++	r->buf = dmabuf;
++	r->user_memory_buf = false;
++	r->external_buf = true;
++
++	*out_resource = r;
++	return 0;
++}
++
++int nnpdrv_hostres_vmap(struct nnpdrv_host_resource *res, void **vptr)
++{
++	if (!res || !vptr)
++		return -EINVAL;
++
++	/*
++	 * dma-buf case
++	 */
++	if (res->external_buf) {
++		*vptr = dma_buf_vmap(res->buf);
++		if (*vptr)
++			return 0;
++
++		return -ENOMEM;
++	}
++
++	/*
++	 * no dma-buf case
++	 */
++	*vptr = vmap(res->pages, res->n_pages, 0, PAGE_KERNEL);
++	if (*vptr)
++		return 0;
++
++	return -ENOMEM;
++}
++
++void nnpdrv_hostres_vunmap(struct nnpdrv_host_resource *res, void *vptr)
++{
++	/*
++	 * dma-buf case
++	 */
++	if (res->external_buf) {
++		dma_buf_vunmap(res->buf, vptr);
++		return;
++	}
++
++	/*
++	 * no dma-buf case
++	 */
++	vunmap(vptr);
++}
++
++/* Finds mapping by device. NULL if not found*/
++static struct dev_mapping *mapping_for_dev(struct nnpdrv_host_resource *res,
++					   struct device *dev)
++{
++	struct dev_mapping *m;
++
++	spin_lock(&res->lock);
++
++	list_for_each_entry(m, &res->devices, node) {
++		if (m->dev == dev)
++			break;
++	}
++
++	spin_unlock(&res->lock);
++
++	/* Check if no mapping found */
++	if (&m->node == &res->devices)
++		return NULL;
++
++	return m;
++}
++
++/**
++ * build_ipc_dma_chain_array() - builds page list of the resource for ipc usage
++ * @m: pointer to device mapping info struct
++ * @use_one_entry: if true will generate all page table in one continuous
++ *                 dma chunk. otherwise a chain of blocks will be used
++ *                 each of one page size.
++ * @start_offset: offset in first mapped page where resource memory starts,
++ *
++ * This function allocate scatterlist, map it to device and populate it with
++ * page table of the device mapped resource in format suitable to be used
++ * in the ipc protocol for sending the resource page table to the device.
++ * The format of the page table is described in the documenation of struct
++ * dev_mapping.
++ *
++ * Return: 0 on success, error value otherwise
++ */
++static int build_ipc_dma_chain_array(struct dev_mapping *m, bool use_one_entry,
++				     unsigned int start_offset)
++{
++	unsigned int i, k = 0;
++	int err = -ENOMEM;
++	struct dma_chain_entry  *p = NULL;
++	struct dma_chain_header *h;
++	struct scatterlist *sg, *map_sg;
++	struct scatterlist *chain_sg;
++	unsigned int chain_size;
++	unsigned int chain_order;
++	unsigned int chain_nents;
++	unsigned int nents_per_entry;
++	dma_addr_t addr;
++	int rc;
++	union {
++		struct dma_chain_entry e;
++		u64                    value;
++	} u;
++	static_assert(sizeof(u) == sizeof(u64), "Size of dma_chain_entry is not 64-bits");
++
++	if (use_one_entry) {
++		/*
++		 * Allocate enough pages in one chunk that will fit
++		 * the header and dma_chain_entry for all the sg_table
++		 * entries.
++		 */
++		nents_per_entry = m->sgt->nents;
++		chain_size = sizeof(struct dma_chain_header) +
++			     m->sgt->nents * sizeof(struct dma_chain_entry);
++		chain_order = get_order(chain_size);
++	} else {
++		/*
++		 * calc number of one page dma buffers needed to hold the
++		 * entire page table.
++		 * NENTS_PER_PAGE is how much dma_chain_entry structs fits
++		 * in a single page following the chain header.
++		 */
++		nents_per_entry = NENTS_PER_PAGE;
++		chain_size = DIV_ROUND_UP(m->sgt->nents, NENTS_PER_PAGE) *
++			     NNP_PAGE_SIZE;
++		chain_order = 0;
++	}
++
++	chain_sg = sgl_alloc_order(chain_size, chain_order,
++				   false, GFP_KERNEL, &chain_nents);
++	if (!chain_sg)
++		return -ENOMEM;
++
++	m->dma_chain_sgt.sgl = chain_sg;
++	m->dma_chain_sgt.nents = chain_nents;
++	m->dma_chain_sgt.orig_nents = chain_nents;
++	m->dma_chain_order = chain_order;
++	rc = dma_map_sgtable(m->dev, &m->dma_chain_sgt, DMA_TO_DEVICE, 0);
++	if (rc)
++		goto free_chain_sg;
++
++	/*
++	 * initialize the header in each block of the chain
++	 * and links each block to the next one
++	 */
++	for_each_sg(chain_sg, sg, chain_nents, i) {
++		/*
++		 * Check that the allocated dma address fits in ipc protocol.
++		 * In the protocol, dma addresses are sent as 4K page numbers
++		 * and must fit in 45 bits.
++		 * Meaning, if the dma address is larger than 57 bits it will
++		 * not fit.
++		 */
++		addr = sg_dma_address(sg);
++		if (NNP_IPC_DMA_PFN_TO_ADDR(NNP_IPC_DMA_ADDR_TO_PFN(addr)) !=
++				addr)
++			goto unmap_chain_sg;
++
++		h = sg_virt(sg);
++		h->total_nents = m->sgt->nents;
++		h->start_offset = (i == 0 ? start_offset : 0);
++		if (sg_is_last(sg))
++			h->dma_next = 0;
++		else
++			h->dma_next = sg_dma_address(sg_next(sg));
++	}
++
++	/*
++	 * iterate over sg_table and populate entries in each block.
++	 */
++	map_sg = m->sgt->sgl;
++	for_each_sg(chain_sg, sg, chain_nents, i) {
++		/*
++		 * h: points to the header of current block
++		 * p: points to current chunk entry in block
++		 */
++		h = sg_virt(sg);
++		h->size = 0;
++		p = (struct dma_chain_entry *)(h + 1);
++		for (k = 0; k < nents_per_entry && !sg_is_last(map_sg); ++k) {
++			int fail;
++
++			/*
++			 * build entry with dma address as page number and
++			 * size in pages
++			 */
++			u.e.dma_chunk_pfn =
++				NNP_IPC_DMA_ADDR_TO_PFN(sg_dma_address(map_sg));
++			u.e.n_pages = sg_dma_len(map_sg) / NNP_PAGE_SIZE;
++
++			/*
++			 * for the dma chunk to fit the ipc restriction its:
++			 * 1) address must not be bigger that 57 bits
++			 * 2) number of pages of the chunk size must fit
++			 *    in 19 bits.
++			 * These restrictions should normally be true,
++			 * However we check it with warning and fail if its not
++			 */
++			/* Check that 4K aligned dma_addr can fit 45 bit pfn */
++			fail = (NNP_IPC_DMA_PFN_TO_ADDR(u.e.dma_chunk_pfn) !=
++				sg_dma_address(map_sg));
++			fail |= (u.e.n_pages * NNP_PAGE_SIZE !=
++				 sg_dma_len(map_sg));
++			if (fail)
++				goto unmap_chain_sg;
++
++			/* Fill entry value (should be 64-bit little-endian) */
++			*((u64 *)(p + k)) = cpu_to_le64(u.value);
++
++			h->size += sg_dma_len(map_sg);
++
++			map_sg = sg_next(map_sg);
++		}
++	}
++
++	/* Here sg is the last in sgt */
++	u.e.dma_chunk_pfn = NNP_IPC_DMA_ADDR_TO_PFN(sg_dma_address(map_sg));
++	/* last chunk size in pages rounded up */
++	u.e.n_pages = DIV_ROUND_UP(sg_dma_len(map_sg), NNP_PAGE_SIZE);
++	/* Fill entry value (should be 64-bit little-endian) */
++	*((u64 *)(p + k)) = cpu_to_le64(u.value);
++
++	h->size += sg_dma_len(map_sg);
++
++#ifdef __BIG_ENDIAN
++	/* convert chain headers to little-endian byte-order */
++	for_each_sg(chain_sg, sg, chain_nents, i) {
++		h = sg_virt(sg);
++		h->dma_next = cpu_to_le64(h->dma_next);
++		h->total_nents = cpu_to_le32(h->total_nents);
++		h->start_offset = cpu_to_le32(h->start_offset);
++		h->size = cpu_to_le64(h->size);
++	}
++#endif
++
++	return 0;
++
++unmap_chain_sg:
++	dma_unmap_sgtable(m->dev, &m->dma_chain_sgt, DMA_TO_DEVICE, 0);
++free_chain_sg:
++	sgl_free_order(chain_sg, chain_order);
++	memset(&m->dma_chain_sgt, 0, sizeof(m->dma_chain_sgt));
++	return err;
++}
++
++int nnpdrv_hostres_map_device(struct nnpdrv_host_resource *res,
++			      struct nnp_device *nnpdev, bool use_one_entry,
++			      dma_addr_t *page_list, unsigned int *total_chunks)
++{
++	int ret;
++	struct dev_mapping *m;
++
++	if (!res || !nnpdev || !page_list)
++		return -EINVAL;
++
++	/* Check if already mapped for the device */
++	m = mapping_for_dev(res, &nnpdev->nnp_pci->pdev->dev);
++	/*
++	 * "mapping_get" will fail and return 0, if m is at destroy stage
++	 * so if mapping is exist and it is not being destroyed,
++	 * "mapping_get" will successfully increase ref and will return 1
++	 */
++	if (m && mapping_get(m) == 1) {
++		*page_list = sg_dma_address(m->dma_chain_sgt.sgl);
++		return 0;
++	}
++
++	nnpdrv_hostres_get(res);
++
++	m = kmalloc(sizeof(*m), GFP_KERNEL);
++	if (!m) {
++		ret = -ENOMEM;
++		goto put_resource;
++	}
++
++	kref_init(&m->ref);
++
++	m->dev = &nnpdev->nnp_pci->pdev->dev;
++	m->res = res;
++
++	if (res->external_buf) {
++		m->dma_att = dma_buf_attach(res->buf, m->dev);
++		ret = PTR_ERR_OR_ZERO(m->dma_att);
++		if (ret < 0)
++			goto free_mapping;
++
++		m->sgt = dma_buf_map_attachment(m->dma_att, res->dir);
++		ret = PTR_ERR_OR_ZERO(m->sgt);
++		if (ret < 0)
++			goto buf_detach;
++	} else {
++		m->sgt = kmalloc(sizeof(*m->sgt), GFP_KERNEL);
++		if (!m->sgt) {
++			ret = -ENOMEM;
++			goto free_mapping;
++		}
++
++		ret = __sg_alloc_table_from_pages(m->sgt, res->pages,
++						  res->n_pages, 0,
++						  res->size + res->start_offset,
++						  NNP_MAX_CHUNK_SIZE,
++						  GFP_KERNEL);
++		if (ret < 0)
++			goto free_sgt_struct;
++
++		ret = dma_map_sg(m->dev, m->sgt->sgl,
++				 m->sgt->orig_nents, res->dir);
++		if (ret < 0)
++			goto free_sgt;
++
++		m->sgt->nents = ret;
++	}
++
++	ret = build_ipc_dma_chain_array(m, use_one_entry, res->start_offset);
++	if (ret < 0)
++		goto unmap;
++
++	spin_lock(&res->lock);
++	list_add(&m->node, &res->devices);
++	spin_unlock(&res->lock);
++
++	*page_list = sg_dma_address(m->dma_chain_sgt.sgl);
++	if (total_chunks)
++		*total_chunks = m->sgt->nents;
++
++	return 0;
++
++unmap:
++	if (res->external_buf) {
++		dma_buf_unmap_attachment(m->dma_att, m->sgt, res->dir);
++buf_detach:
++		dma_buf_detach(res->buf, m->dma_att);
++	} else {
++		dma_unmap_sg(m->dev, m->sgt->sgl,
++			     m->sgt->orig_nents, res->dir);
++free_sgt:
++		sg_free_table(m->sgt);
++free_sgt_struct:
++		kfree(m->sgt);
++	}
++free_mapping:
++	kfree(m);
++put_resource:
++	nnpdrv_hostres_put(res);
++	return ret;
++}
++
++int nnpdrv_hostres_unmap_device(struct nnpdrv_host_resource *res,
++				struct nnp_device *nnpdev)
++{
++	struct dev_mapping *m;
++
++	if (!res)
++		return -EINVAL;
++
++	m = mapping_for_dev(res, &nnpdev->nnp_pci->pdev->dev);
++	if (!m)
++		return -ENXIO;
++
++	mapping_put(m);
++
++	return 0;
++}
++
++int nnpdrv_hostres_map_user(struct nnpdrv_host_resource *res,
++			    struct vm_area_struct *vma)
++{
++	unsigned int i, j, offset = 0, seg_len, s;
++	int err;
++
++	if (!res || !vma)
++		return -EINVAL;
++
++	/*
++	 * Do not allow to map external dma-buf resource.
++	 * The application may map it through the same driver that
++	 * created the dma-buf.
++	 */
++	if (res->external_buf)
++		return -EINVAL;
++
++	if (res->user_memory_buf)
++		return -EINVAL;
++
++	if (vma->vm_end - vma->vm_start < res->size)
++		return -EINVAL;
++
++	s = res->size;
++	seg_len = 0;
++	for (i = 0; i < res->n_pages - 1; ++i) {
++		seg_len += NNP_PAGE_SIZE;
++		if (page_to_pfn(res->pages[i + j]) !=
++		    page_to_pfn(res->pages[i + j + 1]) + 1) {
++			err = remap_pfn_range(vma, vma->vm_start + offset,
++					      page_to_pfn(res->pages[i]),
++					      seg_len, vma->vm_page_prot);
++			if (err < 0)
++				return err;
++			s -= seg_len;
++			offset += seg_len;
++			seg_len = 0;
++		}
++	}
++	err = remap_pfn_range(vma, vma->vm_start + offset,
++			      page_to_pfn(res->pages[i]), s, vma->vm_page_prot);
++
++	return err;
++}
++
++int nnpdrv_hostres_user_lock(struct nnpdrv_host_resource *res)
++{
++	long ret = 0;
++
++	if (!res)
++		return -EINVAL;
++
++	if (res->external_buf) {
++		ret = dma_buf_begin_cpu_access(res->buf, res->dir);
++	} else {
++		struct dev_mapping *m;
++
++		spin_lock(&res->lock);
++		list_for_each_entry(m, &res->devices, node)
++			dma_sync_sg_for_cpu(m->dev, m->sgt->sgl,
++					    m->sgt->orig_nents, res->dir);
++		spin_unlock(&res->lock);
++	}
++
++	return ret;
++}
++
++int nnpdrv_hostres_user_unlock(struct nnpdrv_host_resource *res)
++{
++	if (!res)
++		return -EINVAL;
++
++	if (res->external_buf) {
++		dma_buf_end_cpu_access(res->buf, res->dir);
++	} else {
++		struct dev_mapping *m;
++
++		spin_lock(&res->lock);
++		list_for_each_entry(m, &res->devices, node)
++			dma_sync_sg_for_device(m->dev, m->sgt->sgl,
++					       m->sgt->orig_nents, res->dir);
++		spin_unlock(&res->lock);
++	}
++
++	return 0;
++}
++
++bool nnpdrv_hostres_is_input(struct nnpdrv_host_resource *res)
++{
++	return (res->dir == DMA_TO_DEVICE || res->dir == DMA_BIDIRECTIONAL);
++}
++
++bool nnpdrv_hostres_is_output(struct nnpdrv_host_resource *res)
++{
++	return (res->dir == DMA_FROM_DEVICE || res->dir == DMA_BIDIRECTIONAL);
++}
++
++size_t nnpdrv_hostres_get_size(struct nnpdrv_host_resource *res)
++{
++	return res->size;
++}
++
++bool nnpdrv_hostres_is_usermem(struct nnpdrv_host_resource *res)
++{
++	return res->user_memory_buf;
++}
++
++static ssize_t total_hostres_size_show(struct device *dev,
++				       struct device_attribute *attr, char *buf)
++{
++	return sprintf(buf, "%llu\n", (u64)atomic64_read(&total_hostres_size));
++}
++static DEVICE_ATTR_RO(total_hostres_size);
++
++static struct attribute *nnp_host_attrs[] = {
++	&dev_attr_total_hostres_size.attr,
++	NULL,
++};
++
++static struct attribute_group nnp_host_attrs_grp = {
++		.attrs = nnp_host_attrs,
++};
++
++int nnpdrv_hostres_init_sysfs(struct kobject *kobj)
++{
++	int ret;
++
++	atomic64_set(&total_hostres_size, 0);
++
++	ret = sysfs_create_group(kobj, &nnp_host_attrs_grp);
++
++	return ret;
++}
++
++void nnpdrv_hostres_fini_sysfs(struct kobject *kobj)
++{
++	sysfs_remove_group(kobj, &nnp_host_attrs_grp);
++}
+diff --git a/drivers/misc/intel-nnpi/hostres.h b/drivers/misc/intel-nnpi/hostres.h
+new file mode 100644
+index 0000000..14a871f
+--- /dev/null
++++ b/drivers/misc/intel-nnpi/hostres.h
+@@ -0,0 +1,239 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++
++/*
++ * Copyright (C) 2019-2020 Intel Corporation
++ */
++
++#ifndef _NNPDRV_HOSTRES_H
++#define _NNPDRV_HOSTRES_H
++
++#include <linux/dma-mapping.h>
++#include "device.h"
++
++struct nnpdrv_host_resource;
++
++/**
++ * nnpdrv_hostres_create() - allocate memory and create host resource
++ * @size: Size of the host resource to be created
++ * @dir:  Resource direction (read or write or both)
++ * @res:  Handle to newly created hosr resource
++ *
++ * This function allocate memory pages and provides host resource handle.
++ * The resource can be Input(read by device), Output(write by device) and both.
++ *
++ * The return handle can be used as argument to one of the other functions
++ * in this file for:
++ *    - mapping/unmapping the resource for NNP-I device.
++ *    - mapping for kernel access
++ *    - mapping to user-space by using the handle in offset field of mmap(2)
++ *
++ * The handle should be released when no longer needed by a call to
++ * nnpdrv_hostres_put, the actual destruction will happen when its refcount
++ * reaches zero.
++ *
++ * Return: error number on failure.
++ */
++int nnpdrv_hostres_create(size_t size, enum dma_data_direction dir,
++			  struct nnpdrv_host_resource **res);
++
++/**
++ * nnpdrv_hostres_dma_buf_create() - creates host resource form dma-buf
++ * @dma_buf_fd: File descriptor of struct dma_buf
++ * @dir: Resource direction (read or write or both)
++ * @res: Handle to newly created hosr resource
++ *
++ * This function attaches to a dma-buf object memory and creates a host
++ * resource handle backed by the dma-buf memory pages.
++ * The resource can be Input(read by device), Output(write by device) and both.
++ * If this function fails, it returns error.
++ *
++ * The return handle can be used the same as described for the handle created
++ * by nnpdrv_hostres_create, except mapping to userspace is not allowed,
++ * since this is an external buffer, we let the other driver which created it
++ * to handle mapping it to user-space.
++ *
++ * The handle should be released when no longer needed by a call to
++ * nnpdrv_hostres_put, the actual destruction will happen when its refcount
++ * reaches zero.
++ *
++ * Return: error number on failure.
++ */
++int nnpdrv_hostres_dma_buf_create(int dma_buf_fd, enum dma_data_direction dir,
++				  struct nnpdrv_host_resource **res);
++
++/**
++ * nnpdrv_hostres_create_usermem() - Creates host resource from user-space memory
++ *
++ * @user_ptr: user virtual memory to pin
++ * @size: size of user buffer to pin
++ * @dir: Resource direction (read or write or both)
++ * @out_resource: returns handle to newly created host resource
++ *
++ * This function pin the provided user memory and create a host resource
++ * handle managing this memory.
++ * The provided handle can be used the same as the handle created by
++ * nnpdrv_hostres_create.
++ * The resource can be Input(read by device), Output(write by device) and both.
++ *
++ * The handle should be released when no longer needed by a call to
++ * nnpdrv_hostres_put, the actual destruction will happen when its refcount
++ * reaches zero.
++ *
++ * Return: error number on failure.
++ */
++int nnpdrv_hostres_create_usermem(void __user *user_ptr, size_t size,
++				  enum dma_data_direction dir,
++				  struct nnpdrv_host_resource **out_resource);
++
++/**
++ * nnpdrv_hostres_vmap() - maps resource pages to kernel virtual address space
++ * @res: handle to host resource
++ * @vptr: returns the mapped virtual address
++ *
++ * Return: error number on failure.
++ */
++int nnpdrv_hostres_vmap(struct nnpdrv_host_resource *res, void **vptr);
++
++/**
++ * nnpdrv_hostres_vunmap() - unmap the resource from mapped virtual address.
++ * @res: handle to host resource
++ * @vptr: returns the mapped virtual address
++ *
++ * Return: error number on failure.
++ */
++void nnpdrv_hostres_vunmap(struct nnpdrv_host_resource *res, void *vptr);
++
++/**
++ * nnpdrv_hostres_map_device() - Maps the host resource to NNP-I device
++ *
++ * @res: handle to host resource
++ * @nnpdev: handle to nnp device struct
++ * @use_one_entry: when true will produce ipc dma chain page table descriptor
++ *                 of the mapping in a single concurrent dma block.
++ *                 otherwise a chain of multiple blocks might be generated.
++ * @page_list: returns the dma address of the ipc dma chain page table
++ *             descriptor.
++ * @total_chunks: returns the total number of elements in the mapping's
++ *                sg_table. Can be NULL if this info is not required.
++ *
++ * This function maps the host resource to be accessible from device
++ * and returns the dma page list of DMA addresses packed in format
++ * suitable to be used in ipc level to be sent to the device.
++ *
++ * The resource can be mapped to multiple devices.
++ * The resource can be mapped to userspace and to device at the same time.
++ *
++ * Return: error on failure.
++ */
++int nnpdrv_hostres_map_device(struct nnpdrv_host_resource *res,
++			      struct nnp_device *nnpdev, bool use_one_entry,
++			      dma_addr_t *page_list, u32 *total_chunks);
++
++/**
++ * nnpdrv_hostres_unmap_device() - Unmaps the host resource from NNP-I device
++ * @res: handle to host resource
++ * @nnpdev: handle to nnp device struct
++ *
++ * This function unmaps previously mapped host resource from device.
++ * The resource must be mapped to this device before calling this function.
++ * The resource must be unlocked from this device, if it was previously locked,
++ * before calling this function.
++ *
++ * Return: error on failure.
++ */
++int nnpdrv_hostres_unmap_device(struct nnpdrv_host_resource *res,
++				struct nnp_device *nnpdev);
++
++/**
++ * nnpdrv_hostres_map_user() -  Maps the host resource to userspace
++ * @res: handle to host resource
++ * @vma: user virtual memory area
++ *
++ * This function maps the host resource to userspace virtual memory.
++ * The host resource can be mapped to userspace multiple times.
++ * The host resource can be mapped to user and to device at the same time.
++ *
++ * Return: error on failure.
++ */
++int nnpdrv_hostres_map_user(struct nnpdrv_host_resource *res,
++			    struct vm_area_struct *vma);
++
++/**
++ * nnpdrv_hostres_user_lock() - Lock the host resource to access from userspace
++ * @res: handle to host resource
++ *
++ * This function should be called before user-space application is accessing
++ * the host resource content (either for read or write). The function
++ * invalidates  or flashes the cpu caches when necessary.
++ * The function does *not* impose any synchronization between application and
++ * device accesses to the resource memory. Such synchronization is handled
++ * in user-space.
++ *
++ * Return: error on failure.
++ */
++int nnpdrv_hostres_user_lock(struct nnpdrv_host_resource *res);
++
++/**
++ * nnpdrv_hostres_user_unlock() - Unlocks the host resource from userspace access
++ * @res: handle to host resource
++ *
++ * This function should be called after user-space application is finished
++ * accessing the host resource content (either for read or write). The function
++ * invalidates  or flashes the cpu caches when necessary.
++ *
++ * Return: error on failure.
++ */
++int nnpdrv_hostres_user_unlock(struct nnpdrv_host_resource *res);
++
++/**
++ * nnpdrv_hostres_get() - Increases refcount of the hostres
++ * @res: handle to host resource
++ *
++ * This function increases refcount of the host resource if
++ * the resource exists.
++ *
++ * Return: non-zero on success, zero if the resource does not yet exist
++ */
++int nnpdrv_hostres_get(struct nnpdrv_host_resource *res);
++
++/**
++ * nnpdrv_hostres_put() - Decreases refcount of the hostres
++ * @res: handle to host resource
++ *
++ * This function decreases refcount of the host resource and destroyes it
++ * when it reaches 0.
++ */
++void nnpdrv_hostres_put(struct nnpdrv_host_resource *res);
++
++/**
++ * nnpdrv_hostres_is_input() - Returns if the host resource is input resource
++ * @res: handle to host resource
++ *
++ * This function returns true if the host resource can be read by device.
++ * The "input" terminology is used here since such resources are usually
++ * used as inputs to device inference network.
++ *
++ * Return: true if the reasource is readable.
++ */
++bool nnpdrv_hostres_is_input(struct nnpdrv_host_resource *res);
++
++/**
++ * nnpdrv_hostres_is_output() - Returns if the host resource is output resource
++ * @res: handle to host resource
++ *
++ * This function returns true if the host resource can be modified by device.
++ * The term "output" is used here since usually such resources are used for
++ * outputs of device inference network.
++ *
++ * Return: true if the reasource is writable.
++ */
++bool nnpdrv_hostres_is_output(struct nnpdrv_host_resource *res);
++
++size_t nnpdrv_hostres_get_size(struct nnpdrv_host_resource *res);
++
++bool nnpdrv_hostres_is_usermem(struct nnpdrv_host_resource *res);
++
++int nnpdrv_hostres_init_sysfs(struct kobject *kobj);
++void nnpdrv_hostres_fini_sysfs(struct kobject *kobj);
++
++#endif
+diff --git a/drivers/misc/intel-nnpi/pcie.h b/drivers/misc/intel-nnpi/pcie.h
+index 19976d7..ae156de 100644
+--- a/drivers/misc/intel-nnpi/pcie.h
++++ b/drivers/misc/intel-nnpi/pcie.h
+@@ -9,6 +9,7 @@
+ 
+ #include <linux/atomic.h>
+ #include <linux/kref.h>
++#include <linux/pci.h>
+ #include <linux/sched.h>
+ #include <linux/spinlock.h>
+ #include <linux/version.h>
+-- 
+1.8.3.1
+

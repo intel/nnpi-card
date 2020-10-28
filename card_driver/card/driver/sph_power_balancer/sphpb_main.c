@@ -388,7 +388,7 @@ int create_sphpb(void)
 
 	sphpb->kobj = kobject_create_and_add("sphpb", kernel_kobj);
 	if (unlikely(sphpb->kobj == NULL)) {
-		sph_log_err(POWER_BALANCER_LOG, "sphpb kboj creation failed");
+		sph_log_err(POWER_BALANCER_LOG, "sphpb kobj creation failed");
 		ret = -ENOMEM;
 		goto err;
 	}

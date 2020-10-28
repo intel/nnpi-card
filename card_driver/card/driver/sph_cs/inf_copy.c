@@ -473,6 +473,7 @@ void inf_copy_req_init(struct inf_exec_req *req,
 	req->f = &s_copy_funcs;
 	req->copy = copy;
 	req->cmd = cmd;
+	NNP_ASSERT(size <= copy->devres->size);
 	req->size = size <= copy->devres->size ? size : copy->devres->size;
 	req->priority = priority;
 	req->depend_devres = NULL;

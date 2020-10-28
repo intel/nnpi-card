@@ -14,6 +14,7 @@
 #include <stdint_ext.h>
 #else
 #include <linux/types.h>
+#include <linux/seq_file.h>
 #endif
 #include "project_device_interface.h"
 #include "cve_driver_internal_types.h"
@@ -61,11 +62,11 @@ void cve_di_cleanup(void);
  *	2) FIFO_SIZE = a pre-defined value
  * When the function returns the device is in run-stall state.
  * inputs :
- *	cve_dev - cve device
+ *	ntw - ice network
  * outputs:
  * returns:
  */
-void cve_di_reset_device(struct cve_device *cve_dev);
+void cve_di_reset_device(struct ice_network *ntw);
 
 /*
  * Start the device
@@ -337,4 +338,8 @@ int ice_di_check_mmu_regs(u32 *reg_list, u32 num_regs);
 void ice_di_config_mmu_regs(struct cve_device *ice, u32 *reg_list,
 		u32 num_regs);
 
+#ifndef RING3_VALIDATION
+void ice_di_job_info_print(struct seq_file *m,
+					struct jobgroup_descriptor *jobgroup);
+#endif
 #endif /* _DEVICE_INTERFACE_H_ */
