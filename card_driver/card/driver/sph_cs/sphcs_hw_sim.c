@@ -71,14 +71,14 @@ static int hw_sim_init_dma_engine(void *hw_handle)
 	return 0;
 }
 
-static void hw_sim_reset_rd_dma_engine(void *hw_handle)
+static int hw_sim_reset_rd_dma_engine(void *hw_handle)
 {
-
+	return 0;
 }
 
-static void hw_sim_reset_wr_dma_engine(void *hw_handle)
+static int hw_sim_reset_wr_dma_engine(void *hw_handle)
 {
-
+	return 0;
 }
 
 static void *dma_set_lli_data_element(void *sgl, dma_addr_t src, dma_addr_t dst, uint32_t size)
@@ -203,13 +203,13 @@ static int hw_sim_dma_edit_lli(void *hw_handle, struct lli_desc *outLli, uint64_
 	return 0;
 }
 
-static int hw_sim_dma_start_xfer_h2c(void *hw_handle, int channel, u32 priority, dma_addr_t lli_addr)
+static int hw_sim_dma_start_xfer_h2c(void *hw_handle, int channel, u32 priority, dma_addr_t lli_addr, u64 size)
 {
 	hw_sim_descriptor.post_dma_sgl_h2c_p(channel, lli_addr);
 	return 0;
 }
 
-static int hw_sim_dma_start_xfer_c2h(void *hw_handle, int channel, u32 priority, dma_addr_t lli_addr)
+static int hw_sim_dma_start_xfer_c2h(void *hw_handle, int channel, u32 priority, dma_addr_t lli_addr, u64 size)
 {
 	hw_sim_descriptor.post_dma_sgl_c2h_p(channel, lli_addr);
 	return 0;

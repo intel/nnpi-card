@@ -1,0 +1,620 @@
+From 4260c8e438a5080f68bd22ce724f2e194e403eb9 Mon Sep 17 00:00:00 2001
+From: Guy Zadicario <guy.zadicario@intel.com>
+Date: Mon, 5 Oct 2020 13:27:07 +0300
+Subject: [PATCH v8 13/22] misc: nnpi: device chardev
+
+This adds a character device for each NNP-I device (/dev/nnpi%d) with IOCTL
+interface which allows user-space to generate a "command channel"
+object through which user-space can send command direcly to the
+message scheduler for submission to the device. As well as receive
+responses arrived from the device.
+---
+ drivers/misc/intel-nnpi/Makefile         |   2 +-
+ drivers/misc/intel-nnpi/cmd_chan.c       |   5 +-
+ drivers/misc/intel-nnpi/device.c         |  32 ++++
+ drivers/misc/intel-nnpi/device.h         |   4 +
+ drivers/misc/intel-nnpi/device_chardev.c | 320 +++++++++++++++++++++++++++++++
+ drivers/misc/intel-nnpi/device_chardev.h |  31 +++
+ drivers/misc/intel-nnpi/nnpdrv_main.c    |  16 +-
+ include/uapi/misc/intel_nnpi.h           |  47 +++++
+ 8 files changed, 453 insertions(+), 4 deletions(-)
+ create mode 100644 drivers/misc/intel-nnpi/device_chardev.c
+ create mode 100644 drivers/misc/intel-nnpi/device_chardev.h
+
+diff --git a/drivers/misc/intel-nnpi/Makefile b/drivers/misc/intel-nnpi/Makefile
+index 745ab04..4cc16f54 100644
+--- a/drivers/misc/intel-nnpi/Makefile
++++ b/drivers/misc/intel-nnpi/Makefile
+@@ -8,6 +8,6 @@ obj-m	:= intel_nnpidrv.o
+ 
+ intel_nnpidrv-y := nnpdrv_main.o pcie.o device.o msg_scheduler.o \
+ 		   hostres.o host_chardev.o nnp_user.o bootimage.o \
+-                   cmd_chan.o
++                   device_chardev.o cmd_chan.o
+ 
+ ccflags-y += -I$(srctree)/$(src)/ipc_include
+diff --git a/drivers/misc/intel-nnpi/cmd_chan.c b/drivers/misc/intel-nnpi/cmd_chan.c
+index cc407431..3031b91 100644
+--- a/drivers/misc/intel-nnpi/cmd_chan.c
++++ b/drivers/misc/intel-nnpi/cmd_chan.c
+@@ -553,8 +553,9 @@ int nnpdrv_cmd_chan_add_response(struct nnpdrv_cmd_chan *cmd_chan,
+ 		 * a *very* long time without draining the responses, only
+ 		 * that application will get affected in this case.
+ 		 */
+-		pr_err("Response queue full for channel %d losing response!\n",
+-		       cmd_chan->chan_id);
++		dev_err(cmd_chan->nnpdev->dev,
++			"Response queue full for channel %d losing response!\n",
++			cmd_chan->chan_id);
+ 		return -ENOMEM;
+ 	}
+ 
+diff --git a/drivers/misc/intel-nnpi/device.c b/drivers/misc/intel-nnpi/device.c
+index 0239f18..397c8ea 100644
+--- a/drivers/misc/intel-nnpi/device.c
++++ b/drivers/misc/intel-nnpi/device.c
+@@ -20,6 +20,7 @@
+ #include <linux/workqueue.h>
+ #include "bootimage.h"
+ #include "cmd_chan.h"
++#include "device_chardev.h"
+ #include "host_chardev.h"
+ #include "ipc_c2h_events.h"
+ #include "nnp_boot_defs.h"
+@@ -308,6 +309,20 @@ void nnpdrv_submit_device_event_to_channels(struct nnp_device *nnpdev,
+ 		nnpdrv_destroy_all_channels(nnpdev);
+ }
+ 
++static void handle_channel_create_response(struct nnp_device *nnpdev,
++					   union c2h_event_report *event_msg)
++{
++	struct nnpdrv_cmd_chan *cmd_chan;
++
++	cmd_chan = nnpdrv_device_find_channel(nnpdev, event_msg->obj_id);
++	if (!cmd_chan)
++		return;
++
++	cmd_chan->event_msg.value = event_msg->value;
++	nnpdrv_cmd_chan_put(cmd_chan);
++	wake_up_all(&nnpdev->waitq);
++}
++
+ static void handle_channel_destroy(struct nnp_device      *nnpdev,
+ 				   union c2h_event_report *event_msg)
+ {
+@@ -346,6 +361,10 @@ static void nnpdrv_process_device_event(struct nnp_device *nnpdev,
+ 		nnpdrv_submit_device_event_to_channels(nnpdev, event_msg, true);
+ 	} else {
+ 		switch (event_msg->event_code) {
++		case NNP_IPC_CREATE_CHANNEL_SUCCESS:
++		case NNP_IPC_CREATE_CHANNEL_FAILED:
++			handle_channel_create_response(nnpdev, event_msg);
++			break;
+ 		case NNP_IPC_DESTROY_CHANNEL_FAILED:
+ 			pr_err("Channel destroyed failed channel %d val %d\n",
+ 			       event_msg->obj_id, event_msg->event_val);
+@@ -914,6 +933,11 @@ struct nnp_device *nnpdrv_device_create(struct nnp_pci_device *nnp_pci)
+ 		(struct nnp_sys_info *)((uintptr_t)nnpdev->bios_system_info +
+ 					NNP_PAGE_SIZE);
+ 
++	/* Create the character device interface to this device */
++	ret = nnpdev_device_chardev_create(nnpdev);
++	if (ret)
++		goto err_sys_info;
++
+ 	/* set host driver state to "Not ready" */
+ 	ret = nnp_set_host_doorbell_value(nnpdev->nnp_pci, 0);
+ 	if (ret)
+@@ -928,6 +952,11 @@ struct nnp_device *nnpdrv_device_create(struct nnp_pci_device *nnp_pci)
+ 
+ 	return nnpdev;
+ 
++err_sys_info:
++	dma_free_coherent(&nnpdev->nnp_pci->pdev->dev,
++			  2 * NNP_PAGE_SIZE,
++			  nnpdev->bios_system_info,
++			  nnpdev->bios_system_info_dma_addr);
+ err_crash_dump:
+ 	dma_free_coherent(&nnpdev->nnp_pci->pdev->dev,
+ 			  NNP_CRASH_DUMP_SIZE,
+@@ -1116,6 +1145,9 @@ static void nnpdrv_free_device(struct work_struct *work)
+ 	if (nnpdev->boot_image_loaded)
+ 		unload_boot_image(nnpdev);
+ 
++	/* destroy device character device */
++	nnpdev_device_chardev_destroy(nnpdev);
++
+ 	dma_free_coherent(&nnpdev->nnp_pci->pdev->dev,
+ 			  NNP_CRASH_DUMP_SIZE,
+ 			  nnpdev->host_crash_dump.vaddr,
+diff --git a/drivers/misc/intel-nnpi/device.h b/drivers/misc/intel-nnpi/device.h
+index cd51d87..12745c2 100644
+--- a/drivers/misc/intel-nnpi/device.h
++++ b/drivers/misc/intel-nnpi/device.h
+@@ -117,6 +117,8 @@ struct query_version_work {
+  * @host_crash_dump: allocated dma page info to host device crash dump
+  * @query_version_work: work struct used to schedule processing of version
+  *                      reply response message arrived from device.
++ * @cdev: cdev object of NNP-I device char dev.
++ * @dev: character device for this device
+  * @ipc_chan_resp_op_size: holds response size for each possible channel
+  *                         response.
+  * @ipc_chan_cmd_op_size: holds command size for each possible channel command.
+@@ -169,6 +171,8 @@ struct nnp_device {
+ 	struct host_crash_dump    host_crash_dump;
+ 	struct query_version_work query_version_work;
+ 
++	struct cdev cdev;
++	struct device *dev;
+ 	u8   ipc_chan_resp_op_size[32];
+ 	u8   ipc_chan_cmd_op_size[32];
+ };
+diff --git a/drivers/misc/intel-nnpi/device_chardev.c b/drivers/misc/intel-nnpi/device_chardev.c
+new file mode 100644
+index 0000000..567e389
+--- /dev/null
++++ b/drivers/misc/intel-nnpi/device_chardev.c
+@@ -0,0 +1,320 @@
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++/********************************************
++ * Copyright (C) 2019-2020 Intel Corporation
++ ********************************************/
++
++#define pr_fmt(fmt)   KBUILD_MODNAME ": %s, " fmt, __func__
++
++#include <linux/cdev.h>
++#include <linux/device.h>
++#include <linux/init.h>
++#include <linux/kernel.h>
++#include <linux/module.h>
++#include <linux/printk.h>
++#include <linux/slab.h>
++#include <uapi/misc/intel_nnpi.h>
++#include "cmd_chan.h"
++#include "device_chardev.h"
++#include "ipc_c2h_events.h"
++
++static dev_t       devnum;
++static struct class *class;
++
++#define NNPDRV_DEVICE_DEV_NAME "nnpi"
++
++static inline int is_nnp_device_file(struct file *f);
++
++static int nnpdrv_device_open(struct inode *inode, struct file *f)
++{
++	struct device_client_info *client;
++
++	if (!is_nnp_device_file(f))
++		return -EINVAL;
++
++	if (!inode->i_cdev)
++		return -EINVAL;
++
++	client = kzalloc(sizeof(*client), GFP_KERNEL);
++	if (!client)
++		return -ENOMEM;
++
++	client->nnpdev = container_of(inode->i_cdev,
++				      struct nnp_device,
++				      cdev);
++
++	f->private_data = client;
++
++	return 0;
++}
++
++static int nnpdrv_device_release(struct inode *inode, struct file *f)
++{
++	struct device_client_info *client =
++		(struct device_client_info *)f->private_data;
++
++	if (!is_nnp_device_file(f))
++		return -EINVAL;
++
++	kfree(client);
++	f->private_data = NULL;
++
++	return 0;
++}
++
++static int event_val_to_nnp_error(enum event_val event_val)
++{
++	pr_debug("Got error. event_val: %d\n", event_val);
++
++	switch (event_val) {
++	case NNP_IPC_NO_ERROR:
++		return 0;
++	case NNP_IPC_NO_MEMORY:
++		return -ENOMEM;
++	default:
++		return -EFAULT;
++	}
++}
++
++static long create_channel(struct device_client_info *cinfo,
++			   void __user               *arg,
++			   unsigned int              size)
++{
++	struct nnp_device *nnpdev = cinfo->nnpdev;
++	struct ioctl_nnpi_create_channel req;
++	struct nnpdrv_cmd_chan *chan;
++	union h2c_channel_op msg;
++	u32 error_mask;
++	long ret = 0;
++	unsigned int io_size = sizeof(req);
++
++	if (size != io_size)
++		return -EINVAL;
++
++	ret = copy_from_user(&req, arg, io_size);
++	if (ret != 0)
++		return -EFAULT;
++
++	req.o_errno = 0;
++
++	if (req.i_max_id < req.i_min_id ||
++	    req.i_max_id > 1023 || req.i_min_id < 0)
++		return -EINVAL;
++
++	/* limit command queue weight to 5 */
++	if (req.i_weight > 5)
++		return -EINVAL;
++
++	/*
++	 * Do not allow create command channel if device is in
++	 * error state.
++	 * However allow new non infer context channels in case
++	 * of fatal ICE error in order to allow retrieve debug
++	 * information.
++	 */
++	error_mask = NNP_DEVICE_ERROR_MASK;
++	if (req.i_max_id >= 256)
++		error_mask &= ~(NNP_DEVICE_FATAL_ICE_ERROR);
++
++	if ((nnpdev->state & error_mask) ||
++	    !(nnpdev->state & NNP_DEVICE_CARD_DRIVER_READY) ||
++	    (req.i_max_id < 256 &&
++	     (nnpdev->state & NNP_DEVICE_ACTIVE_MASK) !=
++	     NNP_DEVICE_ACTIVE_MASK)) {
++		req.o_errno = NNPER_DEVICE_NOT_READY;
++		goto done;
++	}
++
++	/* Validate channel protocol version */
++	if (NNP_VERSION_MAJOR(req.i_protocol_version) !=
++	    NNP_VERSION_MAJOR(nnpdev->chan_protocol_version) ||
++	    NNP_VERSION_MINOR(req.i_protocol_version) !=
++	    NNP_VERSION_MINOR(nnpdev->chan_protocol_version)) {
++		req.o_errno = NNPER_VERSIONS_MISMATCH;
++		goto done;
++	}
++
++	ret = nnpdrv_cmd_chan_create(nnpdev,
++				     req.i_host_fd,
++				     req.i_weight,
++				     req.i_min_id,
++				     req.i_max_id,
++				     req.i_get_device_events,
++				     &chan);
++	if (ret < 0)
++		goto done;
++
++	/*
++	 * send the create request to card
++	 *
++	 * Some requests sent from user-space to the device using the command
++	 * channel should be rejected by the device if it made from
++	 * a different or un-priviledged user.
++	 * We send the uid and flag the channel privilege only for
++	 * CAP_SYS_ADMIN users. The device uses this info to reject
++	 * certain particular requests when made from other channels.
++	 */
++	msg.value = 0;
++	msg.opcode = NNP_IPC_H2C_OP_CHANNEL_OP;
++	msg.chan_id = chan->chan_id;
++	msg.uid = current_euid().val;
++	if (capable(CAP_SYS_ADMIN))
++		msg.privileged = 1;
++
++	ret = nnpdrv_queue_msg(nnpdev->public_cmdq, msg);
++	if (ret < 0) {
++		if (!nnpdrv_cmd_chan_set_destroyed(chan))
++			nnpdrv_cmd_chan_put(chan);
++		goto done;
++	}
++
++	ret = wait_event_interruptible(nnpdev->waitq,
++		chan->event_msg.value != 0 ||
++		is_card_fatal_drv_event(chan->card_critical_error.event_code));
++	if (chan->event_msg.value == 0) {
++		if (ret < 0) {
++			ret = -EINTR;
++			nnpdrv_cmd_chan_send_destroy(chan);
++		} else {
++			req.o_errno = NNPER_DEVICE_ERROR;
++			ret = 0;
++			if (!nnpdrv_cmd_chan_set_destroyed(chan))
++				nnpdrv_cmd_chan_put(chan);
++		}
++		goto done;
++	} else if (chan->event_msg.event_code ==
++		   NNP_IPC_CREATE_CHANNEL_FAILED) {
++		req.o_errno = event_val_to_nnp_error(chan->event_msg.event_val);
++		if (!nnpdrv_cmd_chan_set_destroyed(chan))
++			nnpdrv_cmd_chan_put(chan);
++		goto done;
++	}
++
++	req.o_channel_id = chan->chan_id;
++
++	/*
++	 * Attach file descriptor to the channel object - if created
++	 * successfully
++	 */
++	req.o_fd = nnpdrv_cmd_chan_create_file(chan);
++
++	/* remove channel object if failed */
++	if (req.o_fd < 0) {
++		ret = req.o_fd;
++		nnpdrv_cmd_chan_send_destroy(chan);
++	}
++
++done:
++	req.o_privileged = capable(CAP_SYS_ADMIN) ? 1 : 0;
++	if (copy_to_user(arg, &req, io_size) != 0)
++		return -EFAULT;
++
++	return ret;
++}
++
++static long nnpdrv_device_ioctl(struct file  *f,
++				unsigned int  cmd,
++				unsigned long arg)
++{
++	struct device_client_info *client =
++		(struct device_client_info *)f->private_data;
++	unsigned int ioc_nr, size;
++
++	if (!is_nnp_device_file(f))
++		return -EINVAL;
++
++	if (_IOC_TYPE(cmd) != 'D')
++		return -EINVAL;
++
++	ioc_nr = _IOC_NR(cmd);
++	size = _IOC_SIZE(cmd);
++
++	switch (ioc_nr) {
++	case _IOC_NR(IOCTL_NNPI_DEVICE_CREATE_CHANNEL):
++		return create_channel(client, (void __user *)arg, size);
++	default:
++		dev_err(client->nnpdev->dev,
++			"Unsupported device IOCTL 0x%x\n", cmd);
++	}
++
++	return -EINVAL;
++}
++
++static const struct file_operations nnpdrv_device_fops = {
++	.owner = THIS_MODULE,
++	.open = nnpdrv_device_open,
++	.release = nnpdrv_device_release,
++	.unlocked_ioctl = nnpdrv_device_ioctl,
++	.compat_ioctl = nnpdrv_device_ioctl
++};
++
++static inline int is_nnp_device_file(struct file *f)
++{
++	return (f->f_op == &nnpdrv_device_fops);
++}
++
++int nnpdev_device_chardev_create(struct nnp_device *nnpdev)
++{
++	int ret;
++
++	if (!nnpdev)
++		return -EINVAL;
++
++	cdev_init(&nnpdev->cdev, &nnpdrv_device_fops);
++	nnpdev->cdev.owner = THIS_MODULE;
++	ret = cdev_add(&nnpdev->cdev,
++		       MKDEV(MAJOR(devnum), nnpdev->id),
++		       1);
++	if (ret)
++		return ret;
++
++	nnpdev->dev = device_create(class,
++				    NULL,
++				    MKDEV(MAJOR(devnum), nnpdev->id),
++				    nnpdev,
++				    NNPI_DEVICE_DEV_FMT,
++				    nnpdev->id);
++	if (IS_ERR(nnpdev->dev)) {
++		cdev_del(&nnpdev->cdev);
++		return PTR_ERR(nnpdev->dev);
++	}
++
++	return 0;
++}
++
++void nnpdev_device_chardev_destroy(struct nnp_device *nnpdev)
++{
++	if (nnpdev) {
++		device_destroy(class, MKDEV(MAJOR(devnum), nnpdev->id));
++		cdev_del(&nnpdev->cdev);
++	}
++}
++
++int nnpdev_device_chardev_init(void)
++{
++	int ret;
++
++	ret = alloc_chrdev_region(&devnum, 0,
++				  NNP_MAX_DEVS, NNPDRV_DEVICE_DEV_NAME);
++	if (ret < 0) {
++		pr_err("failed to allocate devnum %d\n", ret);
++		return ret;
++	}
++
++	class = class_create(THIS_MODULE, NNPDRV_DEVICE_DEV_NAME);
++	if (IS_ERR(class)) {
++		ret = PTR_ERR(class);
++		pr_err("failed to register class %d\n", ret);
++		unregister_chrdev_region(devnum, NNP_MAX_DEVS);
++		return ret;
++	}
++
++	return 0;
++}
++
++void nnpdev_device_chardev_cleanup(void)
++{
++	class_destroy(class);
++	unregister_chrdev_region(devnum, NNP_MAX_DEVS);
++}
++
+diff --git a/drivers/misc/intel-nnpi/device_chardev.h b/drivers/misc/intel-nnpi/device_chardev.h
+new file mode 100644
+index 0000000..46d17dd
+--- /dev/null
++++ b/drivers/misc/intel-nnpi/device_chardev.h
+@@ -0,0 +1,31 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++
++/********************************************
++ * Copyright (C) 2019-2020 Intel Corporation
++ ********************************************/
++#ifndef _NNPDRV_DEVICE_CHARDEV_H
++#define _NNPDRV_DEVICE_CHARDEV_H
++
++#include "device.h"
++#include <linux/fs.h>
++#include <linux/list.h>
++
++struct events_report_client_info {
++	struct list_head events_list_head;
++	struct list_head node;
++};
++
++struct inf_process_info;
++
++struct device_client_info {
++	struct nnp_device *nnpdev;
++	struct file *host_file;
++	bool is_inf_client;
++};
++
++int nnpdev_device_chardev_create(struct nnp_device *nnpdev);
++void nnpdev_device_chardev_destroy(struct nnp_device *nnpdev);
++int nnpdev_device_chardev_init(void);
++void nnpdev_device_chardev_cleanup(void);
++
++#endif
+diff --git a/drivers/misc/intel-nnpi/nnpdrv_main.c b/drivers/misc/intel-nnpi/nnpdrv_main.c
+index 9dcb9dd..31bf403 100644
+--- a/drivers/misc/intel-nnpi/nnpdrv_main.c
++++ b/drivers/misc/intel-nnpi/nnpdrv_main.c
+@@ -12,6 +12,7 @@
+ #include <linux/printk.h>
+ #include <linux/stringify.h>
+ #include "device.h"
++#include "device_chardev.h"
+ #include "pcie.h"
+ 
+ static int __init nnpdrv_init_module(void)
+@@ -20,18 +21,31 @@ static int __init nnpdrv_init_module(void)
+ 
+ 	nnpdrv_device_module_init();
+ 
++	ret = nnpdev_device_chardev_init();
++	if (ret) {
++		pr_err("failed to init chardev class\n");
++		goto err_dev;
++	}
++
+ 	ret = nnpdrv_pci_module_init();
+ 	if (ret) {
+ 		pr_err("failed to init pcie\n");
+-		return -ENODEV;
++		goto err_char;
+ 	}
+ 
+ 	return 0;
++
++err_char:
++	nnpdev_device_chardev_cleanup();
++err_dev:
++	nnpdrv_device_module_fini();
++	return ret;
+ }
+ 
+ static void __exit nnpdrv_cleanup(void)
+ {
+ 	nnpdrv_pci_module_fini();
++	nnpdev_device_chardev_cleanup();
+ 	nnpdrv_device_module_fini();
+ }
+ 
+diff --git a/include/uapi/misc/intel_nnpi.h b/include/uapi/misc/intel_nnpi.h
+index f789a89..4808ad6 100644
+--- a/include/uapi/misc/intel_nnpi.h
++++ b/include/uapi/misc/intel_nnpi.h
+@@ -145,6 +145,53 @@ struct nnpdrv_ioctl_destroy_hostres {
+ 	__u8  o_errno;
+ };
+ 
++/*
++ * ioctls for /dev/nnpi%d device
++ */
++#define NNPI_DEVICE_DEV_FMT "nnpi%u"
++
++/**
++ * IOCTL_NNPI_DEVICE_CREATE_CHANNEL:
++ *
++ * A request to create a new communication "channel" with an NNP-I device.
++ * This channel can be used to send command and receive responses from the
++ * device.
++ */
++#define IOCTL_NNPI_DEVICE_CREATE_CHANNEL      \
++	_IOWR('D', 0, struct ioctl_nnpi_create_channel)
++
++/**
++ * struct ioctl_nnpi_create_channel - IOCTL_NNPI_DEVICE_CREATE_CHANNEL payload
++ * @i_weight: controls how much command submission bandwidth this channel will
++ *            get comparing to other channels. This value defines how much
++ *            commands should be transmitted (if available) to the device from
++ *            this channel before scheduling transmision from other channels.
++ * @i_host_fd: opened file descriptor to /dev/nnpi_host
++ * @i_min_id: minimum range for channel id allocation
++ * @i_max_id: maximum range for channel id allocation
++ * @i_get_device_events: if true, device-level event responses will be
++ *            delivered to be read from the channel.
++ * @i_protocol_version: The NNP_IPC_CHAN_PROTOCOL_VERSION the user-space has
++ *                      compiled with.
++ * @o_fd: returns file-descriptor through which commands/responses can be
++ *        write/read.
++ * @o_channel_id: returns the unique id of the channel
++ * @o_privileged: true if the channel is priviledged
++ * @o_errno: On output, 0 on success, one of the NNPERR_* error codes on error.
++ */
++struct ioctl_nnpi_create_channel {
++	__u32    i_weight;
++	__s32    i_host_fd;
++	__s32    i_min_id;
++	__s32    i_max_id;
++	__s32    i_get_device_events;
++	__u16    i_protocol_version;
++	__s32    o_fd;
++	__u16    o_channel_id;
++	__s32    o_privileged;
++	__u8     o_errno;
++};
++
+ /****************************************************************
+  * Error code values - errors returned in o_errno fields of
+  * above structures.
+-- 
+1.8.3.1
+

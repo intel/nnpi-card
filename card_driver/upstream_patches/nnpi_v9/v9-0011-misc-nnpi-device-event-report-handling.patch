@@ -1,0 +1,416 @@
+From acd5d853de3421f4c5a87eb2d418bdd4c0109bb7 Mon Sep 17 00:00:00 2001
+From: Guy Zadicario <guy.zadicario@intel.com>
+Date: Mon, 5 Oct 2020 13:17:51 +0300
+Subject: [PATCH v9 11/22] misc: nnpi: device event report handling
+
+This adds handling of various "event report" response messages arrived
+from the device.
+Some of these responses are sent by the device to indicate an error or
+some other event detected on the device and some are sent as responses
+for commands that previously sent to the device.
+The possible event responses are defined in ipc_include/ipc_c2h_events.h
+included in this commit.
+
+The event report response may be targeted to a specific command channel,
+in which case it is being routed to that channel, or it may be a
+"device-level" event which is handled by the driver.
+---
+ drivers/misc/intel-nnpi/cmd_chan.h                 |   2 +
+ drivers/misc/intel-nnpi/device.c                   |  92 ++++++++++
+ drivers/misc/intel-nnpi/device.h                   |   5 +
+ .../misc/intel-nnpi/ipc_include/ipc_c2h_events.h   | 204 +++++++++++++++++++++
+ drivers/misc/intel-nnpi/ipc_include/ipc_protocol.h |   1 +
+ 5 files changed, 304 insertions(+)
+ create mode 100644 drivers/misc/intel-nnpi/ipc_include/ipc_c2h_events.h
+
+diff --git a/drivers/misc/intel-nnpi/cmd_chan.h b/drivers/misc/intel-nnpi/cmd_chan.h
+index eb1d754..3ca1d45 100644
+--- a/drivers/misc/intel-nnpi/cmd_chan.h
++++ b/drivers/misc/intel-nnpi/cmd_chan.h
+@@ -62,6 +62,8 @@ struct nnpdrv_cmd_chan {
+ 	char             *respq_buf;
+ };
+ 
++#define chan_broken(chan) ((chan)->card_critical_error.event_code)
++
+ int nnpdrv_cmd_chan_create(struct nnp_device *nnpdev, int host_fd, u32 weight,
+ 			   unsigned int min_id, unsigned int max_id,
+ 			   bool get_device_events,
+diff --git a/drivers/misc/intel-nnpi/device.c b/drivers/misc/intel-nnpi/device.c
+index b8fca93..b1c193a 100644
+--- a/drivers/misc/intel-nnpi/device.c
++++ b/drivers/misc/intel-nnpi/device.c
+@@ -21,6 +21,7 @@
+ #include "bootimage.h"
+ #include "cmd_chan.h"
+ #include "host_chardev.h"
++#include "ipc_c2h_events.h"
+ #include "nnp_boot_defs.h"
+ #include "pcie.h"
+ 
+@@ -229,6 +230,95 @@ struct nnpdrv_cmd_chan *nnpdrv_find_channel(struct nnp_device *nnpdev,
+ 	return NULL;
+ }
+ 
++void nnpdrv_submit_device_event_to_channels(struct nnp_device *nnpdev,
++					    union c2h_event_report *event_msg,
++					    bool force)
++{
++	struct nnpdrv_cmd_chan *cmd_chan;
++	int i;
++
++	spin_lock(&nnpdev->lock);
++	hash_for_each(nnpdev->cmd_chan_hash, i, cmd_chan, hash_node) {
++		if (is_card_fatal_event(event_msg->event_code) &&
++		    !is_card_fatal_drv_event(chan_broken(cmd_chan))) {
++			cmd_chan->card_critical_error.value = event_msg->value;
++			wake_up_all(&nnpdev->waitq);
++		}
++
++		if (force || cmd_chan->get_device_events)
++			nnpdrv_cmd_chan_add_response(cmd_chan, (u64 *)event_msg,
++						     sizeof(*event_msg));
++	}
++	spin_unlock(&nnpdev->lock);
++}
++
++/*
++ * this function handle device-level event report message.
++ * which is usually affect the entire device and not a single channel
++ */
++static void nnpdrv_process_device_event(struct nnp_device *nnpdev,
++					union c2h_event_report *event_msg)
++{
++	bool force = is_card_fatal_event(event_msg->event_code);
++
++	nnpdrv_submit_device_event_to_channels(nnpdev, event_msg, force);
++}
++
++struct event_report_work {
++	struct work_struct work;
++	struct nnp_device    *nnpdev;
++	union c2h_event_report msg;
++};
++
++static void device_event_report_handler(struct work_struct *work)
++{
++	struct event_report_work *req =
++		container_of(work, struct event_report_work, work);
++
++	nnpdrv_process_device_event(req->nnpdev, &req->msg);
++
++	kfree(req);
++}
++
++static int handle_event_report(struct nnp_device *nnpdev, const void *msgbuf,
++			       int avail_qwords)
++{
++	const union c2h_event_report *event_msg = msgbuf;
++	struct event_report_work *req;
++
++	int msg_qwords = sizeof(*event_msg) / sizeof(u64);
++
++	if (avail_qwords < msg_qwords)
++		return 0;
++
++	if (event_msg->chan_valid) {
++		struct nnpdrv_cmd_chan *cmd_chan;
++
++		cmd_chan = nnpdrv_find_channel(nnpdev, event_msg->chan_id);
++		if (cmd_chan) {
++			nnpdrv_cmd_chan_add_response(cmd_chan, (u64 *)event_msg,
++						     sizeof(*event_msg));
++			nnpdrv_cmd_chan_put(cmd_chan);
++		} else {
++			dev_dbg(&nnpdev->nnp_pci->pdev->dev,
++				"Got Event Report for non existing channel id %d\n",
++				event_msg->chan_id);
++		}
++		return msg_qwords;
++	}
++
++	req = kzalloc(sizeof(*req), GFP_NOWAIT);
++	if (!req)
++		return msg_qwords;
++
++	memcpy(&req->msg, event_msg, sizeof(*event_msg));
++	req->nnpdev = nnpdev;
++	INIT_WORK(&req->work, device_event_report_handler);
++	queue_work(nnpdev->wq, &req->work);
++
++	return msg_qwords;
++}
++
+ static int handle_sys_info(struct nnp_device *nnpdev, const void *msgbuf,
+ 			   int avail_qwords)
+ {
+@@ -257,6 +347,7 @@ typedef int (*response_handler)(struct nnp_device *nnpdev, const void *msgbuf,
+ 
+ static response_handler resp_handlers[NNP_IPC_C2H_OPCODE_LAST + 1] = {
+ 	[NNP_IPC_C2H_OP_QUERY_VERSION_REPLY3] = handle_query_version_reply3,
++	[NNP_IPC_C2H_OP_EVENT_REPORT] = handle_event_report,
+ 	[NNP_IPC_C2H_OP_SYS_INFO] = handle_sys_info,
+ 	[NNP_IPC_C2H_OP_BIOS_PROTOCOL] = handle_bios_protocol
+ };
+@@ -666,6 +757,7 @@ struct nnp_device *nnpdrv_device_create(struct nnp_pci_device *nnp_pci)
+ 
+ 	ida_init(&nnpdev->cmd_chan_ida);
+ 	hash_init(nnpdev->cmd_chan_hash);
++	init_waitqueue_head(&nnpdev->waitq);
+ 
+ 	ret = nnpdrv_first_device_init();
+ 	if (ret)
+diff --git a/drivers/misc/intel-nnpi/device.h b/drivers/misc/intel-nnpi/device.h
+index 0dd83bb..e0aeef0 100644
+--- a/drivers/misc/intel-nnpi/device.h
++++ b/drivers/misc/intel-nnpi/device.h
+@@ -99,6 +99,7 @@ struct query_version_work {
+  * @response_num_msgs: number of qwords available in @response_buf
+  * @cmd_chan_ida: allocate channel ids to be used in ipc protocol.
+  * @cmd_chan_hash: maps command channel id to its struct pointer.
++ * @waitq: used to wait for device response messages
+  * @bios_system_info_dma_addr: dma page allocated for bios system info.
+  * @bios_system_info: virtual pointer to bios system info page
+  * @bios_version_str: the device's started bios version string
+@@ -149,6 +150,7 @@ struct nnp_device {
+ 
+ 	struct ida cmd_chan_ida;
+ 	DECLARE_HASHTABLE(cmd_chan_hash, 6);
++	wait_queue_head_t waitq;
+ 
+ 	dma_addr_t                  bios_system_info_dma_addr;
+ 	struct nnp_c2h_system_info  *bios_system_info;
+@@ -194,5 +196,8 @@ static inline int nnpdrv_msg_sched_queue_add_msg(struct msg_sched_queue *queue,
+ 
+ struct nnpdrv_cmd_chan *nnpdrv_find_channel(struct nnp_device *nnpdev,
+ 					    u16 chan_id);
++void nnpdrv_submit_device_event_to_channels(struct nnp_device *nnpdev,
++					    union c2h_event_report *event_msg,
++					    bool force);
+ 
+ #endif
+diff --git a/drivers/misc/intel-nnpi/ipc_include/ipc_c2h_events.h b/drivers/misc/intel-nnpi/ipc_include/ipc_c2h_events.h
+new file mode 100644
+index 0000000..10d6581
+--- /dev/null
++++ b/drivers/misc/intel-nnpi/ipc_include/ipc_c2h_events.h
+@@ -0,0 +1,204 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++
++/********************************************
++ * Copyright (C) 2019-2020 Intel Corporation
++ ********************************************/
++#ifndef _NNP_IPC_C2H_EVENTS_H
++#define _NNP_IPC_C2H_EVENTS_H
++
++/**
++ * The following describes the possible values for a c2h_event_report message
++ * sent from card to host to report on some error or other events.
++ *
++ * The c2h_event_report message has the following fields available to describe
++ * the event:
++ *    event_code  - 8 bits value describing the type of event
++ *    event_val   - 8 bits value - interpetation depends on event_code
++ *    chan_id     - the protocol id of the channel in which the event was
++ *                 occurred.
++ *    obj_id      - 16 bits, interpretation depends on event_code, usually used
++ *                 to hold an inference object protocol ID.
++ *    obj_id_2    - 16 bits, in case obj_id is not enough to describe the object
++ * In this file we define the possible values for the above fields and document
++ * each field meaning for each possible event_code.
++ */
++
++/**
++ * Event codes ranges
++ *
++ * Those ranges should match the definition of RuntimeEventCodes
++ * defined in include/sphcsInference.h and used by the daemon/runtime
++ * interface !!!
++ *
++ * error codes are grouped into the following ranges:
++ *     0 -   3   ==> non error events generated by daemon/runtime
++ *     4 -  47   ==> non error events generated by card kernel driver
++ *    48 -  51   ==> non-critical error events generated by daemon/runtime
++ *    52 -  95   ==> non-critical error events generatd by kernel driver
++ *    96 - 103   ==> context-critical error events generated by daemon/runtime
++ *   104 - 111   ==> context-critical error events generated by kernel driver
++ *   112 - 119   ==> card-critical error events generated by daemon/runtime
++ *   120 - 127   ==> card-critical error events generated by kernel driver
++ *
++ * context-critical error event is one that puts the infer context in an
++ * un-recovarable error state.
++ * card-critical error event is one that make the card not useful for inference
++ * request until it is reset.
++ */
++#define EVENT_NON_ERR_START             0
++#define EVENT_NON_ERR_DRV_START         4
++#define EVENT_ERR_START                48
++#define EVENT_ERR_DRV_START            52
++#define EVENT_CONTEXT_FATAL_START      96
++#define EVENT_CONTEXT_FATAL_DRV_START 104
++#define EVENT_CARD_FATAL_START        112
++#define EVENT_CARD_FATAL_DRV_START    120
++
++#define is_context_fatal_event(e)  ({ \
++	int e_ = (e); \
++	(e_ >= EVENT_CONTEXT_FATAL_START && e_ < EVENT_CARD_FATAL_START); \
++})
++
++#define is_card_fatal_event(e)     ((e) >= EVENT_CARD_FATAL_START)
++#define is_card_fatal_drv_event(e)     ((e) >= EVENT_CARD_FATAL_DRV_START)
++
++#define NNP_IPC_RUNTIME_DONE   (EVENT_NON_ERR_START + 1)
++/*            MAX offset for EVENT_NON_ERR_START is 3 */
++
++/* non-error event codes */
++#define NNP_IPC_CREATE_CONTEXT_SUCCESS   (EVENT_NON_ERR_DRV_START + 0)
++#define NNP_IPC_CREATE_DEVRES_SUCCESS    (EVENT_NON_ERR_DRV_START + 1)
++#define NNP_IPC_CREATE_COPY_SUCCESS      (EVENT_NON_ERR_DRV_START + 2)
++#define NNP_IPC_EXECUTE_COPY_SUCCESS     (EVENT_NON_ERR_DRV_START + 3)
++#define NNP_IPC_DEVRES_DESTROYED         (EVENT_NON_ERR_DRV_START + 4)
++#define NNP_IPC_COPY_DESTROYED           (EVENT_NON_ERR_DRV_START + 5)
++#define NNP_IPC_CONTEXT_DESTROYED        (EVENT_NON_ERR_DRV_START + 6)
++#define NNP_IPC_CREATE_DEVNET_SUCCESS    (EVENT_NON_ERR_DRV_START + 7)
++#define NNP_IPC_DEVNET_DESTROYED         (EVENT_NON_ERR_DRV_START + 8)
++#define NNP_IPC_CREATE_INFREQ_SUCCESS    (EVENT_NON_ERR_DRV_START + 9)
++#define NNP_IPC_INFREQ_DESTROYED         (EVENT_NON_ERR_DRV_START + 10)
++#define NNP_IPC_RECOVER_CONTEXT_SUCCESS  (EVENT_NON_ERR_DRV_START + 11)
++#define NNP_IPC_THERMAL_TRIP_EVENT       (EVENT_NON_ERR_DRV_START + 12)
++#define NNP_IPC_DEVNET_ADD_RES_SUCCESS   (EVENT_NON_ERR_DRV_START + 13)
++#define NNP_IPC_DEVICE_STATE_CHANGED     (EVENT_NON_ERR_DRV_START + 14)
++#define NNP_IPC_DEVNET_RESOURCES_RESERVATION_SUCCESS \
++	(EVENT_NON_ERR_DRV_START + 15)
++#define NNP_IPC_DEVNET_RESOURCES_RELEASE_SUCCESS  (EVENT_NON_ERR_DRV_START + 16)
++#define NNP_IPC_CREATE_CHANNEL_SUCCESS   (EVENT_NON_ERR_DRV_START + 17)
++#define NNP_IPC_CHANNEL_DESTROYED        (EVENT_NON_ERR_DRV_START + 18)
++#define NNP_IPC_CHANNEL_SET_RB_SUCCESS   (EVENT_NON_ERR_DRV_START + 19)
++#define NNP_IPC_CHANNEL_MAP_HOSTRES_SUCCESS   (EVENT_NON_ERR_DRV_START + 20)
++#define NNP_IPC_CHANNEL_UNMAP_HOSTRES_SUCCESS (EVENT_NON_ERR_DRV_START + 21)
++#define NNP_IPC_ABORT_REQUEST            (EVENT_NON_ERR_DRV_START + 22)
++#define NNP_IPC_GET_FIFO                 (EVENT_NON_ERR_DRV_START + 23)
++#define NNP_IPC_CREATE_CMD_SUCCESS       (EVENT_NON_ERR_DRV_START + 24)
++#define NNP_IPC_CMD_DESTROYED            (EVENT_NON_ERR_DRV_START + 25)
++#define NNP_IPC_EXECUTE_CMD_COMPLETE     (EVENT_NON_ERR_DRV_START + 26)
++#define NNP_IPC_DEVNET_SET_PROPERTY_SUCCESS  (EVENT_NON_ERR_DRV_START + 27)
++#define NNP_IPC_EXECUTE_CPYLST_SUCCESS   (EVENT_NON_ERR_DRV_START + 28)
++#define NNP_IPC_GET_CR_FIFO_REPLY        (EVENT_NON_ERR_DRV_START + 29)
++#define NNP_IPC_P2P_PEERS_CONNECTED      (EVENT_NON_ERR_DRV_START + 30)
++#define NNP_IPC_P2P_PEER_DEV_UPDATED     (EVENT_NON_ERR_DRV_START + 31)
++#define NNP_IPC_EXECUTE_COPY_SUBRES_SUCCESS  (EVENT_NON_ERR_DRV_START + 32)
++/*                   MAX offset for EVENT_NON_ERR_DRV_START is 43 */
++
++/* non-critical error event codes */
++#define NNP_IPC_CREATE_CONTEXT_FAILED    (EVENT_ERR_DRV_START + 0)
++#define NNP_IPC_CREATE_DEVRES_FAILED     (EVENT_ERR_DRV_START + 1)
++#define NNP_IPC_CREATE_COPY_FAILED       (EVENT_ERR_DRV_START + 2)
++#define NNP_IPC_DESTROY_CONTEXT_FAILED   (EVENT_ERR_DRV_START + 3)
++#define NNP_IPC_DESTROY_DEVRES_FAILED    (EVENT_ERR_DRV_START + 4)
++#define NNP_IPC_DESTROY_COPY_FAILED      (EVENT_ERR_DRV_START + 5)
++#define NNP_IPC_CREATE_SYNC_FAILED       (EVENT_ERR_DRV_START + 6)
++#define NNP_IPC_ERROR_SUB_RESOURCE_LOAD_FAILED      (EVENT_ERR_DRV_START + 7)
++#define NNP_IPC_CREATE_DEVNET_FAILED     (EVENT_ERR_DRV_START + 8)
++#define NNP_IPC_DESTROY_DEVNET_FAILED    (EVENT_ERR_DRV_START + 9)
++#define NNP_IPC_CREATE_INFREQ_FAILED     (EVENT_ERR_DRV_START + 10)
++#define NNP_IPC_DESTROY_INFREQ_FAILED    (EVENT_ERR_DRV_START + 11)
++#define NNP_IPC_RECOVER_CONTEXT_FAILED   (EVENT_ERR_DRV_START + 12)
++#define NNP_IPC_ERROR_MCE_CORRECTABLE    (EVENT_ERR_DRV_START + 13)
++#define NNP_IPC_ERROR_MCE_UNCORRECTABLE  (EVENT_ERR_DRV_START + 14)
++#define NNP_IPC_DEVNET_ADD_RES_FAILED    (EVENT_ERR_DRV_START + 15)
++#define NNP_IPC_DEVNET_RESOURCES_RESERVATION_FAILED (EVENT_ERR_DRV_START + 16)
++#define NNP_IPC_DEVNET_RESOURCES_RELEASE_FAILED     (EVENT_ERR_DRV_START + 17)
++#define NNP_IPC_CREATE_CHANNEL_FAILED    (EVENT_ERR_DRV_START + 18)
++#define NNP_IPC_DESTROY_CHANNEL_FAILED   (EVENT_ERR_DRV_START + 19)
++#define NNP_IPC_CHANNEL_SET_RB_FAILED    (EVENT_ERR_DRV_START + 20)
++#define NNP_IPC_CREATE_CMD_FAILED        (EVENT_ERR_DRV_START + 21)
++#define NNP_IPC_DESTROY_CMD_FAILED       (EVENT_ERR_DRV_START + 22)
++#define NNP_IPC_CHANNEL_MAP_HOSTRES_FAILED   (EVENT_ERR_DRV_START + 23)
++#define NNP_IPC_CHANNEL_UNMAP_HOSTRES_FAILED (EVENT_ERR_DRV_START + 24)
++#define NNP_IPC_DEVNET_SET_PROPERTY_FAILED  (EVENT_ERR_DRV_START + 25)
++#define NNP_IPC_ERROR_DRAM_ECC_CORRECTABLE (EVENT_ERR_DRV_START + 26)
++#define NNP_IPC_EXECUTE_COPY_FAILED        (EVENT_ERR_DRV_START + 27)
++#define NNP_IPC_SCHEDULE_INFREQ_FAILED     (EVENT_ERR_DRV_START + 28)
++#define NNP_IPC_EXECUTE_CPYLST_FAILED      (EVENT_ERR_DRV_START + 29)
++#define NNP_IPC_EXECUTE_COPY_SUBRES_FAILED  (EVENT_ERR_DRV_START + 30)
++#define NNP_IPC_EC_FAILED_TO_RELEASE_CREDIT  (EVENT_ERR_DRV_START + 31)
++#define NNP_IPC_DMA_HANG_DETECTED            (EVENT_ERR_DRV_START + 32)
++/*                   MAX offset for EVENT_ERR_DRV_START is 43 */
++
++/* context critical error event codes */
++#define NNP_IPC_ERROR_RUNTIME_LAUNCH     (EVENT_CONTEXT_FATAL_START + 0)
++#define NNP_IPC_ERROR_RUNTIME_DIED       (EVENT_CONTEXT_FATAL_START + 1)
++/*                   MAX offset for EVENT_CONTEXT_FATAL_START is 7 */
++
++#define NNP_IPC_CONTEXT_EXEC_ERROR          (EVENT_CONTEXT_FATAL_DRV_START + 0)
++#define NNP_IPC_CTX_DRAM_ECC_UNCORRECTABLE  (EVENT_CONTEXT_FATAL_DRV_START + 1)
++/*                   MAX offset for EVENT_CONTEXT_FATAL_DRV_START is 7 */
++
++/* card critical error event codes */
++#define NNP_IPC_ERROR_OS_CRASHED          (EVENT_CARD_FATAL_START + 0)
++#define NNP_IPC_ERROR_DRAM_ECC_UNCORRECTABLE_FATAL  (EVENT_CARD_FATAL_START + 1)
++#define NNP_IPC_ERROR_FATAL_ICE_ERROR     (EVENT_CARD_FATAL_START + 2)
++/*                   MAX offset for EVENT_CARD_FATAL_START is 7 */
++
++/* card critical and driver fatal*/
++#define NNP_IPC_ERROR_PCI_ERROR           (EVENT_CARD_FATAL_DRV_START + 0)
++#define NNP_IPC_ERROR_MCE_UNCORRECTABLE_FATAL  (EVENT_CARD_FATAL_DRV_START + 1)
++#define NNP_IPC_ERROR_CARD_RESET          (EVENT_CARD_FATAL_DRV_START + 2)
++#define NNP_IPC_ERROR_CHANNEL_KILLED      (EVENT_CARD_FATAL_DRV_START + 3)
++#define NNP_IPC_ERROR_PROTOCOL_ERROR      (EVENT_CARD_FATAL_DRV_START + 4)
++#define NNP_IPC_FATAL_DMA_HANG_DETECTED   (EVENT_CARD_FATAL_DRV_START + 5)
++/*                   MAX offset for EVENT_CARD_FATAL_DRV_START is 7 */
++
++enum event_val {
++	NNP_IPC_NO_ERROR		= 0,
++	NNP_IPC_NO_SUCH_CONTEXT		= 1,
++	NNP_IPC_NO_SUCH_DEVRES		= 2,
++	NNP_IPC_NO_SUCH_COPY		= 3,
++	NNP_IPC_NO_SUCH_NET		= 4,
++	NNP_IPC_NO_SUCH_INFREQ		= 5,
++	NNP_IPC_ALREADY_EXIST		= 6,
++	NNP_IPC_NO_DAEMON		= 7,
++	NNP_IPC_NO_MEMORY		= 8,
++	NNP_IPC_RUNTIME_FAILED		= 9,
++	NNP_IPC_RUNTIME_LAUNCH_FAILED	= 10,
++	NNP_IPC_DMA_ERROR		= 11,
++	NNP_IPC_RUNTIME_NOT_SUPPORTED	= 12,
++	NNP_IPC_RUNTIME_INVALID_EXECUTABLE_NETWORK_BINARY = 13,
++	NNP_IPC_RUNTIME_INFER_MISSING_RESOURCE        = 14,
++	NNP_IPC_RUNTIME_INFER_EXEC_ERROR              = 15,
++	NNP_IPC_RUNTIME_INFER_SCHEDULE_ERROR          = 16,
++	NNP_IPC_CONTEXT_BROKEN                        = 17,
++	NNP_IPC_DEVNET_RESERVE_INSUFFICIENT_RESOURCES = 18,
++	NNP_IPC_TIMEOUT_EXCEEDED        = 19,
++	NNP_IPC_ECC_ALLOC_FAILED        = 20,
++	NNP_IPC_NO_SUCH_CHANNEL         = 21,
++	NNP_IPC_NO_SUCH_CMD             = 22,
++	NNP_IPC_NO_SUCH_HOSTRES         = 23,
++	NNP_IPC_DEVNET_EDIT_BUSY        = 24,
++	NNP_IPC_DEVNET_EDIT_ERROR       = 25,
++	NNP_IPC_NOT_SUPPORTED           = 26,
++	NNP_IPC_ICEDRV_INFER_EXEC_ERROR = 27,
++	NNP_IPC_ICEDRV_INFER_EXEC_ERROR_NEED_RESET = 28,
++	NNP_IPC_ICEDRV_INFER_EXEC_ERROR_NEED_CARD_RESET = 29,
++	NNP_IPC_NO_EXEC_ERRORS          = 30,
++	NNP_IPC_IO_ERROR                = 31,
++	NNP_IPC_INPUT_IS_DIRTY          = 32,
++
++	/* Non failure events */
++	NNP_IPC_CMDLIST_FINISHED       = 128,
++};
++
++#endif
+diff --git a/drivers/misc/intel-nnpi/ipc_include/ipc_protocol.h b/drivers/misc/intel-nnpi/ipc_include/ipc_protocol.h
+index a083e6b..f53106e 100644
+--- a/drivers/misc/intel-nnpi/ipc_include/ipc_protocol.h
++++ b/drivers/misc/intel-nnpi/ipc_include/ipc_protocol.h
+@@ -10,6 +10,7 @@
+ 
+ #ifdef __KERNEL__
+ #include <linux/dma-mapping.h>
++#include "ipc_c2h_events.h"
+ #include "nnp_inbound_mem.h"
+ 
+ #define CHECK_MESSAGE_SIZE(t, n_qw) \
+-- 
+1.8.3.1
+

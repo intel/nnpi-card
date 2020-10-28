@@ -12,11 +12,8 @@ echo "**********************************************************************"
 
 dmesg -c > /dev/null 2>&1
 
-#mount debug file system hostname contains Debug flavor
-RES=$(hostname)
-if [ "$RES" != "${RES%"Debug"*}" ]; then         
-        mount -t debugfs none /sys/kernel/debug
-fi
+#mount debug file system
+mount -t debugfs none /sys/kernel/debug
 
 if [ -e /sys/kernel/debug/kmemleak ]; then
         echo clear > /sys/kernel/debug/kmemleak
@@ -51,7 +48,7 @@ done
 #update modules.dep accordingly
 depmod -a
 #symlinks for having nnpi executables and libraries in standard locations
-ln -s /opt/intel_nnpi/lib /usr/local/lib 
+ln -s /opt/intel_nnpi/lib /usr/local/lib
 ln -s /opt/intel_nnpi/bin /usr/local/bin
 ln -sf /opt/intel_nnpi/bin/sph_runtime_psw  /usr/bin/sph_runtime_psw
 ln -sf /opt/intel_nnpi/bin/sph_counterd /usr/bin/sph_counterd
@@ -60,7 +57,7 @@ ln -sf /opt/intel_nnpi/bin/sph_trace    /usr/bin/sph_trace
 ln -sf /opt/intel_nnpi/bin/sph_hwtrace    /usr/bin/sph_hwtrace
 ln -sf /opt/intel_nnpi/bin/sph_maintenance /usr/bin/sph_maintenance
 
-# invoke either start_sph_ep or start_sph_sa 
+# invoke either start_sph_ep or start_sph_sa
 . sph_start_placeholder
 
 #Order of modules insertion shall be:

@@ -416,6 +416,8 @@ int configure_ice_frequency(struct cve_device *dev)
 	return ret;
 }
 
+/* Commenting out below redundant function */
+#if 0
 /* return "0" if managed to set GP#13 register to "test" value */
 static int set_gp_reg_to_test_val(struct cve_device *cve_dev)
 {
@@ -445,6 +447,7 @@ static int set_gp_reg_to_test_val(struct cve_device *cve_dev)
 
 	return (reg_val != ICE_MMIO_GP_RESET_REG_TEST_VAL);
 }
+#endif
 
 /* return "0" if GP#13 back to his default value */
 static int get_gp_reg_val_reset_done(struct cve_device *cve_dev)
@@ -551,7 +554,6 @@ int do_reset_device(struct cve_device *cve_dev, uint8_t idc_reset)
 	u32 err;
 	int retval = 0;
 	uint64_t value, mask, notify_ice_mask;
-	struct cve_device_group *dg = g_cve_dev_group_list;
 
 	err = ice_di_is_shared_read_error(cve_dev);
 	if (err) {
@@ -569,41 +571,20 @@ int do_reset_device(struct cve_device *cve_dev, uint8_t idc_reset)
 	notify_ice_mask = value;
 
 	if (idc_reset) {
-		cve_os_dev_log(CVE_LOGLEVEL_DEBUG,
-			cve_dev->dev_index,
-			"Performing IDC Reset\n");
+
+/* Commenting out below routines
+ * set_gp_reg_to_test_val - Redundant
+ * ice_di_configure_clk_squashing - No more valid as A step is not used
+ */
+#if 0
 		retval = set_gp_reg_to_test_val(cve_dev);
 
 		/* SW WA for STEP A */
 		ice_di_configure_clk_squashing(cve_dev, true);
 
-		retval = cve_os_lock(&dg->poweroff_dev_list_lock,
-				CVE_INTERRUPTIBLE);
-		if (retval != 0) {
-			cve_os_log_default(CVE_LOGLEVEL_ERROR,
-					"Error:%d PowerOff Lock not acquired\n",
-					retval);
-			return retval;
-		}
-
-		cve_os_write_idc_mmio(cve_dev,
-			cfg_default.bar0_mem_icerst_offset, value);
-
-		/* Check if ICEs are Ready */
-		/* Driver is not yet sure how long to wait for ICERDY */
-		__wait_for_ice_rdy(cve_dev, value, mask,
-					cfg_default.bar0_mem_icerdy_offset);
-		if ((value & mask) != mask) {
-			cve_os_log_default(CVE_LOGLEVEL_ERROR,
-				"Initialization of ICE-%d failed\n",
-				cve_dev->dev_index);
-			return -1;
-		}
-
-		cve_os_unlock(&dg->poweroff_dev_list_lock);
-
 		/* SW WA for STEP A */
 		ice_di_configure_clk_squashing(cve_dev, false);
+#endif
 
 /* This piece of code was never active. It was there
  * in CVE to support Platform Driver.
@@ -1020,6 +1001,10 @@ void ice_di_update_page_sz(struct cve_device *cve_dev, u32 *page_sz_array)
 	struct cve_device_group __maybe_unused *dg = cve_dg_get();
 
 	for (i = 0; i < ICE_PAGE_SZ_CONFIG_REG_COUNT; i++) {
+
+		if (cve_dev->prev_reg_config.page_sz_reg[i] == page_sz_array[i])
+			continue;
+
 		cve_os_write_mmio_32(cve_dev,
 				(cfg_default.mmu_base +
 				 cfg_default.mmu_page_sizes_offset + (i * 4)),
@@ -1030,6 +1015,8 @@ void ice_di_update_page_sz(struct cve_device *cve_dev, u32 *page_sz_array)
 				i, (cfg_default.mmu_base +
 				 cfg_default.mmu_page_sizes_offset + (i * 4)),
 				page_sz_array[i]);
+
+		cve_dev->prev_reg_config.page_sz_reg[i] = page_sz_array[i];
 	}
 
 }

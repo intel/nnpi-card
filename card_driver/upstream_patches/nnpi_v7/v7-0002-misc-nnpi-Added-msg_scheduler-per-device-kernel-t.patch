@@ -1,0 +1,827 @@
+From 63cc1843513e96cfcfd665b0e5665e2fc9b9142f Mon Sep 17 00:00:00 2001
+From: Guy Zadicario <guy.zadicario@intel.com>
+Date: Sun, 29 Mar 2020 22:41:42 +0300
+Subject: [PATCH v7 02/17] misc: nnpi: Added msg_scheduler per-device kernel
+ thread
+
+This adds the msg_scheduler object which is allocated for each
+NNP-I device. It includes a kernel thread which manages multiple
+"command queues", each command queue is a list of commands that
+needs to be sent to the NNP-I device through the h/w command queue.
+
+The thread in msg_scheduler schedules sending of the commands and
+it is a single point where the write_mesg function of the "pci" layer
+is called (the function which puts the message on the h/w command queue).
+
+A "command" to the device is formed as N number of unsigned 64-bit values, where N is
+either 1, 2 or 3.
+
+The msg_scheduler object is created on device creation and destoyed on device removal.
+The "public_cmdq" queue object is also allocated which will be used to send driver
+generated commands to the NNP-I device.
+
+Signed-off-by: Guy Zadicario <guy.zadicario@intel.com>
+Reviewed-by: Vaibhav Agarwal <vaibhav.agarwal@intel.com>
+---
+ drivers/misc/intel-nnpi/Makefile        |   2 +-
+ drivers/misc/intel-nnpi/device.c        |  47 +++-
+ drivers/misc/intel-nnpi/device.h        |  17 ++
+ drivers/misc/intel-nnpi/msg_scheduler.c | 481 ++++++++++++++++++++++++++++++++
+ drivers/misc/intel-nnpi/msg_scheduler.h | 163 +++++++++++
+ 5 files changed, 708 insertions(+), 2 deletions(-)
+ create mode 100644 drivers/misc/intel-nnpi/msg_scheduler.c
+ create mode 100644 drivers/misc/intel-nnpi/msg_scheduler.h
+
+diff --git a/drivers/misc/intel-nnpi/Makefile b/drivers/misc/intel-nnpi/Makefile
+index 6851010..db4b0af 100644
+--- a/drivers/misc/intel-nnpi/Makefile
++++ b/drivers/misc/intel-nnpi/Makefile
+@@ -6,6 +6,6 @@
+ 
+ obj-m	:= intel_nnpidrv.o
+ 
+-intel_nnpidrv-y := nnpdrv_main.o pcie.o device.o
++intel_nnpidrv-y := nnpdrv_main.o pcie.o device.o msg_scheduler.o
+ 
+ ccflags-y += -I$(srctree)/$(src)/ipc_include
+diff --git a/drivers/misc/intel-nnpi/device.c b/drivers/misc/intel-nnpi/device.c
+index 9e403bc..371d8ba 100644
+--- a/drivers/misc/intel-nnpi/device.c
++++ b/drivers/misc/intel-nnpi/device.c
+@@ -51,6 +51,31 @@ void nnpdrv_device_process_messages(struct nnp_device *nnpdev,
+ 	/* placeholder - will be filled in later patches */
+ }
+ 
++static int cmdq_sched_handler(u64 *msg, int size, void *hw_data)
++{
++	struct nnp_device *nnpdev = (struct nnp_device *)hw_data;
++	int ret;
++
++	ret = nnp_cmdq_write_mesg(nnpdev->hw_handle, msg, size, NULL);
++
++	return ret;
++}
++
++struct msg_scheduler_queue *nnpdrv_create_cmd_queue(struct nnp_device *nnpdev,
++						    u32                weight)
++{
++	return msg_scheduler_queue_create(nnpdev->cmdq_sched,
++					  nnpdev,
++					  cmdq_sched_handler,
++					  weight);
++}
++
++int nnpdrv_destroy_cmd_queue(struct nnp_device          *nnpdev,
++			     struct msg_scheduler_queue *q)
++{
++	return msg_scheduler_queue_destroy(nnpdev->cmdq_sched, q);
++}
++
+ /**
+  * nnpdrv_device_create - creates a nnp device structure.
+  *
+@@ -102,6 +127,18 @@ struct nnp_device *nnpdrv_device_create(struct nnp_pci_device        *hw_handle,
+ 	nnpdev->hw_handle = hw_handle;
+ 	nnpdev->hw_device_info = hw_dinfo;
+ 
++	nnpdev->cmdq_sched = msg_scheduler_create();
++	if (!nnpdev->cmdq_sched) {
++		pr_err("failed to create msgQ scheduler\n");
++		goto err_exit;
++	}
++
++	nnpdev->public_cmdq = nnpdrv_create_cmd_queue(nnpdev, 1);
++	if (!nnpdev->public_cmdq) {
++		pr_err("failed to create public command q\n");
++		goto err_exit;
++	}
++
+ 	kref_init(&nnpdev->ref);
+ 
+ 	pr_debug("Created NNP-I device %u\n", nnpdev->id);
+@@ -109,6 +146,9 @@ struct nnp_device *nnpdrv_device_create(struct nnp_pci_device        *hw_handle,
+ 	return nnpdev;
+ 
+ err_exit:
++	nnpdrv_destroy_cmd_queue(nnpdev, nnpdev->public_cmdq);
++	if (nnpdev->cmdq_sched)
++		msg_scheduler_destroy(nnpdev->cmdq_sched);
+ 	if (-1 != nnpdev->id)
+ 		ida_simple_remove(&dev_ida, nnpdev->id);
+ 	kfree(nnpdev);
+@@ -183,8 +223,13 @@ static void nnpdrv_free_device(struct work_struct *work)
+ 
+ 	pr_debug("Freeing NNP-I device %u\n", nnpdev->id);
+ 
+-	ida_simple_remove(&dev_ida, nnpdev->id);
++	if (nnpdrv_destroy_cmd_queue(nnpdev, nnpdev->public_cmdq))
++		pr_err("cmd queue destruction went wrong\n");
+ 
++	if (msg_scheduler_destroy(nnpdev->cmdq_sched))
++		pr_err("cmd queue scheduler destruction went wrong\n");
++
++	ida_simple_remove(&dev_ida, nnpdev->id);
+ 	kfree(nnpdev);
+ 
+ 	if (WARN_ON(!completion))
+diff --git a/drivers/misc/intel-nnpi/device.h b/drivers/misc/intel-nnpi/device.h
+index 487af2f..6ea7b44 100644
+--- a/drivers/misc/intel-nnpi/device.h
++++ b/drivers/misc/intel-nnpi/device.h
+@@ -11,6 +11,7 @@
+ #include <linux/kernel.h>
+ #include <linux/kref.h>
+ #include <linux/workqueue.h>
++#include "msg_scheduler.h"
+ #include "pcie.h"
+ 
+ #define NNP_MAX_DEVS		256
+@@ -23,6 +24,9 @@ struct nnp_device {
+ 	struct completion *release_completion;
+ 	struct work_struct free_work;
+ 
++	struct msg_scheduler       *cmdq_sched;
++	struct msg_scheduler_queue *public_cmdq;
++
+ 	int            id;
+ 	char           name[DEVICE_NAME_LEN];
+ };
+@@ -30,6 +34,19 @@ struct nnp_device {
+ int nnpdrv_device_init(void);
+ void nnpdrv_device_fini(void);
+ 
++struct msg_scheduler_queue *nnpdrv_create_cmd_queue(struct nnp_device *nnpdev,
++						    u32                weight);
++
++int nnpdrv_destroy_cmd_queue(struct nnp_device          *nnpdev,
++			     struct msg_scheduler_queue *q);
++
++static inline int nnpdrv_msg_scheduler_queue_add_msg(
++					struct msg_scheduler_queue *queue,
++					u64 *msg, int size)
++{
++	return msg_scheduler_queue_add_msg(queue, msg, size);
++}
++
+ int nnpdrv_device_get(struct nnp_device *nnpdev);
+ void nnpdrv_device_put(struct nnp_device *nnpdev);
+ 
+diff --git a/drivers/misc/intel-nnpi/msg_scheduler.c b/drivers/misc/intel-nnpi/msg_scheduler.c
+new file mode 100644
+index 0000000..76d5c5b
+--- /dev/null
++++ b/drivers/misc/intel-nnpi/msg_scheduler.c
+@@ -0,0 +1,481 @@
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++/********************************************
++ * Copyright (C) 2019-2020 Intel Corporation
++ ********************************************/
++
++/************************************************************************
++ * message scheudler implementation.
++ *
++ * That implements a scheduler object which used to serialize
++ * command submission to an nnpi device.
++ * It manages a list of message queues which hold command messages
++ * that needs to be send to the card.
++ * It also implements a kernel thread which schedules draining
++ * the message queues in round-robin fashion. There are no priorities
++ * to the queues, but each queue can be configured with how many
++ * message commands has to be services from the queue before the
++ * scheduler advance to the next queue. That allows to create queues
++ * which get drains faster then others.
++ *
++ * An instance of this object is created for each NNP-I device and
++ * a message queue is created for each application that creates a
++ * "channel" to the device as well as  one "public" queue used by the
++ * kernel driver itself.
++ ************************************************************************/
++
++#define pr_fmt(fmt)   KBUILD_MODNAME ": %s, " fmt, __func__
++
++#include "msg_scheduler.h"
++#include <linux/err.h>
++#include <linux/interrupt.h>
++#include <linux/jiffies.h>
++#include <linux/kthread.h>
++#include <linux/list.h>
++#include <linux/mutex.h>
++#include <linux/printk.h>
++#include <linux/sched.h>
++#include <linux/seq_file.h>
++#include <linux/slab.h>
++#include <linux/spinlock.h>
++#include <linux/wait.h>
++
++struct msg_entry {
++	u64 msg[MSG_SCHED_MAX_MSG_SIZE];
++	u32 size;
++	struct list_head node;
++};
++
++/**
++ * msg_scheduler_thread_func - the main function of the scheduler thread.
++ *
++ * @data: pointer to the msg scheduler object.
++ * Return: 0 when thread is stopped
++ */
++static int msg_scheduler_thread_func(void *data)
++{
++	struct msg_scheduler *dev_sched = (struct msg_scheduler *)data;
++	struct msg_scheduler_queue *queue_node;
++	struct msg_entry *msg_list_node;
++	int ret;
++	int i;
++	int is_empty;
++	u32 local_total_msgs_num = 0;
++	u32 left = 0;
++
++	pr_debug("msg scheduler thread started\n");
++
++	while (!kthread_should_stop()) {
++		mutex_lock(&dev_sched->destroy_lock);
++		spin_lock_bh(&dev_sched->queue_lock_bh);
++		set_current_state(TASK_INTERRUPTIBLE);
++		if (dev_sched->total_msgs_num == local_total_msgs_num &&
++		    left == 0) {
++			spin_unlock_bh(&dev_sched->queue_lock_bh);
++			mutex_unlock(&dev_sched->destroy_lock);
++			/* wait until messages arrive to some queue */
++			schedule();
++			mutex_lock(&dev_sched->destroy_lock);
++			spin_lock_bh(&dev_sched->queue_lock_bh);
++		}
++		set_current_state(TASK_RUNNING);
++
++		local_total_msgs_num = dev_sched->total_msgs_num;
++		left = 0;
++
++		is_empty = list_empty(&dev_sched->queues_list_head);
++		if (!is_empty)
++			queue_node =
++				list_first_entry(&dev_sched->queues_list_head,
++						 struct msg_scheduler_queue,
++						 queues_list_node);
++
++		spin_unlock_bh(&dev_sched->queue_lock_bh);
++
++		if (is_empty) {
++			mutex_unlock(&dev_sched->destroy_lock);
++			continue;
++		}
++
++		ret = 0;
++
++		while (&queue_node->queues_list_node !=
++		       &dev_sched->queues_list_head) {
++			if (queue_node->msgs_num == 0)
++				goto skip_queue;
++
++			for (i = 0; i < queue_node->handle_cont; i++) {
++				spin_lock_bh(&queue_node->list_lock_bh);
++#ifdef DEBUG
++				queue_node->sched_count++;
++#endif
++				is_empty =
++					list_empty(&queue_node->msgs_list_head);
++				if (!is_empty) {
++					msg_list_node = list_first_entry(
++						&queue_node->msgs_list_head,
++						struct msg_entry, node);
++#ifdef DEBUG
++					queue_node->pre_send_count++;
++#endif
++				}
++				spin_unlock_bh(&queue_node->list_lock_bh);
++
++				if (is_empty)
++					break;
++
++				ret = queue_node->msg_handle(msg_list_node->msg,
++						msg_list_node->size,
++						queue_node->device_hw_data);
++				if (ret) {
++#ifdef DEBUG
++					queue_node->send_failed_count++;
++#endif
++					break;
++				}
++
++				spin_lock_bh(&queue_node->list_lock_bh);
++#ifdef DEBUG
++				queue_node->post_send_count++;
++#endif
++				list_del(&msg_list_node->node);
++				queue_node->msgs_num--;
++				spin_unlock_bh(&queue_node->list_lock_bh);
++				kmem_cache_free(dev_sched->slab_cache_ptr,
++						msg_list_node);
++
++				if (!queue_node->msgs_num)
++					wake_up_all(&queue_node->flush_waitq);
++			}
++
++			/*
++			 * if failed to write into command queue, no point
++			 * trying rest of the message queues
++			 */
++			if (ret)
++				break;
++
++			left += queue_node->msgs_num;
++skip_queue:
++			spin_lock_bh(&dev_sched->queue_lock_bh);
++			queue_node = list_next_entry(queue_node,
++						     queues_list_node);
++			spin_unlock_bh(&dev_sched->queue_lock_bh);
++		}
++
++		mutex_unlock(&dev_sched->destroy_lock);
++
++		if (ret) {
++			pr_err("Failed writing to command queue - invalidating all queues\n");
++			msg_scheduler_invalidate_all(dev_sched);
++		}
++	}
++
++	pr_debug("Thread Stopping\n");
++
++	do_exit(0);
++}
++
++/*
++ * [Description]: create new message queue.
++ *
++ * [in] scheduler
++ * [in] msg_handle
++ * [in] conti_msgs
++ */
++struct msg_scheduler_queue *msg_scheduler_queue_create(
++				struct msg_scheduler *scheduler,
++				void                 *device_hw_data,
++				hw_handle_msg         msg_handle,
++				u32                   conti_msgs)
++{
++	struct msg_scheduler_queue *queue;
++
++	if (!msg_handle) {
++		pr_err("NULL pointer as msg handler\n");
++		return NULL;
++	}
++
++	queue = kzalloc(sizeof(*queue), GFP_NOWAIT);
++	if (!queue)
++		return NULL;
++
++	INIT_LIST_HEAD(&queue->msgs_list_head);
++	spin_lock_init(&queue->list_lock_bh);
++	queue->msgs_num = 0;
++
++	if (!conti_msgs)
++		queue->handle_cont = 1;
++	else
++		queue->handle_cont = conti_msgs;
++
++	queue->device_hw_data = device_hw_data;
++	queue->msg_handle = msg_handle;
++	queue->scheduler = scheduler;
++	init_waitqueue_head(&queue->flush_waitq);
++
++	spin_lock_bh(&scheduler->queue_lock_bh);
++	list_add_tail(&queue->queues_list_node, &scheduler->queues_list_head);
++	spin_unlock_bh(&scheduler->queue_lock_bh);
++
++	return queue;
++}
++
++/*
++ * [description]: remove queue from scheduler.
++ * - free all messages of the queue
++ * - free queue node from queues list
++ * [in]: scheduler
++ * [in]: queue :  queue
++ */
++int msg_scheduler_queue_destroy(struct msg_scheduler       *scheduler,
++				struct msg_scheduler_queue *queue)
++{
++	struct msg_entry *msg_list_node;
++
++	if (!queue || queue->scheduler != scheduler) {
++		pr_err("NULL pointer or wrong scheduler\n");
++		return -EINVAL;
++	}
++
++	mutex_lock(&scheduler->destroy_lock);
++
++	/* destroy all the messages of the queue */
++	spin_lock_bh(&queue->list_lock_bh);
++	while (!list_empty(&queue->msgs_list_head)) {
++		msg_list_node = list_first_entry(&queue->msgs_list_head,
++						 struct msg_entry, node);
++		list_del(&msg_list_node->node);
++		kmem_cache_free(scheduler->slab_cache_ptr, msg_list_node);
++	}
++	spin_unlock_bh(&queue->list_lock_bh);
++
++	/* destroy the queue */
++	spin_lock_bh(&queue->scheduler->queue_lock_bh);
++	list_del(&queue->queues_list_node);
++	spin_unlock_bh(&queue->scheduler->queue_lock_bh);
++	kfree(queue);
++	mutex_unlock(&scheduler->destroy_lock);
++
++	return 0;
++}
++
++/*
++ * [Description]: wait until a message queue is flushed out and empty
++ * [in] queue
++ */
++int msg_scheduler_queue_flush(struct msg_scheduler_queue *queue)
++{
++	int ret;
++
++	/* Wait for the queue to be empty */
++	ret = wait_event_interruptible(queue->flush_waitq,
++				       list_empty(&queue->msgs_list_head));
++
++	return ret;
++}
++
++/*
++ * [Description]: add message to existing queue.
++ * [in] queue
++ * [in] msg
++ * [in] size
++ */
++int msg_scheduler_queue_add_msg(struct msg_scheduler_queue *queue,
++				u64                        *msg,
++				unsigned int               size)
++{
++	unsigned int i;
++	struct msg_entry *msg_list_node;
++	u32 invalid_queue;
++
++	if (!queue || !msg) {
++		pr_err("NULL pointer received as queue list/msg\n");
++		return -EINVAL;
++	}
++
++	if (size > MSG_SCHED_MAX_MSG_SIZE) {
++		pr_err("invalid message size received, size: %u.\n", size);
++		return -EINVAL;
++	}
++
++	/* if queue flaged as invalid - silently ignore the message */
++	if (queue->invalid)
++		return 0;
++
++	msg_list_node = kmem_cache_alloc(queue->scheduler->slab_cache_ptr,
++					 GFP_NOWAIT);
++	if (!msg_list_node) {
++		pr_err("No memory for message list\n");
++		return -ENOMEM;
++	}
++
++	for (i = 0; i < size; i++)
++		msg_list_node->msg[i] = *(msg + i);
++#ifdef _DEBUG
++	for (i = size; i < MSG_SCHED_MAX_MSG_SIZE; i++)
++		msg_list_node->msg[i] = 0xdeadbeefdeadbeefLLU;
++#endif
++
++	msg_list_node->size = size;
++
++	spin_lock_bh(&queue->list_lock_bh);
++	invalid_queue = queue->invalid;
++	if (!invalid_queue) {
++		list_add_tail(&msg_list_node->node, &queue->msgs_list_head);
++		queue->msgs_num++;
++	}
++	spin_unlock_bh(&queue->list_lock_bh);
++
++	/* if queue flaged as invalid - silently ignore the message */
++	if (invalid_queue) {
++		kmem_cache_free(queue->scheduler->slab_cache_ptr,
++				msg_list_node);
++		return 0;
++	}
++
++	spin_lock_bh(&queue->scheduler->queue_lock_bh);
++	queue->scheduler->total_msgs_num++;
++	spin_unlock_bh(&queue->scheduler->queue_lock_bh);
++	wake_up_process(queue->scheduler->scheduler_thread);
++
++	return 0;
++}
++
++void msg_scheduler_queue_make_valid(struct msg_scheduler_queue *queue)
++{
++	spin_lock_bh(&queue->list_lock_bh);
++	queue->invalid = 0;
++	spin_unlock_bh(&queue->list_lock_bh);
++}
++
++/*
++ * [Description]: start dedicate thread to handle message scheduling
++ * - create and start thread.
++ * - allcoate Hw handlers memory
++ */
++struct msg_scheduler *msg_scheduler_create(void)
++{
++	struct msg_scheduler *dev_sched;
++
++	dev_sched = kzalloc(sizeof(*dev_sched), GFP_NOWAIT);
++	if (!dev_sched)
++		goto out;
++
++	dev_sched->slab_cache_ptr = kmem_cache_create("msg_scheduler_slabCache",
++						      sizeof(struct msg_entry),
++						      0, 0, NULL);
++	if (!dev_sched->slab_cache_ptr) {
++		pr_err("failed to create message scheduler slab cache\n");
++		kfree(dev_sched);
++		dev_sched = NULL;
++		goto out;
++	}
++
++	INIT_LIST_HEAD(&dev_sched->queues_list_head);
++
++	spin_lock_init(&dev_sched->queue_lock_bh);
++
++	mutex_init(&dev_sched->destroy_lock);
++
++	dev_sched->scheduler_thread = kthread_run(msg_scheduler_thread_func,
++						  dev_sched,
++						  "msg_scheduler_thread");
++	if (!dev_sched->scheduler_thread) {
++		pr_err("failed to create message scheduler thread\n");
++		kmem_cache_destroy(dev_sched->slab_cache_ptr);
++		mutex_destroy(&dev_sched->destroy_lock);
++		kfree(dev_sched);
++		dev_sched = NULL;
++	}
++
++out:
++	return dev_sched;
++}
++
++/*
++ * [Description]: stop scheduler thread, and release all allocated memory
++ *                that still allocated.
++ *
++ * [in] scheduler
++ */
++int msg_scheduler_destroy(struct msg_scheduler *scheduler)
++{
++	struct msg_scheduler_queue *queue_node;
++	int rc;
++
++	msg_scheduler_invalidate_all(scheduler);
++
++	if (scheduler->scheduler_thread) {
++		rc = kthread_stop(scheduler->scheduler_thread);
++		if (rc) {
++			pr_err("thread exit code is: %d\n", rc);
++			return -ENOMSG;
++		}
++	}
++
++	spin_lock_bh(&scheduler->queue_lock_bh);
++	while (!list_empty(&scheduler->queues_list_head)) {
++		queue_node =
++			list_first_entry(&scheduler->queues_list_head,
++					 struct msg_scheduler_queue,
++					 queues_list_node);
++
++		/* destroy the queue */
++		list_del(&queue_node->queues_list_node);
++		spin_unlock_bh(&scheduler->queue_lock_bh);
++		kfree(queue_node);
++		spin_lock_bh(&scheduler->queue_lock_bh);
++	}
++	spin_unlock_bh(&scheduler->queue_lock_bh);
++
++	kmem_cache_destroy(scheduler->slab_cache_ptr);
++
++	mutex_destroy(&scheduler->destroy_lock);
++	kfree(scheduler);
++
++	pr_debug("destroy done\n");
++
++	return 0;
++}
++
++void msg_scheduler_invalidate_all(struct msg_scheduler *scheduler)
++{
++	struct msg_scheduler_queue *queue_node;
++	struct msg_entry *msg_list_node;
++	u32 nq = 0, nmsg = 0;
++
++	mutex_lock(&scheduler->destroy_lock);
++
++	/*
++	 * For each queue:
++	 * 1) invalidate the queue, so that no more messages will be inserted
++	 * 2) delete all existing messages
++	 */
++	spin_lock_bh(&scheduler->queue_lock_bh);
++	list_for_each_entry(queue_node,
++			    &scheduler->queues_list_head,
++			    queues_list_node) {
++		spin_lock_bh(&queue_node->list_lock_bh);
++		queue_node->invalid = 1;
++		while (!list_empty(&queue_node->msgs_list_head)) {
++			msg_list_node =
++				list_first_entry(&queue_node->msgs_list_head,
++						 struct msg_entry, node);
++			list_del(&msg_list_node->node);
++			kmem_cache_free(scheduler->slab_cache_ptr,
++					msg_list_node);
++			nmsg++;
++		}
++		queue_node->msgs_num = 0;
++		spin_unlock_bh(&queue_node->list_lock_bh);
++		wake_up_all(&queue_node->flush_waitq);
++		nq++;
++	}
++	spin_unlock_bh(&scheduler->queue_lock_bh);
++
++	mutex_unlock(&scheduler->destroy_lock);
++
++	pr_debug("Invalidated %d msg queues, total messages lost %d\n",
++		 nq, nmsg);
++}
+diff --git a/drivers/misc/intel-nnpi/msg_scheduler.h b/drivers/misc/intel-nnpi/msg_scheduler.h
+new file mode 100644
+index 0000000..151d1f2
+--- /dev/null
++++ b/drivers/misc/intel-nnpi/msg_scheduler.h
+@@ -0,0 +1,163 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++
++/********************************************
++ * Copyright (C) 2019-2020 Intel Corporation
++ ********************************************/
++
++#ifndef _NNP_MSGF_SCHEDULER_H
++#define _NNP_MSGF_SCHEDULER_H
++
++#include <linux/fs.h>
++#include <linux/mutex.h>
++#include <linux/poll.h>
++#include <linux/workqueue.h>
++
++#define MSG_SCHED_MAX_MSG_SIZE 3
++
++/**
++ * typedef hw_handle_msg - callback definition called by the scheduler to send
++ *                         a commannd message to device.
++ *
++ * @msg: pointer to the message content
++ * @size: size of message in 64-bit units.
++ * @hw_data: caller supplied context.
++ *
++ * Return: 0 on sucess, error value otherwise
++ */
++typedef int (*hw_handle_msg)(u64 *msg, int size, void *hw_data);
++
++struct msg_scheduler {
++	struct task_struct *scheduler_thread;
++	struct list_head queues_list_head;
++	spinlock_t queue_lock_bh; /* protects queues_list del/inserts */
++	struct mutex destroy_lock; /* serialize q destroy with sched thread */
++	u32 total_msgs_num;
++	struct kmem_cache *slab_cache_ptr;
++};
++
++struct msg_scheduler_queue {
++	struct msg_scheduler *scheduler;
++	struct list_head queues_list_node;
++	struct list_head msgs_list_head;
++	wait_queue_head_t  flush_waitq;
++	u32 invalid;
++	u32 msgs_num;
++	spinlock_t list_lock_bh; /* protects msg_list del/inserts */
++	u32 handle_cont;
++	void *device_hw_data;
++	hw_handle_msg msg_handle;
++#ifdef DEBUG
++	/* Debug statistics counters */
++	u32 sched_count;
++	u32 pre_send_count;
++	u32 post_send_count;
++	u32 send_failed_count;
++#endif
++};
++
++/**
++ * msg_scheduler_create - creates msg scheduler object
++ *
++ * This function creates message scheduler object which can hold
++ * multiple message queues and a scheduling thread which pop messages
++ * from the different queues and synchronously send it down to the device
++ * for transmission.
++ *
++ * Return: pointer to allocated scheduler object or NULL on failure
++ */
++struct msg_scheduler *msg_scheduler_create(void);
++
++/**
++ * msg_scheduler_destroy - destroyes a msg scheduler object
++ *
++ * @scheduler: pointer to msg scheduler object
++ *
++ * This function will wait for the scheduler thread to complete.
++ *
++ * Return: 0 on sucess, error code otherwise
++ */
++int msg_scheduler_destroy(struct msg_scheduler *scheduler);
++
++/**
++ * msg_scheduler_invalidate_all - Remove all messages from all queues
++ *
++ * @scheduler: pointer to msg scheduler object
++ *
++ * This function removes all messages from all queues and mark all queues
++ * invalid. invalid queues can only be destroyed, no messages can be added to
++ * an invalid queue.
++ * This function is called just before a card reset to prevent any new messages
++ * to be sent on the h/w queue.
++ */
++void msg_scheduler_invalidate_all(struct msg_scheduler *scheduler);
++
++/**
++ * msg_scheduler_queue_create - create a queue of messages handled by scheduler
++ *
++ * @scheduler: the msg scheduler object
++ * @device_hw_data: user context value that will pass to msg_handle callback
++ * @msg_handle: pointer to callback that will handle writing a message
++ *              to the device.
++ * @conti_msgs: controls number of messages the scheduler should handle from
++ *              this queue before moving to other queues.
++ *
++ * Return: pointer to msg scheduler queue object, NULL on failure.
++ */
++struct msg_scheduler_queue *msg_scheduler_queue_create(
++					struct msg_scheduler *scheduler,
++					void                 *device_hw_data,
++					hw_handle_msg         msg_handle,
++					u32                   conti_msgs);
++
++/**
++ * msg_scheduler_queue_destroy - destroy a message queue object
++ *
++ * @scheduler: the msg scheduler object
++ * @queue: the message queue object to be destroyed.
++ *
++ * This function destroys a message queue object, if the queue is not
++ * empty from messages, the messages will be deleted and will be dropped.
++ * (will not get sent to the device).
++ *
++ * Return: 0 on success.
++ */
++int msg_scheduler_queue_destroy(struct msg_scheduler       *scheduler,
++				struct msg_scheduler_queue *queue);
++
++/**
++ * msg_scheduler_queue_flush - flush and wait for message queue to be emty
++ *
++ * @queue: the message queue object
++ *
++ * Return: 0 on success, error value otherwise.
++ */
++int msg_scheduler_queue_flush(struct msg_scheduler_queue *queue);
++
++/**
++ * msg_scheduler_queue_add_msg - adds a message packet to a message queue
++ *
++ * @queue: the message queue object
++ * @msg: pointer to message content
++ * @size: size of message in 64-bit units
++ *
++ * This function adds a message to the queue to be scheduled to be sent
++ * to the device. The message will be sent once the scheduler thread
++ * drains it from the queue.
++ *
++ * Return: 0 on success, error value otherwise
++ */
++int msg_scheduler_queue_add_msg(struct       msg_scheduler_queue *queue,
++				u64         *msg,
++				unsigned int size);
++
++/**
++ * msg_scheduler_queue_make_valid - marks a queue valid
++ *
++ * @queue: the message queue object
++ *
++ *  This function marks a queue as valid again after it made invalid
++ *  by a call to msg_scheduler_invalidate_all.
++ */
++void msg_scheduler_queue_make_valid(struct msg_scheduler_queue *queue);
++
++#endif /* _NNP_MSGF_SCHEDULER_H */
+-- 
+1.8.3.1
+

@@ -207,6 +207,8 @@ static int __load_fw(const u64 fw_image,
 			get_fw_binary_type_str(fw_sec->fw_type),
 			fw_sec->sections_nr);
 
+	fw_sec->user_count = 0;
+	fw_sec->last_used = trace_clock_global();
 	*out_fw_sec = fw_sec;
 
 	return retval;
@@ -218,7 +220,8 @@ exit:
 
 
 static int ice_map_fw_per_dev_ctx(cve_dev_context_handle_t hcontext,
-		struct cve_fw_loaded_sections *load_fw_sec)
+		struct cve_fw_loaded_sections *load_fw_sec,
+		enum fw_binary_type fw_type)
 {
 	int retval = CVE_DEFAULT_ERROR_CODE;
 	struct dev_context *context = (struct dev_context *)hcontext;
@@ -228,13 +231,19 @@ static int ice_map_fw_per_dev_ctx(cve_dev_context_handle_t hcontext,
 
 	/* find mapped structure with dummy base fw */
 	fw_mapped = cve_dle_lookup(context->mapped_fw_sections,
-			list, cve_fw_loaded->fw_type, fw_sec->fw_type);
+			list, cve_fw_loaded->fw_type, fw_type);
 	if (!fw_mapped) {
 		cve_os_log(CVE_LOGLEVEL_ERROR,
 				"FW_Type=%s can't be found in mapped fw list\n",
-				get_fw_binary_type_str(fw_sec->fw_type));
+				get_fw_binary_type_str(fw_type));
 		retval = -ICEDRV_KERROR_FW_INVAL_TYPE;
 		goto out;
+	}
+
+	/* if loaded fw pointer is NULL, map base f/w */
+	if (!load_fw_sec) {
+		load_fw_sec = fw_mapped->base_fw_loaded;
+		fw_sec = load_fw_sec;
 	}
 
 	/* copy of base fw loaded section pointer for restoring incase error*/
@@ -330,7 +339,8 @@ out:
 }
 
 int ice_dev_fw_map(cve_dev_context_handle_t hcontext_list,
-		struct cve_fw_loaded_sections *out_fw_sec)
+		struct cve_fw_loaded_sections *out_fw_sec,
+		enum fw_binary_type fw_type)
 {
 	struct dev_context *dev_context_list =
 		(struct dev_context *) hcontext_list;
@@ -342,7 +352,7 @@ int ice_dev_fw_map(cve_dev_context_handle_t hcontext_list,
 
 	do {
 		retval = ice_map_fw_per_dev_ctx(dev_ctx_item,
-			out_fw_sec);
+			out_fw_sec, fw_type);
 		if (retval < 0) {
 			cve_os_log(CVE_LOGLEVEL_ERROR,
 				"ce_load_fw_per_dev_ctx failed %d\n",
@@ -366,6 +376,7 @@ int cve_dev_fw_load_and_map(cve_dev_context_handle_t hcontext_list,
 		const u64 fw_image,
 		const u64 fw_binmap,
 		const u32 fw_binmap_size_bytes,
+		enum fw_binary_type fw_type,
 		struct cve_fw_loaded_sections **out_fw_sec)
 {
 	struct dev_context *dev_context_list =
@@ -388,7 +399,7 @@ int cve_dev_fw_load_and_map(cve_dev_context_handle_t hcontext_list,
 
 	do {
 		retval = ice_map_fw_per_dev_ctx(dev_ctx_item,
-			*out_fw_sec);
+			*out_fw_sec, fw_type);
 		if (retval < 0) {
 			cve_os_log(CVE_LOGLEVEL_ERROR,
 				"ce_load_fw_per_dev_ctx failed %d\n",

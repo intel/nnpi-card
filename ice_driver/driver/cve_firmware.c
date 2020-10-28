@@ -370,7 +370,8 @@ static int cve_fw_load_firmware_from_user_mem(u64 fw_image,
 		u32 *out_sections_nr,
 		struct cve_fw_section_descriptor **out_sections,
 		struct cve_dma_handle **out_dma_handles,
-		Version **out_fw_version)
+		Version **out_fw_version,
+		u8 *cached_mem_used)
 {
 	int retval = CVE_DEFAULT_ERROR_CODE;
 	u32 sections_nr = 0;
@@ -435,6 +436,8 @@ static int cve_fw_load_firmware_from_user_mem(u64 fw_image,
 
 	/* read the sections */
 	retval = -ENOMEM;
+	*cached_mem_used = 0;
+
 	for (i = 0; i < sections_nr; i++) {
 		struct ICVE_FIRMWARE_SECTION_DESCRIPTOR *s = &sections[i];
 
@@ -464,17 +467,29 @@ static int cve_fw_load_firmware_from_user_mem(u64 fw_image,
 			goto out;
 		}
 
-		/* Allocate DMA'able memory and get its kernel virt address */
-		retval = OS_ALLOC_DMA_SG(dev,
-				s->size_bytes,
-				1,
-				&dma_handles[i],
-				true);
-		if (retval != 0) {
-			cve_os_log(CVE_LOGLEVEL_ERROR,
-					"OS_ALLOC_DMA_SG failed: %d\n",
-					retval);
-			goto out;
+		/* try to look for cached memory */
+		retval = ice_dg_get_cached_mem(s->size_bytes,
+				&dma_handles[i]);
+		/* If error, meaning cached memory not available,
+		 * allocate dynamically
+		 */
+		if (retval < 0) {
+			/* Allocate DMA'able memory and
+			 * get its kernel virt address
+			 */
+			retval = OS_ALLOC_DMA_SG(dev,
+					s->size_bytes,
+					1,
+					&dma_handles[i],
+					true);
+			if (retval != 0) {
+				cve_os_log(CVE_LOGLEVEL_ERROR,
+						"OS_ALLOC_DMA_SG failed: %d\n",
+						retval);
+				goto out;
+			}
+		} else {
+			*cached_mem_used = 1;
 		}
 
 		if (s->offset_in_file > MAX_FW_SIZE_BYTES) {
@@ -898,6 +913,11 @@ int cve_fw_map_sections(
 		s->cve_addr = (u32)va;
 
 		cve_os_log(CVE_LOGLEVEL_DEBUG,
+				"Mapping Firmware(0x%p) FW_Type=%s Section=%d AllocHandle:0x%p ICEVA:0x%llx\n",
+				fw_loaded_sec,
+				get_fw_binary_type_str(fw_loaded_sec->fw_type),
+				i, alloc_handles[i], va);
+		cve_os_log(CVE_LOGLEVEL_DEBUG,
 				COLOR_YELLOW(
 					"Stop Mapping Firmware Section. FW_Type=%s, Section=%d\n"
 					),
@@ -956,6 +976,7 @@ int cve_fw_load_binary(const u64 fw_image,
 	struct cve_dma_handle *dma_handles = NULL;
 	Version *fw_version = NULL;
 	enum fw_binary_type fw_type = CVE_FW_TYPE_INVALID;
+	u8 cached_mem_used = 0;
 
 	/* read input sections from memory */
 	int retval = cve_fw_load_firmware_from_user_mem(fw_image,
@@ -964,7 +985,8 @@ int cve_fw_load_binary(const u64 fw_image,
 			&sections_nr,
 			&sections,
 			&dma_handles,
-			&fw_version);
+			&fw_version,
+			&cached_mem_used);
 	if (retval != 0) {
 		cve_os_log(CVE_LOGLEVEL_ERROR,
 				"cve_os_load_firmware_via_mem failed\n");
@@ -988,6 +1010,8 @@ int cve_fw_load_binary(const u64 fw_image,
 	out_fw_sec->dma_handles = dma_handles;
 	out_fw_sec->fw_type = fw_type;
 	out_fw_sec->fw_version = fw_version;
+	out_fw_sec->cached_mem_used = cached_mem_used;
+
 
 	retval = 0;
 out:
@@ -1092,11 +1116,13 @@ void cve_mapped_fw_sections_cleanup(
 
 		s = &fw_sec->sections[i];
 
-		if (mapped_fw_sec->alloc_handles) {
+		if (mapped_fw_sec->alloc_handles[i]) {
 			/*remove allocations of the FW */
 			cve_os_log(CVE_LOGLEVEL_DEBUG,
-					"Reclaiming allocation of Section=%d\n",
-					i);
+					"Reclaiming allocation of FW:0x%p Section=%d AllocHandle:0x%p ICEVA:0x%x\n",
+					fw_sec,
+					i, mapped_fw_sec->alloc_handles[i],
+					s->cve_addr);
 			cve_mm_reclaim_allocation(
 				mapped_fw_sec->alloc_handles[i]);
 		}
@@ -1400,6 +1426,10 @@ int cve_fw_map(os_domain_handle hdom,
 			goto out;
 		}
 
+		/* keep a backup of base loaded f/w to restore f/w
+		 * if required
+		 */
+		fw_mapped->base_fw_loaded = fw_loaded_curr;
 		/* map current firmware binary to device memory */
 		retval = cve_fw_map_sections(hdom,
 				fw_loaded_curr,
@@ -1413,6 +1443,9 @@ int cve_fw_map(os_domain_handle hdom,
 		}
 
 		/* add fw mapped section to the list */
+		cve_os_log(CVE_LOGLEVEL_DEBUG,
+				"Mapped FW(0x%p) Sections\n", fw_mapped);
+
 		cve_dle_add_to_list_after(fw_mapped_head, list, fw_mapped);
 
 		/* create a subjob for the embedded cb */
@@ -1466,6 +1499,9 @@ void cve_fw_unload(struct cve_device *ice,
 		struct cve_fw_loaded_sections *loaded_fw_section =
 			loaded_fw_sections_list;
 
+		cve_os_log(CVE_LOGLEVEL_DEBUG,
+			"FW(0x%p) Unload f/w MD5:%s #FwInfra\n",
+			loaded_fw_section, loaded_fw_section->md5_str);
 		cve_dle_remove_from_list(loaded_fw_sections_list,
 				list, loaded_fw_section);
 		cve_fw_sections_cleanup(ice, loaded_fw_section->sections,
@@ -1488,7 +1524,8 @@ void cve_fw_unmap(struct cve_fw_mapped_sections *fw_mapped_list,
 				list,
 				fw_mapped);
 		cve_os_log(CVE_LOGLEVEL_DEBUG,
-				"Mapped FW section cleanup\n");
+				"Mapped FW(0x%p) section cleanup #FwInfra\n",
+				fw_mapped);
 		cve_mapped_fw_sections_cleanup(fw_mapped);
 		OS_FREE(fw_mapped, sizeof(*fw_mapped));
 	}
@@ -2067,15 +2104,20 @@ void cve_fw_sections_cleanup(struct cve_device *ice,
 					s->permissions,
 					s->size_bytes);
 
-				if (fw_dma_handle->mem_handle.sgt) {
-					cve_sync_sgt_to_llc(
+				/* if memory is from cached pool, return it*/
+				if (fw_dma_handle->persistent) {
+					ice_dg_put_cached_mem(fw_dma_handle);
+				} else {
+
+					if (fw_dma_handle->mem_handle.sgt) {
+						cve_sync_sgt_to_llc(
 						fw_dma_handle->mem_handle.sgt);
 
-					OS_FREE_DMA_SG(dev,
-						s->size_bytes,
-						fw_dma_handle);
+						OS_FREE_DMA_SG(dev,
+							s->size_bytes,
+							fw_dma_handle);
+					}
 				}
-
 			}
 			OS_FREE(dma_handles_lst,
 					sizeof(*dma_handles_lst) *

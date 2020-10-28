@@ -46,6 +46,7 @@
 /* were not yet matched by the follower. */
 #define MAX_SHARED_DISTANCE 0x40
 #define MAX_NUM_JG_DESC 1
+#define CLOS_SIGNATURE_DEFAULT 0xFFFFFFFF
 
 /* Since the physical memory is 16GB and the page size is 32KB then the
 * MAX_BUFFER_COUNT will be equal to 16GB/32KB which is 524288 and this value
@@ -156,103 +157,156 @@ static void __assign_fw_ownership(struct cve_device_group *dg,
 	}
 	out_fw_sec->md5_str[i*2] = '\0';
 
-	if (!dg->loaded_cust_fw_sections) {
+	if (out_fw_sec->cached_mem_used) {
 		/* add new loaded dynamic fw to global struct */
 		cve_dle_add_to_list_after(dg->loaded_cust_fw_sections,
 				list, out_fw_sec);
 		cve_os_log(CVE_LOGLEVEL_DEBUG,
-				"Cached firmware fw_sec_struct:0x%p MD5:%s\n",
+				"Cached firmware fw_sec_struct:0x%p MD5:%s #FwCaching\n",
 				out_fw_sec, out_fw_sec->md5_str);
 	} else {
 		cve_dle_add_to_list_after(
 				pnetwork->loaded_cust_fw_sections,
 				list, out_fw_sec);
 		cve_os_log(CVE_LOGLEVEL_DEBUG,
-				"PNTW:0x%p Adding custom firmware fw_sec_struct:0x%p MD5:%s\n",
+				"PNTW:0x%p Adding custom firmware fw_sec_struct:0x%p MD5:%s #FwCaching\n",
 				pnetwork, out_fw_sec, out_fw_sec->md5_str);
 	}
 }
 
 #endif
 
-/* return 0 on success
- * return -1 if nothing to compare i.e. no caching
- * return 1 if mismatch detected
- */
-static int __compare_md5(struct cve_device_group *dg,
-		u8 *md5)
-{
-	int not_equal = 0;
-	u8 i = 0;
-
-	/* If no MD5, exit */
-	if (!md5) {
-		not_equal = 1;
-		goto exit;
-	}
-
-	/* if no copy cached yet, so nothing to compare */
-	if (!dg->loaded_cust_fw_sections) {
-		not_equal = -1;
-		cve_os_log(CVE_LOGLEVEL_INFO,
-				"no firmware cached, loading new firmware\n");
-		goto exit;
-	}
-
-	for (; i < ICEDRV_MD5_MAX_SIZE; i++) {
-		if (dg->loaded_cust_fw_sections->md5[i] != md5[i])
-			break;
-	}
-
-	/* at least 1 byte did not match */
-	if (i < ICEDRV_MD5_MAX_SIZE) {
-		not_equal = 1;
-		cve_os_log(CVE_LOGLEVEL_INFO,
-				"MD5 mismatch cached:%s loading new firmware\n",
-				dg->loaded_cust_fw_sections->md5_str);
-	}
-
-exit:
-	return not_equal;
-}
-
 static void __cleanup_fw_loading(struct ice_pnetwork *pnetwork,
 		struct cve_fw_loaded_sections *out_fw_sec,
 		int md5_match)
 {
 	struct cve_device_group *dg = cve_dg_get();
+	struct cve_fw_loaded_sections *fw_sec = out_fw_sec;
 
-	if (md5_match < 0) {
+	if (out_fw_sec->cached_mem_used) {
 		/* remove fw from global struct */
 		cve_dle_remove_from_list(dg->loaded_cust_fw_sections,
 				list, out_fw_sec);
 		cve_os_log(CVE_LOGLEVEL_DEBUG,
-				"release cached firmware fw_sec_struct:0x%p MD5:%s\n",
-				out_fw_sec, out_fw_sec->md5_str);
+				"PNTW:0x%llx release cached firmware fw_sec_struct:0x%p MD5:%s #FwCaching\n",
+				pnetwork->pntw_id, out_fw_sec,
+				out_fw_sec->md5_str);
 	} else {
 		cve_dle_remove_from_list(
 				pnetwork->loaded_cust_fw_sections,
 				list, out_fw_sec);
 		cve_os_log(CVE_LOGLEVEL_DEBUG,
-				"NTW:0x%p clean custom firmware fw_sec_struct:0x%p MD5:%s\n",
-				pnetwork, out_fw_sec, out_fw_sec->md5_str);
+				"PNTW:0x%llx clean custom firmware fw_sec_struct:0x%p MD5:%s #FwCaching\n",
+				pnetwork->pntw_id, out_fw_sec,
+				out_fw_sec->md5_str);
+	}
+	cve_fw_unload(NULL, fw_sec);
+}
+
+static int __remove_pntw_from_fw_user(struct ice_pnetwork *pnetwork)
+{
+	int ret = 0, type = CVE_FW_TYPE_START;
+	struct ice_fw_owner_info *owner_info;
+	struct cve_fw_loaded_sections *prev_fw_sec;
+
+	for (; type < CVE_FW_END_TYPES; type++) {
+		owner_info = &pnetwork->self_info[type];
+		/* Remove pnetwork from f/w owner list */
+		prev_fw_sec = (struct cve_fw_loaded_sections *)
+			owner_info->owner_fw;
+
+		if (owner_info->owner_fw != NULL) {
+			cve_dle_remove_from_list(prev_fw_sec->owners,
+					owner_list, owner_info);
+			cve_os_log(CVE_LOGLEVEL_DEBUG,
+					"PNTW:0x%llx Remove pnetwork from fw:0x%p(user HEAD:0x%p) user list MD5:%s #FwCaching\n",
+					pnetwork->pntw_id, prev_fw_sec,
+					prev_fw_sec->owners,
+					prev_fw_sec->md5_str);
+		}
+	}
+	return ret;
+}
+
+
+static int __add_pntw_to_fw_user(struct ice_pnetwork *pnetwork,
+		struct cve_fw_loaded_sections *out_fw_sec)
+{
+	int ret = 0;
+	struct ice_fw_owner_info *owner_info;
+	struct cve_fw_loaded_sections *prev_fw_sec;
+
+	/* check if pnetwork already has a f/w cached
+	 * if yes, then remove pnetwork from its owner list and add the new
+	 * fw structure
+	 */
+	owner_info = &pnetwork->self_info[out_fw_sec->fw_type];
+	prev_fw_sec = (struct cve_fw_loaded_sections *)owner_info->owner_fw;
+
+	if (owner_info->owner_fw != NULL) {
+		if (owner_info->owner_fw != out_fw_sec) {
+			/* restore base f/w first as ownership of this
+			 * loaded f/w is global
+			 */
+			ret = ice_dev_fw_map(pnetwork->dev_hctx_list,
+					NULL, prev_fw_sec->fw_type);
+			if (ret < 0) {
+				cve_os_log_default(CVE_LOGLEVEL_ERROR,
+						"PNTW:0x%llx fw_map(0x%p) MD5:%s failed:%d\n",
+						pnetwork->pntw_id,
+						prev_fw_sec,
+						prev_fw_sec->md5_str, ret);
+			}
+
+			/* different f/w being requested for caching */
+			cve_dle_remove_from_list(prev_fw_sec->owners,
+					owner_list, owner_info);
+			cve_os_log(CVE_LOGLEVEL_INFO,
+					"PNTW:0x%llx Remove pnetwork from fw:0x%p(ListHead:0x%p) TypeCaching:%u MD5:%s #FwCaching\n",
+					pnetwork->pntw_id, prev_fw_sec,
+					prev_fw_sec->owners,
+					prev_fw_sec->cached_mem_used,
+					prev_fw_sec->md5_str);
+		} else {
+			/*same f/w, nothing to do */
+			goto exit;
+		}
 	}
 
+	/* add this pnetwork to the new f/w struct owner list
+	 * this is to keep track of users during eviction of f/w from cached
+	 * nodes
+	 */
+	owner_info->owner_fw = (void *)out_fw_sec;
+	cve_dle_add_to_list_after(out_fw_sec->owners, owner_list, owner_info);
+	cve_os_log(CVE_LOGLEVEL_DEBUG,
+			"PNTW:0x%llx ADD pnetwork to fw:0x%p(user HEAD:0x%p) TypeCaching:%u MD5:%s #FwCaching\n",
+			pnetwork->pntw_id, out_fw_sec,
+			out_fw_sec->owners, out_fw_sec->cached_mem_used,
+			out_fw_sec->md5_str);
+
+exit:
+	return ret;
 }
+
 
 static int __process_fw_loading(struct ice_pnetwork *pnetwork,
 		u64 fw_image, u64 fw_binmap, u32 fw_binmap_size, u8 *md5)
 {
 	int ret = CVE_DEFAULT_ERROR_CODE;
 	struct cve_device_group *dg = cve_dg_get();
-	struct cve_fw_loaded_sections *out_fw_sec;
+	struct cve_fw_loaded_sections *out_fw_sec = NULL;
 	int load_new_fw = 0;
 
-	load_new_fw = __compare_md5(dg, md5);
-	out_fw_sec = dg->loaded_cust_fw_sections;
+	load_new_fw = ice_dg_find_matching_fw(pnetwork, md5, &out_fw_sec);
 
 	/* check if we stored a copy of IVP lib, if not, store it */
 	if (load_new_fw) {
+		/* check if free node available in cached list
+		 * if not, release oldest free node from loaded
+		 * firmwares
+		 */
+		ice_dg_return_cached_mem(pnetwork);
 		/* allocate and load a copy of the firmware */
 		ret = ice_dev_fw_load(fw_image, fw_binmap,
 				fw_binmap_size, &out_fw_sec);
@@ -266,18 +320,25 @@ static int __process_fw_loading(struct ice_pnetwork *pnetwork,
 		__assign_fw_ownership(dg, pnetwork, out_fw_sec, md5);
 	}
 
+	/* add this network to user list of the f/w,
+	 * will be removed during destroy network
+	 */
+	__add_pntw_to_fw_user(pnetwork, out_fw_sec);
+
 	cve_os_log(CVE_LOGLEVEL_DEBUG,
-				"NTW:0x%llx Mapping f/w 0x%p md5:%s load_new_fw:%d\n",
+				"PNTW:0x%llx Mapping f/w 0x%p md5:%s load_new_fw:%d #FwCaching\n",
 				pnetwork->pntw_id, out_fw_sec,
 				out_fw_sec->md5_str, load_new_fw);
-	ret = ice_dev_fw_map(pnetwork->dev_hctx_list, out_fw_sec);
+	ret = ice_dev_fw_map(pnetwork->dev_hctx_list, out_fw_sec,
+			out_fw_sec->fw_type);
 	if (ret < 0) {
 		cve_os_log_default(CVE_LOGLEVEL_ERROR,
-				"NTW:0x%llx fw_map(0x%p) MD5:%s failed:%d\n",
+				"PNTW:0x%llx fw_map(0x%p) MD5:%s failed:%d\n",
 				pnetwork->pntw_id, out_fw_sec,
 				out_fw_sec->md5_str, ret);
 		goto err_fw_map;
 	}
+
 
 	return ret;
 err_fw_map:
@@ -562,7 +623,7 @@ static void copy_event_data_and_remove(cve_context_process_id_t context_pid,
 				- inf->busy_start_time));
 	DO_TRACE(trace_icedrvEventGeneration(SPH_TRACE_OP_STATE_COMPLETE,
 					ctx->swc_node.sw_id,
-					ntw->pntw->swc_node.sw_id,
+					ntw->swc_node.parent_sw_id,
 					ntw->swc_node.sw_id,
 					ntw->network_id,
 					inf->swc_node.sw_id,
@@ -730,6 +791,40 @@ static void do_warm_reset(struct cve_device *cve_dev,
 }
 
 
+static int md5_assign(u8 *src_md5, u8 *dest_md5)
+{
+	int ret = 0;
+
+	ret = ice_memcpy_s(dest_md5,
+		ICEDRV_MD5_MAX_SIZE * sizeof(src_md5[0]),
+		src_md5,
+		ICEDRV_MD5_MAX_SIZE * sizeof(src_md5[0]));
+	if (ret < 0) {
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+		"Safelib memcpy Failed %d\n", ret);
+		return ret;
+	}
+
+	return 0;
+}
+
+/* return 0 on success
+ * return 1 if mismatch detected
+ */
+static int md5_match(u8 *src_md5, u8 *dest_md5)
+{
+	int i = 0;
+
+	for (; i < ICEDRV_MD5_MAX_SIZE; i++) {
+		if (src_md5[i] != dest_md5[i])
+			return 1;
+	}
+/* TODO: Returning 1 always to disable md5_match logic
+ * revert to return 0 when needed
+*/
+	return 1;
+}
+
 /*
  * reset the CVE device..
  * return :
@@ -746,9 +841,6 @@ static void do_reset(struct cve_device *cve_dev,
 	ASSERT(dev_handle);
 
 	ice_di_mmu_block_entrance(cve_dev);
-
-	/* do device reset */
-	cve_di_reset_device(cve_dev);
 
 	/* restore page sizes MMU configuration */
 	ice_mm_get_page_sz_list(hdom, &page_sz_list);
@@ -770,8 +862,13 @@ static void do_reset(struct cve_device *cve_dev,
 	/* set the MMU addressing mode */
 	ice_di_set_mmu_address_mode(cve_dev);
 
-	ice_di_config_mmu_regs(cve_dev, job->mmu_cfg_list,
-		job->num_mmu_cfg_regs);
+	/* Config mmu if regs set is different */
+	if (md5_match(job->md5, cve_dev->prev_reg_config.mmu_config_md5) != 0) {
+
+		ice_di_config_mmu_regs(cve_dev, job->mmu_cfg_list,
+			job->num_mmu_cfg_regs);
+		md5_assign(job->md5, cve_dev->prev_reg_config.mmu_config_md5);
+	}
 
 	/* reset the page table flags state */
 	cve_mm_reset_page_table_flags(hdom);
@@ -791,10 +888,12 @@ static void do_reset(struct cve_device *cve_dev,
 	if (!block_mmu)
 		ice_di_mmu_unblock_entrance(cve_dev);
 
-	/* complete the reset flow and run the device cores */
-	cve_di_start_running(cve_dev);
-	/* Set fifo size and address*/
+	if (cve_dev->di_cve_needs_reset & ~CVE_DI_RESET_DUE_PNTW_SWITCH)
+		/* complete the reset flow and run the device cores */
+		cve_di_start_running(cve_dev);
+		/* Set fifo size and address*/
 
+	cve_dev->di_cve_needs_reset = 0;
 }
 
 static void __destroy_ice_dump_buffer(struct ice_network *ntw)
@@ -1163,7 +1262,7 @@ static int __dispatch_single_job(
 			SPH_TRACE_OP_STATE_PO,
 			cve_dev->dev_index,
 			next_ctx->swc_node.sw_id,
-			ntw->pntw->swc_node.sw_id,
+			ntw->swc_node.parent_sw_id,
 			ntw->swc_node.sw_id,
 			ntw->network_id,
 			ntw->curr_exe->swc_node.sw_id,
@@ -1175,7 +1274,7 @@ static int __dispatch_single_job(
 		__send_ice_poweron_sync_message_to_cnc(
 				cve_dev, po_ts,
 				next_ctx->swc_node.sw_id,
-				ntw->pntw->swc_node.sw_id,
+				ntw->swc_node.parent_sw_id,
 				ntw->curr_exe->swc_node.sw_id);
 
 		/* Configure ICE dump Registers with
@@ -1354,10 +1453,9 @@ static void __trigger_work_on_ice(struct ice_network *ntw)
 	};
 }
 
-
 int ice_ds_dispatch_jg(struct jobgroup_descriptor *jobgroup)
 {
-	u32 i, ice_mask = 0;
+	u32 i, ice_mask = 0, clos_mask;
 	struct cve_device *dev;
 	int retval = 0;
 	struct cve_device_group *dg = cve_dg_get();
@@ -1379,7 +1477,7 @@ int ice_ds_dispatch_jg(struct jobgroup_descriptor *jobgroup)
 	DO_TRACE(trace__icedrvScheduleInfer(
 		SPH_TRACE_OP_STATE_QUEUED,
 		ntw->pntw->wq->context->swc_node.sw_id,
-		ntw->pntw->swc_node.sw_id,
+		ntw->swc_node.parent_sw_id,
 		ntw->swc_node.sw_id, ntw->network_id,
 		ntw->curr_exe->swc_node.sw_id,
 		SPH_TRACE_OP_STATUS_ICE, ntw->ntw_icemask));
@@ -1396,27 +1494,29 @@ int ice_ds_dispatch_jg(struct jobgroup_descriptor *jobgroup)
 	}
 
 	dg->num_running_ntw++;
+	clos_mask = (ntw->pntw->clos[ICE_CLOS_1] << 16) |
+		ntw->pntw->clos[ICE_CLOS_2];
 	ntw->pntw->wq->num_ntw_running++;
 
 	if ((dg->num_running_ntw == 1)
-		&& (dg->clos_state != CLOS_STATE_SINGLE_NTW)) {
+		&& (dg->clos_signature != clos_mask)) {
 		/* If this is the only Ntw running then respect the
 		 * CLOS requirement
 		 */
-
 		cve_os_log(CVE_LOGLEVEL_INFO,
 			"Allocate CLOS for NtwId=0x%lx\n", (uintptr_t)ntw);
 		__ntw_reserve_clos(ntw->pntw);
 		ice_os_set_clos((void *)&dg->dg_clos_manager);
-		dg->clos_state = CLOS_STATE_SINGLE_NTW;
-
+		dg->clos_signature = clos_mask;
 	} else if ((dg->num_running_ntw == 2)
-		&& (dg->clos_state != CLOS_STATE_MULTI_NTW)) {
+		&& (dg->clos_signature != CLOS_SIGNATURE_DEFAULT)) {
+
+		clos_mask = CLOS_SIGNATURE_DEFAULT;
 		cve_os_log(CVE_LOGLEVEL_INFO,
 			"Reset CLOS\n");
 		/* Reset CLOS MSR registers */
 		ice_os_reset_clos((void *)&dg->dg_clos_manager);
-		dg->clos_state = CLOS_STATE_MULTI_NTW;
+		dg->clos_signature = clos_mask;
 	}
 
 	retval = set_idc_registers(ntw, true);
@@ -1430,6 +1530,9 @@ int ice_ds_dispatch_jg(struct jobgroup_descriptor *jobgroup)
 
 		goto exit;
 	}
+
+	/* Reset all ICEs together */
+	cve_di_reset_device(ntw);
 
 	for (i = 0; i < jobgroup->submitted_jobs_nr; i++) {
 
@@ -1482,6 +1585,7 @@ int ice_ds_dispatch_jg(struct jobgroup_descriptor *jobgroup)
 				retval);
 				goto exit;
 			}
+
 		}
 
 		/*TODO: This call should never fail because of resource */
@@ -1494,7 +1598,7 @@ exit:
 	DO_TRACE(trace__icedrvScheduleInfer(
 		SPH_TRACE_OP_STATE_START,
 		ntw->pntw->wq->context->swc_node.sw_id,
-		ntw->pntw->swc_node.sw_id,
+		ntw->swc_node.parent_sw_id,
 		ntw->swc_node.sw_id, ntw->network_id,
 		ntw->curr_exe->swc_node.sw_id,
 		SPH_TRACE_OP_STATUS_ICE, ice_mask));
@@ -1812,7 +1916,7 @@ int ice_ds_raise_event(struct ice_network *ntw,
 
 		DO_TRACE(trace_icedrvEventGeneration(SPH_TRACE_OP_STATE_ADD,
 					ntw->pntw->wq->context->swc_node.sw_id,
-					ntw->pntw->swc_node.sw_id,
+					ntw->swc_node.parent_sw_id,
 					ntw->swc_node.sw_id, ntw->network_id,
 					inf->swc_node.sw_id,
 					SPH_TRACE_OP_STATUS_MAX,
@@ -2080,6 +2184,16 @@ static int __process_job(struct cve_job *job_desc,
 				"ERROR:%d Invalid MMU Config reg offset\n",
 				ret);
 			goto err_mmu_cfg;
+		}
+
+		ret = ice_memcpy_s(cur_job->md5,
+			sizeof(job_desc->md5[0]) * ICEDRV_MD5_MAX_SIZE,
+			job_desc->md5,
+			sizeof(job_desc->md5[0]) * ICEDRV_MD5_MAX_SIZE);
+		if (ret < 0) {
+			cve_os_log(CVE_LOGLEVEL_ERROR,
+				"Safelib memcpy Failed %d\n", ret);
+			goto out;
 		}
 	}
 
@@ -2996,7 +3110,7 @@ static int __destroy_network(struct ice_network *ntw)
 	head = ntw;
 
 	do {
-		cve_os_log(CVE_LOGLEVEL_DEBUG, "Destroying NtwID=0x%lx\n",
+		cve_os_log(CVE_LOGLEVEL_INFO, "Destroying NtwID=0x%lx\n",
 			(uintptr_t)ntw);
 
 		__destroy_all_inferences(ntw);
@@ -3399,6 +3513,7 @@ int cve_ds_handle_create_network(
 		goto out;
 	}
 
+	network->unique_id = __get_ntw_id();
 	network->pntw = pntw;
 	network->ntw_running = false;
 	network->reset_ntw = false;
@@ -3530,7 +3645,7 @@ int cve_ds_handle_create_infer(
 
 	ctx_sw_id = ntw->pntw->wq->context->swc_node.sw_id;
 	ntw_sw_id = ntw->swc_node.sw_id;
-	parent_ntw_sw_id = ntw->pntw->swc_node.sw_id;
+	parent_ntw_sw_id = ntw->swc_node.parent_sw_id;
 	DO_TRACE(trace__icedrvCreateInfer(
 				SPH_TRACE_OP_STATE_START,
 				ctx_sw_id, parent_ntw_sw_id, ntw_sw_id,
@@ -4463,7 +4578,7 @@ void cve_ds_handle_job_completion(struct cve_device *dev,
 		DO_TRACE(trace__icedrvScheduleInfer(
 					SPH_TRACE_OP_STATE_COMPLETE,
 					ntw->pntw->wq->context->swc_node.sw_id,
-					ntw->pntw->swc_node.sw_id,
+					ntw->swc_node.parent_sw_id,
 					ntw->swc_node.sw_id,
 					ntw->network_id,
 					ntw->curr_exe->swc_node.sw_id,
@@ -4615,6 +4730,12 @@ int cve_ds_open_context(cve_context_process_id_t context_pid,
 			list,
 			new_context);
 
+	/* add the new context to the device group list */
+	cve_dle_add_to_list_after(dg->list_contexts,
+			dg_list,
+			new_context);
+
+
 	new_context->process = context_process;
 
 	cve_create_workqueue(new_context, dg, &new_workqueue);
@@ -4675,10 +4796,28 @@ void cve_destroy_context(
 		struct cve_context_process *context_process,
 		struct ds_context *context)
 {
+	struct cve_device_group *dg = cve_dg_get();
+
+	while (context_process->events) {
+		struct cve_completion_event *event = context_process->events;
+
+		cve_dle_remove_from_list(context_process->events,
+			main_list, event);
+		OS_FREE(event, sizeof(*event));
+	}
+	context_process->events = NULL;
+	context_process->alloc_events = NULL;
+
 	/* remove the context from the process list */
 	cve_dle_remove_from_list(
 			context_process->list_contexts,
 			list,
+			context);
+
+	/* remove the context from the device group list */
+	cve_dle_remove_from_list(
+			dg->list_contexts,
+			dg_list,
 			context);
 
 	/* destroy the context */
@@ -4749,16 +4888,6 @@ int cve_ds_close_context(
 			retval);
 		goto out;
 	}
-
-	while (context_process->events) {
-		struct cve_completion_event *event = context_process->events;
-
-		cve_dle_remove_from_list(context_process->events,
-			main_list, event);
-		OS_FREE(event, sizeof(*event));
-	}
-	context_process->events = NULL;
-	context_process->alloc_events = NULL;
 
 	cve_destroy_context(context_process, context);
 
@@ -5113,7 +5242,7 @@ int cve_ds_wait_for_event(cve_context_process_id_t context_pid,
 
 		DO_TRACE(trace_icedrvEventGeneration(SPH_TRACE_OP_STATE_START,
 					ntw->pntw->wq->context->swc_node.sw_id,
-					ntw->pntw->swc_node.sw_id,
+					ntw->swc_node.parent_sw_id,
 					ntw->swc_node.sw_id,
 					ntw->network_id,
 					inf->swc_node.sw_id,
@@ -5689,7 +5818,6 @@ static void __ntw_release_cntr(struct ice_pnetwork *pntw)
 		cve_dle_move(dg->hw_cntr_list, pntw->cntr_list, list, head);
 
 		head->in_free_pool = true;
-		head->cntr_ntw_id = INVALID_NETWORK_ID;
 		head->cntr_pntw_id = INVALID_NETWORK_ID;
 		dg->num_avl_cntr++;
 
@@ -6495,6 +6623,11 @@ static int __create_pntw(struct ice_pnetwork_descriptor *pntw_desc,
 
 	ret = cve_os_init_wait_que(&parent->rr_wait_queue);
 
+	for (i = CVE_FW_TYPE_START; i < CVE_FW_END_TYPES; i++) {
+		parent->self_info[i].user = (void *)parent;
+		parent->self_info[i].owner_fw = (void *)NULL;
+	}
+
 	for (i = 0; i < NUM_COUNTER_REG; i++)
 		parent->cntr_id_map[i] = INVALID_CTR_ID;
 
@@ -6520,6 +6653,18 @@ static int __create_pntw(struct ice_pnetwork_descriptor *pntw_desc,
 		cve_os_log(CVE_LOGLEVEL_ERROR,
 			"Safelib memcpy Failed %d\n", ret);
 		goto error_free_mem;
+	}
+
+	ret = ice_memcpy_s(parent->ntw_buf_page_config,
+			ICEDRV_PAGE_ALIGNMENT_MAX *
+			sizeof(parent->ntw_buf_page_config[0]),
+			pntw_desc->va_partition_config,
+			ICEDRV_PAGE_ALIGNMENT_MAX *
+			sizeof(parent->ntw_buf_page_config[0]));
+	if (ret < 0) {
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+			"Safelib memcpy Failed %d\n", ret);
+		return ret;
 	}
 
 	ret = __pntw_check_resources(wq, parent);
@@ -6635,6 +6780,7 @@ static int __destroy_pntw(struct ice_pnetwork *pntw)
 	__do_network_cleanup(pntw);
 	ASSERT(!pntw->has_resource);
 
+	__remove_pntw_from_fw_user(pntw);
 	/*Do other cleanup related to HW resource*/
 	ice_fini_sw_dev_contexts(pntw->dev_hctx_list,
 				pntw->loaded_cust_fw_sections);
@@ -6658,6 +6804,7 @@ static int __do_pnetwork_cleanup(struct cve_workqueue *wq)
 	curr = head;
 	do {
 		__do_network_cleanup(curr);
+		__remove_pntw_from_fw_user(curr);
 		/*Do other cleanup related to HW resource*/
 		ice_fini_sw_dev_contexts(curr->dev_hctx_list,
 				curr->loaded_cust_fw_sections);

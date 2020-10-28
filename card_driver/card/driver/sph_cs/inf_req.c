@@ -21,6 +21,7 @@
 #include "sphcs_ibecc.h"
 #include "sph_safe.h"
 #include "inf_ptr2id.h"
+#include "nnp_hwtrace_protocol.h"
 
 static struct inf_devres *devres_for_err_inj;
 static void *addr_for_err_inj;
@@ -569,6 +570,15 @@ static int inf_req_execute(struct inf_exec_req *req)
 		infreq->exec_cmd.sched_params.priority = req->priority;
 		infreq->exec_cmd.sched_params.debugOn = req->debugOn;
 		infreq->exec_cmd.sched_params.collectInfo = req->collectInfo;
+		if (g_the_sphcs->hw_tracing.hwtrace_status == NNPCS_HWTRACE_ACTIVATED)
+			infreq->exec_cmd.sched_params.hwtraceEnabled = 1;
+		else
+			infreq->exec_cmd.sched_params.hwtraceEnabled = 0;
+	} else if (g_the_sphcs->hw_tracing.hwtrace_status == NNPCS_HWTRACE_ACTIVATED) {
+		memset(&infreq->exec_cmd.sched_params, 0, sizeof(infreq->exec_cmd.sched_params));
+		infreq->exec_cmd.sched_params_is_null = 0;
+		infreq->exec_cmd.sched_params.hwtraceEnabled = 1;
+
 	}
 	NNP_SPIN_LOCK_IRQSAVE(&context->sw_counters_lock_irq, flags2);
 	if (context->infreq_counter == 0 &&

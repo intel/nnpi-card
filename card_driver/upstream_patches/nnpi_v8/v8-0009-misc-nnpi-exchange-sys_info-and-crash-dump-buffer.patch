@@ -1,0 +1,341 @@
+From 0aa9970a2663cb2b042385cf8c9d07fa2c627522 Mon Sep 17 00:00:00 2001
+From: Guy Zadicario <guy.zadicario@intel.com>
+Date: Sun, 4 Oct 2020 12:22:14 +0300
+Subject: [PATCH v8 09/22] misc: nnpi: exchange sys_info and crash dump buffer
+ space with device
+
+This patch adds the last phase before the device becomes fully ready
+after it boots and the ipc protocol version has been verified:
+- Host send "Setup crashdump" command to the device which passes an
+  allocated DMA buffer on host which the card will fill with crashdump
+  info when the device get into some fatal error event.
+  Note that on a crash event, the device will copy the crashdump log to
+  both this DMA buffer as well to memory accessible through BAR2, mapped to
+  a structure called "inbound_mem".
+  This crash dump duplication is to increase the chances that the crash
+  dump log will be accessible by host. Depending on the device condition
+  after the crash it may fail to DMA the crash dump to host memory and it
+  might be that accessing BAR2 memory will not be possible.
+
+- Host send "SysInfoSetup" command to the device with an address of DMA
+  page address on host. Device fills the page with static card system
+  information and replies back that the sysinfo data is filled.
+
+The DMA pages mentioned above are allocated during device creation and
+freed during device removal.
+---
+ drivers/misc/intel-nnpi/device.c | 100 +++++++++++++++++++++++++++++++++++++--
+ drivers/misc/intel-nnpi/device.h |  26 +++++++++-
+ drivers/misc/intel-nnpi/pcie.c   |  17 +++++++
+ drivers/misc/intel-nnpi/pcie.h   |   4 ++
+ 4 files changed, 141 insertions(+), 6 deletions(-)
+
+diff --git a/drivers/misc/intel-nnpi/device.c b/drivers/misc/intel-nnpi/device.c
+index 438cf49..41e5bf6 100644
+--- a/drivers/misc/intel-nnpi/device.c
++++ b/drivers/misc/intel-nnpi/device.c
+@@ -196,12 +196,37 @@ static int handle_bios_protocol(struct nnp_device *nnpdev,
+ 	return msg_qwords;
+ }
+ 
++static int handle_sys_info(struct nnp_device *nnpdev,
++			   const void        *msgbuf,
++			   int               avail_qwords)
++{
++	const  union c2h_sys_info *msg = msgbuf;
++	int msg_qwords = sizeof(*msg) / sizeof(u64);
++
++	if (avail_qwords < msg_qwords)
++		return 0;
++
++	/*
++	 * this should never be NULL at that stage,
++	 * we test it for safety to protect against buggy device
++	 * which send us this message before time.
++	 */
++	if (!nnpdev->card_sys_info)
++		return msg_qwords;
++
++	nnpdev->card_sys_info_valid = true;
++	nnpdev->num_ice_devices = hweight32(nnpdev->card_sys_info->ice_mask);
++
++	return msg_qwords;
++}
++
+ typedef int (*response_handler)(struct nnp_device *nnpdev,
+ 				const void        *msgbuf,
+ 				int               avail_qwords);
+ 
+ static response_handler resp_handlers[NNP_IPC_C2H_OPCODE_LAST + 1] = {
+ 	[NNP_IPC_C2H_OP_QUERY_VERSION_REPLY3] = handle_query_version_reply3,
++	[NNP_IPC_C2H_OP_SYS_INFO] = handle_sys_info,
+ 	[NNP_IPC_C2H_OP_BIOS_PROTOCOL] = handle_bios_protocol
+ };
+ 
+@@ -401,6 +426,8 @@ void nnpdrv_device_set_boot_state(struct nnp_device *nnpdev, u32 mask)
+ {
+ 	u32 state, prev_state;
+ 	bool becomes_ready = false;
++	union h2c_setup_crash_dump_msg setup_crash_dump_msg;
++	union h2c_setup_sys_info_page sys_info_page_msg;
+ 	int ret;
+ 
+ 	/*
+@@ -478,6 +505,42 @@ void nnpdrv_device_set_boot_state(struct nnp_device *nnpdev, u32 mask)
+ 			pr_err("Unexpected error while loading boot image. rc=%d\n",
+ 			       ret);
+ 	}
++
++	/* Handle transition to active state */
++	if (((state & NNP_DEVICE_CARD_DRIVER_READY) ||
++	     (state & NNP_DEVICE_CARD_READY)) &&
++	    !(prev_state & NNP_DEVICE_CARD_DRIVER_READY) &&
++	    !(prev_state & NNP_DEVICE_CARD_READY)) {
++		phys_addr_t membar_addr;
++		void *membar_vaddr;
++		u32 val;
++
++		/* set host driver state to "Driver ready" */
++		val = FIELD_PREP(NNP_HOST_DRV_STATE_MASK,
++				 NNP_HOST_DRV_STATE_READY);
++		nnp_set_host_doorbell_value(nnpdev->nnp_pci, val);
++
++		/* send crash dump memory address */
++		setup_crash_dump_msg.opcode = NNP_IPC_H2C_OP_SETUP_CRASH_DUMP;
++		setup_crash_dump_msg.dma_addr =
++		      NNP_IPC_DMA_ADDR_TO_PFN(nnpdev->host_crash_dump.dma_addr);
++
++		nnp_get_membar_addr(nnpdev->nnp_pci,
++				    &membar_addr,
++				    &membar_vaddr,
++				    NULL);
++		setup_crash_dump_msg.membar_addr = membar_addr;
++		nnpdev->inbound_mem = (union nnp_inbound_mem *)membar_vaddr;
++
++		nnpdrv_queue_msg(nnpdev->public_cmdq, setup_crash_dump_msg);
++
++		/* send system info dma page address to card */
++		sys_info_page_msg.value = 0;
++		sys_info_page_msg.opcode = NNP_IPC_H2C_OP_SETUP_SYS_INFO_PAGE;
++		sys_info_page_msg.dma_addr =
++			NNP_IPC_DMA_ADDR_TO_PFN(nnpdev->card_sys_info_dma_addr);
++		nnpdrv_queue_msg(nnpdev->public_cmdq, sys_info_page_msg);
++	}
+ }
+ 
+ /**
+@@ -533,17 +596,35 @@ struct nnp_device *nnpdrv_device_create(struct nnp_pci_device *nnp_pci)
+ 		goto err_cmdq;
+ 	}
+ 
++	/* setup crash dump memory */
++	nnpdev->host_crash_dump.vaddr = dma_alloc_coherent(
++					&nnpdev->nnp_pci->pdev->dev,
++					NNP_CRASH_DUMP_SIZE,
++					&nnpdev->host_crash_dump.dma_addr,
++					GFP_KERNEL);
++
++	if (!nnpdev->host_crash_dump.vaddr) {
++		ret = -ENOMEM;
++		goto err_wq;
++	}
++
+ 	/* setup memory for bios system info */
+ 	nnpdev->bios_system_info = dma_alloc_coherent(
+ 					&nnpdev->nnp_pci->pdev->dev,
+-					NNP_PAGE_SIZE,
++					2 * NNP_PAGE_SIZE,
+ 					&nnpdev->bios_system_info_dma_addr,
+ 					GFP_KERNEL);
+ 	if (!nnpdev->bios_system_info) {
+ 		ret = -ENOMEM;
+-		goto err_wq;
++		goto err_crash_dump;
+ 	}
+ 
++	nnpdev->card_sys_info_dma_addr = nnpdev->bios_system_info_dma_addr +
++					 NNP_PAGE_SIZE;
++	nnpdev->card_sys_info =
++		(struct nnp_sys_info *)((uintptr_t)nnpdev->bios_system_info +
++					NNP_PAGE_SIZE);
++
+ 	/* set host driver state to "Not ready" */
+ 	ret = nnp_set_host_doorbell_value(nnpdev->nnp_pci, 0);
+ 	if (ret)
+@@ -558,6 +639,11 @@ struct nnp_device *nnpdrv_device_create(struct nnp_pci_device *nnp_pci)
+ 
+ 	return nnpdev;
+ 
++err_crash_dump:
++	dma_free_coherent(&nnpdev->nnp_pci->pdev->dev,
++			  NNP_CRASH_DUMP_SIZE,
++			  nnpdev->host_crash_dump.vaddr,
++			  nnpdev->host_crash_dump.dma_addr);
+ err_wq:
+ 	destroy_workqueue(nnpdev->wq);
+ err_cmdq:
+@@ -646,12 +732,13 @@ static void doorbell_changed_handler(struct work_struct *work)
+ 			msg.opcode = NNP_IPC_H2C_OP_QUERY_VERSION;
+ 			if (nnpdrv_queue_msg(nnpdev->public_cmdq, msg) ||
+ 			    msg_scheduler_queue_sync(nnpdev->public_cmdq))
+-				pr_err("Query version msg error\n");
++				pr_err("Failed to send Query version msg\n");
+ 			break;
+ 		case NNP_CARD_BOOT_STATE_NOT_READY:
+ 			/* card is down reset the device boot and error state */
+ 			spin_lock(&nnpdev->lock);
+ 			nnpdev->state = 0;
++			nnpdev->bios_system_info_valid = false;
+ 			spin_unlock(&nnpdev->lock);
+ 			break;
+ 		default:
+@@ -741,7 +828,12 @@ static void nnpdrv_free_device(struct work_struct *work)
+ 		unload_boot_image(nnpdev);
+ 
+ 	dma_free_coherent(&nnpdev->nnp_pci->pdev->dev,
+-			  NNP_PAGE_SIZE,
++			  NNP_CRASH_DUMP_SIZE,
++			  nnpdev->host_crash_dump.vaddr,
++			  nnpdev->host_crash_dump.dma_addr);
++
++	dma_free_coherent(&nnpdev->nnp_pci->pdev->dev,
++			  2 * NNP_PAGE_SIZE,
+ 			  nnpdev->bios_system_info,
+ 			  nnpdev->bios_system_info_dma_addr);
+ 
+diff --git a/drivers/misc/intel-nnpi/device.h b/drivers/misc/intel-nnpi/device.h
+index 0a7673a..4b613d4 100644
+--- a/drivers/misc/intel-nnpi/device.h
++++ b/drivers/misc/intel-nnpi/device.h
+@@ -14,6 +14,7 @@
+ #include <linux/workqueue.h>
+ #include "ipc_protocol.h"
+ #include "msg_scheduler.h"
++#include "nnp_inbound_mem.h"
+ #include "pcie.h"
+ 
+ #define NNP_MAX_DEVS		256
+@@ -55,6 +56,12 @@
+ 
+ #define NNP_DEVICE_RESPONSE_BUFFER_LEN  32
+ 
++struct host_crash_dump {
++	void *vaddr;
++	dma_addr_t dma_addr;
++	u32 dump_size;
++};
++
+ struct query_version_work {
+ 	struct work_struct work;
+ 	u64 chan_resp_op_size;
+@@ -77,10 +84,11 @@ struct query_version_work {
+  *              submissions to the device's command queue.
+  * @public_cmdq: input queue to @cmdq_sched used to schedule driver internal
+  *               commands to be sent to the device.
++ * @inbound_mem: pointer to device inbound memory region (mapped to BAR2)
+  * @wq: singlethread workqueue for processing device's response messages.
+  * @image_wait_node: list node to include this device is a list of devices
+  *                   waiting for the same boot image to be loaded from disk.
+- * @lock: protects accesses to @state
++ * @lock: protects accesses to @state and @inbound_mem
+  * @is_recovery_bios: true if device has booted from the recovery bios flash
+  * @boot_image_loaded: true if boot image load has started
+  * @reset_boot_image_path: boot image to load on next device reset.
+@@ -90,11 +98,18 @@ struct query_version_work {
+  * @bios_system_info: virtual pointer to bios system info page
+  * @bios_version_str: the device's started bios version string
+  * @bios_system_info_valid: true if @bios_system_info has been filled and valid
++ * @card_sys_info_dma_addr: dma address of device sys info page filled by
++ *                          the device after device boot is complete.
++ * @card_sys_info: virtual pointer to device post-boot system info
++ * @card_sys_info_valid: true if @card_sys_info has been filled and valid.
++ * @num_ice_devices: number of inference-compute-engines available.
+  * @state: current device boot state mask (see device state bits above)
+  * @protocol_version: version of host->card ipc protocol
+  * @chan_protocol_version: version of user-space->card commands ipc protocol
++ * @num_active_contexts: number of active inference contexts running.
+  * @curr_boot_state: last boot state field received from device doorbell reg
+  * @card_doorbell_val: last received device doorbell register value.
++ * @host_crash_dump: allocated dma page info to host device crash dump
+  * @query_version_work: work struct used to schedule processing of version
+  *                      reply response message arrived from device.
+  */
+@@ -108,10 +123,11 @@ struct nnp_device {
+ 
+ 	struct msg_scheduler       *cmdq_sched;
+ 	struct msg_scheduler_queue *public_cmdq;
++	union nnp_inbound_mem  *inbound_mem;
+ 
+ 	struct workqueue_struct *wq;
+ 	struct list_head        image_wait_node;
+-	spinlock_t     lock; /* protects accesses to @state */
++	spinlock_t     lock; /* protects accesses to @state and @inbound_mem */
+ 	bool           is_recovery_bios;
+ 	bool           boot_image_loaded;
+ 	char         reset_boot_image_path[PATH_MAX];
+@@ -123,13 +139,19 @@ struct nnp_device {
+ 	struct nnp_c2h_system_info  *bios_system_info;
+ 	char                        bios_version_str[NNP_BIOS_VERSION_LEN];
+ 	bool                        bios_system_info_valid;
++	dma_addr_t                  card_sys_info_dma_addr;
++	struct nnp_sys_info         *card_sys_info;
++	bool                        card_sys_info_valid;
+ 
++	unsigned int   num_ice_devices;
+ 	u32            state;
+ 	u32            curr_boot_state;
+ 	unsigned short protocol_version;
+ 	unsigned short chan_protocol_version;
++	unsigned int   num_active_contexts;
+ 	u32            card_doorbell_val;
+ 
++	struct host_crash_dump    host_crash_dump;
+ 	struct query_version_work query_version_work;
+ };
+ 
+diff --git a/drivers/misc/intel-nnpi/pcie.c b/drivers/misc/intel-nnpi/pcie.c
+index 2d075ff..b0be3f4 100644
+--- a/drivers/misc/intel-nnpi/pcie.c
++++ b/drivers/misc/intel-nnpi/pcie.c
+@@ -409,6 +409,23 @@ int nnp_set_host_doorbell_value(struct nnp_pci_device *nnp_pci, u32 value)
+ 	return 0;
+ }
+ 
++int nnp_get_membar_addr(struct nnp_pci_device *nnp_pci,
++			phys_addr_t           *out_phy_addr,
++			void                  **out_vaddr,
++			size_t                *out_size)
++{
++	if (out_phy_addr)
++		*out_phy_addr = nnp_pci->mem_bar.pa;
++
++	if (out_vaddr)
++		*out_vaddr = nnp_pci->mem_bar.va;
++
++	if (out_size)
++		*out_size = nnp_pci->mem_bar.len;
++
++	return 0;
++}
++
+ static int nnp_init_pci_device(struct nnp_pci_device *nnp_pci)
+ {
+ 	struct pci_dev *pdev = nnp_pci->pdev;
+diff --git a/drivers/misc/intel-nnpi/pcie.h b/drivers/misc/intel-nnpi/pcie.h
+index afbba69..f991767 100644
+--- a/drivers/misc/intel-nnpi/pcie.h
++++ b/drivers/misc/intel-nnpi/pcie.h
+@@ -101,6 +101,10 @@ int nnp_cmdq_write_mesg(struct nnp_pci_device *nnp_pci,
+ 			u64 *msg, u32 size, u64 *timed_wait);
+ int nnp_cmdq_flush(struct nnp_pci_device *nnp_pci);
+ int nnp_set_host_doorbell_value(struct nnp_pci_device *nnp_pci, u32 value);
++int nnp_get_membar_addr(struct nnp_pci_device *nnp_pci,
++			phys_addr_t           *out_phy_addr,
++			void                  **out_vaddr,
++			size_t                *out_len);
+ 
+ /*
+  * Functions implemented by the nnp "device" layer,
+-- 
+1.8.3.1
+

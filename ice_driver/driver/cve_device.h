@@ -63,14 +63,6 @@ enum ICEBO_STATE {
 	TWO_ICE
 };
 
-enum ICEDC_CLOS_STATE {
-
-	CLOS_STATE_DEFAULT = 0,
-	CLOS_STATE_SINGLE_NTW,
-	CLOS_STATE_MULTI_NTW,
-	CLOS_STATE_MAX
-};
-
 /*
  * device info exposed to the userland.
  * the information is supposed to be static - it is
@@ -198,6 +190,14 @@ struct ice_pmon_config {
 	const char *pmon_name;
 	u32 pmon_value;
 };
+
+struct ice_reg_stored_config {
+	/* MD5 sum of mmu config regs */
+	u8 mmu_config_md5[ICEDRV_MD5_MAX_SIZE];
+	u32 page_sz_reg[ICE_PAGE_SZ_CONFIG_REG_COUNT];
+	u32 cbd_entries_nr;
+};
+
 struct cve_device {
 	/* device index */
 	u32 dev_index;
@@ -285,9 +285,12 @@ struct cve_device {
 
 	/* store cdyn request value, if unchanged, dont request it */
 	u16 cdyn_val;
+
 	u32 cdyn_requested;
 	u32 gp_reg14_val;
 	u32 tlc_reg_val;
+
+	struct ice_reg_stored_config prev_reg_config;
 };
 
 struct llc_pmon_config {
@@ -413,6 +416,38 @@ struct trace_node_sysfs {
 	struct hwtrace_job job;
 };
 
+#define FW_SECTION_ALIGNED_SZ_32K (1024 * 32)
+#define FW_SECTION_ALIGNED_SZ_4M (1024 * 1024 * 4)
+
+enum ice_mem_cache_sz_type {
+	ICE_MEM_CACHE_SZ_TYPE_32K,
+	ICE_MEM_CACHE_SZ_TYPE_4M,
+	ICE_MEM_CACHE_SZ_TYPE_MAX
+};
+
+enum ice_mem_cache_sz {
+	ICE_MEM_CACHE_SZ_32K = (32 * 1024),
+	ICE_MEM_CACHE_SZ_4M = (4 * 1024 * 1024)
+};
+#define ICE_MEM_CACHE_SZ_DEFAULT ICE_MEM_CACHE_SZ_4M
+
+struct ice_mem_cache_node {
+	/* link of cache nodes */
+	struct cve_dle_t list;
+	u32 size;
+	/* handle to dma memory */
+	struct cve_dma_handle dma_handle;
+	u64 id;
+	u8 in_use;
+	u8 type;
+};
+
+struct ice_fw_mem_cache {
+	struct ice_mem_cache_node *cache_free_head[ICE_MEM_CACHE_SZ_TYPE_MAX];
+	struct ice_mem_cache_node *cache_used_head[ICE_MEM_CACHE_SZ_TYPE_MAX];
+};
+
+
 /* TODO: In future DG can be rebranded as ResourcePool.
  * It contains ICEs, Counters, LLC and Pools info.
  */
@@ -441,8 +476,8 @@ struct cve_device_group {
 	struct ice_pnetwork *pntw_with_resources;
 	/* number of running networks */
 	u32 num_running_ntw;
-	/* CLOS state */
-	enum ICEDC_CLOS_STATE clos_state;
+	/* Uniquely identifies last CLOS configuration */
+	u32 clos_signature;
 	/* dispatcher data */
 	struct ds_dev_data *ds_data;
 	/* IceDc state, whether card reset is required or not*/
@@ -530,6 +565,11 @@ struct cve_device_group {
 	struct trace_node_sysfs *node_group_sysfs;
 
 	struct cve_fw_loaded_sections *loaded_cust_fw_sections;
+	/* place holder to store all information related memory caching */
+	struct ice_fw_mem_cache fw_mem_cache;
+
+	/* cyclic list to contexts */
+	struct ds_context *list_contexts;
 };
 
 /* Holds all the relevant IDs required for maintaining a map between
@@ -544,8 +584,6 @@ struct cve_hw_cntr_descriptor {
 	u16 graph_cntr_id;
 	/* parent network ID to which this Counter is attached */
 	u64 cntr_pntw_id;
-	/* network ID to which this Counter is attached */
-	u64 cntr_ntw_id;
 	/* Is Counter in free pool */
 	bool in_free_pool;
 };
@@ -618,6 +656,8 @@ struct job_descriptor {
 	u32 num_mmu_cfg_regs;
 	/* SW device context */
 	struct dev_context *dev_ctx;
+	/* MD5 sum of mmu config regs */
+	__u8 md5[ICEDRV_MD5_MAX_SIZE];
 };
 
 /* hold information about a job group */
@@ -814,6 +854,7 @@ struct ice_pnetwork {
 	struct dev_context *dev_ctx[MAX_CVE_DEVICES_NR];
 	/* list of custom loaded fw sections per cve device */
 	struct cve_fw_loaded_sections *loaded_cust_fw_sections;
+	struct ice_fw_owner_info self_info[CVE_FW_END_TYPES];
 
 	/*Duplicate */
 	u8 num_ice;
@@ -900,13 +941,18 @@ struct ice_pnetwork {
 	cve_os_wait_que_t rr_wait_queue;
 
 	u8 last_done;
+
+	u64 ntw_buf_page_config[ICEDRV_PAGE_ALIGNMENT_MAX];
 };
 
 /* hold information about a network */
 struct ice_network {
 	/* stores a reference to self, should always be first member */
 	u64 network_id;
-
+	/* An unique monotonic ID to ensure its not repeated. To be used
+	 * as a key
+	 */
+	u64 unique_id;
 	/* links to a network within its wq */
 	struct cve_dle_t list;
 
@@ -1125,6 +1171,8 @@ struct ds_context {
 	cve_context_id_t context_id;
 	/* cyclic list element inside the process context */
 	struct cve_dle_t list;
+	/* cyclic list element inside the device_gruoup */
+	struct cve_dle_t dg_list;
 	/* list of buffers allocated by user */
 	struct cve_ntw_buffer *buf_list;
 	/* list of per device per context data */
@@ -1234,5 +1282,7 @@ enum ICE_POWER_STATE ice_dev_get_power_state(
 
 void ice_dev_set_power_state(struct cve_device *dev,
 	enum ICE_POWER_STATE pstate);
+
+void ice_reset_prev_reg_config(struct ice_reg_stored_config *pconfig);
 
 #endif /* CVE_DEVICE_H_ */
