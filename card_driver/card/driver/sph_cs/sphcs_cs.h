@@ -65,6 +65,7 @@ struct sphcs {
 	spinlock_t lock_bh;
 	DECLARE_HASHTABLE(cmd_chan_hash, 6);
 
+	struct kobject             *kobj;
 	struct dentry              *debugfs_dir;
 	struct sphcs_hwtrace_data	hw_tracing;
 };

@@ -948,6 +948,17 @@ static int sphcs_create_sphcs(void                           *hw_handle,
 		}
 	}
 
+	sphcs->kobj = kobject_create_and_add("sphcs", kernel_kobj);
+	if (unlikely(sphcs->kobj == NULL)) {
+		sph_log_err(START_UP_LOG, "sphcs kobj creation failed");
+		ret = -ENOMEM;
+		goto free_p2p_heap;
+	}
+
+	ret = sphcs_fpga_power_sysfs_init(sphcs->kobj);
+	if (unlikely(ret < 0))
+		goto rm_kobj;
+
 	sphcs->debugfs_dir = debugfs_create_dir("sphcs", NULL);
 	if (IS_ERR_OR_NULL(sphcs->debugfs_dir)) {
 		sph_log_info(START_UP_LOG, "Failed to create debugfs dir - debugfs will not be used\n");
@@ -957,7 +968,7 @@ static int sphcs_create_sphcs(void                           *hw_handle,
 	ret = dma_page_pool_create(sphcs->hw_device, 128, &sphcs->dma_page_pool);
 	if (ret < 0) {
 		sph_log_err(START_UP_LOG, "Failed to create dma page pool\n");
-		goto free_p2p_heap;
+		goto rm_fpga_power_sysfs;
 	}
 
 	dma_page_pool_init_debugfs(sphcs->dma_page_pool,
@@ -1162,6 +1173,10 @@ free_net_dma_pool:
 	dma_page_pool_destroy(sphcs->net_dma_page_pool);
 free_dma_pool:
 	dma_page_pool_destroy(sphcs->dma_page_pool);
+rm_fpga_power_sysfs:
+	sphcs_fpga_power_sysfs_deinit(sphcs->kobj);
+rm_kobj:
+	kobject_put(sphcs->kobj);
 free_p2p_heap:
 	sphcs_remove_p2p_heap();
 free_mem:
@@ -1254,6 +1269,8 @@ static int sphcs_destroy_sphcs(struct sphcs *sphcs)
 	sphcs_deinit_th_driver();
 	g_the_sphcs = NULL;
 	debugfs_remove_recursive(sphcs->debugfs_dir);
+	sphcs_fpga_power_sysfs_deinit(sphcs->kobj);
+	kobject_put(sphcs->kobj);
 #ifdef HW_LAYER_SPH
 	sysfs_remove_link(&THIS_MODULE->mkobj.kobj, "pci");
 #endif
