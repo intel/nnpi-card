@@ -92,8 +92,8 @@ struct sphcs_pcie_callbacks {
 #define SPHCS_RA_RESET_DMA BIT(2)
 
 /* DMA status */
-#define SPHCS_DMA_STATUS_DONE BIT(0)
-#define SPHCS_DMA_STATUS_FAILED BIT(1)
+#define SPHCS_DMA_STATUS_DONE          BIT(0)
+#define SPHCS_DMA_STATUS_FAILED        BIT(1)
 
 #define SPHCS_DMA_HW_PRIORITY_LOW    1
 #define SPHCS_DMA_HW_PRIORITY_MEDIUM 2

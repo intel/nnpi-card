@@ -363,6 +363,19 @@ TRACE_EVENT(SPH_TRACE_IDS_MAP,
 		  __entry->id2)
 );
 
+TRACE_EVENT(SPH_TRACE_HWTRACE,
+	TP_PROTO(u8 state),
+	TP_ARGS(state),
+	NNP_TP_STRUCT__entry(
+			__field(u8, state)
+	),
+	NNP_TP_fast_assign(
+		       __entry->state = state;
+	),
+	NNP_TP_printk("state=%s",
+		  sph_trace_op_to_str[__entry->state])
+);
+
 TRACE_EVENT(NNP_TRACE_CLOCK_STAMP,
 	TP_PROTO(char *type, u64 clock),
 	TP_ARGS(type, clock),
