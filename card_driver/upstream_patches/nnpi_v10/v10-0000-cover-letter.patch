@@ -1,0 +1,194 @@
+From 203797510c094b8ce9a72d986170648efb3b25bf Mon Sep 17 00:00:00 2001
+From: Guy Zadicario <guy.zadicario@intel.com>
+Date: Tue, 10 Nov 2020 17:11:32 +0200
+Subject: [PATCH v10 00/22] misc: nnpi: New PCIe driver for Intel's NNP-I pcie device
+
+Hi,
+
+This version 10 of the NNP-I driver patch set sent internally
+before submitting out to Greg KH.
+
+The overview of the driver sent on the first cover letter
+is at Documentation/misc-devices/intel-nnpi.txt which is part of patch#22.
+
+All comments from previous versions are fixed, except the following which are
+still open:
+   - use of euid to tag a unique ID of user owning a channel.
+     (Did not find good alternative)
+
+Changes in v10:
+   - removed bitfield in unions from protocol (using bit masks instead)
+   - renamed function names to be more consistant
+   - changed logical/pci "layers" to be called device and HW layers.
+   - removed host resource allocation method from IOCTL. Support only pinning user memory.
+   - re-wrote most of the commit messages
+   - fixed errors reported by lkp
+
+Changes in v9:
+   - fixed potential dead-lock in boot load flow
+   - IOCTL structs alignment issues
+   - sysfs - one value per-attribute
+   - code-style: func arguments and multi-line alignment
+   - sparse errors reported by lkp
+
+Changes in v8:
+   - broke the most of the big patches to little smaller ones.
+   - Reviewed and fixed all comments from v7.
+
+Changes in v7:
+   - Added documentation sections to many structs and functions.
+   - Added "Terminology" section to Documentation/misc-devices/intel-nnpi.txt
+   - Removed use of function pointers with interface to PCIe "h/w layer"
+   - Fixed IOCTLs backward compatability support.
+   - Patch#13 has removed - ipc s/w counters
+   - Patch#15 has removed - handling PCIe link-down in absense of pciehp
+   - Byteorder consideration - Fixed data packets sent to the device to be
+     in little-endian. Other communications with the device is through
+     mmio which is little-endian anyway.
+   - Removed sysfs "reset" attribute
+   - Removed sysfs attribute which outputs application pids.
+   - Fixed and cleaned all other comments.
+
+Changes in v6:
+   - lkp build fixes
+   - fixes build errors when tracing is enabled
+   - made trace compiled by default, define NNP_DISABLE_TRACE to disable.
+   - fixed reviewed-by tag to mention first name before last name.
+   - serialize pcie reset and remove flows.
+   - rebased on top of current linux master
+
+Changes in v5:
+   - Makefile fix for out-of-tree builds
+     (added $(srctree) when specifying include path)
+
+Changes in v4:
+   - Per Dave-Hansen suggestion, abandon patch#20
+     (misc: nnpi: Added hostres_min_order module parameter)
+     Realized that the benefit it brings not worth the risk.
+   - Fixes build failures found by lkp
+   - Some bug fixes found in v3
+   - Clean W=1 build warnings
+
+Changes in v3:
+   - Few small BUG fixes found during testing
+   - Add device bios update flow - boot flow has changed to allow
+     booting the device either with OS boot image or bios capsule image.
+     The device bios will start bios update if capsule image is used.
+   - Fixed comments from previous version
+
+Changes in v2:
+   - used --strict flag to checkpatch.pl, only left CHECK comments which
+     will break the 80 chars line length limit if fixed.
+   - removed CONFIG_DMA_SHARED_BUFFER ifdefs
+   - moved high order page allocation optimization to separete (last) patch
+   - removed device list array
+   - removed all c++ style comments
+
+Thanks,
+Guy.
+
+Guy Zadicario (22):
+  misc: nnpi: main module init and main PCI device access functions
+  misc: nnpi: msg_scheduler object and kernel thread
+  misc: nnpi: host/card ipc protocol
+  misc: nnpi: host resource interface
+  misc: nnpi: IOCTL interface for host memory resource handling
+  misc: nnpi: NNP-I device boot flow
+  misc: nnpi: Device response messages processing
+  misc: nnpi: query and check for matching driver<->device protocol
+    version
+  misc: nnpi: exchange sys_info and crash dump buffer space with device
+  misc: nnpi: command channel object
+  misc: nnpi: Device response messages routing
+  misc: nnpi: command channel file interface
+  misc: nnpi: user-space interface for channel creation
+  misc: nnpi: Mapping host resources to device channel
+  misc: nnpi: Device error handling
+  misc: nnpi: sysfs interface
+  misc: nnpi: enable/disable device for new inference applications use
+  misc: nnpi: PCIe reset and error handling
+  misc: nnpi: Detect device self-reset or hang
+  misc: nnpi: PCIe error injection
+  misc: nnpi: tracing
+  misc: nnpi: driver overview documentation
+
+ Documentation/ABI/testing/sysfs-driver-intel_nnpi  |  273 ++++
+ Documentation/misc-devices/intel-nnpi.txt          |  185 +++
+ MAINTAINERS                                        |    6 +
+ drivers/misc/Kconfig                               |    1 +
+ drivers/misc/Makefile                              |    1 +
+ drivers/misc/intel-nnpi/Kconfig                    |   17 +
+ drivers/misc/intel-nnpi/Makefile                   |   14 +
+ drivers/misc/intel-nnpi/bootimage.c                |  552 +++++++
+ drivers/misc/intel-nnpi/bootimage.h                |   21 +
+ drivers/misc/intel-nnpi/cmd_chan.c                 |  637 ++++++++
+ drivers/misc/intel-nnpi/cmd_chan.h                 |  125 ++
+ drivers/misc/intel-nnpi/device.c                   | 1685 ++++++++++++++++++++
+ drivers/misc/intel-nnpi/device.h                   |  339 ++++
+ drivers/misc/intel-nnpi/device_chardev.c           |  742 +++++++++
+ drivers/misc/intel-nnpi/device_chardev.h           |   18 +
+ drivers/misc/intel-nnpi/device_debugfs.c           |   62 +
+ drivers/misc/intel-nnpi/device_debugfs.h           |   16 +
+ drivers/misc/intel-nnpi/device_sysfs.c             | 1072 +++++++++++++
+ drivers/misc/intel-nnpi/device_sysfs.h             |   14 +
+ drivers/misc/intel-nnpi/host_chardev.c             |  371 +++++
+ drivers/misc/intel-nnpi/host_chardev.h             |   18 +
+ drivers/misc/intel-nnpi/hostres.c                  |  778 +++++++++
+ drivers/misc/intel-nnpi/hostres.h                  |  239 +++
+ .../misc/intel-nnpi/ipc_include/ipc_c2h_events.h   |  204 +++
+ drivers/misc/intel-nnpi/ipc_include/ipc_protocol.h |  353 ++++
+ .../misc/intel-nnpi/ipc_include/nnp_boot_defs.h    |   75 +
+ drivers/misc/intel-nnpi/ipc_include/nnp_elbi.h     |   89 ++
+ .../misc/intel-nnpi/ipc_include/nnp_inbound_mem.h  |   36 +
+ drivers/misc/intel-nnpi/msg_scheduler.c            |  383 +++++
+ drivers/misc/intel-nnpi/msg_scheduler.h            |  165 ++
+ drivers/misc/intel-nnpi/nnp_hw.h                   |   73 +
+ drivers/misc/intel-nnpi/nnp_hw_pcie.c              | 1383 ++++++++++++++++
+ drivers/misc/intel-nnpi/nnp_user.c                 |  135 ++
+ drivers/misc/intel-nnpi/nnp_user.h                 |   84 +
+ drivers/misc/intel-nnpi/nnpdrv_main.c              |   58 +
+ drivers/misc/intel-nnpi/pcie.h                     |  181 +++
+ drivers/misc/intel-nnpi/trace.c                    |    8 +
+ drivers/misc/intel-nnpi/trace.h                    |  116 ++
+ include/uapi/misc/intel_nnpi.h                     |  322 ++++
+ 39 files changed, 10851 insertions(+)
+ create mode 100644 Documentation/ABI/testing/sysfs-driver-intel_nnpi
+ create mode 100644 Documentation/misc-devices/intel-nnpi.txt
+ create mode 100644 drivers/misc/intel-nnpi/Kconfig
+ create mode 100644 drivers/misc/intel-nnpi/Makefile
+ create mode 100644 drivers/misc/intel-nnpi/bootimage.c
+ create mode 100644 drivers/misc/intel-nnpi/bootimage.h
+ create mode 100644 drivers/misc/intel-nnpi/cmd_chan.c
+ create mode 100644 drivers/misc/intel-nnpi/cmd_chan.h
+ create mode 100644 drivers/misc/intel-nnpi/device.c
+ create mode 100644 drivers/misc/intel-nnpi/device.h
+ create mode 100644 drivers/misc/intel-nnpi/device_chardev.c
+ create mode 100644 drivers/misc/intel-nnpi/device_chardev.h
+ create mode 100644 drivers/misc/intel-nnpi/device_debugfs.c
+ create mode 100644 drivers/misc/intel-nnpi/device_debugfs.h
+ create mode 100644 drivers/misc/intel-nnpi/device_sysfs.c
+ create mode 100644 drivers/misc/intel-nnpi/device_sysfs.h
+ create mode 100644 drivers/misc/intel-nnpi/host_chardev.c
+ create mode 100644 drivers/misc/intel-nnpi/host_chardev.h
+ create mode 100644 drivers/misc/intel-nnpi/hostres.c
+ create mode 100644 drivers/misc/intel-nnpi/hostres.h
+ create mode 100644 drivers/misc/intel-nnpi/ipc_include/ipc_c2h_events.h
+ create mode 100644 drivers/misc/intel-nnpi/ipc_include/ipc_protocol.h
+ create mode 100644 drivers/misc/intel-nnpi/ipc_include/nnp_boot_defs.h
+ create mode 100644 drivers/misc/intel-nnpi/ipc_include/nnp_elbi.h
+ create mode 100644 drivers/misc/intel-nnpi/ipc_include/nnp_inbound_mem.h
+ create mode 100644 drivers/misc/intel-nnpi/msg_scheduler.c
+ create mode 100644 drivers/misc/intel-nnpi/msg_scheduler.h
+ create mode 100644 drivers/misc/intel-nnpi/nnp_hw.h
+ create mode 100644 drivers/misc/intel-nnpi/nnp_hw_pcie.c
+ create mode 100644 drivers/misc/intel-nnpi/nnp_user.c
+ create mode 100644 drivers/misc/intel-nnpi/nnp_user.h
+ create mode 100644 drivers/misc/intel-nnpi/nnpdrv_main.c
+ create mode 100644 drivers/misc/intel-nnpi/pcie.h
+ create mode 100644 drivers/misc/intel-nnpi/trace.c
+ create mode 100644 drivers/misc/intel-nnpi/trace.h
+ create mode 100644 include/uapi/misc/intel_nnpi.h
+
+-- 
+1.8.3.1
+

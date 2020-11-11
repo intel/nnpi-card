@@ -1,0 +1,1250 @@
+From bc424c3f19e51f9fe9b53fc0d6c34743aed84c20 Mon Sep 17 00:00:00 2001
+From: Guy Zadicario <guy.zadicario@intel.com>
+Date: Sat, 28 Mar 2020 17:58:39 +0300
+Subject: [PATCH v10 01/22] misc: nnpi: main module init and main PCI device
+ access functions
+
+Initialize the driver module and expose PCI device access functions.
+
+The device handling structure and functions are divided into two layers:
+the "device" layer and the "hw" layer. The interface between those two
+layers is defined in nnp_hw.h.
+
+The "hw" layer probes the device and provides, to higher layers, functions
+for sending and receiving raw commands and responses to/from the device. It
+does not have semantic understanding of these commands and responses, and
+transfers them as abstract binary data.
+
+The "device" layer packs and unpacks command and response messages, and
+uses the "hw" layer to send and receive them. It uses the "hw" layer as an
+abstract communication layer, and is unaware of the PCIe HW used to
+communicate with the NNP-I device.
+
+The header files under the ipc_include directory include HW register
+definitions and protocol structures used to communicate with the NNP-I
+device. These include files are used also by the device internal SW stack.
+
+Signed-off-by: Guy Zadicario <guy.zadicario@intel.com>
+Reviewed-by: Vaibhav Agarwal <vaibhav.agarwal@intel.com>
+---
+ MAINTAINERS                                        |   5 +
+ drivers/misc/Kconfig                               |   1 +
+ drivers/misc/Makefile                              |   1 +
+ drivers/misc/intel-nnpi/Kconfig                    |  17 +
+ drivers/misc/intel-nnpi/Makefile                   |  11 +
+ drivers/misc/intel-nnpi/device.c                   | 167 ++++++
+ drivers/misc/intel-nnpi/device.h                   |  44 ++
+ .../misc/intel-nnpi/ipc_include/nnp_boot_defs.h    |  75 +++
+ drivers/misc/intel-nnpi/ipc_include/nnp_elbi.h     |  89 ++++
+ .../misc/intel-nnpi/ipc_include/nnp_inbound_mem.h  |  36 ++
+ drivers/misc/intel-nnpi/nnp_hw.h                   |  45 ++
+ drivers/misc/intel-nnpi/nnp_hw_pcie.c              | 567 +++++++++++++++++++++
+ drivers/misc/intel-nnpi/nnpdrv_main.c              |  47 ++
+ 13 files changed, 1105 insertions(+)
+ create mode 100644 drivers/misc/intel-nnpi/Kconfig
+ create mode 100644 drivers/misc/intel-nnpi/Makefile
+ create mode 100644 drivers/misc/intel-nnpi/device.c
+ create mode 100644 drivers/misc/intel-nnpi/device.h
+ create mode 100644 drivers/misc/intel-nnpi/ipc_include/nnp_boot_defs.h
+ create mode 100644 drivers/misc/intel-nnpi/ipc_include/nnp_elbi.h
+ create mode 100644 drivers/misc/intel-nnpi/ipc_include/nnp_inbound_mem.h
+ create mode 100644 drivers/misc/intel-nnpi/nnp_hw.h
+ create mode 100644 drivers/misc/intel-nnpi/nnp_hw_pcie.c
+ create mode 100644 drivers/misc/intel-nnpi/nnpdrv_main.c
+
+diff --git a/MAINTAINERS b/MAINTAINERS
+index 3b186ad..cbc9c48 100644
+--- a/MAINTAINERS
++++ b/MAINTAINERS
+@@ -8898,6 +8898,11 @@ F:	include/uapi/linux/mic_common.h
+ F:	include/uapi/linux/mic_ioctl.h
+ F:	include/uapi/linux/scif_ioctl.h
+ 
++INTEL NNP-I PCI DRIVER
++M:	Guy Zadicario <guy.zadicario@intel.com>
++S:	Supported
++F:	drivers/misc/intel-nnpi/
++
+ INTEL P-Unit IPC DRIVER
+ M:	Zha Qipeng <qipeng.zha@intel.com>
+ L:	platform-driver-x86@vger.kernel.org
+diff --git a/drivers/misc/Kconfig b/drivers/misc/Kconfig
+index ce136d6..4b71838 100644
+--- a/drivers/misc/Kconfig
++++ b/drivers/misc/Kconfig
+@@ -472,4 +472,5 @@ source "drivers/misc/ocxl/Kconfig"
+ source "drivers/misc/cardreader/Kconfig"
+ source "drivers/misc/habanalabs/Kconfig"
+ source "drivers/misc/uacce/Kconfig"
++source "drivers/misc/intel-nnpi/Kconfig"
+ endmenu
+diff --git a/drivers/misc/Makefile b/drivers/misc/Makefile
+index c7bd01a..f8fd55d 100644
+--- a/drivers/misc/Makefile
++++ b/drivers/misc/Makefile
+@@ -57,3 +57,4 @@ obj-$(CONFIG_PVPANIC)   	+= pvpanic.o
+ obj-$(CONFIG_HABANA_AI)		+= habanalabs/
+ obj-$(CONFIG_UACCE)		+= uacce/
+ obj-$(CONFIG_XILINX_SDFEC)	+= xilinx_sdfec.o
++obj-$(CONFIG_INTEL_NNPI)        += intel-nnpi/
+diff --git a/drivers/misc/intel-nnpi/Kconfig b/drivers/misc/intel-nnpi/Kconfig
+new file mode 100644
+index 0000000..a63dda5
+--- /dev/null
++++ b/drivers/misc/intel-nnpi/Kconfig
+@@ -0,0 +1,17 @@
++#
++# Copyright (C) 2019-2020 Intel Corporation
++#
++# SPDX-License-Identifier: GPL-2.0-or-later
++#
++
++config INTEL_NNPI
++	tristate "Intel(R) NNP-I (AI accelerator for inference) device driver"
++	depends on PCI
++	select DMA_SHARED_BUFFER
++	help
++	  Device driver for Intel NNP-I PCIe accelerator card for AI inference.
++
++	  If unsure, say N.
++
++	  To compile this driver as a module, choose M here. The module
++	  will be called intel_nnpidrv.
+diff --git a/drivers/misc/intel-nnpi/Makefile b/drivers/misc/intel-nnpi/Makefile
+new file mode 100644
+index 0000000..15a63bc
+--- /dev/null
++++ b/drivers/misc/intel-nnpi/Makefile
+@@ -0,0 +1,11 @@
++#
++# Copyright (C) 2019-2020 Intel Corporation
++#
++# SPDX-License-Identifier: GPL-2.0-or-later
++#
++
++obj-m	:= intel_nnpidrv.o
++
++intel_nnpidrv-y := nnpdrv_main.o nnp_hw_pcie.o device.o
++
++ccflags-y += -I$(srctree)/$(src)/ipc_include
+diff --git a/drivers/misc/intel-nnpi/device.c b/drivers/misc/intel-nnpi/device.c
+new file mode 100644
+index 0000000..27546f6
+--- /dev/null
++++ b/drivers/misc/intel-nnpi/device.c
+@@ -0,0 +1,167 @@
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++/*
++ * Copyright (C) 2019-2020 Intel Corporation
++ */
++
++#define pr_fmt(fmt)   KBUILD_MODNAME ": " fmt
++
++#include "device.h"
++#include <linux/device.h>
++#include <linux/idr.h>
++#include <linux/jiffies.h>
++#include <linux/module.h>
++#include <linux/mutex.h>
++#include <linux/pci.h>
++#include <linux/printk.h>
++#include <linux/sched/clock.h>
++#include <linux/wait.h>
++#include <linux/workqueue.h>
++
++static struct ida dev_ida;
++
++void nnpdev_module_init(void)
++{
++	ida_init(&dev_ida);
++}
++
++void nnpdev_module_fini(void)
++{
++	ida_destroy(&dev_ida);
++}
++
++/**
++ * nnpdev_create() - creates a nnp device structure.
++ * @hw_dev: pointer to the "hw" layer device structure for this NNP-I device
++ *
++ * This function is called by the hw layer when a new NNP-I device is probed.
++ * The function creates "logical" device structure for the device.
++ *
++ * This interface allows to implement any kind of "hw" layer which communicate
++ * with an NNP-I device, either through PCIe or not. It also provides the
++ * ability to implement "hw" layer which only simulates an NNP-I device.
++ *
++ * Return: pointer to allocated and initialize nnp device struct or error value
++ */
++struct nnp_device *nnpdev_create(struct nnp_hw_dev *hw_dev)
++{
++	struct nnp_device *nnpdev;
++	int ret;
++
++	nnpdev = kzalloc(sizeof(*nnpdev), GFP_KERNEL);
++	if (!nnpdev)
++		return ERR_PTR(-ENOMEM);
++
++	ret = ida_simple_get(&dev_ida, 0, NNP_MAX_DEVS, GFP_KERNEL);
++	if (ret < 0)
++		goto err_nnpdev;
++
++	nnpdev->id = ret;
++
++	nnpdev->hw_dev = hw_dev;
++
++	kref_init(&nnpdev->ref);
++
++	return nnpdev;
++
++err_nnpdev:
++	kfree(nnpdev);
++	return ERR_PTR(ret);
++}
++
++/**
++ * nnpdev_card_doorbell_value_changed() - card doorbell changed notification
++ * @nnpdev: The nnp device
++ * @doorbell_val: The new value of the doorbell register
++ *
++ * This function is called from the "hw" layer when the device's doorbell
++ * register is changed.
++ * The function is called from bottom-half.
++ */
++void nnpdev_card_doorbell_value_changed(struct nnp_device *nnpdev,
++					u32 doorbell_val)
++{
++	dev_dbg(nnpdev->hw_dev->dev, "Got card doorbell value 0x%x\n",
++		doorbell_val);
++}
++
++/**
++ * nnpdev_destroy() - destroy nnp device object and wait until its removed
++ * @nnpdev: The nnp device to be destroyed.
++ * @prepare_only: flag to stop use device resources, without destroy or wait
++ *
++ * This function is called by the "hw" layer when a nnp pci device is removed.
++ * It will be called twise, first with @prepare_only set to true
++ * before the device pci memory is unmapped and later with @prepare_only set
++ * to false after the device resources are released.
++ *
++ * When prepare_only is false, the function will inform all device clients
++ * that the device is being removed, will decrement its ref-count and wait
++ * until refcount reaches zero and device structure has been freed.
++ */
++void nnpdev_destroy(struct nnp_device *nnpdev, bool prepare_only)
++{
++	struct completion completion;
++
++	if (prepare_only)
++		return;
++
++	dev_dbg(nnpdev->hw_dev->dev, "Destroying NNP-I device\n");
++
++	/*
++	 * Decrement nnp_device refcount and wait until
++	 * all clients get disconnected, refcount reaches 0 and nnp_device
++	 * is released and freed
++	 */
++	init_completion(&completion);
++	nnpdev->release_completion = &completion;
++	nnpdev_put(nnpdev);
++	wait_for_completion(&completion);
++}
++
++static void free_device(struct work_struct *work)
++{
++	struct nnp_device *nnpdev = container_of(work, struct nnp_device,
++						 free_work);
++
++	struct completion *completion = nnpdev->release_completion;
++
++	dev_dbg(nnpdev->hw_dev->dev, "Freeing NNP-I device\n");
++
++	ida_simple_remove(&dev_ida, nnpdev->id);
++
++	kfree(nnpdev);
++
++	/*
++	 * We should get here only after refcount to nnp_device reaches
++	 * zero, which means nnpdev_destroy has been called and
++	 * release_completion is initialized.
++	 */
++	complete(completion);
++}
++
++static void release_nnp_device(struct kref *kref)
++{
++	struct nnp_device *nnpdev = container_of(kref, struct nnp_device, ref);
++
++	/*
++	 * schedule work item to actually free the device since
++	 * the device refcount can reach zero from within nnpdev->wq work item
++	 * (when a channel is freed while processing a "CHANNEL_DESTROYED"
++	 *  response message from the device).
++	 * This will cause dead-lock since we try to flush and destroy that
++	 * workqueue when freeing the device.
++	 */
++	INIT_WORK(&nnpdev->free_work, free_device);
++	queue_work(system_wq, &nnpdev->free_work);
++}
++
++void nnpdev_get(struct nnp_device *nnpdev)
++{
++	kref_get(&nnpdev->ref);
++}
++
++void nnpdev_put(struct nnp_device *nnpdev)
++{
++	kref_put(&nnpdev->ref, release_nnp_device);
++}
+diff --git a/drivers/misc/intel-nnpi/device.h b/drivers/misc/intel-nnpi/device.h
+new file mode 100644
+index 0000000..161a545
+--- /dev/null
++++ b/drivers/misc/intel-nnpi/device.h
+@@ -0,0 +1,44 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++
++/*
++ * Copyright (C) 2019-2020 Intel Corporation
++ */
++
++#ifndef _NNPDRV_DEVICE_H
++#define _NNPDRV_DEVICE_H
++
++#include <linux/completion.h>
++#include <linux/idr.h>
++#include <linux/kernel.h>
++#include <linux/kref.h>
++#include <linux/workqueue.h>
++#include "nnp_hw.h"
++
++#define NNP_MAX_DEVS		256
++
++/**
++ * struct nnp_device - structure for NNP-I "logical" device info
++ * @ref: refcount this object
++ * @hw_dev: pointer to the "hw" device structure
++ * @release_completion: completion object used to wait for all the object users
++ *                      to release their refcount before destruction.
++ * @free_work: scheduled work struct used when refcount reaches zero for
++ *             freeing this structure.
++ * @id: NNP-I device number
++ */
++struct nnp_device {
++	struct kref            ref;
++	struct nnp_hw_dev      *hw_dev;
++	struct completion      *release_completion;
++	struct work_struct     free_work;
++
++	int                    id;
++};
++
++void nnpdev_module_init(void);
++void nnpdev_module_fini(void);
++
++void nnpdev_get(struct nnp_device *nnpdev);
++void nnpdev_put(struct nnp_device *nnpdev);
++
++#endif
+diff --git a/drivers/misc/intel-nnpi/ipc_include/nnp_boot_defs.h b/drivers/misc/intel-nnpi/ipc_include/nnp_boot_defs.h
+new file mode 100644
+index 0000000..3250da580
+--- /dev/null
++++ b/drivers/misc/intel-nnpi/ipc_include/nnp_boot_defs.h
+@@ -0,0 +1,75 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++
++/********************************************
++ * Copyright (C) 2019-2020 Intel Corporation
++ ********************************************/
++
++#ifndef _NNP_BOOT_DEFS_H
++#define _NNP_BOOT_DEFS_H
++/*
++ * Value fields of card->host doorbell status register HOST_PCI_DOORBELL_VALUE
++ */
++#define NNP_CARD_BOOT_STATE_MASK            0xff
++#define NNP_CARD_BIOS_UPDATE_COUNTER_MASK   0xf00
++#define NNP_CARD_ERROR_MASK                 0xf000
++#define NNP_CARD_KEEP_ALIVE_MASK            0x00f00000
++
++/* Possible values for card boot state */
++/* bios has not yet initialized */
++#define NNP_CARD_BOOT_STATE_NOT_READY       0
++/* bios initilaized and waiting for os boot image over pci */
++#define NNP_CARD_BOOT_STATE_BIOS_READY      1
++/* recovery bios initilaized and waiting for capsule update over pci */
++#define NNP_CARD_BOOT_STATE_RECOVERY_BIOS_READY 2
++/* bios copied boot image successfully, os boot has started */
++#define NNP_CARD_BOOT_STATE_BOOT_STARTED    3
++/* card has booted and card driver has loaded */
++#define NNP_CARD_BOOT_STATE_DRV_READY       4
++/* card driver finished initialization and user space daemon has started */
++#define NNP_CARD_BOOT_STATE_CARD_READY      8
++/* bios copied data into the system info structure */
++#define NNP_CARD_BOOT_STATE_BIOS_SYSINFO_READY 10
++/* bios capsule update has started flashing the bios image */
++#define NNP_CARD_BOOT_STATE_BIOS_FLASH_STARTED 0x20
++
++/* Possible card error values */
++#define NNP_CARD_ERROR_HOST_ERROR           1
++#define NNP_CARD_ERROR_BOOT_PARAMS          2
++#define NNP_CARD_ERROR_IMAGE_COPY           3
++#define NNP_CARD_ERROR_CORRUPTED_IMAGE      4
++#define NNP_CARD_ERROR_NOT_CAPSULE          8
++#define NNP_CARD_ERROR_CAPSULE_FAILED       9
++/*
++ * Value fields of host->card doorbell status register PCI_HOST_DOORBELL_VALUE
++ */
++#define NNP_HOST_BOOT_STATE_MASK            0xf
++#define NNP_HOST_ERROR_MASK                 0xf0
++#define NNP_HOST_DRV_STATE_MASK             0xf00
++#define NNP_HOST_DRV_REQUEST_SELF_RESET_MASK  0x10000
++#define NNP_HOST_KEEP_ALIVE_MASK            0x00f00000
++#define NNP_HOSY_P2P_POKE_MASK              0xff000000
++
++/* Possible values for host boot state */
++/* boot/bios image is not loaded yet to memory */
++#define NNP_HOST_BOOT_STATE_IMAGE_NOT_READY         0
++/* host driver is up and ready */
++#define NNP_HOST_BOOT_STATE_DRV_READY               (0x1 | 0x8)
++/* debug os image is loaded and ready in memory */
++#define NNP_HOST_BOOT_STATE_DEBUG_OS_IMAGE_READY    (0x2 | 0x8)
++/* bios image is loaded and ready in memory */
++#define NNP_HOST_BOOT_STATE_BIOS_IMAGE_READY        (0x3 | 0x8)
++/* debug bios image is loaded and ready in memory */
++#define NNP_HOST_BOOT_STATE_DEBUG_BIOS_IMAGE_READY  (0x4 | 0x8)
++
++/* Possible values for host error */
++#define NNP_HOST_ERROR_CANNOT_LOAD_IMAGE     1
++
++/* Possible values for host driver state */
++/* driver did not detected the device yet */
++#define NNP_HOST_DRV_STATE_NOT_READY         0
++/* driver initialized and ready */
++#define NNP_HOST_DRV_STATE_READY             1
++/* host/card protocol version mismatch */
++#define NNP_HOST_DRV_STATE_VERSION_ERROR     2
++
++#endif // of _NNP_BOOT_DEFS_H
+diff --git a/drivers/misc/intel-nnpi/ipc_include/nnp_elbi.h b/drivers/misc/intel-nnpi/ipc_include/nnp_elbi.h
+new file mode 100644
+index 0000000..53a7ee4
+--- /dev/null
++++ b/drivers/misc/intel-nnpi/ipc_include/nnp_elbi.h
+@@ -0,0 +1,89 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++
++/********************************************
++ * Copyright (C) 2019-2020 Intel Corporation
++ ********************************************/
++#ifndef _NNP_ELBI_H
++#define _NNP_ELBI_H
++#include <linux/bitops.h>
++
++#define ELBI_LINE_BDF                         (ELBI_BASE + 0x4)
++
++/*
++ * COMMAND FIFO registers
++ */
++#define ELBI_COMMAND_WRITE_WO_MSI_LOW         (ELBI_BASE + 0x50)
++#define ELBI_COMMAND_WRITE_WO_MSI_HIGH        (ELBI_BASE + 0x54)
++#define ELBI_COMMAND_WRITE_W_MSI_LOW          (ELBI_BASE + 0x58)
++#define ELBI_COMMAND_WRITE_W_MSI_HIGH         (ELBI_BASE + 0x5C)
++
++#define ELBI_COMMAND_FIFO_0_LOW		 (ELBI_BASE + 0x80)
++#define ELBI_COMMAND_FIFO_LOW(i)         (ELBI_COMMAND_FIFO_0_LOW + (i) * 8)
++#define ELBI_COMMAND_FIFO_HIGH(i)        (ELBI_COMMAND_FIFO_0_LOW + (i) * 8 + 4)
++#define ELBI_COMMAND_FIFO_DEPTH          16
++
++#define ELBI_COMMAND_IOSF_CONTROL        (ELBI_BASE + 0x44)
++#define CMDQ_READ_PTR_MASK               GENMASK(3, 0)
++#define CMDQ_WRITE_PTR_MASK              GENMASK(12, 8)
++
++#define ELBI_COMMAND_PCI_CONTROL                          (ELBI_BASE + 0x48)
++#define ELBI_COMMAND_PCI_CONTROL_ALMOST_EMPTY_TH_MASK     GENMASK(3, 0)
++#define ELBI_COMMAND_PCI_CONTROL_FLUSH_MASK               BIT(8)
++
++/*
++ * RESPONSE FIFO registers
++ */
++#define ELBI_RESPONSE_FIFO_0_LOW        (ELBI_BASE + 0x100)
++#define ELBI_RESPONSE_FIFO_LOW(i)       (ELBI_RESPONSE_FIFO_0_LOW + (i) * 8)
++#define ELBI_RESPONSE_FIFO_HIGH(i)      (ELBI_RESPONSE_FIFO_0_LOW + (i) * 8 + 4)
++#define ELBI_RESPONSE_FIFO_DEPTH        16
++
++#define ELBI_RESPONSE_PCI_CONTROL       (ELBI_BASE + 0x60)
++#define RESPQ_READ_PTR_MASK             GENMASK(3, 0)
++#define RESPQ_WRITE_PTR_MASK            GENMASK(12, 8)
++
++/*
++ * Host side interrupt status & mask register
++ */
++#define ELBI_PCI_STATUS                       (ELBI_BASE + 0x8)
++#define ELBI_PCI_MSI_MASK                     (ELBI_BASE + 0xC)
++#define ELBI_PCI_STATUS_CMDQ_EMPTY_MASK               BIT(0)
++#define ELBI_PCI_STATUS_CMDQ_ALMOST_EMPTY_MASK        BIT(1)
++#define ELBI_PCI_STATUS_CMDQ_READ_UPDATE_MASK         BIT(2)
++#define ELBI_PCI_STATUS_CMDQ_FLUSH_MASK               BIT(3)
++#define ELBI_PCI_STATUS_CMDQ_WRITE_ERROR_MASK         BIT(4)
++#define ELBI_PCI_STATUS_RESPQ_FULL_MASK               BIT(5)
++#define ELBI_PCI_STATUS_RESPQ_ALMOST_FULL_MASK        BIT(6)
++#define ELBI_PCI_STATUS_RESPQ_NEW_RESPONSE_MASK       BIT(7)
++#define ELBI_PCI_STATUS_RESPQ_FLUSH_MASK              BIT(8)
++#define ELBI_PCI_STATUS_RESPQ_READ_ERROR_MASK         BIT(9)
++#define ELBI_PCI_STATUS_RESPQ_READ_POINTER_ERROR_MASK BIT(10)
++#define ELBI_PCI_STATUS_DOORBELL_MASK                 BIT(11)
++#define ELBI_PCI_STATUS_DOORBELL_READ_MASK            BIT(12)
++#define ELBI_PCI_STATUS_FLR_REQUEST_MASK              BIT(13)
++#define ELBI_PCI_STATUS_LOCAL_D3_MASK                 BIT(14)
++#define ELBI_PCI_STATUS_LOCAL_FLR_MASK                BIT(15)
++
++/* DOORBELL registers */
++#define ELBI_PCI_HOST_DOORBELL_VALUE                  (ELBI_BASE + 0x34)
++#define ELBI_HOST_PCI_DOORBELL_VALUE                  (ELBI_BASE + 0x38)
++
++/* CPU_STATUS registers */
++/* CPU_STATUS_0 - Updated by bios with postcode */
++#define ELBI_CPU_STATUS_0                             (ELBI_BASE + 0x1b8)
++/* CPU_STATUS_1 - Updated by bios with bios flash progress */
++#define ELBI_CPU_STATUS_1                             (ELBI_BASE + 0x1bc)
++/* CPU_STATUS_2 - Updated by card driver - bitfields below */
++#define ELBI_CPU_STATUS_2                             (ELBI_BASE + 0x1c0)
++/* CPU_STATUS_3 - not used */
++#define ELBI_CPU_STATUS_3                             (ELBI_BASE + 0x1c4)
++
++/* Bitfields updated in ELBI_CPU_STATUS_2 indicating card driver states */
++/*
++ * FLR_MODE_MASK 0 == warm reset
++ *               1 == cold reset
++ *               2 == ignore FLR (will not reset the card)
++ */
++#define ELBI_CPU_STATUS_2_FLR_MODE_MASK               GENMASK(1, 0)
++
++#endif
+diff --git a/drivers/misc/intel-nnpi/ipc_include/nnp_inbound_mem.h b/drivers/misc/intel-nnpi/ipc_include/nnp_inbound_mem.h
+new file mode 100644
+index 0000000..cdff7af
+--- /dev/null
++++ b/drivers/misc/intel-nnpi/ipc_include/nnp_inbound_mem.h
+@@ -0,0 +1,36 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++
++/********************************************
++ * Copyright (C) 2019-2020 Intel Corporation
++ ********************************************/
++
++#ifndef _NNP_INBOUND_MEM_H
++#define _NNP_INBOUND_MEM_H
++
++#include <linux/types.h>
++
++#define NNP_PAGE_SHIFT 12
++
++/* The crash dump buffer size is PAGE-SIZE*2^NNP_CRASH_DUMP_SIZE_PAGE_ORDER or
++ * 2^(PAGE_SHIFT+NNP_CRASH_DUMP_SIZE_PAGE_ORDER)
++ */
++#define NNP_CRASH_DUMP_SIZE_PAGE_ORDER 2
++
++#define NNP_INBOUND_MEM_MAGIC  0x4d687073  /* value of 'sphM' */
++#define NNP_CRASH_DUMP_SIZE   \
++	(1lu << (NNP_PAGE_SHIFT + NNP_CRASH_DUMP_SIZE_PAGE_ORDER))
++#define NNP_CRASH_DUMP_SIZE_PAGES    (NNP_CRASH_DUMP_SIZE >> NNP_PAGE_SHIFT)
++#pragma pack(push, 1)
++
++union nnp_inbound_mem {
++	struct {
++		__le32  magic;
++		__le32  crash_dump_size;
++		__u8	crash_dump[];
++	};
++	__u8 row[NNP_CRASH_DUMP_SIZE];
++};
++
++#pragma pack(pop)
++
++#endif
+diff --git a/drivers/misc/intel-nnpi/nnp_hw.h b/drivers/misc/intel-nnpi/nnp_hw.h
+new file mode 100644
+index 0000000..e60084b
+--- /dev/null
++++ b/drivers/misc/intel-nnpi/nnp_hw.h
+@@ -0,0 +1,45 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++
++/*
++ * Copyright (C) 2019-2020 Intel Corporation
++ */
++
++#ifndef _NNPDRV_HW_H
++#define _NNPDRV_HW_H
++
++struct nnp_device;
++struct device;
++
++#define NNP_MAX_COMMAND_HWQ_DEPTH    16
++#define NNP_MAX_RESPONSE_HWQ_DEPTH   16
++
++/**
++ * struct nnp_hw_dev - structure of the nnp "hw" device
++ * @dev: the device structure of the actual NNP-I device
++ *
++ * This structure describe the "hw" nnpi device as seen by the
++ * "device" layer.
++ */
++struct nnp_hw_dev {
++	struct device *dev;
++};
++
++/*
++ * Functions implemented by the nnp "hw" layer,
++ * called by the nnp "device" layer
++ */
++int nnp_cmdq_flush(struct nnp_hw_dev *hw_dev);
++
++/*
++ * Functions implemented by the nnp "device" layer,
++ * called by the nnp "hw" layer
++ */
++struct nnp_device *nnpdev_create(struct nnp_hw_dev *hw_dev);
++void nnpdev_destroy(struct nnp_device *nnpdev, bool prepare_only);
++void nnpdev_card_doorbell_value_changed(struct nnp_device *nnpdev,
++					u32 doorbell_val);
++
++int nnp_hw_init(void);
++void nnp_hw_fini(void);
++
++#endif
+diff --git a/drivers/misc/intel-nnpi/nnp_hw_pcie.c b/drivers/misc/intel-nnpi/nnp_hw_pcie.c
+new file mode 100644
+index 0000000..6e0c58f
+--- /dev/null
++++ b/drivers/misc/intel-nnpi/nnp_hw_pcie.c
+@@ -0,0 +1,567 @@
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++/*
++ * Copyright (C) 2019-2020 Intel Corporation
++ */
++
++#define pr_fmt(fmt)   KBUILD_MODNAME ": " fmt
++
++#include <linux/atomic.h>
++#include <linux/bitfield.h>
++#include <linux/delay.h>
++#include <linux/dev_printk.h>
++#include <linux/interrupt.h>
++#include <linux/module.h>
++#include <linux/pci.h>
++#include <linux/printk.h>
++#include <linux/sched.h>
++#include <linux/spinlock.h>
++#include <linux/timekeeping.h>
++#include <linux/version.h>
++#include <linux/wait.h>
++#define ELBI_BASE         0  /* MMIO offset of ELBI registers */
++#include "nnp_elbi.h"
++#include "nnp_boot_defs.h"
++#include "nnp_inbound_mem.h"
++#include "nnp_hw.h"
++
++/*
++ * SpringHill PCI card identity settings
++ */
++#define NNP_PCI_DEVICE_ID		0x45c6
++#define NNP_PCI_VENDOR_ID		PCI_VENDOR_ID_INTEL
++#define NNP_PCI_DEVFN                   0
++#define NNP_PCI_MMIO_BAR                0
++#define NNP_PCI_INBOUND_MEM_BAR         2
++
++#ifdef CONFIG_64BIT
++#define USE_64BIT_MMIO
++#endif
++
++/**
++ * struct nnp_memdesc - describe a mapped PCI BAR
++ * @pa: the physical address of the mapped BAR
++ * @va: virtual address of the mapped BAR
++ * @len: size of the mapped BAR
++ */
++struct nnp_memdesc {
++	phys_addr_t   pa;
++	void __iomem  *va;
++	size_t        len;
++};
++
++/**
++ * struct nnp_pci - structure for NNP-I pci device info.
++ * @hw_dev: data exposed to upper "device" layer to identify this device.
++ * @ref: reference count for this object
++ * @pdev: pointer to the pcie device struct
++ * @nnpdev: pointer to the "logical" device structure of this NNP-I device.
++ *          This is to separate NNP-I common device management from hw device
++ *          management (which potentially be not a pci device).
++ * @mmio: device's BAR0 mapping info
++ * @mem_bar: device's BAR2 mapping info, this is the "inbound memory region"
++ *           This device memory region is described in
++ *           ipc_include/nnp_inbound_mem.h
++ * @mem_enabled: true if BARs are mapped and enabled
++ * @irq_lock: protects accesses to cmd_read_update_count members.
++ * @response_buf: buffer to hold response messages pulled of the device's
++ *                response queue.
++ * @new_response: non-zero value indicate the device has sent an interrupt
++ *                notifying that new response is available in the response
++ *                queue and that response(s) did not yet pulled from the device
++ *                response queue.
++ * @doorbell_changed: non-zero value indicate the device has sent an interrupt
++ *                    notifying the doorbell register has changed and this new
++ *                    doorbell value has not yet been processed.
++ * @card_status_wait: waitq that get signaled when device pci status has changed
++ *                    or device has updated its read pointer of the command
++ *                    queue.
++ * @card_doorbell_val: card's doorbell register value, updated when doorbell
++ *                     interrupt is received.
++ * @card_status: Last device interrupt status register, updated in interrupt
++ *               handler.
++ * @cmd_read_update_count: number of times the device has updated its read
++ *                         pointer to the device command queue.
++ * @removing: true if device remove is in progress.
++ */
++struct nnp_pci {
++	struct nnp_hw_dev hw_dev;
++	struct pci_dev    *pdev;
++	struct nnp_device *nnpdev;
++
++	struct nnp_memdesc        mmio;
++	struct nnp_memdesc        mem_bar; /* the inbound memory region */
++	bool                      mem_enabled;
++
++	spinlock_t      irq_lock; /* protects @cmd_read_update_count */
++	u64             response_buf[ELBI_RESPONSE_FIFO_DEPTH];
++	atomic_t        new_response;
++	atomic_t        doorbell_changed;
++	wait_queue_head_t card_status_wait;
++	u32             card_doorbell_val;
++
++	u32             card_status;
++	u32             cmd_read_update_count;
++
++	bool            removing;
++};
++
++static const char nnp_driver_name[] = "nnp_pcie";
++
++/* interrupt mask bits we enable and handle at interrupt level */
++static u32 card_status_int_mask = ELBI_PCI_STATUS_CMDQ_READ_UPDATE_MASK;
++
++/* interrupt mask bits we enable and handle at threaded interrupt level */
++static u32 card_status_threaded_mask =
++		   ELBI_PCI_STATUS_RESPQ_NEW_RESPONSE_MASK |
++		   ELBI_PCI_STATUS_DOORBELL_MASK;
++
++static inline void nnp_mmio_write(struct nnp_pci *nnp_pci, u32 off, u32 val)
++{
++	iowrite32(val, nnp_pci->mmio.va + off);
++}
++
++static inline u32 nnp_mmio_read(struct nnp_pci *nnp_pci, u32 off)
++{
++	return ioread32(nnp_pci->mmio.va + off);
++}
++
++static inline void nnp_mmio_write_8b(struct nnp_pci *nnp_pci, u32 off, u64 val)
++{
++#ifdef USE_64BIT_MMIO
++	writeq(val, nnp_pci->mmio.va + off);
++#else
++	nnp_mmio_write(nnp_pci, off, lower_32_bits(val));
++	nnp_mmio_write(nnp_pci, off, upper_32_bits(val));
++#endif
++}
++
++static inline u64 nnp_mmio_read_8b(struct nnp_pci *nnp_pci, u32 off)
++{
++#ifdef USE_64BIT_MMIO
++	u64 ret;
++
++	ret = readq(nnp_pci->mmio.va + off);
++
++	return ret;
++#else
++	u32 low;
++	u64 ret;
++
++	low = nnp_mmio_read(nnp_pci, ELBI_RESPONSE_FIFO_LOW(off));
++	ret = nnp_mmio_read(nnp_pci, ELBI_RESPONSE_FIFO_HIGH(off));
++	ret = (ret << 32) | low;
++	return ret;
++#endif
++}
++
++static void nnp_process_commands(struct nnp_pci *nnp_pci)
++{
++	u32 response_pci_control;
++	u32 read_pointer;
++	u32 write_pointer;
++	u32 avail_slots;
++	int i;
++
++	response_pci_control = nnp_mmio_read(nnp_pci, ELBI_RESPONSE_PCI_CONTROL);
++	read_pointer = FIELD_GET(RESPQ_READ_PTR_MASK, response_pci_control);
++	write_pointer = FIELD_GET(RESPQ_WRITE_PTR_MASK, response_pci_control);
++	if (read_pointer > write_pointer) {
++		dev_err(&nnp_pci->pdev->dev, "Mismatched read and write pointers\n");
++		return;
++	}
++
++	/* Commands to read */
++	avail_slots = write_pointer - read_pointer;
++
++	if (!avail_slots)
++		return;
++
++	for (i = 0; i < avail_slots; i++) {
++		read_pointer = (read_pointer + 1) % ELBI_RESPONSE_FIFO_DEPTH;
++
++		nnp_pci->response_buf[i] =
++			nnp_mmio_read_8b(nnp_pci,
++					 ELBI_RESPONSE_FIFO_LOW(read_pointer));
++	}
++
++	/*
++	 * HW restriction - we cannot update the read pointer with the same
++	 * value it currently have. This will be the case if we need to advance
++	 * it by FIFO_DEPTH locations. In this case we will update it in two
++	 * steps, first advance by 1, then to the proper value.
++	 */
++	if (avail_slots == ELBI_COMMAND_FIFO_DEPTH) {
++		u32 next_read_pointer =
++			(read_pointer + 1) % ELBI_RESPONSE_FIFO_DEPTH;
++
++		response_pci_control &= ~(RESPQ_READ_PTR_MASK);
++		response_pci_control |= FIELD_PREP(RESPQ_READ_PTR_MASK,
++						   next_read_pointer);
++		nnp_mmio_write(nnp_pci, ELBI_RESPONSE_PCI_CONTROL,
++			       response_pci_control);
++	}
++
++	response_pci_control &= ~(RESPQ_READ_PTR_MASK);
++	response_pci_control |= FIELD_PREP(RESPQ_READ_PTR_MASK, read_pointer);
++	nnp_mmio_write(nnp_pci, ELBI_RESPONSE_PCI_CONTROL,
++		       response_pci_control);
++}
++
++static irqreturn_t interrupt_handler(int irq, void *data)
++{
++	struct nnp_pci *nnp_pci = data;
++	irqreturn_t ret;
++	unsigned long flags;
++	bool should_wake = false;
++
++	/* clear interrupts mask */
++	nnp_mmio_write(nnp_pci, ELBI_PCI_MSI_MASK, UINT_MAX);
++
++	nnp_pci->card_status = nnp_mmio_read(nnp_pci, ELBI_PCI_STATUS);
++
++	nnp_mmio_write(nnp_pci, ELBI_PCI_STATUS,
++		       nnp_pci->card_status &
++		       (card_status_int_mask | card_status_threaded_mask));
++
++	if (nnp_pci->card_status & ELBI_PCI_STATUS_CMDQ_READ_UPDATE_MASK) {
++		spin_lock_irqsave(&nnp_pci->irq_lock, flags);
++		should_wake = true;
++		nnp_pci->cmd_read_update_count++;
++		spin_unlock_irqrestore(&nnp_pci->irq_lock, flags);
++	}
++
++	if (nnp_pci->card_status &
++	    ELBI_PCI_STATUS_RESPQ_NEW_RESPONSE_MASK) {
++		atomic_inc(&nnp_pci->new_response);
++	}
++
++	if (nnp_pci->card_status &
++	    ELBI_PCI_STATUS_DOORBELL_MASK) {
++		nnp_pci->card_doorbell_val =
++			nnp_mmio_read(nnp_pci, ELBI_HOST_PCI_DOORBELL_VALUE);
++
++		atomic_inc(&nnp_pci->doorbell_changed);
++	}
++
++	if (nnp_pci->card_status & card_status_threaded_mask)
++		ret = IRQ_WAKE_THREAD;
++	else
++		ret = IRQ_HANDLED;
++
++	/* Enable desired interrupts */
++	nnp_mmio_write(nnp_pci, ELBI_PCI_MSI_MASK,
++		       ~(card_status_int_mask | card_status_threaded_mask));
++
++	if (should_wake)
++		wake_up_all(&nnp_pci->card_status_wait);
++
++	return ret;
++}
++
++static irqreturn_t threaded_interrupt_handler(int irq, void *data)
++{
++	struct nnp_pci *nnp_pci = data;
++
++	if (atomic_xchg(&nnp_pci->doorbell_changed, 0)) {
++		nnpdev_card_doorbell_value_changed(nnp_pci->nnpdev,
++						   nnp_pci->card_doorbell_val);
++	}
++
++	if (atomic_xchg(&nnp_pci->new_response, 0))
++		nnp_process_commands(nnp_pci);
++
++	return IRQ_HANDLED;
++}
++
++static int nnp_setup_interrupts(struct nnp_pci *nnp_pci,
++				struct pci_dev *pdev)
++{
++	int rc;
++	int irq;
++
++	rc = pci_alloc_irq_vectors(pdev, 1, 1, PCI_IRQ_MSI);
++	if (rc < 1)
++		return rc;
++
++	irq = pci_irq_vector(pdev, 0);
++
++	rc = request_threaded_irq(irq, interrupt_handler,
++				  threaded_interrupt_handler, IRQF_ONESHOT,
++				  "nnpi-msi", nnp_pci);
++	if (rc)
++		goto err_irq_req_fail;
++
++	return 0;
++
++err_irq_req_fail:
++	pci_free_irq_vectors(pdev);
++	return rc;
++}
++
++static void nnp_free_interrupts(struct nnp_pci *nnp_pci, struct pci_dev *pdev)
++{
++	/* clear interrupts mask */
++	nnp_mmio_write(nnp_pci, ELBI_PCI_MSI_MASK, UINT_MAX);
++	free_irq(pci_irq_vector(pdev, 0), nnp_pci);
++	pci_free_irq_vectors(pdev);
++}
++
++int nnp_cmdq_flush(struct nnp_hw_dev *hw_dev)
++{
++	struct nnp_pci *nnp_pci = container_of(hw_dev, struct nnp_pci, hw_dev);
++
++	nnp_mmio_write(nnp_pci, ELBI_COMMAND_PCI_CONTROL,
++		       ELBI_COMMAND_PCI_CONTROL_FLUSH_MASK);
++
++	return 0;
++}
++
++static int nnp_init_pci_device(struct nnp_pci *nnp_pci)
++{
++	struct pci_dev *pdev = nnp_pci->pdev;
++	u32 doorbell_val, status;
++	int rc;
++	u32 line_bdf;
++
++	rc = pci_enable_device(pdev);
++	if (rc) {
++		dev_err(&nnp_pci->pdev->dev,
++			"failed to enable pci device. rc=%d\n", rc);
++		return rc;
++	}
++
++	pci_set_master(pdev);
++
++	if (!nnp_pci->mem_enabled) {
++		rc = pci_request_regions(pdev, nnp_driver_name);
++		if (rc) {
++			dev_err(&nnp_pci->pdev->dev,
++				"failed to get pci regions.\n");
++			goto disable_device;
++		}
++
++		nnp_pci->mmio.pa = pci_resource_start(pdev, NNP_PCI_MMIO_BAR);
++		nnp_pci->mmio.len = pci_resource_len(pdev, NNP_PCI_MMIO_BAR);
++		nnp_pci->mmio.va = pci_ioremap_bar(pdev, NNP_PCI_MMIO_BAR);
++		if (!nnp_pci->mmio.va) {
++			dev_err(&nnp_pci->pdev->dev, "Cannot remap MMIO BAR\n");
++			rc = -EIO;
++			goto release_regions;
++		}
++
++		/* Map inbound memory region BAR */
++		nnp_pci->mem_bar.pa =
++			pci_resource_start(pdev, NNP_PCI_INBOUND_MEM_BAR);
++		nnp_pci->mem_bar.len =
++			pci_resource_len(pdev, NNP_PCI_INBOUND_MEM_BAR);
++		nnp_pci->mem_bar.va =
++			pci_ioremap_bar(pdev, NNP_PCI_INBOUND_MEM_BAR);
++		if (!nnp_pci->mem_bar.va) {
++			dev_err(&nnp_pci->pdev->dev,
++				"Cannot remap INBOUND_MEM BAR\n");
++			rc = -EIO;
++			goto unmap_mmio;
++		}
++
++		nnp_pci->mem_enabled = true;
++	}
++
++	/*
++	 * Check that the pci link is in good state:
++	 * mmio read should return valid value.
++	 */
++	line_bdf = nnp_mmio_read(nnp_pci, ELBI_LINE_BDF);
++	if (line_bdf == 0xffffffff) {
++		dev_err(&nnp_pci->pdev->dev, "PCIe link in bad state\n");
++		rc = -EIO;
++		goto unmap_mem_bar;
++	}
++
++	rc = pci_set_dma_mask(pdev, DMA_BIT_MASK(64));
++	if (rc) {
++		dev_err(&nnp_pci->pdev->dev, "Cannot set DMA mask\n");
++		goto unmap_mem_bar;
++	}
++
++	/* clear interrupts mask */
++	nnp_mmio_write(nnp_pci, ELBI_PCI_MSI_MASK, UINT_MAX);
++
++	rc = nnp_setup_interrupts(nnp_pci, pdev);
++	if (rc) {
++		dev_err(&nnp_pci->pdev->dev,
++			"nnp_setup_interrupts failed %d\n", rc);
++		goto unmap_mem_bar;
++	}
++
++	/*
++	 * done setting up the new pci device,
++	 * add it to the set of NNP-I devices
++	 */
++	if (!nnp_pci->nnpdev) {
++		struct nnp_device *nnpdev;
++
++		nnpdev = nnpdev_create(&nnp_pci->hw_dev);
++		if (IS_ERR(nnpdev)) {
++			dev_err(&nnp_pci->pdev->dev,
++				"failed to register enumarated NNP-I device");
++			rc = PTR_ERR(nnpdev);
++			goto free_interrupts;
++		}
++		nnp_pci->nnpdev = nnpdev;
++	}
++
++	/* notify bios that host driver is up */
++	nnp_cmdq_flush(&nnp_pci->hw_dev);
++	doorbell_val = nnp_mmio_read(nnp_pci, ELBI_PCI_HOST_DOORBELL_VALUE);
++	doorbell_val &= ~(NNP_HOST_BOOT_STATE_MASK);
++	doorbell_val |= FIELD_PREP(NNP_HOST_BOOT_STATE_MASK,
++				   NNP_HOST_BOOT_STATE_DRV_READY);
++	nnp_mmio_write(nnp_pci, ELBI_PCI_HOST_DOORBELL_VALUE, doorbell_val);
++
++	/* Update upper layer with current value of card doorbell value */
++	doorbell_val = nnp_mmio_read(nnp_pci, ELBI_HOST_PCI_DOORBELL_VALUE);
++	nnpdev_card_doorbell_value_changed(nnp_pci->nnpdev, doorbell_val);
++	status = nnp_mmio_read(nnp_pci, ELBI_PCI_STATUS);
++	if (status & ELBI_PCI_STATUS_DOORBELL_MASK)
++		nnp_mmio_write(nnp_pci,
++			       ELBI_PCI_STATUS, ELBI_PCI_STATUS_DOORBELL_MASK);
++
++	/* process any exising command in the response queue */
++	nnp_process_commands(nnp_pci);
++
++	/* Enable desired interrupts */
++	nnp_mmio_write(nnp_pci,
++		       ELBI_PCI_MSI_MASK,
++		       ~(card_status_int_mask | card_status_threaded_mask));
++
++	return 0;
++
++free_interrupts:
++	nnp_free_interrupts(nnp_pci, pdev);
++unmap_mem_bar:
++	if (!nnp_pci->mem_enabled)
++		goto disable_device;
++
++	iounmap(nnp_pci->mem_bar.va);
++unmap_mmio:
++	iounmap(nnp_pci->mmio.va);
++release_regions:
++	pci_release_regions(pdev);
++	nnp_pci->mem_enabled = false;
++disable_device:
++	pci_disable_device(pdev);
++
++	return rc;
++}
++
++static void nnp_fini_pci_device(struct nnp_pci *nnp_pci, bool release_regions)
++{
++	wake_up_all(&nnp_pci->card_status_wait);
++	nnp_free_interrupts(nnp_pci, nnp_pci->pdev);
++	if (release_regions && nnp_pci->mem_enabled) {
++		iounmap(nnp_pci->mem_bar.va);
++		iounmap(nnp_pci->mmio.va);
++		pci_release_regions(nnp_pci->pdev);
++		nnp_pci->mem_enabled = false;
++	}
++	pci_disable_device(nnp_pci->pdev);
++}
++
++static int nnp_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
++{
++	struct nnp_pci *nnp_pci = NULL;
++	int rc = -ENODEV;
++
++	if (PCI_FUNC(pdev->devfn) != NNP_PCI_DEVFN) {
++		dev_err(&pdev->dev,
++			"unsupported pci.devfn=%u (driver only supports pci.devfn=%u)\n",
++			PCI_FUNC(pdev->devfn), NNP_PCI_DEVFN);
++		return -ENODEV;
++	}
++
++	nnp_pci = kzalloc(sizeof(*nnp_pci), GFP_KERNEL);
++	if (!nnp_pci) {
++		rc = -ENOMEM;
++		dev_err(&pdev->dev, "nnp_pci kmalloc failed rc %d\n", rc);
++		goto do_exit;
++	}
++
++	nnp_pci->hw_dev.dev = &pdev->dev;
++	nnp_pci->pdev = pdev;
++	pci_set_drvdata(pdev, nnp_pci);
++
++	init_waitqueue_head(&nnp_pci->card_status_wait);
++	spin_lock_init(&nnp_pci->irq_lock);
++
++	rc = nnp_init_pci_device(nnp_pci);
++	if (rc)
++		goto do_exit;
++
++	/*
++	 * Take refcount to the device which will be released only when
++	 * nnpi_pci struct is freed
++	 */
++	pci_dev_get(nnp_pci->pdev);
++
++	return 0;
++
++do_exit:
++	dev_err(&pdev->dev, "Probe failed rc %d\n", rc);
++	kfree(nnp_pci);
++	pci_set_drvdata(pdev, NULL);
++	return rc;
++}
++
++static void nnp_remove(struct pci_dev *pdev)
++{
++	struct nnp_pci *nnp_pci = NULL;
++
++	nnp_pci = pci_get_drvdata(pdev);
++	if (!nnp_pci)
++		return;
++
++	nnp_pci->removing = true;
++
++	/* inform card that host driver is down */
++	nnp_mmio_write(nnp_pci, ELBI_PCI_HOST_DOORBELL_VALUE, 0);
++
++	nnpdev_destroy(nnp_pci->nnpdev, true);
++	nnp_fini_pci_device(nnp_pci, true);
++	nnpdev_destroy(nnp_pci->nnpdev, false);
++
++	pci_set_drvdata(nnp_pci->pdev, NULL);
++	pci_dev_put(nnp_pci->pdev);
++	kfree(nnp_pci);
++}
++
++static const struct pci_device_id nnp_pci_tbl[] = {
++	{PCI_DEVICE(NNP_PCI_VENDOR_ID, NNP_PCI_DEVICE_ID)},
++	/* required last entry */
++	{ 0, }
++};
++
++static struct pci_driver nnp_driver = {
++	.name = nnp_driver_name,
++	.id_table = nnp_pci_tbl,
++	.probe = nnp_probe,
++	.remove = nnp_remove
++};
++
++int nnp_hw_init(void)
++{
++	int ret;
++
++	pr_debug("nnp_pci hw_init\n");
++
++	ret = pci_register_driver(&nnp_driver);
++	if (ret)
++		pr_err("pci_register_driver failed ret %d\n", ret);
++
++	return ret;
++}
++
++void nnp_hw_fini(void)
++{
++	pci_unregister_driver(&nnp_driver);
++}
+diff --git a/drivers/misc/intel-nnpi/nnpdrv_main.c b/drivers/misc/intel-nnpi/nnpdrv_main.c
+new file mode 100644
+index 0000000..e9173a5
+--- /dev/null
++++ b/drivers/misc/intel-nnpi/nnpdrv_main.c
+@@ -0,0 +1,47 @@
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++/*
++ * Copyright (C) 2019-2020 Intel Corporation
++ */
++
++#define pr_fmt(fmt)   KBUILD_MODNAME ": " fmt
++
++#include <linux/init.h>
++#include <linux/kernel.h>
++#include <linux/module.h>
++#include <linux/printk.h>
++#include <linux/stringify.h>
++#include "device.h"
++#include "nnp_hw.h"
++
++static int __init nnp_init_module(void)
++{
++	int ret = 0;
++
++	nnpdev_module_init();
++
++	ret = nnp_hw_init();
++	if (ret) {
++		pr_err("failed to init pcie\n");
++		goto err_dev;
++	}
++
++	return 0;
++
++err_dev:
++	nnpdev_module_fini();
++	return ret;
++}
++
++static void __exit nnp_cleanup(void)
++{
++	nnp_hw_fini();
++	nnpdev_module_fini();
++}
++
++module_init(nnp_init_module);
++module_exit(nnp_cleanup);
++
++MODULE_LICENSE("GPL v2");
++MODULE_DESCRIPTION("Intel(R) NNPI Host Driver");
++MODULE_AUTHOR("Intel Corporation");
+-- 
+1.8.3.1
+
