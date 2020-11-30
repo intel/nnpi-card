@@ -409,7 +409,7 @@ static ssize_t sphcs_genmsg_chan_write(struct file       *f,
 						    &channel->write_host_page_addr,
 						    &chunk_size);
 			if (n != 1 || chunk_size != NNP_PAGE_SIZE) {
-				sph_log_err(SERVICE_LOG, "Failed to get host response page for write n=%d chunk_size=%d\n", n, chunk_size);
+				sph_log_err(SERVICE_LOG, "Failed to get host response page for write n=%d chunk_size=%u\n", n, chunk_size);
 				/* end the write loop and return */
 				break;
 			}
@@ -537,7 +537,7 @@ static long write_response_wait(struct file *f, void __user *arg)
 					    &channel->write_host_page_addr,
 					    &chunk_size);
 		if (n != 1 || chunk_size != NNP_PAGE_SIZE) {
-			sph_log_err(SERVICE_LOG, "Failed to get host response page for write n=%d chunk_size=%d\n", n, chunk_size);
+			sph_log_err(SERVICE_LOG, "Failed to get host response page for write n=%d chunk_size=%u\n", n, chunk_size);
 			ret = -1;
 		} else {
 			host_rb_update_free_space(resp_data_rb, NNP_PAGE_SIZE);
@@ -1051,7 +1051,7 @@ static long process_accept_client(struct file *f, void __user *arg)
 	channel->fd = anon_inode_getfd("sphchan",
 				       &sphcs_genmsg_chan_fops,
 				       channel,
-				       O_RDWR);
+				       O_RDWR | O_CLOEXEC);
 	if (channel->fd < 0) {
 		sph_log_err(SERVICE_LOG, "Failed to create channel file descriptor\n");
 		ret = channel->fd;

@@ -564,13 +564,13 @@ static void dispatch_next_subjobs(struct di_job *job,
 		project_hook_dispatch_new_job(dev, ntw);
 
 		if (dev->prev_reg_config.cbd_entries_nr !=
-			cfg_default.mmio_cbd_entries_nr_offset) {
+			dev->fifo_desc->fifo.entries) {
 			/** Configure CBDT entry size only for cold run*/
 			cve_os_write_mmio_32(dev,
 				cfg_default.mmio_cbd_entries_nr_offset,
 				dev->fifo_desc->fifo.entries);
 			dev->prev_reg_config.cbd_entries_nr =
-				cfg_default.mmio_cbd_entries_nr_offset;
+				dev->fifo_desc->fifo.entries;
 		}
 	} else {
 		ASSERT(dev->is_cold_run == 0);

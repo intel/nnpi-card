@@ -171,7 +171,12 @@ static void __assign_fw_ownership(struct cve_device_group *dg,
 		cve_os_log(CVE_LOGLEVEL_DEBUG,
 				"PNTW:0x%p Adding custom firmware fw_sec_struct:0x%p MD5:%s #FwCaching\n",
 				pnetwork, out_fw_sec, out_fw_sec->md5_str);
+		ice_swc_counter_inc(g_sph_swc_global,
+				ICEDRV_SWC_GLOBAL_COUNTER_FW_DYNAMIC_ALLOC);
 	}
+
+	ice_swc_counter_inc(g_sph_swc_global,
+			ICEDRV_SWC_GLOBAL_COUNTER_FW_MD5_MISMATCH);
 }
 
 #endif
@@ -5965,7 +5970,9 @@ static int __map_resources_and_context(struct ice_pnetwork *pntw)
 				ICEDRV_SWC_INFER_DEVICE_COUNTER_ID,
 				dev->dev_index);
 
-		if (ice_di_is_cold_run(job->di_hjob) && pntw->pntw_cntrmask) {
+		if (((cve_di_get_device_reset_flag(dev) &
+			CVE_DI_RESET_DUE_PNTW_SWITCH) != 0) &&
+				pntw->pntw_cntrmask) {
 			/* Unmap old mapping and add Map BAR1 Space */
 			ice_unmap_bar1(dev_ctx);
 			retval = ice_map_bar1(dev, dev_ctx);
@@ -6694,6 +6701,8 @@ static int __create_pntw(struct ice_pnetwork_descriptor *pntw_desc,
 
 	__update_pntw_sw_id(parent, pntw_desc->obj_id);
 	ice_swc_create_pntw_node(parent);
+	ice_swc_counter_inc(g_sph_swc_global,
+			ICEDRV_SWC_GLOBAL_COUNTER_PNTW_TOT);
 
 	cve_os_log(CVE_LOGLEVEL_DEBUG,
 			"New PNTW:0x%llx Created NumIce:%d CLOS0:%d CLOS1:%d CLOS2:%d CLOS3:%d\n",

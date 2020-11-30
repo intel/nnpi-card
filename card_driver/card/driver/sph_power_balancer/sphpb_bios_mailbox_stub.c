@@ -55,3 +55,13 @@ int set_imon_vccin_calib_config(uint16_t imon_offset, //fixed point S7.8
 {
 	return 0;
 }
+
+int get_offset_calib_config(int16_t *offset)
+{
+	return 0;
+}
+
+int set_offset_calib_config(int16_t offset)
+{
+	return 0;
+}
