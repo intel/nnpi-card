@@ -403,6 +403,38 @@ struct trace_node_sysfs {
 	struct hwtrace_job job;
 };
 
+#define FW_SECTION_ALIGNED_SZ_32K (1024 * 32)
+#define FW_SECTION_ALIGNED_SZ_4M (1024 * 1024 * 4)
+
+enum ice_mem_cache_sz_type {
+	ICE_MEM_CACHE_SZ_TYPE_32K,
+	ICE_MEM_CACHE_SZ_TYPE_4M,
+	ICE_MEM_CACHE_SZ_TYPE_MAX
+};
+
+enum ice_mem_cache_sz {
+	ICE_MEM_CACHE_SZ_32K = (32 * 1024),
+	ICE_MEM_CACHE_SZ_4M = (4 * 1024 * 1024)
+};
+#define ICE_MEM_CACHE_SZ_DEFAULT ICE_MEM_CACHE_SZ_4M
+
+struct ice_mem_cache_node {
+	/* link of cache nodes */
+	struct cve_dle_t list;
+	u32 size;
+	/* handle to dma memory */
+	struct cve_dma_handle dma_handle;
+	u64 id;
+	u8 in_use;
+	u8 type;
+};
+
+struct ice_fw_mem_cache {
+	struct ice_mem_cache_node *cache_free_head[ICE_MEM_CACHE_SZ_TYPE_MAX];
+	struct ice_mem_cache_node *cache_used_head[ICE_MEM_CACHE_SZ_TYPE_MAX];
+};
+
+
 /* TODO: In future DG can be rebranded as ResourcePool.
  * It contains ICEs, Counters, LLC and Pools info.
  */
@@ -520,6 +552,8 @@ struct cve_device_group {
 	struct trace_node_sysfs *node_group_sysfs;
 
 	struct cve_fw_loaded_sections *loaded_cust_fw_sections;
+	/* place holder to store all information related memory caching */
+	struct ice_fw_mem_cache fw_mem_cache;
 };
 
 /* Holds all the relevant IDs required for maintaining a map between
@@ -927,6 +961,7 @@ struct ice_network {
 
 	/* list of custom loaded fw sections per cve device */
 	struct cve_fw_loaded_sections *loaded_cust_fw_sections;
+	struct ice_fw_owner_info self_info[CVE_FW_END_TYPES];
 
 	/* Flag to disallow fw loading after exIR */
 	u8 exIR_performed;

@@ -44,7 +44,16 @@ static const struct sph_sw_counter_info g_swc_global_info[] = {
 	 "Total number of Destroyed Context"},
 	/* ICEDRV_SWC_GLOBAL_ACTIVE_ICE_COUNT */
 	{ICEDRV_SWC_GLOBAL_GROUP_GEN, "activeICECount",
-	 "Total number of Active ICE"}
+	 "Total number of Active ICE"},
+	/* ICEDRV_SWC_GLOBAL_COUNTER_NTW_TOT */
+	{ICEDRV_SWC_GLOBAL_GROUP_GEN, "networkTotal",
+	 "Total number of network created"},
+	/* ICEDRV_SWC_GLOBAL_COUNTER_FW_MD5_MISMATCH */
+	{ICEDRV_SWC_GLOBAL_GROUP_GEN, "newFwDetectCount",
+	 "Total number of fw loaded not previously cached"},
+	/* ICEDRV_SWC_GLOBAL_COUNTER_FW_DYNAMIC_ALLOC */
+	{ICEDRV_SWC_GLOBAL_GROUP_GEN, "fwDynamicAllocCount",
+	 "Total number of FW loaded using dynamic allocation"},
 };
 
 static const struct sph_sw_counters_set g_swc_global_set = {

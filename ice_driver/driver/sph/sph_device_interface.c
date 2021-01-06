@@ -707,6 +707,9 @@ void store_ecc_err_count(struct cve_device *cve_dev)
 			ICEDRV_SWC_INFER_DEVICE_COUNTER_ECC_SERRCOUNT,
 			serr);
 
+	/* Reset ecc err count register as the current count is stored*/
+	cve_os_write_mmio_32(cve_dev,
+			cfg_default.mmio_ecc_serrcount_offset, 0);
 
 	__set_persistant_secc_counter(cve_dev->hswc, serr);
 
@@ -715,6 +718,10 @@ void store_ecc_err_count(struct cve_device *cve_dev)
 	ice_swc_counter_add(cve_dev->hswc,
 			ICEDRV_SWC_DEVICE_COUNTER_ECC_DERRCOUNT, derr);
 
+	/* Reset ecc err count register as the current count is stored*/
+	cve_os_write_mmio_32(cve_dev,
+			cfg_default.mmio_ecc_derrcount_offset, 0);
+
 	__set_persistant_decc_counter(cve_dev->hswc, derr);
 
 	parity_err = cve_os_read_mmio_32_force_print(cve_dev,
@@ -722,6 +729,10 @@ void store_ecc_err_count(struct cve_device *cve_dev)
 	ice_swc_counter_add(cve_dev->hswc_infer,
 			ICEDRV_SWC_INFER_DEVICE_COUNTER_PARITY_ERRCOUNT,
 			parity_err);
+
+	/* Reset parity err count register as the current count is stored*/
+	cve_os_write_mmio_32(cve_dev,
+			cfg_default.mmio_parity_errcount_offset, 0);
 
 	unmapped_err.val = cve_os_read_mmio_32_force_print(cve_dev,
 			cfg_default.mmio_unmapped_err_id_offset);

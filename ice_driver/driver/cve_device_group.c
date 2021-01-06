@@ -12,6 +12,7 @@
 #include "cve_linux_internal.h"
 #include "dispatcher.h"
 #include "device_interface.h"
+#include "cve_firmware.h"
 
 #include "ice_sw_counters.h"
 #ifndef RING3_VALIDATION
@@ -41,6 +42,22 @@ static struct ice_drv_config drv_config_param = {
 	.initial_iccp_config[1] = RESET_CDYN_VAL,
 	.initial_iccp_config[2] = BLOCKED_CDYN_VAL,
 };
+
+static int __free_mem_node(struct ice_mem_cache_node *node);
+static int __init_mem_node(struct ice_mem_cache_node *node,
+		enum ice_mem_cache_sz_type type);
+static int __alloc_mem_node(enum ice_mem_cache_sz_type type,
+		struct ice_mem_cache_node **out_node);
+static int __free_mem_cache_nodes_per_type(enum ice_mem_cache_sz_type type,
+		struct ice_fw_mem_cache *fw_mem_cache);
+static int __alloc_mem_cache_nodes_per_type(enum ice_mem_cache_sz_type type,
+		struct ice_fw_mem_cache *fw_mem_cache);
+static int __map_size_to_type(u32 size, enum ice_mem_cache_sz_type *type);
+static int __get_free_mem_cache_node(enum ice_mem_cache_sz_type type,
+		struct ice_fw_mem_cache *fw_mem_cache,
+		struct ice_mem_cache_node **out_node);
+static int __put_free_mem_cache_node(struct ice_fw_mem_cache *fw_mem_cache,
+		struct ice_mem_cache_node *node);
 
 static struct cve_device_group *__get_ref_to_dg(void)
 {
@@ -1153,6 +1170,523 @@ void ice_dg_return_this_ice(struct ice_network *ntw,
 		ASSERT(false);
 
 	bo->in_pool_ice++;
+}
+
+static int __free_mem_node(struct ice_mem_cache_node *node)
+{
+	int ret = 0;
+	struct cve_device *dev = ice_get_first_dev();
+
+
+	OS_FREE_DMA_SG(dev, node->size, &node->dma_handle);
+
+	/* Free memory for each cache node */
+	ret = OS_FREE(node, sizeof(*node));
+	return ret;
+
+}
+
+
+static int __map_size_to_type(u32 size, enum ice_mem_cache_sz_type *type)
+{
+	int ret = 0;
+
+	if (size <= ICE_MEM_CACHE_SZ_32K)
+		ret = -1;
+	else if (size <= ICE_MEM_CACHE_SZ_4M)
+		*type = ICE_MEM_CACHE_SZ_TYPE_4M;
+	else
+		ret = -1;
+
+	return ret;
+}
+
+static int __init_mem_node(struct ice_mem_cache_node *node,
+	       enum ice_mem_cache_sz_type type)
+{
+	struct cve_device *dev = ice_get_first_dev();
+	u32 size = 0;
+	int ret = 0;
+
+	switch (type) {
+	case ICE_MEM_CACHE_SZ_TYPE_32K:
+		size = ICE_MEM_CACHE_SZ_32K;
+		break;
+	case ICE_MEM_CACHE_SZ_TYPE_4M:
+		size = ICE_MEM_CACHE_SZ_4M;
+		break;
+	default:
+		size = ICE_MEM_CACHE_SZ_32K;
+		break;
+	}
+
+	/* Allocate DMA'able memory and get its kernel virt address */
+	ret = OS_ALLOC_DMA_SG(dev, size, 1, &node->dma_handle, true);
+	if (ret != 0) {
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+				"DMA alloc failed(%d) for size:%u\n",
+					 ret, size);
+		goto out;
+	}
+
+	OS_SET_DMA_CONTIG_PERSISTANT(&node->dma_handle, node);
+	node->size = size;
+	node->type = type;
+	node->in_use = 0;
+	node->id = (u64)&node->dma_handle;
+out:
+	return ret;
+}
+
+
+
+static int __alloc_mem_node(enum ice_mem_cache_sz_type type,
+		struct ice_mem_cache_node **out_node)
+{
+	struct ice_mem_cache_node *node;
+	int ret = 0;
+
+	/* Allocate memory for  each cache node */
+	ret = OS_ALLOC_ZERO(sizeof(*node), (void **)&node);
+	if (ret != 0) {
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+				"Allocation failed(%d) for ice_mem_cache_node\n",
+					 ret);
+		goto out;
+	}
+
+	ret = __init_mem_node(node, type);
+	if (ret != 0)
+		goto err_node_init;
+
+	*out_node = node;
+	return ret;
+
+err_node_init:
+	*out_node = NULL;
+	OS_FREE(node, sizeof(*node));
+out:
+	return ret;
+}
+
+static int __free_mem_cache_nodes_per_type(enum ice_mem_cache_sz_type type,
+		struct ice_fw_mem_cache *fw_mem_cache)
+{
+	struct ice_mem_cache_node *head = fw_mem_cache->cache_free_head[type];
+	struct ice_mem_cache_node *curr = NULL;
+	struct ice_mem_cache_node *next = NULL;
+	u32 is_last = 0;
+
+	cve_os_log(CVE_LOGLEVEL_DEBUG,
+			"Free List Type:%u HEAD:0x%p #FwCaching\n", type, head);
+	cve_os_log(CVE_LOGLEVEL_DEBUG,
+			"Used List Type:%u HEAD:0x%p #FwCaching\n", type,
+			fw_mem_cache->cache_used_head[type]);
+
+	if (head == NULL)
+		goto exit;
+
+	curr = head;
+	do {
+		next = cve_dle_next(curr, list);
+
+		if (next == curr)
+			is_last = 1;
+		cve_dle_remove_from_list(fw_mem_cache->cache_free_head[type],
+				list, curr);
+
+		cve_os_log(CVE_LOGLEVEL_DEBUG,
+				"Free List Type:%u HEAD:0x%p Node:0x%p is_last:%d Cleanup #FwCaching\n",
+				type,
+				fw_mem_cache->cache_free_head[type],
+				curr, is_last);
+
+		__free_mem_node(curr);
+
+		curr = next;
+
+	} while (!is_last);
+
+
+exit:
+	/* Also check used list, this should be empty, else assert*/
+	head = fw_mem_cache->cache_used_head[type];
+	ASSERT(head == NULL);
+
+	return 0;
+}
+
+
+
+static int __alloc_mem_cache_nodes_per_type(enum ice_mem_cache_sz_type type,
+		struct ice_fw_mem_cache *fw_mem_cache)
+{
+	u8 max_nodes = MAX_CVE_DEVICES_NR;
+	u8 count = 0;
+	struct ice_mem_cache_node *node;
+	int ret = 0;
+
+	for (; count < max_nodes; count++) {
+		ret = __alloc_mem_node(type, &node);
+		if (ret)
+			goto error;
+
+		cve_dle_add_to_list_before(
+				fw_mem_cache->cache_free_head[type],
+				list, node);
+		cve_os_log(CVE_LOGLEVEL_DEBUG,
+				"Type:%u HEAD:0x%p Node:0x%p #FwCaching\n",
+				type, fw_mem_cache->cache_free_head[type],
+				node);
+	}
+
+	return ret;
+error:
+	__free_mem_cache_nodes_per_type(type, fw_mem_cache);
+	return ret;
+}
+
+static int __get_free_mem_cache_node(enum ice_mem_cache_sz_type type,
+		struct ice_fw_mem_cache *fw_mem_cache,
+		struct ice_mem_cache_node **out_node)
+{
+	struct ice_mem_cache_node *head = fw_mem_cache->cache_free_head[type];
+	int ret = 0;
+
+	if (head == NULL) {
+		ret = -1;
+		cve_os_log(CVE_LOGLEVEL_WARNING,
+				"Type:%u No free Node\n", type);
+		goto exit;
+	}
+
+	cve_dle_remove_from_list(fw_mem_cache->cache_free_head[type],
+			list, head);
+	cve_os_log(CVE_LOGLEVEL_DEBUG,
+			"FreeList Type:%u Head:0x%p Remove Node:0x%p\n",
+			type, fw_mem_cache->cache_free_head[type], head);
+	cve_os_log(CVE_LOGLEVEL_DEBUG,
+			"UsedList Type:%u Head:0x%p Node:0x%p putting to used status\n",
+			type, fw_mem_cache->cache_used_head[type], head);
+	cve_dle_add_to_list_before(fw_mem_cache->cache_used_head[type],
+			list, head);
+	head->in_use = 1;
+	*out_node = head;
+
+exit:
+	return ret;
+}
+
+static int __put_free_mem_cache_node(struct ice_fw_mem_cache *fw_mem_cache,
+		struct ice_mem_cache_node *node)
+{
+	struct ice_mem_cache_node *lookup = NULL;
+	int ret = 0;
+
+	if (node->type != ICE_MEM_CACHE_SZ_TYPE_32K &&
+			node->type != ICE_MEM_CACHE_SZ_TYPE_4M) {
+		ret = -1;
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+				"Type:%u Node:%p is invalid\n",
+				node->type, node);
+		goto exit;
+	}
+
+	lookup = cve_dle_lookup(fw_mem_cache->cache_used_head[node->type],
+			list, id, node->id);
+	if (!lookup) {
+		ret = -1;
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+				"Type:%u Node:%p is invalid\n",
+				node->type, node);
+		goto exit;
+	}
+
+	cve_os_log(CVE_LOGLEVEL_DEBUG,
+			"UsedList Type:%u HEAD:0x%p Remove Node:0x%p #FwCaching\n",
+			node->type, fw_mem_cache->cache_used_head[node->type],
+			node);
+	node->in_use = 0;
+	cve_dle_remove_from_list(fw_mem_cache->cache_used_head[node->type],
+			list, node);
+	cve_dle_add_to_list_before(
+			fw_mem_cache->cache_free_head[node->type],
+			list, node);
+	cve_os_log(CVE_LOGLEVEL_DEBUG,
+			"FreeList Type:%u HEAD:0x%p ADD Node:0x%p #FwCaching\n",
+			node->type,
+			fw_mem_cache->cache_free_head[node->type],
+			node);
+
+exit:
+	return ret;
+}
+
+
+
+int ice_dg_free_fw_mem_cache_nodes(struct ice_fw_mem_cache *fw_mem_cache)
+{
+	u8 i = ICE_MEM_CACHE_SZ_TYPE_4M;
+
+	for (; i < ICE_MEM_CACHE_SZ_TYPE_MAX; i++)
+		__free_mem_cache_nodes_per_type(i, fw_mem_cache);
+
+	return 0;
+}
+
+int ice_dg_alloc_fw_mem_cache_nodes(struct ice_fw_mem_cache *fw_mem_cache)
+{
+	u8 max_types = ICE_MEM_CACHE_SZ_TYPE_MAX;
+	u8 i = ICE_MEM_CACHE_SZ_TYPE_4M, j = ICE_MEM_CACHE_SZ_TYPE_4M;
+	int ret = 0;
+
+	for (; i < max_types; i++) {
+		ret =  __alloc_mem_cache_nodes_per_type(i, fw_mem_cache);
+		if (ret)
+			goto error;
+	}
+
+	return ret;
+error:
+	for (j = 0; j <= i; j++)
+		__free_mem_cache_nodes_per_type(j, fw_mem_cache);
+
+	return ret;
+}
+
+/*
+ * Success : 1
+ * No free Node : 0
+ * Error : -1
+ */
+int __ice_dg_check_free_cached_mem(u32 size)
+{
+	int ret = 1;
+	enum ice_mem_cache_sz_type type;
+	struct cve_device_group *dg = cve_dg_get();
+
+	ret = __map_size_to_type(size, &type);
+	if (ret < 0) {
+		cve_os_log(CVE_LOGLEVEL_WARNING,
+				"Size:%u not supported for caching logic\n",
+				size);
+		goto exit;
+	}
+
+	if (!dg->fw_mem_cache.cache_free_head[type]) {
+		ret = 0;
+		cve_os_log(CVE_LOGLEVEL_WARNING,
+				"Type:%u No free Node\n", type);
+		goto exit;
+	}
+
+	/* reached here, so there is atleast one free node */
+	ret = 1;
+exit:
+	cve_os_log(CVE_LOGLEVEL_DEBUG,
+				"Type:%u Free Node status:%d\n", type, ret);
+	return ret;
+
+}
+
+
+int __ice_dg_get_cached_mem(u32 size, struct cve_dma_handle *dma_handle)
+{
+	int ret = 0;
+	enum ice_mem_cache_sz_type type;
+	struct cve_device_group *dg = cve_dg_get();
+	struct ice_mem_cache_node *node;
+
+	ret = __map_size_to_type(size, &type);
+	if (ret < 0) {
+		cve_os_log(CVE_LOGLEVEL_DEBUG,
+				"Size:%u not supported for caching logic\n",
+				size);
+		goto exit;
+	}
+
+	ret = __get_free_mem_cache_node(type, &dg->fw_mem_cache, &node);
+	if (ret < 0) {
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+				"Size:%u no free node\n", size);
+		goto exit;
+	}
+	OS_CLONE_DMA_CONTIG_HANDLE(&node->dma_handle, dma_handle);
+
+exit:
+	return ret;
+
+}
+
+int __ice_dg_put_cached_mem(struct cve_dma_handle *dma_handle)
+{
+	int ret = 0;
+	struct cve_device_group *dg = cve_dg_get();
+	struct ice_mem_cache_node *node;
+
+	OS_GET_DMA_CONTIG_PERSISTANT(dma_handle, node);
+
+	ret = __put_free_mem_cache_node(&dg->fw_mem_cache, node);
+
+	return ret;
+}
+
+#ifdef _DEBUG
+static void __dump_fw_list_info(struct cve_fw_loaded_sections *loaded_fw_list)
+{
+	struct cve_fw_loaded_sections *loaded_fw_section;
+
+	loaded_fw_section = loaded_fw_list;
+	if (!loaded_fw_list)
+		return;
+
+	do {
+		cve_os_log(CVE_LOGLEVEL_DEBUG,
+				"f/w(0x%p) MD5:%s\n",
+				loaded_fw_section,
+				loaded_fw_section->md5_str);
+		loaded_fw_section = cve_dle_next(loaded_fw_section, list);
+	} while (loaded_fw_list != loaded_fw_section);
+}
+#else
+static void __dump_fw_list_info(struct cve_fw_loaded_sections *loaded_fw_list)
+{
+
+}
+#endif
+
+static int __dg_find_lru_cached_fw(struct cve_device_group *dg,
+		struct cve_fw_loaded_sections **out_node)
+{
+	int ret = 0;
+	u64 __lru = trace_clock_global();
+	struct cve_fw_loaded_sections *loaded_fw_section;
+	struct cve_fw_loaded_sections *loaded_fw_sections_list;
+
+	loaded_fw_sections_list = dg->loaded_cust_fw_sections;
+	if (!loaded_fw_sections_list) {
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+				"cached list is NULL\n");
+		ret = -EINVAL;
+		goto exit;
+	}
+
+	*out_node = NULL;
+	loaded_fw_section = dg->loaded_cust_fw_sections;
+	do {
+		/* Only look for such LRU nodes which have no active users */
+		if (loaded_fw_section->owners == NULL) {
+			if (loaded_fw_section->last_used < __lru) {
+				__lru = loaded_fw_section->last_used;
+				*out_node = loaded_fw_section;
+				cve_os_log(CVE_LOGLEVEL_DEBUG,
+						"LRU f/w(0x%p) found MD5:%s #FwCaching\n",
+						loaded_fw_section,
+						loaded_fw_section->md5_str);
+			}
+		}
+		loaded_fw_section = cve_dle_next(loaded_fw_section, list);
+	} while (loaded_fw_sections_list != loaded_fw_section);
+
+exit:
+	return ret;
+}
+
+/* release oldest cached f/w until atleast 1 cached memory is available */
+int __ice_dg_return_cached_mem(struct ice_network *ntw)
+{
+	int ret = 0;
+	struct cve_device_group *dg = cve_dg_get();
+	struct cve_fw_loaded_sections *loaded_fw_section;
+	u32 sz = ICE_MEM_CACHE_SZ_DEFAULT;
+
+	ret = __ice_dg_check_free_cached_mem(sz);
+	while (ret == 0) {
+		ret = __dg_find_lru_cached_fw(dg, &loaded_fw_section);
+		if (ret < 0)
+			break;
+
+		if (loaded_fw_section == NULL) {
+			/*could not find any node with no active users*/
+			cve_os_log(CVE_LOGLEVEL_INFO,
+					"NTW:0x%llx Could not find any free cached f/w mode\n",
+					ntw->network_id);
+			break;
+		}
+
+		cve_dle_remove_from_list(dg->loaded_cust_fw_sections,
+				list, loaded_fw_section);
+		cve_os_log(CVE_LOGLEVEL_INFO,
+				"NTW:0x%llx releasing f/w(0x%p) MD5:%s\n",
+				ntw->network_id,
+				loaded_fw_section,
+				loaded_fw_section->md5_str);
+
+		cve_fw_unload(NULL, loaded_fw_section);
+		ret = __ice_dg_check_free_cached_mem(sz);
+	}
+
+	__dump_fw_list_info(dg->loaded_cust_fw_sections);
+
+	return ret;
+}
+
+int __ice_dg_find_matching_fw(struct ice_network *ntw, u8 *md5,
+		struct cve_fw_loaded_sections **out_node)
+{
+	int not_equal = 0;
+	u8 i = 0;
+	struct cve_fw_loaded_sections *loaded_fw_section;
+	struct cve_fw_loaded_sections *loaded_fw_sections_list;
+	struct cve_device_group *dg = cve_dg_get();
+
+	/* If no MD5, exit */
+	if (!md5) {
+		not_equal = 1;
+		goto exit;
+	}
+
+	/* if no copy cached yet, so nothing to compare */
+	if (!dg->loaded_cust_fw_sections) {
+		not_equal = -1;
+		cve_os_log(CVE_LOGLEVEL_INFO,
+				"no firmware cached, loading new firmware\n");
+		goto exit;
+	}
+
+	loaded_fw_sections_list = dg->loaded_cust_fw_sections;
+	loaded_fw_section = dg->loaded_cust_fw_sections;
+	do {
+		for (i = 0; i < ICEDRV_MD5_MAX_SIZE; i++) {
+			if (loaded_fw_section->md5[i] != md5[i])
+				break;
+		}
+
+		/* at least 1 byte did not match */
+		if (i < ICEDRV_MD5_MAX_SIZE) {
+			not_equal = 1;
+			cve_os_log(CVE_LOGLEVEL_INFO,
+					"MD5 mismatch cached MD5:%s\n",
+					loaded_fw_section->md5_str);
+		} else {
+			not_equal = 0;
+			/* match found, so update time stamp to latest
+			 * so that its last to evict
+			 */
+			loaded_fw_section->last_used = trace_clock_global();
+			*out_node = loaded_fw_section;
+			cve_os_log(CVE_LOGLEVEL_DEBUG,
+					"MD5 match found cached MD5:%s\n",
+					loaded_fw_section->md5_str);
+			break;
+		}
+
+		loaded_fw_section = cve_dle_next(loaded_fw_section, list);
+	} while (loaded_fw_sections_list != loaded_fw_section &&
+			not_equal != 0);
+
+exit:
+	return not_equal;
 }
 
 #if 0
