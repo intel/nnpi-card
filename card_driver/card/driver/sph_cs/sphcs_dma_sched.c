@@ -185,11 +185,24 @@ struct sphcs_dma_req {
 	sphcs_dma_sched_completion_callback callback;
 	void *callback_ctx;
 
-	dma_addr_t src;
-	dma_addr_t dst;
 	u32 size;
 	uint64_t transfer_size;
+	union {
+		struct {
+			dma_addr_t src;
+			dma_addr_t dst;
+		} single;
+
+		struct {
+			struct lli_desc *lli;
+			int              listidx;
+		} lli;
+	};
 	int status;
+	/* specifies kind of recovery, reset or reset+retry */
+	int recovery_action;
+	/* flag to track if retrial post DMA reset, allowed only once */
+	u8 retry_post_reset;
 	u32 timeUS;
 	u32 priority;
 	u32 direction;
@@ -221,6 +234,10 @@ struct sphcs_dma_req {
 
 static void do_schedule(struct sphcs_dma_sched *dmaSched,
 			enum sphcs_dma_direction direction);
+
+static int start_request(struct sphcs_dma_sched *dmaSched,
+			 struct sphcs_dma_req *req,
+			 u32 hw_channel);
 
 static void request_callback_handler(struct work_struct *work)
 {
@@ -305,9 +322,28 @@ static void reset_handler(struct work_struct *work)
 								direction[req->direction]);
 
 		list_del(&req->node);
-		if (req->status != SPHCS_DMA_STATUS_DONE)
+		/*
+		 * set silent recovery to false if
+		 * retry already done once OR
+		 * status is != SPHCS_DMA_STATUS_DONE && reovery != RETRY
+		 */
+		if ((req->retry_post_reset) ||
+		    (req->status != SPHCS_DMA_STATUS_DONE &&
+		    !(req->recovery_action & SPHCS_RA_RETRY_DMA)))
 			is_silent = false;
-		complete_request(dmaSched, req);
+
+		if (req->recovery_action & SPHCS_RA_RETRY_DMA &&
+		   !req->retry_post_reset) {
+			sph_log_err(EXECUTE_COMMAND_LOG,
+				"Hang Detected on channel(%d) with status 0, retry issued\n",
+				req->channel);
+			req->retry_counter = 0;
+			/* set to 1, so this request is retried only once */
+			req->retry_post_reset = 1;
+			start_request(dmaSched, req, req->channel);
+		} else {
+			complete_request(dmaSched, req);
+		}
 	}
 
 	if (is_hang && is_silent) {
@@ -470,14 +506,14 @@ static int start_request(struct sphcs_dma_sched *dmaSched,
 			ret = dmaSched->hw_ops->start_xfer_c2h_single(dmaSched->hw_handle,
 								      hw_channel,
 								      convert_dma_sched_prio_to_hw(req->priority),
-								      req->src,
-								      req->dst,
+								      req->single.src,
+								      req->single.dst,
 								      req->size);
 		} else {
 			ret = dmaSched->hw_ops->start_xfer_c2h(dmaSched->hw_handle,
 							       hw_channel,
 							       convert_dma_sched_prio_to_hw(req->priority),
-							       req->src,
+							       req->lli.lli, req->lli.listidx,
 							       req->transfer_size);
 		}
 		break;
@@ -486,14 +522,14 @@ static int start_request(struct sphcs_dma_sched *dmaSched,
 			ret = dmaSched->hw_ops->start_xfer_h2c_single(dmaSched->hw_handle,
 								      hw_channel,
 								      convert_dma_sched_prio_to_hw(req->priority),
-								      req->src,
-								      req->dst,
+								      req->single.src,
+								      req->single.dst,
 								      req->size);
 		} else {
 			ret = dmaSched->hw_ops->start_xfer_h2c(dmaSched->hw_handle,
 							       hw_channel,
 							       convert_dma_sched_prio_to_hw(req->priority),
-							       req->src,
+							       req->lli.lli, req->lli.listidx,
 							       req->transfer_size);
 		}
 		break;
@@ -909,13 +945,15 @@ int sphcs_dma_sched_update_priority(struct sphcs_dma_sched      *dmaSched,
 	struct sphcs_dma_req *req, *tmpReq;
 	struct sphcs_dma_sched_priority_queue *src_q;
 	int ret = 1;
+	dma_addr_t src;
 
 	NNP_SPIN_LOCK_IRQSAVE(&DMA_DIRECTION_INFO(dmaSched, direction).lock_irq, flags);
 
 	NNP_SPIN_LOCK_IRQSAVE(&DMA_QUEUE_INFO(dmaSched, direction, src_priority).lock_irq, flags);
 	src_q = DMA_QUEUE_INFO_PTR(dmaSched, direction, src_priority);
 	list_for_each_entry_safe(req, tmpReq, &src_q->reqList, node) {
-		if (req->src == req_src) {
+		src = (req->size ? req->single.src : req->lli.lli->dma_addr);
+		if (src == req_src) {
 			//Remove from src queue
 			list_del(&req->node);
 			src_q->reqList_size--;
@@ -974,14 +1012,16 @@ int sphcs_dma_sched_start_xfer_single(struct sphcs_dma_sched *dmaSched,
 	req->callback = callback;
 	req->callback_ctx = callback_ctx;
 	req->direction = desc->dma_direction;
-	req->src = src;
+	req->single.src = src;
 
-	req->dst = dst;
+	req->single.dst = dst;
 	req->size = size;
 	req->transfer_size = size;
 	req->timeUS = 0;
 	req->priority = desc->dma_priority;
 	req->flags = desc->flags;
+	/* default is 0, to be set to 1 if retrial is requested post DMA reset */
+	req->retry_post_reset = 0;
 	req->serial_channel = desc->serial_channel;	/* if serial_channel is not equal to 0 - it will serialize the requests */
 						/* from the current serial_channel number. */
 
@@ -1010,7 +1050,8 @@ int sphcs_dma_sched_start_xfer_single(struct sphcs_dma_sched *dmaSched,
 
 static int sphcs_dma_sched_start_xfer(struct sphcs_dma_sched      *dmaSched,
 			       const struct sphcs_dma_desc *desc,
-			       dma_addr_t                   lli,
+			       struct lli_desc             *lli,
+			       int                          listidx,
 			       uint64_t                     transfer_size,
 			       sphcs_dma_sched_completion_callback callback,
 			       void                        *callback_ctx,
@@ -1037,13 +1078,16 @@ static int sphcs_dma_sched_start_xfer(struct sphcs_dma_sched      *dmaSched,
 	req->retry_counter = 0;
 	req->callback = callback;
 	req->callback_ctx = callback_ctx;
-	req->src = lli;
+	req->lli.lli = lli;
+	req->lli.listidx = listidx;
 	req->size = 0;
 	req->transfer_size = transfer_size;
 	req->timeUS = 0;
 	req->direction = desc->dma_direction;
 	req->priority = desc->dma_priority;
 	req->flags = desc->flags;
+	/* default is 0, to be set to 1 if retrial is requested post DMA reset */
+	req->retry_post_reset = 0;
 	req->serial_channel = desc->serial_channel; /* if serial_channel is not equal to 0 - it will serialize the requests */
 					      /* from the current serial_channel number. */
 
@@ -1114,7 +1158,7 @@ int sphcs_dma_sched_start_xfer_multi(struct sphcs_dma_sched      *dmaSched,
 		NNP_ASSERT(transfer_size == lli->xfer_size[0]);
 		return sphcs_dma_sched_start_xfer(dmaSched,
 						  desc,
-						  lli->dma_addr + lli->offsets[0],
+						  lli, 0,
 						  transfer_size,
 						  callback,
 						  callback_ctx,
@@ -1132,7 +1176,7 @@ int sphcs_dma_sched_start_xfer_multi(struct sphcs_dma_sched      *dmaSched,
 	for (i = 0; i < lli->num_lists; i++) {
 		ret = sphcs_dma_sched_start_xfer(dmaSched,
 						 desc,
-						 lli->dma_addr + lli->offsets[i],
+						 lli, i,
 						 lli->xfer_size[i],
 						 sphcs_dma_multi_xfer_callback,
 						 handle,
@@ -1172,13 +1216,14 @@ static int sphcs_dma_sched_xfer_complete_int(struct sphcs_dma_sched *dmaSched,
 			req->transfer_size, channel, req->priority, (uint64_t)(uintptr_t)req));
 
 	/* If retry is requested, no more than SPHCS_NUM_OF_DMA_RETRIES allowed */
-	if (req->retry_counter < SPHCS_NUM_OF_DMA_RETRIES &&
-			recovery_action == SPHCS_RA_RETRY_DMA) {
+	if ((req->retry_counter < SPHCS_NUM_OF_DMA_RETRIES) &&
+	    (recovery_action == SPHCS_RA_RETRY_DMA)) {
 		sph_log_err(EXECUTE_COMMAND_LOG, "DMA failed - retry issued\n");
 		req->retry_counter++;
 		start_request(dmaSched, req, channel);
 	} else {
 		req->status = status;
+		req->recovery_action = recovery_action;
 		req->timeUS = xferTimeUS;
 
 		free_dma_hw_channel(dmaSched, req->direction, channel);
@@ -1202,7 +1247,7 @@ static int sphcs_dma_sched_xfer_complete_int(struct sphcs_dma_sched *dmaSched,
 
 		dir_info = DMA_DIRECTION_INFO_PTR(dmaSched, dma_direction);
 
-		if ((recovery_action == SPHCS_RA_RESET_DMA) ||
+		if ((recovery_action & SPHCS_RA_RESET_DMA) ||
 				(req->retry_counter == SPHCS_NUM_OF_DMA_RETRIES &&
 				recovery_action == SPHCS_RA_RETRY_DMA)) {
 

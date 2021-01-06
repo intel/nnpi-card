@@ -148,12 +148,12 @@ static void __assign_fw_ownership(struct cve_device_group *dg,
 	}
 	out_fw_sec->md5_str[i*2] = '\0';
 
-	if (!dg->loaded_cust_fw_sections) {
+	if (out_fw_sec->cached_mem_used) {
 		/* add new loaded dynamic fw to global struct */
 		cve_dle_add_to_list_after(dg->loaded_cust_fw_sections,
 				list, out_fw_sec);
 		cve_os_log(CVE_LOGLEVEL_DEBUG,
-				"Cached firmware fw_sec_struct:0x%p MD5:%s\n",
+				"Cached firmware fw_sec_struct:0x%p MD5:%s #FwCaching\n",
 				out_fw_sec, out_fw_sec->md5_str);
 	} else {
 		cve_dle_add_to_list_after(
@@ -162,90 +162,146 @@ static void __assign_fw_ownership(struct cve_device_group *dg,
 		cve_os_log(CVE_LOGLEVEL_DEBUG,
 				"NTW:0x%p Adding custom firmware fw_sec_struct:0x%p MD5:%s\n",
 				network, out_fw_sec, out_fw_sec->md5_str);
+		ice_swc_counter_inc(g_sph_swc_global,
+				ICEDRV_SWC_GLOBAL_COUNTER_FW_DYNAMIC_ALLOC);
 	}
-}
 
+	ice_swc_counter_inc(g_sph_swc_global,
+			ICEDRV_SWC_GLOBAL_COUNTER_FW_MD5_MISMATCH);
+}
 #endif
-
-/* return 0 on success
- * return -1 if nothing to compare i.e. no caching
- * return 1 if mismatch detected
- */
-static int __compare_md5(struct cve_device_group *dg,
-		struct ice_network *network,
-		u8 *md5)
-{
-	int not_equal = 0;
-	u8 i = 0;
-
-	/* If no MD5, exit */
-	if (!md5) {
-		not_equal = 1;
-		goto exit;
-	}
-
-	/* if no copy cached yet, so nothing to compare */
-	if (!dg->loaded_cust_fw_sections) {
-		not_equal = -1;
-		cve_os_log(CVE_LOGLEVEL_INFO,
-				"no firmware cached, loading new firmware\n");
-		goto exit;
-	}
-
-	for (; i < ICEDRV_MD5_MAX_SIZE; i++) {
-		if (dg->loaded_cust_fw_sections->md5[i] != md5[i])
-			break;
-	}
-
-	/* at least 1 byte did not match */
-	if (i < ICEDRV_MD5_MAX_SIZE) {
-		not_equal = 1;
-		cve_os_log(CVE_LOGLEVEL_INFO,
-				"MD5 mismatch cached:%s loading new firmware\n",
-				dg->loaded_cust_fw_sections->md5_str);
-	}
-
-exit:
-	return not_equal;
-}
 
 static void __cleanup_fw_loading(struct ice_network *network,
 		struct cve_fw_loaded_sections *out_fw_sec,
 		int md5_match)
 {
 	struct cve_device_group *dg = cve_dg_get();
+	struct cve_fw_loaded_sections *fw_sec = out_fw_sec;
 
-	if (md5_match < 0) {
+	if (out_fw_sec->cached_mem_used) {
 		/* remove fw from global struct */
 		cve_dle_remove_from_list(dg->loaded_cust_fw_sections,
 				list, out_fw_sec);
 		cve_os_log(CVE_LOGLEVEL_DEBUG,
-				"release cached firmware fw_sec_struct:0x%p MD5:%s\n",
-				out_fw_sec, out_fw_sec->md5_str);
+				"NTW:0x%llx release cached firmware fw_sec_struct:0x%p MD5:%s #FwCaching\n",
+				network->network_id, out_fw_sec,
+				out_fw_sec->md5_str);
 	} else {
 		cve_dle_remove_from_list(
 				network->loaded_cust_fw_sections,
 				list, out_fw_sec);
 		cve_os_log(CVE_LOGLEVEL_DEBUG,
-				"NTW:0x%p clean custom firmware fw_sec_struct:0x%p MD5:%s\n",
-				network, out_fw_sec, out_fw_sec->md5_str);
+				"NTW:0x%llx clean custom firmware fw_sec_struct:0x%p MD5:%s #FwCaching\n",
+				network->network_id, out_fw_sec,
+				out_fw_sec->md5_str);
 	}
 
+	cve_fw_unload(NULL, fw_sec);
 }
+
+static int __remove_ntw_from_fw_user(struct ice_network *network)
+{
+	int ret = 0, type = CVE_FW_TYPE_START;
+	struct ice_fw_owner_info *owner_info;
+	struct cve_fw_loaded_sections *prev_fw_sec;
+
+	for (; type < CVE_FW_END_TYPES; type++) {
+		owner_info = &network->self_info[type];
+		/* Remove network from f/w owner list */
+		prev_fw_sec =
+			(struct cve_fw_loaded_sections *)owner_info->owner_fw;
+		if (owner_info->owner_fw != NULL) {
+			cve_dle_remove_from_list(prev_fw_sec->owners,
+					owner_list, owner_info);
+			cve_os_log(CVE_LOGLEVEL_DEBUG,
+					"NTW:0x%llx Remove network from fw:0x%p(user HEAD:0x%p) user list MD5:%s #FwCaching\n",
+					network->network_id, prev_fw_sec,
+					prev_fw_sec->owners,
+					prev_fw_sec->md5_str);
+		}
+	}
+
+	return ret;
+}
+
+
+static int __add_ntw_to_fw_user(struct ice_network *network,
+		struct cve_fw_loaded_sections *out_fw_sec)
+{
+	int ret = 0;
+	struct ice_fw_owner_info *owner_info;
+	struct cve_fw_loaded_sections *prev_fw_sec;
+
+	/* check if network already has a f/w cached
+	 * if yes, then remove network from its owner list and add the new
+	 * fw structure
+	 */
+	owner_info = &network->self_info[out_fw_sec->fw_type];
+	prev_fw_sec = (struct cve_fw_loaded_sections *)owner_info->owner_fw;
+
+	if (owner_info->owner_fw != NULL) {
+		if (owner_info->owner_fw != out_fw_sec) {
+			/* restore base f/w first as ownership of this
+			 * loaded f/w is global
+			 */
+			ret = ice_dev_fw_map(network->dev_hctx_list,
+					NULL, prev_fw_sec->fw_type);
+			if (ret < 0) {
+				cve_os_log_default(CVE_LOGLEVEL_ERROR,
+						"NTW:0x%llx fw_map(0x%p) MD5:%s failed:%d\n",
+						network->network_id,
+						prev_fw_sec,
+						prev_fw_sec->md5_str, ret);
+			}
+
+			/* different f/w being requested for caching */
+			cve_dle_remove_from_list(prev_fw_sec->owners,
+					owner_list, owner_info);
+			cve_os_log(CVE_LOGLEVEL_DEBUG,
+					"NTW:0x%llx Remove network from fw:0x%p(ListHead:0x%p) TypeCaching:%u MD5:%s #FwCaching\n",
+					network->network_id, prev_fw_sec,
+					prev_fw_sec->owners,
+					prev_fw_sec->cached_mem_used,
+					prev_fw_sec->md5_str);
+		} else {
+			/*same f/w, nothing to do */
+			goto exit;
+		}
+	}
+
+	/* add this network to the new f/w struct owner list
+	 * this is to keep track of users during eviction of f/w from cached
+	 * nodes
+	 */
+	owner_info->owner_fw = (void *)out_fw_sec;
+	cve_dle_add_to_list_after(out_fw_sec->owners, owner_list, owner_info);
+	cve_os_log(CVE_LOGLEVEL_DEBUG,
+			"NTW:0x%llx ADD network to fw:0x%p(user HEAD:0x%p) TypeCaching:%u MD5:%s\n",
+			network->network_id, out_fw_sec,
+			out_fw_sec->owners, out_fw_sec->cached_mem_used,
+			out_fw_sec->md5_str);
+exit:
+	return ret;
+}
+
 
 static int __process_fw_loading(struct ice_network *network,
 		u64 fw_image, u64 fw_binmap, u32 fw_binmap_size, u8 *md5)
 {
 	int ret = CVE_DEFAULT_ERROR_CODE;
 	struct cve_device_group *dg = cve_dg_get();
-	struct cve_fw_loaded_sections *out_fw_sec;
+	struct cve_fw_loaded_sections *out_fw_sec = NULL;
 	int load_new_fw = 0;
 
-	load_new_fw = __compare_md5(dg, network, md5);
-	out_fw_sec = dg->loaded_cust_fw_sections;
+	load_new_fw = ice_dg_find_matching_fw(network, md5, &out_fw_sec);
 
 	/* check if we stored a copy of IVP lib, if not, store it */
 	if (load_new_fw) {
+		/* check if free node available in cached list
+		 * if not, release oldest free node from loaded
+		 * firmwares
+		 */
+		ice_dg_return_cached_mem(network);
 		/* allocate and load a copy of the firmware */
 		ret = ice_dev_fw_load(fw_image, fw_binmap,
 				fw_binmap_size, &out_fw_sec);
@@ -259,11 +315,18 @@ static int __process_fw_loading(struct ice_network *network,
 		__assign_fw_ownership(dg, network, out_fw_sec, md5);
 	}
 
+	/* add this network to user list of the f/w,
+	 * will be removed during destroy network
+	 */
+	__add_ntw_to_fw_user(network, out_fw_sec);
+
 	cve_os_log(CVE_LOGLEVEL_DEBUG,
-				"NTW:0x%llx Mapping f/w 0x%p md5:%s load_new_fw:%d\n",
+				"NTW:0x%llx Mapping f/w 0x%p md5:%s load_new_fw:%d #FwCaching\n",
 				network->network_id, out_fw_sec,
 				out_fw_sec->md5_str, load_new_fw);
-	ret = ice_dev_fw_map(network->dev_hctx_list, out_fw_sec);
+
+	ret = ice_dev_fw_map(network->dev_hctx_list,
+			out_fw_sec, out_fw_sec->fw_type);
 	if (ret < 0) {
 		cve_os_log_default(CVE_LOGLEVEL_ERROR,
 				"NTW:0x%llx fw_map(0x%p) MD5:%s failed:%d\n",
@@ -271,6 +334,7 @@ static int __process_fw_loading(struct ice_network *network,
 				out_fw_sec->md5_str, ret);
 		goto err_fw_map;
 	}
+
 
 	return ret;
 err_fw_map:
@@ -2725,6 +2789,7 @@ static int __destroy_network(struct ice_network *ntw)
 
 		__destroy_jg_list(ntw);
 		__destroy_pp_mirror_image(&ntw->ntw_surf_pp_list);
+		__remove_ntw_from_fw_user(ntw);
 		ice_fini_sw_dev_contexts(ntw->dev_hctx_list,
 				ntw->loaded_cust_fw_sections);
 		ice_swc_destroy_ntw_node(ntw);
@@ -3092,7 +3157,7 @@ int cve_ds_handle_create_network(
 	struct cve_workqueue *workqueue = NULL;
 	struct cve_device_group *dg = cve_dg_get();
 	struct cve_device *dev = ice_get_first_dev();
-	u32 ntw_resources[6];
+	u32 ntw_resources[6], i = 0;
 
 	ntw_resources[0] = network_desc->llc_size[ICE_CLOS_0];
 	ntw_resources[1] = network_desc->llc_size[ICE_CLOS_1];
@@ -3156,6 +3221,11 @@ int cve_ds_handle_create_network(
 	network->res_resource = false;
 	network->exIR_performed = 0;
 	network->reset_ntw = false;
+	for (i = CVE_FW_TYPE_START; i < CVE_FW_END_TYPES; i++) {
+		network->self_info[i].user = (void *)network;
+		network->self_info[i].owner_fw = (void *)NULL;
+	}
+
 	cve_dle_init(&network->del_list, (void *)network);
 
 	retval = ice_init_sw_dev_contexts(network_desc, network);
@@ -3205,6 +3275,8 @@ int cve_ds_handle_create_network(
 	ntw_resources[4] = network->num_ice;
 	__local_builtin_popcount(network->cntr_bitmap, ntw_resources[5]);
 
+	ice_swc_counter_inc(g_sph_swc_global,
+		ICEDRV_SWC_GLOBAL_COUNTER_NTW_TOT);
 	DO_TRACE(trace_icedrvCreateNetwork(
 		SPH_TRACE_OP_STATE_COMPLETE,
 		workqueue->context->swc_node.sw_id,

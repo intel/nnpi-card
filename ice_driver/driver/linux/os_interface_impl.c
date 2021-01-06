@@ -1104,6 +1104,8 @@ int __cve_os_alloc_dma_sg(struct cve_device *cve_dev,
 	out_dma_handle->mem_type = CVE_MEMORY_TYPE_KERNEL_SG;
 	out_dma_handle->mem_handle.sgt = sgt;
 	out_dma_handle->priv = (void *)priv_data;
+	out_dma_handle->persistent = 0;
+	out_dma_handle->persistent_node = NULL;
 
 	ret = 0;
 	goto out;
@@ -1455,6 +1457,8 @@ int __cve_os_alloc_dma_contig(struct cve_device *cve_dev,
 				((1 << ICE_DEFAULT_PAGE_SHIFT) - 1)));
 
 	out_dma_handle->mem_type = CVE_MEMORY_TYPE_KERNEL_CONTIG;
+	out_dma_handle->persistent = 0;
+	out_dma_handle->persistent_node = NULL;
 
 	cve_os_log(CVE_LOGLEVEL_DEBUG,
 			"allocate dma_addr = %pad, virtual = %p, size = %d\n",
@@ -1657,6 +1661,21 @@ int cve_probe_common(struct cve_os_device *linux_device, int dev_ind)
 		}
 	}
 
+	dg = cve_dg_get();
+	if (!dg) {
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+			"Could not find valid device group pointer\n");
+		goto out;
+	}
+
+	retval = ice_dg_alloc_fw_mem_cache_nodes(&dg->fw_mem_cache);
+	if (retval != 0) {
+		cve_os_log_default(CVE_LOGLEVEL_ERROR,
+				"ice_dg_alloc_fw_mem_cache_nodes failed %d\n",
+				retval);
+		goto out;
+	}
+
 	retval = init_ice_poweroff_sysfs();
 	if (retval != 0) {
 		cve_os_log_default(CVE_LOGLEVEL_ERROR,
@@ -1672,12 +1691,6 @@ int cve_probe_common(struct cve_os_device *linux_device, int dev_ind)
 	}
 
 	/* register with power balancer */
-	dg = cve_dg_get();
-	if (!dg) {
-		cve_os_log(CVE_LOGLEVEL_ERROR,
-			"Could not find valid device group pointer\n");
-		goto out;
-	}
 
 	dg->sphmb.idc_mailbox_base = NULL;
 	retval = sphpb_map_idc_mailbox_base_registers(&dg->sphmb);
@@ -1799,13 +1812,20 @@ term_sysfsCall:
 	term_ice_poweroff_sysfs();
 
 	/* release memory for any custom firmware cached globally */
-	cve_os_log(CVE_LOGLEVEL_DEBUG,
+	cve_os_log(CVE_LOGLEVEL_INFO,
 			"UnMapping cached f/w 0x%p MD5:%s\n",
 			dg->loaded_cust_fw_sections,
 			dg->loaded_cust_fw_sections->md5_str);
 
 	if (dg)
 		cve_fw_unload(NULL, dg->loaded_cust_fw_sections);
+
+	ret = ice_dg_free_fw_mem_cache_nodes(&dg->fw_mem_cache);
+	if (ret != 0) {
+		cve_os_log_default(CVE_LOGLEVEL_ERROR,
+				"ice_dg_alloc_fw_mem_cache_nodes failed %d\n",
+				ret);
+	}
 
 	active_ice = (~g_icemask) & VALID_ICE_MASK;
 	while (active_ice) {

@@ -1579,9 +1579,15 @@ static inline void __read_isr_q(struct idc_device *dev,
 				status_hl = (status_hl >> 1);
 				index++;
 			}
-			tail = (tail + 1) % IDC_ISR_BH_QUEUE_SZ;
+		} else {
+			cve_os_log_default(CVE_LOGLEVEL_ERROR,
+				"Spurious BH IsrQNode[%d] idc_status:0x%llx ice_status:0x%llx\n",
+				tail, qnode->idc_status, qnode->ice_status);
 		}
+
+		tail = (tail + 1) % IDC_ISR_BH_QUEUE_SZ;
 	}
+
 	*q_tail = tail;
 }
 
@@ -1601,7 +1607,6 @@ void cve_di_interrupt_handler_deferred_proc(struct idc_device *dev)
 	struct cve_device_group *dg;
 
 	u32 head, tail;
-	struct dev_isr_status *isr_status_node;
 
 	DO_TRACE(trace__icedrvBottomHalf(
 				SPH_TRACE_OP_STATE_QUEUED,
@@ -1626,15 +1631,6 @@ void cve_di_interrupt_handler_deferred_proc(struct idc_device *dev)
 		/* Q Empty*/
 		cve_os_log(CVE_LOGLEVEL_INFO,
 			"ISR-BH Q is EMPTY, nothing to do\n");
-		goto end;
-	}
-
-	isr_status_node = &dev->isr_status[tail];
-	if (!isr_status_node->valid) {
-		cve_os_log_default(CVE_LOGLEVEL_ERROR,
-				"Spurious BH IsrQNode[%d] idc_status:0x%llx ice_status:0x%llx\n",
-				tail, isr_status_node->idc_status,
-				isr_status_node->ice_status);
 		goto end;
 	}
 

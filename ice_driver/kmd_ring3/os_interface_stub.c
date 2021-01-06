@@ -1134,6 +1134,8 @@ int __cve_os_alloc_dma_contig(struct cve_device *cve_dev, uint32_t size_of_elem,
 	out_dma_handle->mem_type = CVE_MEMORY_TYPE_KERNEL_CONTIG;
 	out_dma_handle->mem_handle.dma_address =
 			coral_pa_mem_get_phy_addr_for_ptr((void*) *out_vaddr);
+	out_dma_handle->persistent = 0;
+	out_dma_handle->persistent_node = NULL;
 	
 	cve_os_log(CVE_LOGLEVEL_DEBUG,
 			"DMA_CONTIG was allocated. PA=0x%llx\n",

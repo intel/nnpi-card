@@ -172,6 +172,7 @@ static void IPC_OPCODE_HANDLER(SETUP_SYS_INFO_PAGE)(
 	sph_log_info(CREATE_COMMAND_LOG, "Setup sys info page received\n");
 
 	sphcs->host_sys_info_dma_addr = NNP_IPC_DMA_PFN_TO_ADDR(msg->dma_addr);
+	sphcs->host_sys_info_num_page = msg->num_page;
 	sphcs->host_sys_info_dma_addr_valid = true;
 
 	/* send host sys_info packet, if available */

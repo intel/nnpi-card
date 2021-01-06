@@ -257,6 +257,11 @@ struct cve_dma_handle {
 		struct sg_table *sgt;
 	} mem_handle;
 	void *priv;
+	/* if true, meaning pre-allocated during driver init and doesnt need
+	 * to be freed. Will be freed during driver term.
+	 */
+	u8 persistent;
+	void *persistent_node;
 };
 
 /* allocation address, either virtual address or file descriptor
@@ -310,6 +315,28 @@ struct ice_drv_memleak {
 #define OS_FREE_DMA_SG(cve_dev, size_of_elem, dma_addr) ({ \
 	__cve_os_free_dma_sg(cve_dev, size_of_elem, dma_addr); \
 })
+
+#define OS_SET_DMA_CONTIG_PERSISTANT(dma_addr, node) ({ \
+	(dma_addr)->persistent = 1; \
+	(dma_addr)->persistent_node = node; \
+})
+
+#define OS_GET_DMA_CONTIG_PERSISTANT(dma_addr, node) ({ \
+	node = (dma_addr)->persistent_node; \
+})
+#define OS_CLONE_DMA_CONTIG_HANDLE(dma_addr, copy_addr) ({ \
+	(copy_addr)->persistent = (dma_addr)->persistent; \
+	(copy_addr)->persistent_node = (dma_addr)->persistent_node; \
+	(copy_addr)->mem_type = (dma_addr)->mem_type; \
+	(copy_addr)->mem_handle.sgt = (dma_addr)->mem_handle.sgt; \
+	(copy_addr)->priv = (dma_addr)->priv; \
+})
+
+
+#define OS_UNSET_DMA_CONTIG_PERSISTANT(dma_addr) ({ \
+	(dma_addr)->persistent = 0; \
+})
+
 
 /*
  * Tensilica debugger specific

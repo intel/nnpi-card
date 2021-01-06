@@ -44,8 +44,8 @@ struct sphcs_dma_hw_ops {
 	int (*init_lli_vec)(void *hw_handle, struct lli_desc *outLli, uint64_t dst_offset, genlli_get_next_cb cb, void *cb_ctx);
 	u64 (*gen_lli_vec)(void *hw_handle, struct lli_desc *outLli, uint64_t dst_offset, genlli_get_next_cb cb, void *cb_ctx);
 	int (*edit_lli_elem)(struct lli_desc *lli, u32 elem_idx, dma_addr_t src, dma_addr_t dst);
-	int (*start_xfer_h2c)(void *hw_handle, int channel, u32 priority, dma_addr_t lli_addr, u64 size);
-	int (*start_xfer_c2h)(void *hw_handle, int channel, u32 priority, dma_addr_t lli_addr, u64 size);
+	int (*start_xfer_h2c)(void *hw_handle, int channel, u32 priority, struct lli_desc *lli, int listidx, u64 size);
+	int (*start_xfer_c2h)(void *hw_handle, int channel, u32 priority, struct lli_desc *lli, int listidx, u64 size);
 	int (*start_xfer_h2c_single)(void *hw_handle, int channel, u32 priority, dma_addr_t src, dma_addr_t dst, u32 size);
 	int (*start_xfer_c2h_single)(void *hw_handle, int channel, u32 priority, dma_addr_t src, dma_addr_t dst, u32 size);
 	int (*xfer_c2h_single)(void *hw_handle, dma_addr_t src, dma_addr_t dst, u32 size, u32 timeout_ms, int *status, u32 *time_us);
@@ -99,6 +99,10 @@ struct sphcs_pcie_callbacks {
 #define SPHCS_DMA_HW_PRIORITY_MEDIUM 2
 #define SPHCS_DMA_HW_PRIORITY_HIGH   4
 #define SPHCS_DMA_PRIORITY_FACTOR 4
+
+void sphcs_pcie_dma_term_setup(void         *hw_handle,
+			       dma_addr_t    host_dma_addr,
+			       uint32_t      num_page);
 
 int sphcs_hw_init(struct sphcs_pcie_callbacks *callbacks);
 int sphcs_hw_cleanup(void);
