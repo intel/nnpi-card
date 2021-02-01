@@ -148,13 +148,19 @@ static void send_sys_info_handler(struct work_struct *work)
 	struct sys_info_dma_data dma_data;
 	void *vptr;
 
-	if (!s_sys_info_packet_valid)
-		return;
-
 	if (!g_the_sphcs)
 		return;
 
 	if (!g_the_sphcs->host_sys_info_dma_addr_valid)
+		return;
+
+#ifdef HW_LAYER_SPH
+	sphcs_pcie_dma_term_setup(g_the_sphcs->hw_handle,
+				  g_the_sphcs->host_sys_info_dma_addr + 1024,
+				  (g_the_sphcs->host_sys_info_num_page - 1));
+#endif
+
+	if (!s_sys_info_packet_valid)
 		return;
 
 	dma_data.host_dma_addr = g_the_sphcs->host_sys_info_dma_addr;

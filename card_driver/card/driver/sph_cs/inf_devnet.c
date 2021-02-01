@@ -72,7 +72,6 @@ void inf_devnet_delete_devres(struct inf_devnet *devnet,
 {
 	struct devres_node *n;
 	bool found;
-	int ret;
 
 	NNP_SPIN_LOCK(&devnet->lock);
 	do {
@@ -84,7 +83,7 @@ void inf_devnet_delete_devres(struct inf_devnet *devnet,
 					devnet->first_devres = NULL;
 				NNP_SPIN_UNLOCK(&devnet->lock);
 				found = true;
-				ret = inf_devres_put(n->devres);
+				inf_devres_put(n->devres);
 				kfree(n);
 				NNP_SPIN_LOCK(&devnet->lock);
 				break;
@@ -234,7 +233,7 @@ static void release_devnet(struct kref *kref)
 					devnet->context->protocol_id,
 					devnet->protocol_id);
 
-	ret = inf_context_put(devnet->context);
+	inf_context_put(devnet->context);
 	del_ptr2id(devnet);
 
 	kfree(devnet);

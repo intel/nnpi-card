@@ -20,9 +20,11 @@ static void treat_credit_release_failure(struct inf_exec_req *req, enum event_va
 	struct inf_exec_error_details *err_details;
 	int rc;
 
+	NNP_ASSERT(req->cmd_type != CMDLIST_CMD_COPYLIST);
+
 	rc = inf_exec_error_details_alloc(req->cmd_type,
-					  0,
-					  0,
+					  req->cmd_type == CMDLIST_CMD_INFREQ ? req->infreq->protocol_id : req->copy->protocol_id,
+					  req->cmd_type == CMDLIST_CMD_INFREQ ? req->infreq->devnet->protocol_id : 0,
 					  NNP_IPC_FAILED_TO_RELEASE_CREDIT,
 					  0,
 					  &err_details);
@@ -93,11 +95,7 @@ int inf_devres_create(uint16_t            protocol_id,
 	devres->queue_version = 0;
 	atomic_set(&devres->pivot_usecount, 0);
 	devres->pivot = NULL;
-
-	/* make sure context will not be destroyed during devres life */
-	inf_context_get(context);
 	devres->context = context;
-
 	spin_lock_init(&devres->lock_irq);
 	devres->is_dirty = false;
 	devres->size = size;
@@ -119,26 +117,26 @@ int inf_devres_create(uint16_t            protocol_id,
 	devres->is_p2p_dst = (devres->usage_flags & IOCTL_INF_RES_P2P_DST) ? true : false;
 	devres->ptr2id = add_ptr2id(devres);
 	if (unlikely(devres->ptr2id == 0)) {
-		rc = -ENOMEM;
-		goto failed_to_init_p2p_buf;
+		kfree(devres);
+		return -ENOMEM;
 	}
 
 	if (inf_devres_is_p2p(devres)) {
 		rc = sphcs_p2p_init_p2p_buf(devres->is_p2p_src, &devres->p2p_buf);
-		if (rc)
-			goto failed_to_init_p2p_buf;
+		if (unlikely(rc < 0)) {
+			del_ptr2id(devres);
+			kfree(devres);
+			return rc;
+		}
 	}
+
+	/* make sure context will not be destroyed during devres life */
+	inf_context_get(context);
 
 	NNP_SW_COUNTER_ADD(context->sw_counters, CTX_SPHCS_SW_COUNTERS_INFERENCE_DEVICE_RESOURCE_SIZE, size);
 
 	*out_devres = devres;
 	return 0;
-
-failed_to_init_p2p_buf:
-	kfree(devres);
-	inf_context_put(context);
-
-	return rc;
 }
 
 int inf_devres_attach_buf(struct inf_devres *devres,
@@ -255,10 +253,11 @@ static void release_devres(struct kref *kref)
 	struct inf_devres *devres = container_of(kref,
 						 struct inf_devres,
 						 ref);
-	int ret;
 
 	NNP_ASSERT(is_inf_devres_ptr(devres));
 	NNP_ASSERT(list_empty(&devres->exec_queue));
+
+	devres->magic = 0;
 
 	NNP_SPIN_LOCK(&devres->context->lock);
 	hash_del(&devres->hash_node);
@@ -283,7 +282,7 @@ static void release_devres(struct kref *kref)
 					devres->context->protocol_id,
 					devres->protocol_id);
 
-	ret = inf_context_put(devres->context);
+	inf_context_put(devres->context);
 	del_ptr2id(devres);
 
 	kfree(devres);
@@ -346,14 +345,17 @@ int inf_devres_add_req_to_queue(struct inf_devres *devres, struct inf_exec_req *
 
 int inf_devres_send_release_credit(struct inf_devres *devres, struct inf_exec_req *req)
 {
-	int rc = 0;
+	int rc;
 
 	NNP_ASSERT(devres->is_p2p_dst && !devres->is_dirty);
 
 	inf_exec_req_get(req);
-	rc = sphcs_p2p_send_rel_cr_and_ring_db(&devres->p2p_buf, credit_released_cb, req);
-	if (unlikely(rc)) {
-		sph_log_err(EXECUTE_COMMAND_LOG, "Failed to initiate credit release.\n");
+	rc = -EIO;
+	if (likely(devres->p2p_buf.peer_dev != NULL))
+		rc = sphcs_p2p_send_rel_cr_and_ring_db(&devres->p2p_buf, credit_released_cb, req);
+	if (unlikely(rc != 0)) {
+		sph_log_err(EXECUTE_COMMAND_LOG, "Failed to initiate credit release(devres %hu), buf(%hhu) was diconnected, rc:%d.\n",
+			    devres->protocol_id, devres->p2p_buf.buf_id, rc);
 		treat_credit_release_failure(req, NNP_IPC_NO_MEMORY);
 		inf_exec_req_put(req);
 	}

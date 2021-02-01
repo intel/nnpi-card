@@ -92,6 +92,8 @@ static int d2d_copy_complete_cb(struct sphcs *sphcs, void *ctx, const void *user
 	int err = 0;
 	struct inf_exec_req *req = (struct inf_exec_req *)ctx;
 	struct inf_copy *copy;
+	struct inf_devres *devres;
+	unsigned long flags;
 
 	NNP_ASSERT(req != NULL);
 	NNP_ASSERT(status == SPHCS_DMA_STATUS_DONE || status == SPHCS_DMA_STATUS_FAILED);
@@ -100,18 +102,26 @@ static int d2d_copy_complete_cb(struct sphcs *sphcs, void *ctx, const void *user
 		err = -NNPER_DMA_ERROR;
 
 	copy = req->copy;
+	devres = copy->devres;
 
 	/* Should be source p2p buffer */
-	NNP_ASSERT(copy->d2d && copy->devres->is_p2p_src);
+	NNP_ASSERT(copy->d2d && devres->is_p2p_src);
 
 	/* Forward credit to the consumer only if copy has been successfully completed */
 	if (likely(err == 0)) {
-		copy->devres->p2p_buf.ready = false;
-		err = sphcs_p2p_send_fw_cr_and_ring_db(&copy->devres->p2p_buf, copy_complete_cb, req);
+		NNP_SPIN_LOCK_IRQSAVE(&devres->lock_irq, flags);
+		devres->p2p_buf.ready = false;
+		err = -EIO;
+		if (likely(devres->p2p_buf.peer_dev != NULL))
+			err = sphcs_p2p_send_fw_cr_and_ring_db(&devres->p2p_buf, copy_complete_cb, req);
+		NNP_SPIN_UNLOCK_IRQRESTORE(&devres->lock_irq, flags);
+		if (unlikely(err != 0))
+			sph_log_err(EXECUTE_COMMAND_LOG, "Failed to initiate forward credit(devres %hu), buf(%hhu) was diconnected, err:%d.\n",
+				    devres->protocol_id, devres->p2p_buf.buf_id, err);
 	}
 
 	/* If DMA failed or failed to start credit forwarding */
-	if (unlikely(err))
+	if (unlikely(err != 0))
 		inf_copy_req_complete(req, err, NULL, 0);
 
 	return 0;
@@ -129,9 +139,15 @@ int inf_d2d_copy_create(union h2c_ChanInferenceCopyOp *cmd,
 	int ret;
 	u64 transfer_size;
 
+	if (!from_devres->is_p2p_src || from_devres->p2p_buf.peer_dev == NULL) {
+		sph_log_err(CREATE_COMMAND_LOG, "Create copy d2d should be for p2p_src and paired devres(%hu).\n", from_devres->protocol_id);
+		return -EINVAL;
+	}
+	NNP_ASSERT(from_devres->p2p_buf.ready);
+
 	copy = kzalloc(sizeof(struct inf_copy), GFP_KERNEL);
 	if (unlikely(copy == NULL)) {
-		sph_log_err(CREATE_COMMAND_LOG, "FATAL: %s():%u failed to allocate copy object\n", __func__, __LINE__);
+		sph_log_err(CREATE_COMMAND_LOG, "FATAL: failed to allocate 2d2 copy object\n");
 		return -ENOMEM;
 	}
 
@@ -173,17 +189,6 @@ int inf_d2d_copy_create(union h2c_ChanInferenceCopyOp *cmd,
 	if (unlikely(ret < 0))
 		goto failed_to_create_counters;
 
-	/* Increment devres and context refcount as copy has the references to them */
-	inf_devres_get(from_devres);
-	inf_context_get(context);
-
-	/* Add copy to the context hash */
-	NNP_SPIN_LOCK(&copy->context->lock);
-	hash_add(copy->context->copy_hash,
-		 &copy->hash_node,
-		 copy->protocol_id);
-	NNP_SPIN_UNLOCK(&copy->context->lock);
-
 	/* Calculate DMA LLI size */
 	ret = g_the_sphcs->hw_ops->dma.init_lli(g_the_sphcs->hw_handle, &copy->lli, from_devres->dma_map, to_sgt, 0, false);
 	if (ret != 0) {
@@ -205,6 +210,17 @@ int inf_d2d_copy_create(union h2c_ChanInferenceCopyOp *cmd,
 	/* Generate LLI */
 	transfer_size = g_the_sphcs->hw_ops->dma.gen_lli(g_the_sphcs->hw_handle, from_devres->dma_map, to_sgt, &copy->lli, 0);
 	NNP_ASSERT(transfer_size == from_devres->size);
+
+	/* Increment devres and context refcount as copy has the references to them */
+	inf_devres_get(from_devres);
+	inf_context_get(context);
+
+	/* Add copy to the context hash */
+	NNP_SPIN_LOCK(&copy->context->lock);
+	hash_add(copy->context->copy_hash,
+		 &copy->hash_node,
+		 copy->protocol_id);
+	NNP_SPIN_UNLOCK(&copy->context->lock);
 
 	DO_TRACE(trace_copy_create(false,
 				true,
@@ -257,12 +273,9 @@ int inf_copy_create(union h2c_ChanInferenceCopyOp *cmd,
 	if (subres_copy && card2Host)
 		return -EINVAL;
 
-	inf_devres_get(devres);
-
 	copy = kzalloc(sizeof(struct inf_copy), GFP_KERNEL);
 	if (unlikely(copy == NULL)) {
-		sph_log_err(CREATE_COMMAND_LOG, "FATAL: %s():%u failed to allocate copy object\n", __func__, __LINE__);
-		inf_devres_put(devres);
+		sph_log_err(CREATE_COMMAND_LOG, "FATAL: failed to allocate copy object.\n");
 		return -ENOMEM;
 	}
 
@@ -367,6 +380,8 @@ int inf_copy_create(union h2c_ChanInferenceCopyOp *cmd,
 		 &copy->hash_node,
 		 copy->protocol_id);
 	NNP_SPIN_UNLOCK(&copy->context->lock);
+	inf_devres_get(devres);
+
 
 	sphcs_send_event_report(g_the_sphcs,
 				NNP_IPC_CREATE_COPY_SUCCESS,
@@ -380,7 +395,6 @@ int inf_copy_create(union h2c_ChanInferenceCopyOp *cmd,
 	return 0;
 
 failed:
-	inf_devres_put(devres);
 	kfree(copy);
 
 	return res;
@@ -764,6 +778,7 @@ static void inf_copy_req_complete(struct inf_exec_req *req,
 	struct inf_cmd_list *cmd;
 	bool is_d2d_copy;
 	bool send_cmdlist_event_report = false;
+	unsigned long flags;
 
 	NNP_ASSERT(req->cmd_type == CMDLIST_CMD_COPY);
 	NNP_ASSERT(req->in_progress);
@@ -828,6 +843,9 @@ static void inf_copy_req_complete(struct inf_exec_req *req,
 		case -NNPER_INPUT_IS_DIRTY:
 			event_val = NNP_IPC_INPUT_IS_DIRTY;
 			break;
+		case -EIO:
+			event_val = NNP_IPC_IO_ERROR;
+			break;
 		default:
 			event_val = NNP_IPC_DMA_ERROR;
 		}
@@ -842,6 +860,7 @@ static void inf_copy_req_complete(struct inf_exec_req *req,
 
 	/* If copy from destination p2p resource completed*/
 	if (copy->card2Host && copy->devres->is_p2p_dst) {
+		NNP_SPIN_LOCK_IRQSAVE(&devres->lock_irq, flags);
 		/* Resource will be ready again, once d2d copy will succeed */
 		devres->p2p_buf.ready = false;
 
@@ -856,6 +875,7 @@ static void inf_copy_req_complete(struct inf_exec_req *req,
 			if (inf_devres_send_release_credit(copy->devres, req) && (cmd != NULL))
 				atomic_dec(&cmd->num_left);
 		}
+		NNP_SPIN_UNLOCK_IRQRESTORE(&devres->lock_irq, flags);
 	}
 
 	if (cmd != NULL)
