@@ -1,0 +1,839 @@
+From c3d77b29945f4737638aa1f0e1d985075f2d7313 Mon Sep 17 00:00:00 2001
+From: Guy Zadicario <guy.zadicario@intel.com>
+Date: Sun, 15 Nov 2020 18:13:34 +0200
+Subject: [PATCH v15 16/29] misc: nnpi: Device error handling
+
+Handle error events reported by the device. Error events are received as
+event report messages - device-level messages which are not associated with
+a specific channel, and therefore are handled at the driver level.
+
+Each error type can be handled in one or more ways:
+- Report the error by sending a uevent on the device (/dev/nnpi%d)
+- Update a SW counter of the error type received
+- Special handling of fatal errors - change device boot state and informs
+  all channels.
+
+For some of the errors, uevent notification is triggered only if its
+counter has crossed a pre-defined threshold.
+
+Added sysfs attributes for exporting the error thresholds and counters.
+
+Signed-off-by: Guy Zadicario <guy.zadicario@intel.com>
+---
+ Documentation/ABI/testing/sysfs-driver-intel_nnpi |  74 ++++++
+ drivers/misc/intel-nnpi/device.c                  | 276 +++++++++++++++++++++-
+ drivers/misc/intel-nnpi/device.h                  |  93 +++++++-
+ drivers/misc/intel-nnpi/device_sysfs.c            | 223 +++++++++++++++++
+ 4 files changed, 663 insertions(+), 3 deletions(-)
+
+diff --git a/Documentation/ABI/testing/sysfs-driver-intel_nnpi b/Documentation/ABI/testing/sysfs-driver-intel_nnpi
+index f97315a..d50fbfe 100644
+--- a/Documentation/ABI/testing/sysfs-driver-intel_nnpi
++++ b/Documentation/ABI/testing/sysfs-driver-intel_nnpi
+@@ -29,3 +29,77 @@ Date:           Sep 2020
+ Kernelversion:  5.11
+ Contact:        guy.zadicario@intel.com
+ Description:    Device operational state string.
++
++What:           /sys/class/nnpi/nnpi<n>/cecc_threshold
++Date:           Sep 2020
++Kernelversion:  5.11
++Contact:        guy.zadicario@intel.com
++Description:    Threshold value specifying how many device corrected ECC
++                errors should occur before informing uevent of the error.
++
++What:           /sys/class/nnpi/nnpi<n>/ucecc_threshold
++Date:           Sep 2020
++Kernelversion:  5.11
++Contact:        guy.zadicario@intel.com
++Description:    Threshold value specifying how many device un-corrected ECC
++                errors should occur before informing uevent of the error.
++
++What:           /sys/class/nnpi/nnpi<n>/ecc_nonfatal
++Date:           Sep 2020
++Kernelversion:  5.11
++Contact:        guy.zadicario@intel.com
++Description:    Counter of device non-fatal ECC error events reported by the device.
++
++What:           /sys/class/nnpi/nnpi<n>/ecc_fatal
++Date:           Sep 2020
++Kernelversion:  5.11
++Contact:        guy.zadicario@intel.com
++Description:    Counter of device fatal ECC error events reported by the device.
++
++What:           /sys/class/nnpi/nnpi<n>/dram_ecc_nonfatal
++Date:           Sep 2020
++Kernelversion:  5.11
++Contact:        guy.zadicario@intel.com
++Description:    Counter of device non-fatal DRAM ECC error events reported by the device.
++
++What:           /sys/class/nnpi/nnpi<n>/dram_ecc_fatal
++Date:           Sep 2020
++Kernelversion:  5.11
++Contact:        guy.zadicario@intel.com
++Description:    Counter of device fatal DRAM ECC error events reported by the device.
++
++What:           /sys/class/nnpi/nnpi<n>/mce_nonfatal
++Date:           Sep 2020
++Kernelversion:  5.11
++Contact:        guy.zadicario@intel.com
++Description:    Counter of device non-fatal MCE error events reported by the device.
++
++What:           /sys/class/nnpi/nnpi<n>/mce_fatal
++Date:           Sep 2020
++Kernelversion:  5.11
++Contact:        guy.zadicario@intel.com
++Description:    Counter of device fatal MCE error events reported by the device.
++
++What:           /sys/class/nnpi/nnpi<n>/dma_hang_nonfatal
++Date:           Sep 2020
++Kernelversion:  5.11
++Contact:        guy.zadicario@intel.com
++Description:    Counter of device non-fatal DMA hang events reported by the device.
++
++What:           /sys/class/nnpi/nnpi<n>/dma_hang_fatal
++Date:           Sep 2020
++Kernelversion:  5.11
++Contact:        guy.zadicario@intel.com
++Description:    Counter of device fatal DMA hang events reported by the device.
++
++What:           /sys/class/nnpi/nnpi<n>/ecc_correctable
++Date:           Sep 2020
++Kernelversion:  5.11
++Contact:        guy.zadicario@intel.com
++Description:    Counter of device correctable ECC error events reported by the device.
++
++What:           /sys/class/nnpi/nnpi<n>/dram_ecc_correctable
++Date:           Sep 2020
++Kernelversion:  5.11
++Contact:        guy.zadicario@intel.com
++Description:    Counter of device correctable DRAM ECC error events reported by the device.
+diff --git a/drivers/misc/intel-nnpi/device.c b/drivers/misc/intel-nnpi/device.c
+index 9220327..e6f784c 100644
+--- a/drivers/misc/intel-nnpi/device.c
++++ b/drivers/misc/intel-nnpi/device.c
+@@ -14,6 +14,7 @@
+ #include "cmd_chan.h"
+ #include "device.h"
+ #include "device_chardev.h"
++#include "device_sysfs.h"
+ #include "host_chardev.h"
+ #include "ipc_c2h_events.h"
+ #include "msg_scheduler.h"
+@@ -210,6 +211,147 @@ static void disconnect_all_channels(struct nnp_device *nnpdev)
+ 	spin_unlock(&nnpdev->lock);
+ }
+ 
++#define APPEND_ENV(args...)                                                 \
++({                                                                          \
++	if (!alloc_failed && num_env < MAX_ENVS) {                          \
++		event_env[num_env++] = kasprintf(GFP_KERNEL, ## args);      \
++		alloc_failed = !event_env[num_env - 1];                     \
++	} else {                                                            \
++		alloc_failed = true;                                        \
++	}                                                                   \
++})
++
++static void inform_device_event(struct nnp_device *nnpdev,
++				union c2h_event_report *event)
++{
++	/* 6 == largest uevent below has 5 envs + 1 NULL terminator */
++	#define MAX_ENVS 6
++	char *event_env[MAX_ENVS];
++	int num_env = 0;
++	bool alloc_failed = false;
++	int i;
++	bool below_threshold = false;
++	const char *boot_state;
++	const char *state;
++	const char *fail_reason;
++
++	/*
++	 * inform of some events needs to happen only every a configured
++	 * threshold.
++	 * For those events: increment the relevant counter and either
++	 * set below_threshold to indicate no inform is needed if its
++	 * value is still below the threshold or zero the counter for
++	 * the next threshold count.
++	 */
++	spin_lock(&nnpdev->lock);
++	if (event->event_code == NNP_IPC_ERROR_MCE_CORRECTABLE) {
++		nnpdev->correctable_ecc_counter++;
++		if (nnpdev->correctable_ecc_counter <
++		    nnpdev->correctable_ecc_threshold)
++			below_threshold = true;
++		else
++			nnpdev->correctable_ecc_counter = 0;
++	} else if (event->event_code == NNP_IPC_ERROR_MCE_UNCORRECTABLE &&
++		   event->event_val != 0) {
++		nnpdev->uncorrectable_ecc_counter++;
++		if (nnpdev->uncorrectable_ecc_counter <
++		    nnpdev->uncorrectable_ecc_threshold)
++			below_threshold = true;
++		else
++			nnpdev->uncorrectable_ecc_counter = 0;
++	} else if (event->event_code == NNP_IPC_ERROR_DRAM_ECC_CORRECTABLE) {
++		nnpdev->correctable_dram_ecc_counter++;
++		if (nnpdev->correctable_dram_ecc_counter <
++		    nnpdev->correctable_dram_ecc_threshold)
++			below_threshold = true;
++		else
++			nnpdev->correctable_dram_ecc_counter = 0;
++	} else if (event->event_code == NNP_IPC_CTX_DRAM_ECC_UNCORRECTABLE) {
++		nnpdev->uncorrectable_dram_ecc_counter++;
++		if (nnpdev->uncorrectable_dram_ecc_counter <
++		    nnpdev->uncorrectable_dram_ecc_threshold)
++			below_threshold = true;
++		else
++			nnpdev->uncorrectable_dram_ecc_counter = 0;
++	}
++	spin_unlock(&nnpdev->lock);
++
++	/* Do not need to inform if below threshold */
++	if (below_threshold)
++		return;
++
++	/*
++	 * generate uevent to inform the event
++	 */
++	if (event->event_code == NNP_IPC_ERROR_OS_CRASHED) {
++		APPEND_ENV("NNPI_EVENT=crash");
++		APPEND_ENV("NNPI_ERROR_CLASS=fatal");
++	} else if (event->event_code == NNP_IPC_ERROR_PCI_ERROR ||
++		   event->event_code == NNP_IPC_ERROR_PROTOCOL_ERROR) {
++		APPEND_ENV("NNPI_EVENT=pci_error");
++		APPEND_ENV("NNPI_ERROR_CLASS=fatal");
++	} else if (event->event_code == NNP_IPC_ERROR_MCE_CORRECTABLE) {
++		if (event->event_val != 0)
++			APPEND_ENV("NNPI_EVENT=ecc_error");
++		else
++			APPEND_ENV("NNPI_EVENT=mce_error");
++		APPEND_ENV("NNPI_ERROR_CLASS=correctable");
++	} else if (event->event_code == NNP_IPC_ERROR_MCE_UNCORRECTABLE) {
++		if (event->event_val != 0)
++			APPEND_ENV("NNPI_EVENT=ecc_error");
++		else
++			APPEND_ENV("NNPI_EVENT=mce_error");
++		APPEND_ENV("NNPI_ERROR_CLASS=uncorrectable");
++	} else if (event->event_code == NNP_IPC_ERROR_MCE_UNCORRECTABLE_FATAL) {
++		if (event->event_val != 0)
++			APPEND_ENV("NNPI_EVENT=ecc_error");
++		else
++			APPEND_ENV("NNPI_EVENT=mce_error");
++		APPEND_ENV("NNPI_ERROR_CLASS=fatal");
++	} else if (event->event_code == NNP_IPC_THERMAL_TRIP_EVENT) {
++		APPEND_ENV("NNPI_EVENT=thermal");
++		APPEND_ENV("NNPI_ERROR_CLASS=no_error");
++		APPEND_ENV("NNPI_THERMAL_TRIP=%d", event->event_val);
++		APPEND_ENV("NNPI_THERMAL_TRIP_DIR=%s",
++			   (event->obj_id_2 >= event->obj_id ?  "up" : "down"));
++	} else if (event->event_code == NNP_IPC_DEVICE_STATE_CHANGED) {
++		nnpdev_sysfs_get_state_strings(nnpdev, &state, &boot_state,
++					       &fail_reason);
++		APPEND_ENV("NNPI_EVENT=state");
++		APPEND_ENV("NNPI_ERROR_CLASS=no_error");
++		APPEND_ENV("NNPI_STATE=%s", state);
++		APPEND_ENV("NNPI_BOOT_STATE=%s", boot_state);
++		APPEND_ENV("NNPI_FAIL_REASON=%s", fail_reason);
++	} else if (event->event_code == NNP_IPC_ERROR_DRAM_ECC_CORRECTABLE) {
++		APPEND_ENV("NNPI_EVENT=dram_ecc_error");
++		APPEND_ENV("NNPI_ERROR_CLASS=correctable");
++	} else if (event->event_code == NNP_IPC_CTX_DRAM_ECC_UNCORRECTABLE) {
++		APPEND_ENV("NNPI_EVENT=dram_ecc_error");
++		APPEND_ENV("NNPI_ERROR_CLASS=uncorrectable");
++	} else if (event->event_code ==
++		   NNP_IPC_ERROR_DRAM_ECC_UNCORRECTABLE_FATAL) {
++		APPEND_ENV("NNPI_EVENT=dram_ecc_error");
++		APPEND_ENV("NNPI_ERROR_CLASS=fatal");
++	} else if (event->event_code == NNP_IPC_DMA_HANG_DETECTED) {
++		APPEND_ENV("NNPI_EVENT=dma_hang_error");
++		APPEND_ENV("NNPI_ERROR_CLASS=uncorrectable");
++	} else if (event->event_code == NNP_IPC_FATAL_DMA_HANG_DETECTED) {
++		APPEND_ENV("NNPI_EVENT=dma_hang_error");
++		APPEND_ENV("NNPI_ERROR_CLASS=fatal");
++	}
++
++	if (num_env > 0) {
++		if (!alloc_failed) {
++			event_env[num_env] = NULL;
++			kobject_uevent_env(&nnpdev->chardev->kobj, KOBJ_CHANGE,
++					   event_env);
++		}
++
++		for (i = 0; i < num_env; ++i)
++			kfree(event_env[i]);
++	}
++}
++
+ void nnpdev_submit_device_event_to_channels(struct nnp_device *nnpdev,
+ 					    union c2h_event_report *event_msg,
+ 					    bool force)
+@@ -321,6 +463,51 @@ static void handle_channel_destroy(struct nnp_device *nnpdev,
+ 	nnp_chan_put(cmd_chan);
+ }
+ 
++static void handle_device_critical_error(struct nnp_device *nnpdev,
++					 union c2h_event_report *event_msg)
++{
++	spin_lock(&nnpdev->lock);
++	switch (event_msg->event_code) {
++	case NNP_IPC_ERROR_OS_CRASHED:
++		nnpdev->state |= NNP_DEVICE_KERNEL_CRASH;
++		nnpdev->counters.uncorr.os_crashed++;
++		break;
++	case NNP_IPC_ERROR_PROTOCOL_ERROR:
++		nnpdev->state |= NNP_DEVICE_PROTOCOL_ERROR;
++		break;
++	case NNP_IPC_ERROR_MCE_UNCORRECTABLE_FATAL:
++		nnpdev->state |= NNP_DEVICE_FATAL_MCE_ERROR;
++		nnpdev->counters.uncorr.os_crashed++;
++		if (event_msg->event_val == 1)
++			nnpdev->counters.uncorr.ecc_fatal++;
++		else
++			nnpdev->counters.uncorr.mce_fatal++;
++		break;
++	case NNP_IPC_ERROR_DRAM_ECC_UNCORRECTABLE_FATAL:
++		nnpdev->state |= NNP_DEVICE_FATAL_DRAM_ECC_ERROR;
++		nnpdev->counters.uncorr.dram_ecc_fatal++;
++		break;
++	case NNP_IPC_ERROR_FATAL_ICE_ERROR:
++		nnpdev->state |= NNP_DEVICE_FATAL_ICE_ERROR;
++		break;
++	case NNP_IPC_ERROR_CARD_RESET:
++		if (nnpdev->state & NNP_DEVICE_HANG)
++			dev_info(nnpdev->dev,
++				 "hang detected - reset is needed\n");
++		break;
++	case NNP_IPC_FATAL_DMA_HANG_DETECTED:
++		nnpdev->counters.uncorr.dma_hang_fatal++;
++		nnpdev->state |= NNP_DEVICE_FATAL_DMA_ERROR;
++		break;
++	default:
++		dev_err(nnpdev->dev, "Unknown event received - %u\n",
++			event_msg->event_code);
++	}
++	spin_unlock(&nnpdev->lock);
++
++	nnpdev_submit_device_event_to_channels(nnpdev, event_msg, true);
++}
++
+ /*
+  * this function handle device-level event report message.
+  * which is usually affect the entire device and not a single channel
+@@ -329,9 +516,33 @@ static void process_device_event(struct nnp_device *nnpdev,
+ 				 union c2h_event_report *event_msg)
+ {
+ 	if (is_card_fatal_event(event_msg->event_code)) {
+-		nnpdev_submit_device_event_to_channels(nnpdev, event_msg, true);
++		/* Handle device critical error */
++		handle_device_critical_error(nnpdev, event_msg);
+ 	} else {
+ 		switch (event_msg->event_code) {
++		case NNP_IPC_ERROR_MCE_CORRECTABLE:
++			nnpdev->counters.corr.ecc++;
++			break;
++		case NNP_IPC_ERROR_DRAM_ECC_CORRECTABLE:
++			nnpdev->counters.corr.dram_ecc++;
++			break;
++		case NNP_IPC_ERROR_MCE_UNCORRECTABLE:
++			dev_dbg(nnpdev->dev,
++				"ECC error received code - %u\n",
++				event_msg->event_code);
++			if (event_msg->event_val == 1)
++				nnpdev->counters.uncorr.ecc_nonfatal++;
++			else
++				nnpdev->counters.uncorr.mce_nonfatal++;
++			break;
++		case NNP_IPC_CTX_DRAM_ECC_UNCORRECTABLE:
++			nnpdev->counters.uncorr.dram_ecc_nonfatal++;
++			break;
++		case NNP_IPC_THERMAL_TRIP_EVENT:
++			dev_dbg(nnpdev->dev,
++				"Thermal trip event num=%d temp=%u\n",
++				event_msg->event_val, event_msg->obj_id_2);
++			break;
+ 		case NNP_IPC_CREATE_CHANNEL_SUCCESS:
+ 		case NNP_IPC_CREATE_CHANNEL_FAILED:
+ 		case NNP_IPC_CHANNEL_SET_RB_SUCCESS:
+@@ -359,6 +570,10 @@ static void process_device_event(struct nnp_device *nnpdev,
+ 		case NNP_IPC_CHANNEL_UNMAP_HOSTRES_SUCCESS:
+ 			handle_channel_unmap_hostres(nnpdev, event_msg);
+ 			break;
++		case NNP_IPC_DMA_HANG_DETECTED:
++			nnpdev->counters.uncorr.dma_hang_nonfatal++;
++			break;
++
+ 		default:
+ 			dev_err(nnpdev->dev,
+ 				"Unknown event received - %u\n",
+@@ -368,6 +583,32 @@ static void process_device_event(struct nnp_device *nnpdev,
+ 
+ 		nnpdev_submit_device_event_to_channels(nnpdev, event_msg, false);
+ 	}
++
++	/*
++	 * ECC errors may be channel specific - call to notify channel
++	 */
++	if (event_msg->obj_valid &&
++	    event_msg->event_code == NNP_IPC_CTX_DRAM_ECC_UNCORRECTABLE) {
++		union c2h_event_report ev;
++		struct nnp_chan *cmd_chan;
++
++		ev.value = event_msg->value;
++		ev.chan_id = event_msg->obj_id;
++		ev.chan_valid = 1;
++
++		cmd_chan = nnpdev_find_channel(nnpdev, ev.chan_id);
++		if (cmd_chan) {
++			nnp_chan_add_response(cmd_chan, (u64 *)&ev, sizeof(ev));
++			nnp_chan_put(cmd_chan);
++		} else {
++			dev_err(nnpdev->dev,
++				"Got channel severity DRAM ECC error for non existing channel id %d!!\n",
++				ev.chan_id);
++		}
++	}
++
++	/* inform device event */
++	inform_device_event(nnpdev, event_msg);
+ }
+ 
+ struct event_report_work {
+@@ -585,8 +826,17 @@ void nnpdev_process_messages(struct nnp_device *nnpdev, u64 *hw_msg,
+ 		j += msg_size;
+ 	} while (j < nof_msg || !msg_size);
+ 
+-	if (fatal_protocol_error)
++	if (fatal_protocol_error) {
++		u64 ev;
++
++		ev = FIELD_PREP(NNP_C2H_OP_MASK, NNP_IPC_C2H_OP_EVENT_REPORT);
++		ev |= FIELD_PREP(NNP_C2H_EVENT_REPORT_CODE_MASK,
++				 NNP_IPC_ERROR_PROTOCOL_ERROR);
++
+ 		nnpdev->state |= NNP_DEVICE_PROTOCOL_ERROR;
++		handle_event_report(nnpdev, &ev, 1);
++		j = hw_nof_msg;
++	}
+ 
+ 	/*
+ 	 * If unprocessed messages left, copy it to the pending messages buffer
+@@ -695,6 +945,7 @@ void nnpdev_set_boot_state(struct nnp_device *nnpdev, u32 mask)
+ {
+ 	u32 state, prev_state;
+ 	bool becomes_ready = false;
++	union c2h_event_report  state_changed_event;
+ 	int ret;
+ 
+ 	/*
+@@ -718,6 +969,19 @@ void nnpdev_set_boot_state(struct nnp_device *nnpdev, u32 mask)
+ 	dev_dbg(nnpdev->dev,
+ 		"device state change 0x%x --> 0x%x\n", prev_state, state);
+ 
++	/*
++	 * Report the state change event to management API clients.
++	 * Do not report SYSINFO_READY state, this is an "internal" state
++	 */
++	if (state != NNP_DEVICE_BOOT_SYSINFO_READY) {
++		state_changed_event.value = 0;
++		state_changed_event.opcode = NNP_IPC_C2H_OP_EVENT_REPORT;
++		state_changed_event.event_code = NNP_IPC_DEVICE_STATE_CHANGED;
++		state_changed_event.obj_id = state & 0xffff;
++		state_changed_event.obj_id_2 = (state >> 16) & 0xffff;
++		inform_device_event(nnpdev, &state_changed_event);
++	}
++
+ 	/* Unload boot image if boot started or failed */
+ 	if (nnpdev->boot_image_loaded &&
+ 	    (((state & NNP_DEVICE_BOOT_STARTED) &&
+@@ -901,6 +1165,7 @@ static void doorbell_changed_handler(struct work_struct *work)
+ 	u32 doorbell_val = req->val;
+ 	struct nnp_device *nnpdev = req->nnpdev;
+ 	u64 query_cmd;
++	union c2h_event_report  state_changed_event;
+ 
+ 	nnpdev->card_doorbell_val = doorbell_val;
+ 
+@@ -961,6 +1226,13 @@ static void doorbell_changed_handler(struct work_struct *work)
+ 			spin_lock(&nnpdev->lock);
+ 			nnpdev->state = 0;
+ 			spin_unlock(&nnpdev->lock);
++
++			state_changed_event.value = 0;
++			state_changed_event.opcode =
++				NNP_IPC_C2H_OP_EVENT_REPORT;
++			state_changed_event.event_code =
++				NNP_IPC_DEVICE_STATE_CHANGED;
++			inform_device_event(nnpdev, &state_changed_event);
+ 			break;
+ 		default:
+ 			break;
+diff --git a/drivers/misc/intel-nnpi/device.h b/drivers/misc/intel-nnpi/device.h
+index 9fdb245..e96d4ae 100644
+--- a/drivers/misc/intel-nnpi/device.h
++++ b/drivers/misc/intel-nnpi/device.h
+@@ -64,6 +64,72 @@ struct query_version_work {
+ 	bool running;
+ };
+ 
++struct nnp_device_counters {
++	struct {
++		/*
++		 * Number of times device needed to be reset
++		 * due to device fatal error
++		 */
++		unsigned long  os_crashed;
++		/*
++		 * Number of times a non-fatal
++		 * uncorrectable ECC error happened
++		 * on device
++		 */
++		unsigned long  ecc_nonfatal;
++		/*
++		 * Number of times a fatal, uncorrectable
++		 * ECC error happened on device
++		 */
++		unsigned long  ecc_fatal;
++		/*
++		 * Number of times a non-fatal
++		 * uncorrectable ECC error happened
++		 * on device DRAM
++		 */
++		unsigned long  dram_ecc_nonfatal;
++		/*
++		 * Number of times a fatal, uncorrectable
++		 * ECC error happened on device DRAM
++		 */
++		unsigned long  dram_ecc_fatal;
++		/*
++		 * Number of times a non-fatal
++		 * uncorrectable MCE error happened
++		 * on device
++		 */
++		unsigned long  mce_nonfatal;
++		/*
++		 * Number of times a fatal, uncorrectable MCE
++		 * error happened on device
++		 */
++		unsigned long  mce_fatal;
++		/*
++		 * Number of times device DMA engine got hanged
++		 * and recovered.
++		 */
++		unsigned long  dma_hang_nonfatal;
++		/*
++		 * Number of times device DMA engine got hanged
++		 * and could not be recovered.
++		 */
++		unsigned long  dma_hang_fatal;
++	} uncorr;
++
++	struct {
++		/*
++		 * Number of times a correctable ECC error
++		 * happened on device
++		 */
++		unsigned long  ecc;
++		/*
++		 * Number of times a correctable ECC error
++		 * happened on device DRAM
++		 */
++		unsigned long  dram_ecc;
++	} corr;
++};
++
+ /**
+  * union c2h_event_report - packs device event report response in 64-bit object
+  * @event_code: device event code, indicate which event has happened
+@@ -106,7 +172,8 @@ struct query_version_work {
+  * @cmdq: input queue to @cmdq_sched used to schedule driver internal commands
+  *        to be sent to the device.
+  * @wq: singlethread workqueue for processing device's response messages.
+- * @lock: protects accesses to @state and @cmd_chan_hash
++ * @lock: protects accesses to @state, @cmd_chan_hash and
++ *        ecc counters and thresholds.
+  * @is_recovery_bios: true if device has booted from the recovery bios flash
+  * @boot_image_loaded: true if boot image load has started
+  * @response_buf: buffer of device response messages arrived from "pci" layer.
+@@ -133,6 +200,19 @@ struct query_version_work {
+  * @ipc_chan_resp_op_size: holds response size for each possible channel
+  *                         response.
+  * @ipc_chan_cmd_op_size: holds command size for each possible channel command.
++ * @counters: counter values for various device events
++ * @correctable_ecc_threshold: threshold value of error counter for generating
++ *                             uevent informing on correctable ecc error.
++ * @correctable_ecc_counter: correctable ecc error counter
++ * @uncorrectable_ecc_threshold: threshold error counter for generating
++ *                               uevent informing on uncorr ecc error.
++ * @uncorrectable_ecc_counter: uncorrectable ecc error counter
++ * @correctable_dram_ecc_threshold: threshold error counter for generating
++ *                                  uevent informing on corr dram ecc error.
++ * @correctable_dram_ecc_counter: correctable dram ecc error counter
++ * @uncorrectable_dram_ecc_threshold: threshold error counter for generating
++ *                                    uevent informing on uncorr dram ecc error
++ * @uncorrectable_dram_ecc_counter: uncorrectable dram ecc error counter
+  */
+ struct nnp_device {
+ 	const struct nnp_device_ops *ops;
+@@ -173,8 +253,19 @@ struct nnp_device {
+ 	struct device    *chardev;
+ 	struct list_head cdev_clients;
+ 	struct mutex     cdev_mutex;
++
+ 	u8   ipc_chan_resp_op_size[32];
+ 	u8   ipc_chan_cmd_op_size[32];
++
++	struct nnp_device_counters counters;
++	unsigned long  correctable_ecc_threshold;
++	unsigned long  correctable_ecc_counter;
++	unsigned long  uncorrectable_ecc_threshold;
++	unsigned long  uncorrectable_ecc_counter;
++	unsigned long  correctable_dram_ecc_threshold;
++	unsigned long  correctable_dram_ecc_counter;
++	unsigned long  uncorrectable_dram_ecc_threshold;
++	unsigned long  uncorrectable_dram_ecc_counter;
+ };
+ 
+ /**
+diff --git a/drivers/misc/intel-nnpi/device_sysfs.c b/drivers/misc/intel-nnpi/device_sysfs.c
+index 561e95b..750b3e7 100644
+--- a/drivers/misc/intel-nnpi/device_sysfs.c
++++ b/drivers/misc/intel-nnpi/device_sysfs.c
+@@ -160,11 +160,234 @@ static ssize_t protocol_version_show(struct device *dev,
+ }
+ static DEVICE_ATTR_RO(protocol_version);
+ 
++static ssize_t cecc_threshold_store(struct device *dev,
++				    struct device_attribute *attr,
++				    const char *buf, size_t  count)
++{
++	struct nnp_device *nnpdev;
++	unsigned long val;
++
++	nnpdev = dev_get_drvdata(dev);
++	if (!nnpdev)
++		return -EINVAL;
++
++	if (kstrtoul(buf, 0, &val) < 0)
++		return -EINVAL;
++
++	nnpdev->correctable_ecc_threshold = val;
++	nnpdev->correctable_ecc_counter = 0;
++
++	return count;
++}
++
++static ssize_t cecc_threshold_show(struct device *dev,
++				   struct device_attribute *attr, char *buf)
++{
++	struct nnp_device *nnpdev;
++
++	nnpdev = dev_get_drvdata(dev);
++	if (!nnpdev)
++		return -EINVAL;
++
++	return sprintf(buf, "%lu\n", nnpdev->correctable_ecc_threshold);
++}
++static DEVICE_ATTR_RW(cecc_threshold);
++
++static ssize_t ucecc_threshold_store(struct device *dev,
++				     struct device_attribute *attr,
++				     const char *buf, size_t count)
++{
++	struct nnp_device *nnpdev;
++	unsigned long val;
++
++	nnpdev = dev_get_drvdata(dev);
++	if (!nnpdev)
++		return -EINVAL;
++
++	if (kstrtoul(buf, 0, &val) < 0)
++		return -EINVAL;
++
++	nnpdev->uncorrectable_ecc_threshold = val;
++	nnpdev->uncorrectable_ecc_counter = 0;
++
++	return count;
++}
++
++static ssize_t ucecc_threshold_show(struct device *dev,
++				    struct device_attribute *attr, char *buf)
++{
++	struct nnp_device *nnpdev;
++
++	nnpdev = dev_get_drvdata(dev);
++	if (!nnpdev)
++		return -EINVAL;
++
++	return sprintf(buf, "%lu\n", nnpdev->uncorrectable_ecc_threshold);
++}
++static DEVICE_ATTR_RW(ucecc_threshold);
++
++static ssize_t os_crashed_show(struct device *dev,
++			       struct device_attribute *attr, char *buf)
++{
++	struct nnp_device *nnpdev;
++
++	nnpdev = dev_get_drvdata(dev);
++	if (!nnpdev)
++		return -EINVAL;
++
++	return sprintf(buf, "%lu\n", nnpdev->counters.uncorr.os_crashed);
++}
++static DEVICE_ATTR_RO(os_crashed);
++
++static ssize_t ecc_nonfatal_show(struct device *dev,
++				 struct device_attribute *attr, char *buf)
++{
++	struct nnp_device *nnpdev;
++
++	nnpdev = dev_get_drvdata(dev);
++	if (!nnpdev)
++		return -EINVAL;
++
++	return sprintf(buf, "%lu\n", nnpdev->counters.uncorr.ecc_nonfatal);
++}
++static DEVICE_ATTR_RO(ecc_nonfatal);
++
++static ssize_t ecc_fatal_show(struct device *dev,
++			      struct device_attribute *attr, char *buf)
++{
++	struct nnp_device *nnpdev;
++
++	nnpdev = dev_get_drvdata(dev);
++	if (!nnpdev)
++		return -EINVAL;
++
++	return sprintf(buf, "%lu\n", nnpdev->counters.uncorr.ecc_fatal);
++}
++static DEVICE_ATTR_RO(ecc_fatal);
++
++static ssize_t dram_ecc_nonfatal_show(struct device *dev,
++				      struct device_attribute *attr, char *buf)
++{
++	struct nnp_device *nnpdev;
++
++	nnpdev = dev_get_drvdata(dev);
++	if (!nnpdev)
++		return -EINVAL;
++
++	return sprintf(buf, "%lu\n", nnpdev->counters.uncorr.dram_ecc_nonfatal);
++}
++static DEVICE_ATTR_RO(dram_ecc_nonfatal);
++
++static ssize_t dram_ecc_fatal_show(struct device *dev,
++				   struct device_attribute *attr, char *buf)
++{
++	struct nnp_device *nnpdev;
++
++	nnpdev = dev_get_drvdata(dev);
++	if (!nnpdev)
++		return -EINVAL;
++
++	return sprintf(buf, "%lu\n", nnpdev->counters.uncorr.dram_ecc_fatal);
++}
++static DEVICE_ATTR_RO(dram_ecc_fatal);
++
++static ssize_t mce_nonfatal_show(struct device *dev,
++				 struct device_attribute *attr, char *buf)
++{
++	struct nnp_device *nnpdev;
++
++	nnpdev = dev_get_drvdata(dev);
++	if (!nnpdev)
++		return -EINVAL;
++
++	return sprintf(buf, "%lu\n", nnpdev->counters.uncorr.mce_nonfatal);
++}
++static DEVICE_ATTR_RO(mce_nonfatal);
++
++static ssize_t mce_fatal_show(struct device *dev,
++			      struct device_attribute *attr, char *buf)
++{
++	struct nnp_device *nnpdev;
++
++	nnpdev = dev_get_drvdata(dev);
++	if (!nnpdev)
++		return -EINVAL;
++
++	return sprintf(buf, "%lu\n", nnpdev->counters.uncorr.mce_fatal);
++}
++static DEVICE_ATTR_RO(mce_fatal);
++
++static ssize_t dma_hang_nonfatal_show(struct device *dev,
++				      struct device_attribute *attr, char *buf)
++{
++	struct nnp_device *nnpdev;
++
++	nnpdev = dev_get_drvdata(dev);
++	if (!nnpdev)
++		return -EINVAL;
++
++	return sprintf(buf, "%lu\n", nnpdev->counters.uncorr.dma_hang_nonfatal);
++}
++static DEVICE_ATTR_RO(dma_hang_nonfatal);
++
++static ssize_t dma_hang_fatal_show(struct device *dev,
++				   struct device_attribute *attr, char *buf)
++{
++	struct nnp_device *nnpdev;
++
++	nnpdev = dev_get_drvdata(dev);
++	if (!nnpdev)
++		return -EINVAL;
++
++	return sprintf(buf, "%lu\n", nnpdev->counters.uncorr.dma_hang_fatal);
++}
++static DEVICE_ATTR_RO(dma_hang_fatal);
++
++static ssize_t ecc_correctable_show(struct device *dev,
++				    struct device_attribute *attr, char *buf)
++{
++	struct nnp_device *nnpdev;
++
++	nnpdev = dev_get_drvdata(dev);
++	if (!nnpdev)
++		return -EINVAL;
++
++	return sprintf(buf, "%lu\n", nnpdev->counters.corr.ecc);
++}
++static DEVICE_ATTR_RO(ecc_correctable);
++
++static ssize_t dram_ecc_correctable_show(struct device *dev,
++					 struct device_attribute *attr,
++					 char *buf)
++{
++	struct nnp_device *nnpdev;
++
++	nnpdev = dev_get_drvdata(dev);
++	if (!nnpdev)
++		return -EINVAL;
++
++	return sprintf(buf, "%lu\n", nnpdev->counters.corr.dram_ecc);
++}
++static DEVICE_ATTR_RO(dram_ecc_correctable);
++
+ static struct attribute *nnp_dev_attrs[] = {
+ 	&dev_attr_protocol_version.attr,
++	&dev_attr_cecc_threshold.attr,
++	&dev_attr_ucecc_threshold.attr,
+ 	&dev_attr_boot_state.attr,
+ 	&dev_attr_boot_fail_reason.attr,
+ 	&dev_attr_card_state.attr,
++	&dev_attr_os_crashed.attr,
++	&dev_attr_ecc_nonfatal.attr,
++	&dev_attr_ecc_fatal.attr,
++	&dev_attr_dram_ecc_nonfatal.attr,
++	&dev_attr_dram_ecc_fatal.attr,
++	&dev_attr_mce_nonfatal.attr,
++	&dev_attr_mce_fatal.attr,
++	&dev_attr_dma_hang_nonfatal.attr,
++	&dev_attr_dma_hang_fatal.attr,
++	&dev_attr_ecc_correctable.attr,
++	&dev_attr_dram_ecc_correctable.attr,
+ 	NULL
+ };
+ 
+-- 
+1.8.3.1
+

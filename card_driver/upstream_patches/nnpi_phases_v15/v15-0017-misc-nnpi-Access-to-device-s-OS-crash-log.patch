@@ -1,0 +1,473 @@
+From 21afc3061e11b2b14c16edf955ce9daa1d17f184 Mon Sep 17 00:00:00 2001
+From: Guy Zadicario <guy.zadicario@intel.com>
+Date: Mon, 16 Nov 2020 08:27:05 +0200
+Subject: [PATCH v15 17/29] misc: nnpi: Access to device's OS crash log
+
+Give access to device's crash log.
+Allocate coherent DMA memory area during device initialization and send
+its address to the device. When the device OS is crashed, a crash log
+will be copied by the device to two places:
+1) The host memory allocated by the driver
+2) Device DRAM area which is accessible from host through BAR2.
+   The structure of this memory is defined in ipc_include/nnp_inbound_mem.h
+
+Add two sysfs attibutes to query the crashlog size and dump it.
+
+Signed-off-by: Guy Zadicario <guy.zadicario@intel.com>
+---
+ Documentation/ABI/testing/sysfs-driver-intel_nnpi  |  12 +++
+ drivers/misc/intel-nnpi/device.c                   |  44 ++++++++-
+ drivers/misc/intel-nnpi/device.h                   |  16 +++-
+ drivers/misc/intel-nnpi/device_sysfs.c             | 101 +++++++++++++++++++++
+ drivers/misc/intel-nnpi/ipc_include/ipc_protocol.h |   5 +-
+ .../misc/intel-nnpi/ipc_include/nnp_inbound_mem.h  |  32 +++++++
+ drivers/misc/intel-nnpi/nnp_pcie.c                 |  19 ++++
+ 7 files changed, 225 insertions(+), 4 deletions(-)
+ create mode 100644 drivers/misc/intel-nnpi/ipc_include/nnp_inbound_mem.h
+
+diff --git a/Documentation/ABI/testing/sysfs-driver-intel_nnpi b/Documentation/ABI/testing/sysfs-driver-intel_nnpi
+index d50fbfe..559e3bd 100644
+--- a/Documentation/ABI/testing/sysfs-driver-intel_nnpi
++++ b/Documentation/ABI/testing/sysfs-driver-intel_nnpi
+@@ -44,6 +44,18 @@ Contact:        guy.zadicario@intel.com
+ Description:    Threshold value specifying how many device un-corrected ECC
+                 errors should occur before informing uevent of the error.
+ 
++What:           /sys/class/nnpi/nnpi<n>/crashlog_size
++Date:           Sep 2020
++Kernelversion:  5.11
++Contact:        guy.zadicario@intel.com
++Description:    Size of device crash log. zero if no device crash log exist.
++
++What:           /sys/class/nnpi/nnpi<n>/crashlog
++Date:           Sep 2020
++Kernelversion:  5.11
++Contact:        guy.zadicario@intel.com
++Description:    Binary attribute containing the device crash log content.
++
+ What:           /sys/class/nnpi/nnpi<n>/ecc_nonfatal
+ Date:           Sep 2020
+ Kernelversion:  5.11
+diff --git a/drivers/misc/intel-nnpi/device.c b/drivers/misc/intel-nnpi/device.c
+index e6f784c..39d5a4a 100644
+--- a/drivers/misc/intel-nnpi/device.c
++++ b/drivers/misc/intel-nnpi/device.c
+@@ -470,6 +470,9 @@ static void handle_device_critical_error(struct nnp_device *nnpdev,
+ 	switch (event_msg->event_code) {
+ 	case NNP_IPC_ERROR_OS_CRASHED:
+ 		nnpdev->state |= NNP_DEVICE_KERNEL_CRASH;
++		nnpdev->host_crash_dump.dump_size =
++				((u32)event_msg->obj_id_2 << 16) |
++				(u32)event_msg->obj_id;
+ 		nnpdev->counters.uncorr.os_crashed++;
+ 		break;
+ 	case NNP_IPC_ERROR_PROTOCOL_ERROR:
+@@ -945,6 +948,8 @@ void nnpdev_set_boot_state(struct nnp_device *nnpdev, u32 mask)
+ {
+ 	u32 state, prev_state;
+ 	bool becomes_ready = false;
++	u64 setup_crash_dump_cmd[2];
++	unsigned long pfn;
+ 	union c2h_event_report  state_changed_event;
+ 	int ret;
+ 
+@@ -1043,12 +1048,30 @@ void nnpdev_set_boot_state(struct nnp_device *nnpdev, u32 mask)
+ 	     (state & NNP_DEVICE_CARD_READY)) &&
+ 	    !(prev_state & NNP_DEVICE_CARD_DRIVER_READY) &&
+ 	    !(prev_state & NNP_DEVICE_CARD_READY)) {
++		phys_addr_t membar_addr;
++		void *membar_vaddr;
+ 		u32 val;
+ 
+ 		/* set host driver state to "Driver ready" */
+ 		val = FIELD_PREP(NNP_HOST_DRV_STATE_MASK,
+ 				 NNP_HOST_DRV_STATE_READY);
+ 		nnpdev->ops->set_host_doorbell_value(nnpdev, val);
++
++		/* send crash dump memory address */
++		pfn = NNP_IPC_DMA_ADDR_TO_PFN(nnpdev->host_crash_dump.dma_addr);
++		setup_crash_dump_cmd[0] =
++			FIELD_PREP(NNP_H2C_OP_MASK,
++				   NNP_IPC_H2C_OP_SETUP_CRASH_DUMP);
++		setup_crash_dump_cmd[0] |=
++			FIELD_PREP(NNP_H2C_SETUP_CRASH_DUMP_QW0_DMA_ADDR_MASK,
++				   pfn);
++
++		nnpdev->ops->get_membar_addr(nnpdev, &membar_addr,
++					     &membar_vaddr, NULL);
++		nnpdev->inbound_mem = (union nnp_inbound_mem *)membar_vaddr;
++		setup_crash_dump_cmd[1] = membar_addr;
++
++		nnpdev_queue_msg(nnpdev->cmdq, setup_crash_dump_cmd);
+ 	}
+ }
+ 
+@@ -1110,6 +1133,17 @@ int nnpdev_init(struct nnp_device *nnpdev, struct device *dev,
+ 		goto err_cmdq;
+ 	}
+ 
++	/* setup crash dump memory */
++	nnpdev->host_crash_dump.vaddr =
++		dma_alloc_coherent(nnpdev->dev, NNP_CRASH_DUMP_SIZE,
++				   &nnpdev->host_crash_dump.dma_addr,
++				   GFP_KERNEL);
++
++	if (!nnpdev->host_crash_dump.vaddr) {
++		ret = -ENOMEM;
++		goto err_wq;
++	}
++
+ 	/* setup memory for bios system info */
+ 	nnpdev->bios_system_info =
+ 		dma_alloc_coherent(nnpdev->dev, NNP_PAGE_SIZE,
+@@ -1117,7 +1151,7 @@ int nnpdev_init(struct nnp_device *nnpdev, struct device *dev,
+ 				   GFP_KERNEL);
+ 	if (!nnpdev->bios_system_info) {
+ 		ret = -ENOMEM;
+-		goto err_wq;
++		goto err_crash_dump;
+ 	}
+ 
+ 	/* Create the character device interface to this device */
+@@ -1138,6 +1172,10 @@ int nnpdev_init(struct nnp_device *nnpdev, struct device *dev,
+ 	dma_free_coherent(nnpdev->dev, NNP_PAGE_SIZE,
+ 			  nnpdev->bios_system_info,
+ 			  nnpdev->bios_system_info_dma_addr);
++err_crash_dump:
++	dma_free_coherent(nnpdev->dev, NNP_CRASH_DUMP_SIZE,
++			  nnpdev->host_crash_dump.vaddr,
++			  nnpdev->host_crash_dump.dma_addr);
+ err_wq:
+ 	destroy_workqueue(nnpdev->wq);
+ err_cmdq:
+@@ -1297,6 +1335,10 @@ void nnpdev_destroy(struct nnp_device *nnpdev)
+ 	/* destroy character device */
+ 	nnpdev_cdev_destroy(nnpdev);
+ 
++	dma_free_coherent(nnpdev->dev, NNP_CRASH_DUMP_SIZE,
++			  nnpdev->host_crash_dump.vaddr,
++			  nnpdev->host_crash_dump.dma_addr);
++
+ 	dma_free_coherent(nnpdev->dev, NNP_PAGE_SIZE,
+ 			  nnpdev->bios_system_info,
+ 			  nnpdev->bios_system_info_dma_addr);
+diff --git a/drivers/misc/intel-nnpi/device.h b/drivers/misc/intel-nnpi/device.h
+index e96d4ae..a14c44c 100644
+--- a/drivers/misc/intel-nnpi/device.h
++++ b/drivers/misc/intel-nnpi/device.h
+@@ -55,6 +55,12 @@
+ 
+ #define NNP_DEVICE_RESPONSE_BUFFER_LEN  32
+ 
++struct host_crash_dump {
++	void *vaddr;
++	dma_addr_t dma_addr;
++	u32 dump_size;
++};
++
+ struct query_version_work {
+ 	struct work_struct work;
+ 	u64 chan_resp_op_size;
+@@ -171,8 +177,9 @@ struct nnp_device_counters {
+  *              submissions to the device's command queue.
+  * @cmdq: input queue to @cmdq_sched used to schedule driver internal commands
+  *        to be sent to the device.
++ * @inbound_mem: pointer to device inbound memory region (mapped to BAR2)
+  * @wq: singlethread workqueue for processing device's response messages.
+- * @lock: protects accesses to @state, @cmd_chan_hash and
++ * @lock: protects accesses to @state, @inbound_mem, @cmd_chan_hash and
+  *        ecc counters and thresholds.
+  * @is_recovery_bios: true if device has booted from the recovery bios flash
+  * @boot_image_loaded: true if boot image load has started
+@@ -191,6 +198,7 @@ struct nnp_device_counters {
+  * @num_active_contexts: number of active inference contexts running.
+  * @curr_boot_state: last boot state field received from device doorbell reg
+  * @card_doorbell_val: last received device doorbell register value.
++ * @host_crash_dump: allocated dma page info to host device crash dump
+  * @query_version_work: work struct used to schedule processing of version
+  *                      reply response message arrived from card.
+  * @cdev: cdev object of NNP-I device char dev.
+@@ -221,6 +229,7 @@ struct nnp_device {
+ 
+ 	struct nnp_msched       *cmdq_sched;
+ 	struct nnp_msched_queue *cmdq;
++	union nnp_inbound_mem  *inbound_mem;
+ 
+ 	struct workqueue_struct *wq;
+ 	spinlock_t     lock;
+@@ -247,6 +256,7 @@ struct nnp_device {
+ 	u32            card_doorbell_val;
+ 	struct image_info boot_image;
+ 
++	struct host_crash_dump    host_crash_dump;
+ 	struct query_version_work query_version_work;
+ 
+ 	struct cdev      cdev;
+@@ -274,11 +284,15 @@ struct nnp_device {
+  *              commands.
+  * @cmdq_write_mesg: inserts a command message to the card's command queue.
+  * @set_host_doorbell_value: change the host doorbell value on device.
++ * @nnp_get_membar_addr: retrieve address of mapped card's inbound memory area
+  */
+ struct nnp_device_ops {
+ 	int (*cmdq_flush)(struct nnp_device *hw_dev);
+ 	int (*cmdq_write_mesg)(struct nnp_device *nnpdev, u64 *msg, u32 size);
+ 	int (*set_host_doorbell_value)(struct nnp_device *nnpdev, u32 value);
++	int (*get_membar_addr)(struct nnp_device *nnpdev,
++			       phys_addr_t *out_phy_addr,
++			       void __iomem **out_vaddr, size_t *out_len);
+ };
+ 
+ bool nnpdev_no_devices(void);
+diff --git a/drivers/misc/intel-nnpi/device_sysfs.c b/drivers/misc/intel-nnpi/device_sysfs.c
+index 750b3e7..9b1aa5b 100644
+--- a/drivers/misc/intel-nnpi/device_sysfs.c
++++ b/drivers/misc/intel-nnpi/device_sysfs.c
+@@ -11,6 +11,7 @@
+ 
+ #include "cmd_chan.h"
+ #include "device_sysfs.h"
++#include "nnp_inbound_mem.h"
+ 
+ void nnpdev_sysfs_get_state_strings(struct nnp_device *nnpdev,
+ 				    const char **state, const char **boot_state,
+@@ -226,6 +227,64 @@ static ssize_t ucecc_threshold_show(struct device *dev,
+ }
+ static DEVICE_ATTR_RW(ucecc_threshold);
+ 
++/**
++ * crashlog_dump() - prints crashlog size or crashlog content to buf
++ * @nnpdev: the device
++ * @dump_content: if true prints the dump content, otherwise prints dump size
++ * @buf: output buffer
++ * @offset: offset in crashdump content to read, ignored if @dump_content is false
++ * @count: size of output buffer
++ *
++ * Return: number of bytes copied to @buf
++ */
++static ssize_t crashlog_dump(struct nnp_device *nnpdev, bool dump_content,
++			     char *buf, loff_t offset, size_t count)
++{
++	void *vaddr;
++	u32 dump_size = 0;
++	ssize_t ret;
++
++	spin_lock(&nnpdev->lock);
++
++	if (nnpdev->host_crash_dump.dump_size) {
++		dump_size = nnpdev->host_crash_dump.dump_size;
++		vaddr = nnpdev->host_crash_dump.vaddr;
++	} else if (nnpdev->inbound_mem &&
++		   nnpdev->inbound_mem->magic == NNP_INBOUND_MEM_MAGIC &&
++		   nnpdev->inbound_mem->crash_dump_size) {
++		dump_size = nnpdev->inbound_mem->crash_dump_size;
++		vaddr = nnpdev->inbound_mem->crash_dump;
++	} else if (dump_content) {
++		vaddr = "crashlog empty\n";
++		dump_size = strlen(vaddr);
++	}
++
++	if (!dump_content)
++		ret = scnprintf(buf, count, "%u\n", dump_size);
++	else if (dump_size > 0)
++		ret = memory_read_from_buffer(buf, count, &offset, vaddr,
++					      dump_size);
++	else
++		ret = 0;
++
++	spin_unlock(&nnpdev->lock);
++
++	return ret;
++}
++
++static ssize_t crashlog_size_show(struct device *dev,
++				  struct device_attribute *attr, char *buf)
++{
++	struct nnp_device *nnpdev;
++
++	nnpdev = dev_get_drvdata(dev);
++	if (!nnpdev)
++		return -EINVAL;
++
++	return crashlog_dump(nnpdev, false, buf, 0, PAGE_SIZE);
++}
++static DEVICE_ATTR_RO(crashlog_size);
++
+ static ssize_t os_crashed_show(struct device *dev,
+ 			       struct device_attribute *attr, char *buf)
+ {
+@@ -374,6 +433,7 @@ static ssize_t dram_ecc_correctable_show(struct device *dev,
+ 	&dev_attr_protocol_version.attr,
+ 	&dev_attr_cecc_threshold.attr,
+ 	&dev_attr_ucecc_threshold.attr,
++	&dev_attr_crashlog_size.attr,
+ 	&dev_attr_boot_state.attr,
+ 	&dev_attr_boot_fail_reason.attr,
+ 	&dev_attr_card_state.attr,
+@@ -395,6 +455,32 @@ static ssize_t dram_ecc_correctable_show(struct device *dev,
+ 		.attrs = nnp_dev_attrs,
+ };
+ 
++static ssize_t crashlog_read(struct file *filp, struct kobject *kobj,
++			     struct bin_attribute *attr, char *buf,
++			     loff_t offset, size_t count)
++{
++	struct device *dev = kobj_to_dev(kobj);
++	struct nnp_device *nnpdev;
++
++	nnpdev = dev_get_drvdata(dev);
++	if (!nnpdev)
++		return -EINVAL;
++
++	return crashlog_dump(nnpdev, true, buf, offset, count);
++}
++
++static const struct bin_attribute crashlog_attr = {
++	.attr = {
++		.name = "crashlog",
++		.mode = 0400,
++	},
++	.size = NNP_CRASH_DUMP_SIZE,
++	.read = crashlog_read,
++	.write = NULL,
++	.mmap = NULL,
++	.private = (void *)0,
++};
++
+ int nnpdev_sysfs_init(struct nnp_device *nnpdev)
+ {
+ 	int ret;
+@@ -403,14 +489,28 @@ int nnpdev_sysfs_init(struct nnp_device *nnpdev)
+ 	if (ret)
+ 		return ret;
+ 
++	ret = device_create_bin_file(nnpdev->chardev, &crashlog_attr);
++	if (ret)
++		goto fail_bin;
++
+ 	ret = sysfs_create_link(&nnpdev->chardev->kobj,
+ 				&nnpdev->dev->kobj, "device");
+ 	if (ret)
+ 		goto fail_link;
+ 
++	/* set crashlog attributes be accessible by root only */
++	ret = sysfs_chmod_file(&nnpdev->chardev->kobj,
++			       &dev_attr_crashlog_size.attr, 0400);
++	if (ret)
++		goto fail_chmod;
++
+ 	return 0;
+ 
++fail_chmod:
++	sysfs_remove_link(&nnpdev->chardev->kobj, "device");
+ fail_link:
++	device_remove_bin_file(nnpdev->chardev, &crashlog_attr);
++fail_bin:
+ 	sysfs_remove_group(&nnpdev->chardev->kobj, &nnp_dev_attrs_grp);
+ 	return ret;
+ }
+@@ -418,5 +518,6 @@ int nnpdev_sysfs_init(struct nnp_device *nnpdev)
+ void nnpdev_sysfs_fini(struct nnp_device *nnpdev)
+ {
+ 	sysfs_remove_link(&nnpdev->chardev->kobj, "device");
++	device_remove_bin_file(nnpdev->chardev, &crashlog_attr);
+ 	sysfs_remove_group(&nnpdev->chardev->kobj, &nnp_dev_attrs_grp);
+ }
+diff --git a/drivers/misc/intel-nnpi/ipc_include/ipc_protocol.h b/drivers/misc/intel-nnpi/ipc_include/ipc_protocol.h
+index 136cb9f..291780f 100644
+--- a/drivers/misc/intel-nnpi/ipc_include/ipc_protocol.h
++++ b/drivers/misc/intel-nnpi/ipc_include/ipc_protocol.h
+@@ -9,6 +9,8 @@
+ #include <linux/dma-mapping.h>
+ #include <linux/types.h>
+ 
++#include "nnp_inbound_mem.h"
++
+ #define IPC_OP_MAX          BIT(6)
+ #define NNP_IPC_OPCODE_MASK GENMASK(5, 0)
+ 
+@@ -19,8 +21,7 @@
+  * We do not use just PAGE_SIZE since it may differ between
+  * card and host.
+  */
+-#define NNP_PAGE_SHIFT       12
+-#define NNP_PAGE_SIZE        BIT(12)
++#define NNP_PAGE_SIZE        BIT(NNP_PAGE_SHIFT)
+ 
+ #define NNP_VERSION_DOT_MASK   GENMASK(4, 0)
+ #define NNP_VERSION_MINOR_MASK GENMASK(9, 5)
+diff --git a/drivers/misc/intel-nnpi/ipc_include/nnp_inbound_mem.h b/drivers/misc/intel-nnpi/ipc_include/nnp_inbound_mem.h
+new file mode 100644
+index 0000000..d9cce61
+--- /dev/null
++++ b/drivers/misc/intel-nnpi/ipc_include/nnp_inbound_mem.h
+@@ -0,0 +1,32 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++
++/* Copyright (C) 2019-2020 Intel Corporation */
++
++#ifndef _NNP_INBOUND_MEM_H
++#define _NNP_INBOUND_MEM_H
++
++#include <linux/types.h>
++#include <linux/bits.h>
++
++#define NNP_PAGE_SHIFT 12
++
++/* The crash dump buffer size is PAGE_SIZE * 2^NNP_CRASH_DUMP_SIZE_PAGE_ORDER or
++ * 2^(PAGE_SHIFT + NNP_CRASH_DUMP_SIZE_PAGE_ORDER)
++ */
++#define NNP_CRASH_DUMP_SIZE_PAGE_ORDER 2
++
++#define NNP_INBOUND_MEM_MAGIC  0x4d687073
++#define NNP_CRASH_DUMP_SIZE    \
++	BIT(NNP_PAGE_SHIFT + NNP_CRASH_DUMP_SIZE_PAGE_ORDER)
++#define NNP_CRASH_DUMP_SIZE_PAGES    (NNP_CRASH_DUMP_SIZE >> NNP_PAGE_SHIFT)
++
++union nnp_inbound_mem {
++	struct {
++		__le32  magic;
++		__le32  crash_dump_size;
++		__u8	crash_dump[];
++	} __packed;
++	__u8 row[NNP_CRASH_DUMP_SIZE];
++} __packed;
++
++#endif
+diff --git a/drivers/misc/intel-nnpi/nnp_pcie.c b/drivers/misc/intel-nnpi/nnp_pcie.c
+index 09486ec..2bd4210 100644
+--- a/drivers/misc/intel-nnpi/nnp_pcie.c
++++ b/drivers/misc/intel-nnpi/nnp_pcie.c
+@@ -401,10 +401,29 @@ static int nnp_set_host_doorbell_value(struct nnp_device *nnpdev, u32 value)
+ 	return 0;
+ }
+ 
++static int nnp_get_membar_addr(struct nnp_device *nnpdev,
++			       phys_addr_t *out_phy_addr,
++			       void __iomem **out_vaddr, size_t *out_len)
++{
++	struct nnp_pci *nnp_pci = container_of(nnpdev, struct nnp_pci, nnpdev);
++
++	if (out_phy_addr)
++		*out_phy_addr = pci_resource_start(nnp_pci->pdev, 2);
++
++	if (out_vaddr)
++		*out_vaddr = nnp_pci->mem_bar_va;
++
++	if (out_len)
++		*out_len = pci_resource_len(nnp_pci->pdev, 2);
++
++	return 0;
++}
++
+ static struct nnp_device_ops nnp_device_ops = {
+ 	.cmdq_flush = nnp_cmdq_flush,
+ 	.cmdq_write_mesg = nnp_cmdq_write_mesg,
+ 	.set_host_doorbell_value = nnp_set_host_doorbell_value,
++	.get_membar_addr = nnp_get_membar_addr,
+ };
+ 
+ static void set_host_boot_state(struct nnp_pci *nnp_pci, int boot_state)
+-- 
+1.8.3.1
+

@@ -1,0 +1,52 @@
+From 951047b5d551b92d2d769a16263d87004227b807 Mon Sep 17 00:00:00 2001
+From: Guy Zadicario <guy.zadicario@intel.com>
+Date: Wed, 18 Nov 2020 08:24:54 +0200
+Subject: [PATCH v15 29/29] misc: nnpi: Tag channel objects with creator
+ user-id and privileged tag
+
+Allow the device SW stack to reject certain host requests based on the
+requestor user identity. This is done by tagging each channel with
+the user-id and privileged flag when the channel is created.
+
+This is used for the follwing:
+1) When host application queries for some card resource status, card
+   SW stack will hide resources that was created by different user,
+   unless the requestor is privileged.
+2) When host application request to change device settings that will
+   affect all users, card SW stack will reject the request if the
+   requestor is not privileged.
+
+Signed-off-by: Guy Zadicario <guy.zadicario@intel.com>
+---
+ drivers/misc/intel-nnpi/device_chardev.c | 12 ++++++++++--
+ 1 file changed, 10 insertions(+), 2 deletions(-)
+
+diff --git a/drivers/misc/intel-nnpi/device_chardev.c b/drivers/misc/intel-nnpi/device_chardev.c
+index 66e7458..cd85789 100644
+--- a/drivers/misc/intel-nnpi/device_chardev.c
++++ b/drivers/misc/intel-nnpi/device_chardev.c
+@@ -194,11 +194,19 @@ static long create_channel(struct device_client_info *cinfo, void __user *arg,
+ 
+ 	/*
+ 	 * send the create request to card
++	 *
++	 * Some requests sent from user-space to the device using the command
++	 * channel should be rejected by the device if it made from
++	 * a different or un-privileged user.
++	 * We send the uid and flag the channel privilege only for
++	 * CAP_SYS_ADMIN users. The device uses this info to reject
++	 * certain particular requests when made from other channels.
+ 	 */
+ 	cmd = FIELD_PREP(NNP_H2C_OP_MASK, NNP_IPC_H2C_OP_CHANNEL_OP);
+ 	cmd |= FIELD_PREP(NNP_H2C_CHANNEL_OP_CHAN_ID_MASK, chan->chan_id);
+-	cmd |= FIELD_PREP(NNP_H2C_CHANNEL_OP_UID_MASK, 0);
+-	cmd |= FIELD_PREP(NNP_H2C_CHANNEL_OP_PRIV_MASK, 1);
++	cmd |= FIELD_PREP(NNP_H2C_CHANNEL_OP_UID_MASK, current_euid().val);
++	if (capable(CAP_SYS_ADMIN))
++		cmd |= FIELD_PREP(NNP_H2C_CHANNEL_OP_PRIV_MASK, 1);
+ 
+ 	ret = nnpdev_queue_msg(nnpdev->cmdq, cmd);
+ 	if (ret < 0)
+-- 
+1.8.3.1
+

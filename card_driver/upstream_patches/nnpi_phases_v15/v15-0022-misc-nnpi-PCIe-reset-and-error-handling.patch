@@ -1,0 +1,735 @@
+From e47c5e0ed1e7edb4661c55fb408e7966d7d0f1f6 Mon Sep 17 00:00:00 2001
+From: Guy Zadicario <guy.zadicario@intel.com>
+Date: Mon, 16 Nov 2020 12:10:39 +0200
+Subject: [PATCH v15 22/29] misc: nnpi: PCIe reset and error handling
+
+Handle PCIe reset and errors - inform all client applications about the
+error and stop any I/O to the device until device is resumed.
+
+Signed-off-by: Guy Zadicario <guy.zadicario@intel.com>
+---
+ drivers/misc/intel-nnpi/device.c        | 117 +++++++++++++++++-
+ drivers/misc/intel-nnpi/device.h        |  14 +++
+ drivers/misc/intel-nnpi/device_sysfs.c  |  35 +++---
+ drivers/misc/intel-nnpi/msg_scheduler.c |  32 ++++-
+ drivers/misc/intel-nnpi/msg_scheduler.h |   9 ++
+ drivers/misc/intel-nnpi/nnp_pcie.c      | 207 ++++++++++++++++++++++++++++++--
+ 6 files changed, 384 insertions(+), 30 deletions(-)
+
+diff --git a/drivers/misc/intel-nnpi/device.c b/drivers/misc/intel-nnpi/device.c
+index 7a9d9c5..bf10c9c 100644
+--- a/drivers/misc/intel-nnpi/device.c
++++ b/drivers/misc/intel-nnpi/device.c
+@@ -477,6 +477,12 @@ static void handle_device_critical_error(struct nnp_device *nnpdev,
+ 				(u32)event_msg->obj_id;
+ 		nnpdev->counters.uncorr.os_crashed++;
+ 		break;
++	case NNP_IPC_ERROR_PCI_ERROR:
++		nnpdev->state |= NNP_DEVICE_PCI_ERROR;
++		nnpdev->dev_error = event_msg->event_val;
++		if (event_msg->event_val == NNP_DEVERR_FATAL_ERROR)
++			nnpdev->counters.uncorr.os_crashed++;
++		break;
+ 	case NNP_IPC_ERROR_PROTOCOL_ERROR:
+ 		nnpdev->state |= NNP_DEVICE_PROTOCOL_ERROR;
+ 		break;
+@@ -496,7 +502,7 @@ static void handle_device_critical_error(struct nnp_device *nnpdev,
+ 		nnpdev->state |= NNP_DEVICE_FATAL_ICE_ERROR;
+ 		break;
+ 	case NNP_IPC_ERROR_CARD_RESET:
+-		if (nnpdev->state & NNP_DEVICE_HANG)
++		if ((nnpdev->state & NNP_DEVICE_HANG) && event_msg->event_val)
+ 			dev_info(nnpdev->dev,
+ 				 "hang detected - reset is needed\n");
+ 		break;
+@@ -1370,6 +1376,20 @@ void nnpdev_card_doorbell_value_changed(struct nnp_device *nnpdev,
+ }
+ EXPORT_SYMBOL(nnpdev_card_doorbell_value_changed);
+ 
++static void notify_device_disconnect(struct nnp_device *nnpdev, bool is_reset)
++{
++	u64 ev;
++
++	/*
++	 * Report critical error event to all clients
++	 */
++	ev = FIELD_PREP(NNP_C2H_OP_MASK, NNP_IPC_C2H_OP_EVENT_REPORT);
++	ev |= FIELD_PREP(NNP_C2H_EVENT_REPORT_CODE_MASK,
++			 NNP_IPC_ERROR_CARD_RESET);
++	ev |= FIELD_PREP(NNP_C2H_EVENT_REPORT_VAL_MASK, is_reset);
++	handle_event_report(nnpdev, &ev, 1);
++}
++
+ /**
+  * nnpdev_destroy() - destroy nnp device object
+  * @nnpdev: The nnp device to be destroyed.
+@@ -1388,6 +1408,11 @@ void nnpdev_destroy(struct nnp_device *nnpdev)
+ 	if (nnpdev->boot_image_loaded)
+ 		unload_boot_image(nnpdev);
+ 
++	/*
++	 * Notify all client applications to stop using the device
++	 */
++	notify_device_disconnect(nnpdev, false);
++
+ 	destroy_workqueue(nnpdev->wq);
+ 	disconnect_all_channels(nnpdev);
+ 
+@@ -1425,6 +1450,96 @@ void nnpdev_enable(struct nnp_device *nnpdev)
+ 	spin_unlock(&nnpdev->lock);
+ }
+ 
++/**
++ * nnpdev_device_error_detected() - notification of underlying device error
++ * @nnpdev: nnp device
++ * @error_type: device error type.
++ *
++ * This function is called from NNP-I device driver when PCIe error is
++ * detected.
++ *
++ */
++int nnpdev_device_error_detected(struct nnp_device *nnpdev,
++				 enum nnp_dev_err error_type)
++{
++	u64 ev;
++
++	/*
++	 * report the event through event report path.
++	 */
++	ev = FIELD_PREP(NNP_C2H_OP_MASK, NNP_IPC_C2H_OP_EVENT_REPORT);
++	ev |= FIELD_PREP(NNP_C2H_EVENT_REPORT_CODE_MASK,
++			 NNP_IPC_ERROR_PCI_ERROR);
++	ev |= FIELD_PREP(NNP_C2H_EVENT_REPORT_VAL_MASK, error_type);
++
++	handle_event_report(nnpdev, &ev, 1);
++
++	return 0;
++}
++EXPORT_SYMBOL(nnpdev_device_error_detected);
++
++/*
++ * nnpdev_reset_prepare - notification that device is going to be reset
++ *
++ * @nnpdev: nnp device
++ * @is_hang: true if reset is due to device hang was detected.
++ *
++ * This function is called from NNP-I device driver before device reset starts.
++ */
++void nnpdev_reset_prepare(struct nnp_device *nnpdev, bool is_hang)
++{
++	/* BAR2 can not longer be accessed */
++	spin_lock(&nnpdev->lock);
++	nnpdev->inbound_mem = NULL;
++	spin_unlock(&nnpdev->lock);
++
++	/*
++	 * Put the device in error state due to reset started.
++	 * Error condition will be cleared when boot state is changed.
++	 */
++	if (is_hang) {
++		nnpdev_set_boot_state(nnpdev, NNP_DEVICE_HANG);
++	} else {
++		nnpdev_set_boot_state(nnpdev, NNP_DEVICE_CARD_IN_RESET);
++
++		/* set host driver state to "Not ready" */
++		nnpdev->ops->set_host_doorbell_value(nnpdev, 0);
++	}
++
++	/*
++	 * Remove and invalidate all message queues so that
++	 * no more messages will be sent to the h/w queue
++	 */
++	nnp_msched_throttle_all(nnpdev->cmdq_sched);
++
++	/*
++	 * Notify all client applications to stop using the device
++	 */
++	notify_device_disconnect(nnpdev, true);
++}
++EXPORT_SYMBOL(nnpdev_reset_prepare);
++
++/*
++ * nnpdev_reset_done - device reset flow done notification
++ *
++ * @nnpdev: nnp device
++ *
++ * This function is called from NNP-I device driver after device reset
++ * flow has successfully completed.
++ */
++void nnpdev_reset_done(struct nnp_device *nnpdev)
++{
++	void *membar_vaddr;
++
++	/* re-enable the command q */
++	nnp_msched_queue_unthrottle(nnpdev->cmdq);
++
++	/* recover BAR2 address after reset succeeded */
++	nnpdev->ops->get_membar_addr(nnpdev, NULL, &membar_vaddr, NULL);
++	nnpdev->inbound_mem = (union nnp_inbound_mem *)membar_vaddr;
++}
++EXPORT_SYMBOL(nnpdev_reset_done);
++
+ static int __init nnp_init(void)
+ {
+ 	int ret;
+diff --git a/drivers/misc/intel-nnpi/device.h b/drivers/misc/intel-nnpi/device.h
+index 9be16a3..7ec20a6 100644
+--- a/drivers/misc/intel-nnpi/device.h
++++ b/drivers/misc/intel-nnpi/device.h
+@@ -205,6 +205,8 @@ struct nnp_device_counters {
+  * @num_active_contexts: number of active inference contexts running.
+  * @curr_boot_state: last boot state field received from device doorbell reg
+  * @card_doorbell_val: last received device doorbell register value.
++ * @dev_error: non-zero if device error has occurred, possible values are one of
++ *             NNP_DEVERR_* values defined below
+  * @host_crash_dump: allocated dma page info to host device crash dump
+  * @query_version_work: work struct used to schedule processing of version
+  *                      reply response message arrived from card.
+@@ -267,6 +269,7 @@ struct nnp_device {
+ 	unsigned short chan_protocol_version;
+ 	unsigned int   num_active_contexts;
+ 	u32            card_doorbell_val;
++	u32            dev_error;
+ 
+ 	struct host_crash_dump    host_crash_dump;
+ 	struct query_version_work query_version_work;
+@@ -309,6 +312,13 @@ struct nnp_device_ops {
+ 
+ bool nnpdev_no_devices(void);
+ 
++enum nnp_dev_err {
++	NNP_DEVERR_NON_FATAL_ERROR = 1,
++	NNP_DEVERR_FATAL_ERROR,
++	NNP_DEVERR_PERMANENT_FAILURE,
++	NNP_DEVERR_LINK_RETRAIN_REQUIRED
++};
++
+ /*
+  * Functions exported by the device framework module which are
+  * called by the lower layer NNP-I device driver module
+@@ -320,6 +330,10 @@ void nnpdev_card_doorbell_value_changed(struct nnp_device *nnpdev,
+ 					u32 doorbell_val);
+ void nnpdev_process_messages(struct nnp_device *nnpdev, u64 *hw_msg,
+ 			     unsigned int hw_nof_msg);
++int nnpdev_device_error_detected(struct nnp_device *nnpdev,
++				 enum nnp_dev_err error_type);
++void nnpdev_reset_prepare(struct nnp_device *nnpdev, bool is_hang);
++void nnpdev_reset_done(struct nnp_device *nnpdev);
+ 
+ /*
+  * Framework internal functions (not exported)
+diff --git a/drivers/misc/intel-nnpi/device_sysfs.c b/drivers/misc/intel-nnpi/device_sysfs.c
+index d167526..4640fbc 100644
+--- a/drivers/misc/intel-nnpi/device_sysfs.c
++++ b/drivers/misc/intel-nnpi/device_sysfs.c
+@@ -139,34 +139,41 @@ void nnpdev_sysfs_get_state_strings(struct nnp_device *nnpdev,
+ 		goto find_state;
+ 
+ 	/* Find failure Reason*/
+-	if (nnpdev->state & NNP_DEVICE_FAILED_VERSION)
++	if (nnpdev->state &
++	    (NNP_DEVICE_FAILED_VERSION | NNP_DEVICE_PROTOCOL_ERROR)) {
+ 		*fail_reason = "version Mismatch";
+-	else if (nnpdev->state & NNP_DEVICE_CAPSULE_EXPECTED)
++	} else if (nnpdev->state & NNP_DEVICE_CAPSULE_EXPECTED) {
+ 		*fail_reason = "Bios Update Required";
+-	else if (nnpdev->state & NNP_DEVICE_CAPSULE_FAILED)
++	} else if (nnpdev->state & NNP_DEVICE_CAPSULE_FAILED) {
+ 		*fail_reason = "Bios Update Failed";
+-	else if (nnpdev->state & NNP_DEVICE_CORRUPTED_BOOT_IMAGE)
++	} else if (nnpdev->state & NNP_DEVICE_CORRUPTED_BOOT_IMAGE) {
+ 		*fail_reason = "Boot/Capsule image verification Failed";
+-	else if (nnpdev->state & NNP_DEVICE_BOOT_FAILED)
++	} else if (nnpdev->state & NNP_DEVICE_BOOT_FAILED) {
+ 		*fail_reason = "Boot Failed";
+-	else if (nnpdev->state & NNP_DEVICE_HOST_DRIVER_ERROR)
++	} else if (nnpdev->state & NNP_DEVICE_HOST_DRIVER_ERROR) {
+ 		*fail_reason = "Driver Error";
+-	else if (nnpdev->state & NNP_DEVICE_KERNEL_CRASH)
++	} else if (nnpdev->state & NNP_DEVICE_KERNEL_CRASH) {
+ 		*fail_reason = "OS Crash";
+-	else if (nnpdev->state & NNP_DEVICE_CARD_IN_RESET)
++	} else if (nnpdev->state & NNP_DEVICE_PCI_ERROR) {
++		if (nnpdev->dev_error == NNP_DEVERR_LINK_RETRAIN_REQUIRED)
++			*fail_reason = "PCI Error (rescan required)";
++		else
++			*fail_reason = "PCI Error";
++	} else if (nnpdev->state & NNP_DEVICE_CARD_IN_RESET) {
+ 		*fail_reason = "Reset in progress";
+-	else if (nnpdev->state & NNP_DEVICE_FATAL_MCE_ERROR)
++	} else if (nnpdev->state & NNP_DEVICE_FATAL_MCE_ERROR) {
+ 		*fail_reason = "Fatal MCE Error";
+-	else if (nnpdev->state & NNP_DEVICE_FATAL_DRAM_ECC_ERROR)
++	} else if (nnpdev->state & NNP_DEVICE_FATAL_DRAM_ECC_ERROR) {
+ 		*fail_reason = "Fatal DRAM ECC Error";
+-	else if (nnpdev->state & NNP_DEVICE_FATAL_ICE_ERROR)
++	} else if (nnpdev->state & NNP_DEVICE_FATAL_ICE_ERROR) {
+ 		*fail_reason = "Fatal ICE execution error";
+-	else if (nnpdev->state & NNP_DEVICE_FATAL_DMA_ERROR)
++	} else if (nnpdev->state & NNP_DEVICE_FATAL_DMA_ERROR) {
+ 		*fail_reason = "Fatal DMA hang error";
+-	else if (nnpdev->state & NNP_DEVICE_HANG)
++	} else if (nnpdev->state & NNP_DEVICE_HANG) {
+ 		*fail_reason = "Device Not Responding (Hang)";
+-	else
++	} else {
+ 		*fail_reason = "None";
++	}
+ 
+ find_state:
+ 	if (!state)
+diff --git a/drivers/misc/intel-nnpi/msg_scheduler.c b/drivers/misc/intel-nnpi/msg_scheduler.c
+index 747186b..aa3dc12 100644
+--- a/drivers/misc/intel-nnpi/msg_scheduler.c
++++ b/drivers/misc/intel-nnpi/msg_scheduler.c
+@@ -51,12 +51,15 @@ struct msg_entry {
+  *
+  * The function should be called when the scheduler mutex is held to prevent
+  * the queue from being destroyed.
++ *
++ * Return: zero on success, error code otherwise.
+  */
+-static void do_sched(struct nnp_msched *sched, struct nnp_msched_queue *q)
++static int do_sched(struct nnp_msched *sched, struct nnp_msched_queue *q)
+ {
+ 	struct nnp_device *nnpdev = sched->nnpdev;
+ 	struct msg_entry *msg;
+ 	unsigned int left_msgs;
++	int ret;
+ 
+ 	lockdep_assert_held(&sched->mutex);
+ 
+@@ -64,7 +67,7 @@ static void do_sched(struct nnp_msched *sched, struct nnp_msched_queue *q)
+ 	spin_lock(&q->list_lock);
+ 	if (list_empty(&q->msgs)) {
+ 		spin_unlock(&q->list_lock);
+-		return;
++		return 0;
+ 	}
+ 
+ 	msg = list_first_entry(&q->msgs, struct msg_entry, node);
+@@ -78,8 +81,9 @@ static void do_sched(struct nnp_msched *sched, struct nnp_msched_queue *q)
+ 	/*
+ 	 * Write the fetched message out.
+ 	 * Note that cmdq_write_mesg function may sleep.
++	 * (may fail if the device gets reset)
+ 	 */
+-	nnpdev->ops->cmdq_write_mesg(nnpdev, msg->msg, msg->size);
++	ret = nnpdev->ops->cmdq_write_mesg(nnpdev, msg->msg, msg->size);
+ 
+ 	kmem_cache_free(sched->slab_cache_ptr, msg);
+ 
+@@ -89,6 +93,8 @@ static void do_sched(struct nnp_msched *sched, struct nnp_msched_queue *q)
+ 	 */
+ 	if (!left_msgs)
+ 		wake_up_all(&q->sync_waitq);
++
++	return ret;
+ }
+ 
+ /**
+@@ -109,11 +115,20 @@ static int msg_sched_thread_func(void *data)
+ 	struct nnp_msched *dev_sched = data;
+ 	struct nnp_msched_queue *q;
+ 	bool need_sched;
++	int ret;
+ 
+ 	while (!kthread_should_stop()) {
+ 		mutex_lock(&dev_sched->mutex);
+-		list_for_each_entry(q, &dev_sched->queues, node)
+-			do_sched(dev_sched, q);
++		list_for_each_entry(q, &dev_sched->queues, node) {
++			ret = do_sched(dev_sched, q);
++
++			/*
++			 * if failed to write into command queue, no point
++			 * trying rest of the message queues
++			 */
++			if (ret)
++				break;
++		}
+ 
+ 		/*
+ 		 * Wait for new messages to be available in some queue
+@@ -239,6 +254,13 @@ int nnp_msched_queue_add_msg(struct nnp_msched_queue *queue, u64 *msg,
+ 	return 0;
+ }
+ 
++void nnp_msched_queue_unthrottle(struct nnp_msched_queue *queue)
++{
++	spin_lock(&queue->list_lock);
++	queue->throttled = false;
++	spin_unlock(&queue->list_lock);
++}
++
+ struct nnp_msched *nnp_msched_create(struct nnp_device *nnpdev)
+ {
+ 	struct nnp_msched *dev_sched;
+diff --git a/drivers/misc/intel-nnpi/msg_scheduler.h b/drivers/misc/intel-nnpi/msg_scheduler.h
+index 2475a7a..3f9d0cb 100644
+--- a/drivers/misc/intel-nnpi/msg_scheduler.h
++++ b/drivers/misc/intel-nnpi/msg_scheduler.h
+@@ -145,4 +145,13 @@ struct nnp_msched_queue {
+ int nnp_msched_queue_add_msg(struct nnp_msched_queue *queue, u64 *msg,
+ 			     unsigned int size);
+ 
++/**
++ * nnp_msched_queue_unthrottle() - marks a queue valid
++ * @queue: the message queue object
++ *
++ *  This function marks a queue as unthrottled if it became throttled
++ *  by a previous call to nnp_msched_throttle_all.
++ */
++void nnp_msched_queue_unthrottle(struct nnp_msched_queue *queue);
++
+ #endif /* _NNP_MSGF_SCHEDULER_H */
+diff --git a/drivers/misc/intel-nnpi/nnp_pcie.c b/drivers/misc/intel-nnpi/nnp_pcie.c
+index 2bd4210..4ce6211 100644
+--- a/drivers/misc/intel-nnpi/nnp_pcie.c
++++ b/drivers/misc/intel-nnpi/nnp_pcie.c
+@@ -3,7 +3,9 @@
+ 
+ #define pr_fmt(fmt)   KBUILD_MODNAME ": " fmt
+ 
++#include <linux/aer.h>
+ #include <linux/bitfield.h>
++#include <linux/delay.h>
+ #include <linux/dev_printk.h>
+ #include <linux/interrupt.h>
+ #include <linux/io-64-nonatomic-lo-hi.h>
+@@ -30,6 +32,7 @@
+  * @mem_bar_va: device's BAR2 mapped virtual address, this is the
+  *              "inbound memory region". This device memory region is
+  *              described in ipc_include/nnp_inbound_mem.h
++ * @remove_reset_mutex: serialize device remove and reset flows.
+  * @lock: protects accesses to cmd_read_update_count members.
+  * @response_buf: buffer to hold response messages pulled of the device's
+  *                response queue.
+@@ -46,6 +49,7 @@
+  * @cmd_read_update_count: number of times the device has updated its read
+  *                         pointer to the device command queue.
+  * @removing: true if device remove is in progress.
++ * @in_reset: true if PCI device is in reset flow.
+  */
+ struct nnp_pci {
+ 	struct nnp_device nnpdev;
+@@ -53,6 +57,7 @@ struct nnp_pci {
+ 
+ 	void __iomem      *mmio_va;
+ 	void __iomem      *mem_bar_va;
++	struct mutex      remove_reset_mutex;
+ 
+ 	spinlock_t      lock;
+ 	u64             response_buf[ELBI_RESPONSE_FIFO_DEPTH];
+@@ -65,6 +70,8 @@ struct nnp_pci {
+ 	u32             card_status;
+ 	u32             cmd_read_update_count;
+ 	bool            removing;
++
++	bool            in_reset;
+ };
+ 
+ #define NNP_DRIVER_NAME  "nnp_pcie"
+@@ -108,10 +115,10 @@ static void nnp_process_commands(struct nnp_pci *nnp_pci)
+ 	if (read_pointer > write_pointer) {
+ 		/* This should never happen on proper device hardware */
+ 		dev_err(&nnp_pci->pdev->dev, "Mismatched read and write pointers\n");
+-		/*
+-		 * For now just ignore it. Implement handling for such fatal
+-		 * device errors on a later patch
+-		 */
++
++		/* report the event upstream */
++		nnpdev_device_error_detected(&nnp_pci->nnpdev,
++					     NNP_DEVERR_PERMANENT_FAILURE);
+ 		return;
+ 	}
+ 
+@@ -261,7 +268,7 @@ static void nnp_free_interrupts(struct nnp_pci *nnp_pci, struct pci_dev *pdev)
+  *            advance its command queue read pointer. The caller may wait
+  *            for this counter to be advanced past this point before calling
+  *            this function again to re-try the write.
+- * * -ENODEV: device remove is in progress.
++ * * -ENODEV: device remove or reset is in progress.
+  */
+ static int nnp_cmdq_write_mesg_nowait(struct nnp_pci *nnp_pci, u64 *msg,
+ 				      u32 size, u32 *read_update_count)
+@@ -270,7 +277,7 @@ static int nnp_cmdq_write_mesg_nowait(struct nnp_pci *nnp_pci, u64 *msg,
+ 	u32 read_pointer, write_pointer;
+ 	int i;
+ 
+-	if (nnp_pci->removing)
++	if (nnp_pci->removing || nnp_pci->in_reset)
+ 		return -ENODEV;
+ 
+ 	if (!size)
+@@ -347,7 +354,7 @@ static bool check_read_count(struct nnp_pci *nnp_pci, u32 count)
+  *
+  * Return:
+  * * 0: Success, command has been written
+- * * -ENODEV: device remove is in progress.
++ * * -ENODEV: device remove or reset is in progress.
+  */
+ static int nnp_cmdq_write_mesg(struct nnp_device *nnpdev, u64 *msg, u32 size)
+ {
+@@ -362,8 +369,9 @@ static int nnp_cmdq_write_mesg(struct nnp_device *nnpdev, u64 *msg, u32 size)
+ 
+ 		rc = wait_event_interruptible(nnp_pci->card_status_wait,
+ 					      check_read_count(nnp_pci, rcnt) ||
+-					      nnp_pci->removing);
+-		if (!rc && nnp_pci->removing) {
++					      nnp_pci->removing ||
++					      nnp_pci->in_reset);
++		if (!rc && (nnp_pci->removing || nnp_pci->in_reset)) {
+ 			rc = -ENODEV;
+ 			break;
+ 		}
+@@ -380,6 +388,9 @@ static int nnp_cmdq_flush(struct nnp_device *nnpdev)
+ {
+ 	struct nnp_pci *nnp_pci = container_of(nnpdev, struct nnp_pci, nnpdev);
+ 
++	if (nnp_pci->in_reset)
++		return -ENODEV;
++
+ 	nnp_mmio_write(nnp_pci, ELBI_COMMAND_PCI_CONTROL,
+ 		       ELBI_COMMAND_PCI_CONTROL_FLUSH_MASK);
+ 
+@@ -390,6 +401,9 @@ static int nnp_set_host_doorbell_value(struct nnp_device *nnpdev, u32 value)
+ {
+ 	struct nnp_pci *nnp_pci = container_of(nnpdev, struct nnp_pci, nnpdev);
+ 
++	if (nnp_pci->in_reset)
++		return -ENODEV;
++
+ 	/*
+ 	 * The SELF_RESET bit is set only by the h/w layer,
+ 	 * do not allow higher layer to set it
+@@ -440,6 +454,18 @@ static void set_host_boot_state(struct nnp_pci *nnp_pci, int boot_state)
+ 	nnp_mmio_write(nnp_pci, HOST_DOORBELL_REG, doorbell_val);
+ }
+ 
++static void inform_driver_ready(struct nnp_pci *nnp_pci)
++{
++	u32 doorbell_val;
++
++	nnp_cmdq_flush(&nnp_pci->nnpdev);
++	doorbell_val = nnp_mmio_read(nnp_pci, ELBI_PCI_HOST_DOORBELL_VALUE);
++	doorbell_val &= ~NNP_HOST_BOOT_STATE_MASK;
++	doorbell_val |= FIELD_PREP(NNP_HOST_BOOT_STATE_MASK,
++				   NNP_HOST_BOOT_STATE_DRV_READY);
++	nnp_mmio_write(nnp_pci, ELBI_PCI_HOST_DOORBELL_VALUE, doorbell_val);
++}
++
+ static int nnp_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
+ {
+ 	struct device *dev = &pdev->dev;
+@@ -457,6 +483,7 @@ static int nnp_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
+ 	init_waitqueue_head(&nnp_pci->card_status_wait);
+ 	spin_lock_init(&nnp_pci->lock);
+ 	spin_lock_init(&nnp_pci->cmdq_lock);
++	mutex_init(&nnp_pci->remove_reset_mutex);
+ 
+ 	rc = pcim_enable_device(pdev);
+ 	if (rc)
+@@ -482,6 +509,16 @@ static int nnp_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
+ 		return dev_err_probe(dev, rc,
+ 				     "nnp_setup_interrupts failed %d\n", rc);
+ 
++	rc = pci_enable_pcie_error_reporting(pdev);
++	if (rc)
++		dev_dbg(&nnp_pci->pdev->dev,
++			"pci_enable_pcie_error_reporting returned %d\n", rc);
++
++	rc = pci_enable_pcie_error_reporting(pdev);
++	if (rc)
++		dev_dbg(&nnp_pci->pdev->dev,
++			"pci_enable_pcie_error_reporting returned %d\n", rc);
++
+ 	/*
+ 	 * done setting up the new pci device,
+ 	 * add it to the NNP-I framework.
+@@ -492,7 +529,7 @@ static int nnp_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
+ 
+ 	/* notify bios that host driver is up */
+ 	nnp_cmdq_flush(&nnp_pci->nnpdev);
+-	set_host_boot_state(nnp_pci, NNP_HOST_BOOT_STATE_DRV_READY);
++	inform_driver_ready(nnp_pci);
+ 
+ 	/* Update NNP-I framework with current value of card doorbell value */
+ 	notify_card_doorbell_value(nnp_pci);
+@@ -513,6 +550,8 @@ static void nnp_remove(struct pci_dev *pdev)
+ {
+ 	struct nnp_pci *nnp_pci = pci_get_drvdata(pdev);
+ 
++	mutex_lock(&nnp_pci->remove_reset_mutex);
++
+ 	/* stop service new interrupts */
+ 	nnp_free_interrupts(nnp_pci, nnp_pci->pdev);
+ 
+@@ -524,8 +563,155 @@ static void nnp_remove(struct pci_dev *pdev)
+ 	set_host_boot_state(nnp_pci, NNP_HOST_BOOT_STATE_IMAGE_NOT_READY);
+ 
+ 	nnpdev_destroy(&nnp_pci->nnpdev);
++
++	mutex_unlock(&nnp_pci->remove_reset_mutex);
++}
++
++static pci_ers_result_t nnp_pci_err_error_detected(struct pci_dev *dev,
++						   pci_channel_state_t error)
++{
++	struct nnp_pci *nnp_pci = NULL;
++
++	nnp_pci = pci_get_drvdata(dev);
++	if (!nnp_pci)
++		return PCI_ERS_RESULT_NONE;
++
++	dev_err(&nnp_pci->pdev->dev, "PCI error detected error=%d\n", error);
++
++	if (error == pci_channel_io_normal) {
++		/* non-fatal error */
++
++		/* report the event upstream */
++		nnpdev_device_error_detected(&nnp_pci->nnpdev,
++					     NNP_DEVERR_NON_FATAL_ERROR);
++
++		/* no need to reset the PCI bus */
++		return PCI_ERS_RESULT_CAN_RECOVER;
++	}
++
++	if (error == pci_channel_io_frozen) {
++		/* fatal error */
++
++		/* report the event upstream */
++		nnpdev_device_error_detected(&nnp_pci->nnpdev,
++					     NNP_DEVERR_FATAL_ERROR);
++
++		/* need to reset the link */
++		return PCI_ERS_RESULT_NEED_RESET;
++	}
++
++	if (error == pci_channel_io_perm_failure) {
++		/* cannot be recovered */
++
++		/* report the event upstream */
++		nnpdev_device_error_detected(&nnp_pci->nnpdev,
++					     NNP_DEVERR_PERMANENT_FAILURE);
++
++		return PCI_ERS_RESULT_DISCONNECT;
++	}
++
++	return PCI_ERS_RESULT_NONE;
+ }
+ 
++static pci_ers_result_t nnp_pci_err_mmio_enabled(struct pci_dev *dev)
++{
++	dev_dbg(&dev->dev, "PCI error mmio_enabled\n");
++	return PCI_ERS_RESULT_NONE;
++}
++
++static pci_ers_result_t nnp_pci_err_slot_reset(struct pci_dev *dev)
++{
++	u32 cmd;
++
++	dev_dbg(&dev->dev, "PCI error slot_reset\n");
++
++	pci_read_config_dword(dev, 0x4, &cmd);
++	if (cmd != 0xffffffff)
++		return PCI_ERS_RESULT_RECOVERED;
++	else
++		return PCI_ERS_RESULT_DISCONNECT;
++}
++
++static void nnp_pci_err_resume(struct pci_dev *dev)
++{
++	struct nnp_pci *nnp_pci = NULL;
++
++	nnp_pci = pci_get_drvdata(dev);
++	if (!nnp_pci)
++		return;
++
++	dev_dbg(&nnp_pci->pdev->dev, "PCI error resume\n");
++}
++
++static void nnp_reset_prepare(struct pci_dev *dev)
++{
++	struct nnp_pci *nnp_pci = NULL;
++
++	nnp_pci = pci_get_drvdata(dev);
++
++	dev_dbg(&nnp_pci->pdev->dev, "reset_prepare\n");
++	/* unlock will happen on nnp_reset_done */
++	mutex_lock(&nnp_pci->remove_reset_mutex);
++
++	nnpdev_reset_prepare(&nnp_pci->nnpdev, false);
++	nnp_pci->in_reset = true;
++}
++
++static void nnp_reset_done(struct pci_dev *dev)
++{
++	struct nnp_pci *nnp_pci = NULL;
++	int rc = 0;
++	u32 cmd;
++	int t = 30;
++
++	nnp_pci = pci_get_drvdata(dev);
++
++	dev_dbg(&nnp_pci->pdev->dev, "reset_done\n");
++
++	do {
++		pci_read_config_dword(dev, 0x4, &cmd);
++		dev_dbg(&nnp_pci->pdev->dev,
++			"config after reset t=%d cmd0 = 0x%x\n", t, cmd);
++		if (cmd != 0xffffffff)
++			break;
++		msleep(100);
++	} while (t-- > 0);
++
++	if (cmd != 0xffffffff) {
++		nnp_pci->in_reset = false;
++
++		/* restore interrupt mask (was reset by the device) */
++		nnp_mmio_write(nnp_pci, ELBI_PCI_MSI_MASK, ~card_status_int_mask);
++		inform_driver_ready(nnp_pci);
++	}
++
++	if (cmd == 0xffffffff || rc) {
++		u32 err = (cmd == 0xffffffff || rc == -EIO ?
++			   NNP_DEVERR_LINK_RETRAIN_REQUIRED :
++			   NNP_DEVERR_PERMANENT_FAILURE);
++
++		dev_err(&nnp_pci->pdev->dev,
++			"failed to initialize pci device after FLR/Reset!!\n");
++		if (err == NNP_DEVERR_LINK_RETRAIN_REQUIRED)
++			dev_err(&nnp_pci->pdev->dev,
++				"Remove and Rescan device may help.\n");
++		nnpdev_device_error_detected(&nnp_pci->nnpdev, err);
++	} else {
++		nnpdev_reset_done(&nnp_pci->nnpdev);
++	}
++
++	mutex_unlock(&nnp_pci->remove_reset_mutex);
++}
++
++static struct pci_error_handlers nnp_pci_err_handlers = {
++	.error_detected = nnp_pci_err_error_detected,
++	.mmio_enabled = nnp_pci_err_mmio_enabled,
++	.slot_reset = nnp_pci_err_slot_reset,
++	.reset_prepare = nnp_reset_prepare,
++	.reset_done = nnp_reset_done,
++	.resume = nnp_pci_err_resume,
++};
++
+ static const struct pci_device_id nnp_pci_tbl[] = {
+ 	{ PCI_DEVICE(PCI_VENDOR_ID_INTEL, NNP_PCI_DEVICE_ID) },
+ 	{ }
+@@ -536,6 +722,7 @@ static void nnp_remove(struct pci_dev *pdev)
+ 	.id_table = nnp_pci_tbl,
+ 	.probe = nnp_probe,
+ 	.remove = nnp_remove,
++	.err_handler = &nnp_pci_err_handlers,
+ };
+ 
+ module_pci_driver(nnp_driver);
+-- 
+1.8.3.1
+
