@@ -115,7 +115,6 @@ static void release_cmd(struct kref *kref)
 						ref);
 	struct id_range *range, *tmp;
 	uint16_t i;
-	int ret;
 	bool optimized = false;
 
 	NNP_ASSERT(is_inf_cmd_ptr(cmd));
@@ -174,7 +173,7 @@ static void release_cmd(struct kref *kref)
 					cmd->context->protocol_id,
 					cmd->protocol_id);
 
-	ret = inf_context_put(cmd->context);
+	inf_context_put(cmd->context);
 	del_ptr2id(cmd);
 	kfree(cmd);
 }

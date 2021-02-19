@@ -167,15 +167,14 @@ int sphcs_p2p_init_p2p_buf(bool is_src_buf, struct sphcs_p2p_buf *buf)
 	buf->is_src_buf = is_src_buf;
 	buf->peer_buf_id = (-1);
 	buf->peer_dev = NULL;
+	buf->ready = false;
 
 	if (buf->is_src_buf) {
 		bufs = src_bufs;
 		ida = &p2p_sbid_ida;
-		buf->ready = true;
 	} else {
 		bufs = dst_bufs;
 		ida = &p2p_dbid_ida;
-		buf->ready = false;
 	}
 
 	id = ida_simple_get(ida, 0, MAX_NUM_OF_P2P_BUFS, GFP_KERNEL);
@@ -291,15 +290,29 @@ void IPC_OPCODE_HANDLER(CHAN_P2P_GET_CR_FIFO)(struct sphcs *sphcs, union h2c_Cha
 
 void IPC_OPCODE_HANDLER(CHAN_P2P_CONNECT_PEERS)(struct sphcs *sphcs, union h2c_ChanConnectPeers *cmd)
 {
-	struct sphcs_p2p_buf *buf;
+	struct sphcs_p2p_buf *buf = (cmd->is_src_buf) ? src_bufs[cmd->buf_id] : dst_bufs[cmd->buf_id];
+	struct sphcs_p2p_peer_dev *peer_dev = NULL;
+	enum event_val eval = NNP_IPC_NO_ERROR;
 
-	sph_log_debug(GENERAL_LOG, "is_src_buf %u buf_id %u peer_buf_id %u peer_dev_id %u\n", cmd->is_src_buf, cmd->buf_id, cmd->peer_buf_id, cmd->peer_dev_id);
+	if (unlikely(buf == NULL)) {
+		sph_log_err(CREATE_COMMAND_LOG, "p2p buf(%hhu) does not exist.\n", cmd->buf_id);
+		eval = NNP_IPC_NO_SUCH_DEVRES;
+		goto send_report;
+	}
 
-	buf = (cmd->is_src_buf) ? src_bufs[cmd->buf_id] : dst_bufs[cmd->buf_id];
-	buf->peer_buf_id = cmd->peer_buf_id;
-	buf->peer_dev = (cmd->is_src_buf) ? &p2p_consumers[cmd->peer_dev_id] : &p2p_producers[cmd->peer_dev_id];
+	sph_log_debug(CREATE_COMMAND_LOG, "is_src_buf %u buf_id %u peer_buf_id %u peer_dev_id %u, %sconnect\n",
+		      cmd->is_src_buf, cmd->buf_id, cmd->peer_buf_id, cmd->peer_dev_id, cmd->disconnect ? "dis" : "");
 
-	sphcs_send_event_report(sphcs, NNP_IPC_P2P_PEERS_CONNECTED, 0, NULL, cmd->chan_id, cmd->p2p_tr_id);
+	if (!cmd->disconnect) {
+		buf->peer_buf_id = cmd->peer_buf_id;
+		peer_dev = (cmd->is_src_buf) ? &p2p_consumers[cmd->peer_dev_id] : &p2p_producers[cmd->peer_dev_id];
+	}
+
+	eval = s_p2p_cbs->dst_devres_peer(buf, peer_dev);
+
+send_report:
+	if (!cmd->disconnect)
+		sphcs_send_event_report(sphcs, NNP_IPC_P2P_PEERS_CONNECTED, eval, NULL, cmd->chan_id, cmd->p2p_tr_id);
 }
 
 static void _sphcs_p2p_remove_lli_templates(struct sphcs *sphcs,
@@ -488,7 +501,13 @@ int sphcs_p2p_new_message_arrived(void)
 			NNP_ASSERT(fw_fifo_elem);
 			new_element_found = fw_fifo_elem->is_new;
 			if (new_element_found) {
-				sph_log_debug(GENERAL_LOG, "Credit forwarded for dst buffer %u\n", fw_fifo_elem->dbid);
+#ifdef _DEBUG
+				struct sphcs_p2p_buf *buf = dst_bufs[fw_fifo_elem->dbid];
+
+				if (buf != NULL)
+					NNP_ASSERT(buf->buf_id == fw_fifo_elem->dbid);
+#endif
+				sph_log_debug(EXECUTE_COMMAND_LOG, "Credit forwarded for dst buffer %u\n", fw_fifo_elem->dbid);
 				s_p2p_cbs->new_data_arrived(dst_bufs[fw_fifo_elem->dbid]);
 				/* Mark the element as handled and promote the read ptr */
 				fw_fifo_elem->is_new = 0;
@@ -502,7 +521,13 @@ int sphcs_p2p_new_message_arrived(void)
 			NNP_ASSERT(rel_fifo_elem);
 			new_element_found = rel_fifo_elem->is_new;
 			if (new_element_found) {
-				sph_log_debug(GENERAL_LOG, "Credit released for src buffer %u\n", rel_fifo_elem->sbid);
+#ifdef _DEBUG
+				struct sphcs_p2p_buf *buf = src_bufs[fw_fifo_elem->sbid];
+
+				if (buf != NULL)
+					NNP_ASSERT(buf->buf_id == fw_fifo_elem->sbid);
+#endif
+				sph_log_debug(EXECUTE_COMMAND_LOG, "Credit released for src buffer %u\n", rel_fifo_elem->sbid);
 				s_p2p_cbs->data_consumed(src_bufs[rel_fifo_elem->sbid]);
 				/* Mark the element as handled and promote the read ptr */
 				rel_fifo_elem->is_new = 0;
@@ -535,7 +560,7 @@ int sphcs_p2p_init(struct sphcs *sphcs, struct sphcs_p2p_cbs *p2p_cbs)
 		/* We send release credit messages to producers */
 		p2p_producers[i].peer_cr_fifo.elem_size = sizeof(struct sphcs_p2p_rel_cr_fifo_elem);
 		p2p_producers[i].peer_cr_fifo.buf_vaddr = dma_alloc_coherent(sphcs->hw_device,
-									     CR_FIFO_DEPTH * sizeof(struct sphcs_p2p_fw_cr_fifo_elem),
+									     CR_FIFO_DEPTH * sizeof(struct sphcs_p2p_rel_cr_fifo_elem),
 									     &p2p_producers[i].peer_cr_fifo.buf_dma_addr,
 									     GFP_KERNEL);
 		if (p2p_producers[i].peer_cr_fifo.buf_vaddr == NULL) {
@@ -565,7 +590,7 @@ int sphcs_p2p_init(struct sphcs *sphcs, struct sphcs_p2p_cbs *p2p_cbs)
 		/* We send forward credit messages to consumers */
 		p2p_consumers[i].peer_cr_fifo.elem_size = sizeof(struct sphcs_p2p_fw_cr_fifo_elem);
 		p2p_consumers[i].peer_cr_fifo.buf_vaddr = dma_alloc_coherent(sphcs->hw_device,
-									     CR_FIFO_DEPTH * sizeof(struct sphcs_p2p_rel_cr_fifo_elem),
+									     CR_FIFO_DEPTH * sizeof(struct sphcs_p2p_fw_cr_fifo_elem),
 									     &p2p_consumers[i].peer_cr_fifo.buf_dma_addr,
 									     GFP_KERNEL);
 		if (p2p_consumers[i].peer_cr_fifo.buf_vaddr == NULL) {

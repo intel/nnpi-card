@@ -9,7 +9,7 @@
 #include <linux/types.h>
 #include "ipc_protocol.h"
 
-#define NNP_IPC_CHAN_PROTOCOL_VERSION NNP_MAKE_VERSION(1, 5, 0)
+#define NNP_IPC_CHAN_PROTOCOL_VERSION NNP_MAKE_VERSION(1, 6, 0)
 
 #define NNP_IPC_GENMSG_BAD_CLIENT_ID   0xFFF
 
@@ -510,11 +510,11 @@ CHECK_MESSAGE_SIZE(union h2c_ChanHwTraceState, 1);
 union h2c_ChanGetCrFIFO {
 	struct {
 		__le64 opcode      : 6;  /* NNP_IPC_H2C_OP_CHAN_GET_CR_FIFO */
-		__le64 chan_id      : NNP_IPC_CHANNEL_BITS;
-		__le64 p2p_tr_id   : 16;
+		__le64 chan_id     :NNP_IPC_CHANNEL_BITS;
+		__le64 p2p_tr_id   :16;
 		__le64 peer_id     : 5;
 		__le64 fw_fifo     : 1;/* fw fifo or relase fifo */
-		__le64 reserved    : 26;
+		__le64 reserved    :26;
 	};
 
 	__le64 value;
@@ -524,18 +524,19 @@ CHECK_MESSAGE_SIZE(union h2c_ChanGetCrFIFO, 1);
 union h2c_ChanConnectPeers {
 	struct {
 		__le64 opcode      : 6;  /* NNP_IPC_H2C_OP_CHAN_P2P_CONNECT_PEERS */
-		__le64 chan_id      : NNP_IPC_CHANNEL_BITS;
-		__le64 p2p_tr_id   : 16;
+		__le64 chan_id     :NNP_IPC_CHANNEL_BITS;
+		__le64 p2p_tr_id   :16;
 		__le64 buf_id      : 8;
 		__le64 is_src_buf  : 1;
 		__le64 peer_dev_id : 5;
 		__le64 peer_buf_id : 8;
-		__le64 reserved    : 10;
+		__le64 disconnect  : 1;
+		__le64 reserved    : 9;
 	};
 
 	__le64 value;
 };
-CHECK_MESSAGE_SIZE(union h2c_ChanGetCrFIFO, 1);
+CHECK_MESSAGE_SIZE(union h2c_ChanConnectPeers, 1);
 
 union h2c_ChanUpdatePeerDev {
 	struct {

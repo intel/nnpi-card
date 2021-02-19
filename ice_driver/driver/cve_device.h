@@ -201,6 +201,8 @@ struct ice_reg_stored_config {
 struct cve_device {
 	/* device index */
 	u32 dev_index;
+	/* validity of the device based on fuse value and user input */
+	u8 is_valid;
 	/* link to Ntw ICEs */
 	struct cve_dle_t owner_list;
 	/* link to cve devices in an ICEBO */

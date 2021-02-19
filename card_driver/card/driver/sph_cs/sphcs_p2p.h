@@ -39,6 +39,9 @@ struct sphcs_p2p_cbs {
 	 * rel cr fifo with sbid equal to buf->buf_id
 	 */
 	void (*data_consumed)(struct sphcs_p2p_buf *buf);
+
+	/* Called when a peer buf is connected or disconnected */
+	enum event_val (*dst_devres_peer)(struct sphcs_p2p_buf *buf, struct sphcs_p2p_peer_dev *peer_dev);
 };
 
 /* Only for SPH EP */
