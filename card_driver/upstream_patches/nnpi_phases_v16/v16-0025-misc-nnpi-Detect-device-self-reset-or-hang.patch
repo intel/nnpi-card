@@ -1,0 +1,389 @@
+From 19428859b6f58aaa4b12ca9ccc4244b4fee6d6f2 Mon Sep 17 00:00:00 2001
+From: Guy Zadicario <guy.zadicario@intel.com>
+Date: Mon, 16 Nov 2020 15:27:39 +0200
+Subject: [PATCH v16 25/29] misc: nnpi: Detect device self-reset or hang
+
+Handle two possible fatal NNP-I device states:
+
+1) The device has self reset itself, without the driver asking for it.
+   This situation might happen on a device with defect s/w or h/w, and
+   should not happen during normal operation. However, when it happens,
+   the PCIe link will stay up but the host driver will stop receiving
+   interrupts. So the driver needs to detect this situation and deal with
+   it.
+
+2) The device hangs and stops serving any host requests.
+   We would like to detect this hang condition and release any client
+   waiting for a device response.
+
+Identifying these fatal device states is done using a timer for each NNP-I
+device which fires every 3 seconds, and detects the above two conditions.
+
+Signed-off-by: Guy Zadicario <guy.zadicario@intel.com>
+---
+ drivers/misc/intel-nnpi/nnp_pcie.c | 210 +++++++++++++++++++++++++++++++++++--
+ 1 file changed, 200 insertions(+), 10 deletions(-)
+
+diff --git a/drivers/misc/intel-nnpi/nnp_pcie.c b/drivers/misc/intel-nnpi/nnp_pcie.c
+index 22af156..f369cf0 100644
+--- a/drivers/misc/intel-nnpi/nnp_pcie.c
++++ b/drivers/misc/intel-nnpi/nnp_pcie.c
+@@ -10,9 +10,12 @@
+ #include <linux/interrupt.h>
+ #include <linux/io-64-nonatomic-lo-hi.h>
+ #include <linux/module.h>
++#include <linux/mutex.h>
+ #include <linux/pci.h>
+ #include <linux/sched.h>
+ #include <linux/spinlock.h>
++#include <linux/timekeeping.h>
++#include <linux/timer.h>
+ #include <linux/wait.h>
+ 
+ #include "device.h"
+@@ -33,12 +36,15 @@
+  *              "inbound memory region". This device memory region is
+  *              described in ipc_include/nnp_inbound_mem.h
+  * @remove_reset_mutex: serialize device remove and reset flows.
+- * @lock: protects accesses to cmd_read_update_count members.
++ * @lock: protects accesses to cmd_read_update_count members and also
++ *        protects read/write of ELBI_PCI_MSI_MASK register
+  * @response_buf: buffer to hold response messages pulled of the device's
+  *                response queue.
+  * @card_status_wait: waitq that get signaled when device PCI status has changed
+  *                    or device has updated its read pointer of the command
+  *                    queue.
++ * @reset_work: work struct used to schedule device reset operation
++ * @interrupts_mask_timer: timer used to trigger device hang condition check.
+  * @card_doorbell_val: card's doorbell register value, updated when doorbell
+  *                     interrupt is received.
+  * @cmdq_free_slots: number of slots in the device's command queue which is known
+@@ -50,6 +56,10 @@
+  *                         pointer to the device command queue.
+  * @removing: true if device remove is in progress.
+  * @in_reset: true if PCI device is in reset flow.
++ * @keep_alive: last host keep alive counter received in doorbell register.
++ * @periodic_on: true when @interrupts_mask_timer is active. It is turns off
++ *               during device reset.
++ * @hang: true if device hang condition is detected.
+  */
+ struct nnp_pci {
+ 	struct nnp_device nnpdev;
+@@ -62,6 +72,8 @@ struct nnp_pci {
+ 	spinlock_t      lock;
+ 	u64             response_buf[ELBI_RESPONSE_FIFO_DEPTH];
+ 	wait_queue_head_t card_status_wait;
++	struct work_struct reset_work;
++	struct timer_list  interrupts_mask_timer;
+ 	u32             card_doorbell_val;
+ 
+ 	u32             cmdq_free_slots;
+@@ -72,6 +84,11 @@ struct nnp_pci {
+ 	bool            removing;
+ 
+ 	bool            in_reset;
++
++	int             keep_alive;
++	int             periodic_on;
++
++	bool            hang;
+ };
+ 
+ #define NNP_DRIVER_NAME  "nnp_pcie"
+@@ -81,6 +98,9 @@ struct nnp_pci {
+ 				  ELBI_PCI_STATUS_RESPQ_NEW_RESPONSE |
+ 				  ELBI_PCI_STATUS_DOORBELL;
+ 
++/* Interrupts mask check timer interval, set for 3 seconds */
++static u32 interrupts_mask_check_timer_ms = 3000;
++
+ static inline void nnp_mmio_write(struct nnp_pci *nnp_pci, u32 off, u32 val)
+ {
+ 	iowrite32(val, nnp_pci->mmio_va + off);
+@@ -184,6 +204,15 @@ static irqreturn_t threaded_interrupt_handler(int irq, void *data)
+ {
+ 	struct nnp_pci *nnp_pci = data;
+ 	bool should_wake = false;
++	u32 card_boot_state;
++
++	/*
++	 * we have to take the lock here since it protects accesses to
++	 * ELBI_PCI_MSI_MASK register which is being tested also by
++	 * nnp_interrupts_mask_reg_check function, which must not "see"
++	 * the temporary UINT_MAX value we write to it in this handler.
++	 */
++	spin_lock(&nnp_pci->lock);
+ 
+ 	/* mask interrupts */
+ 	mask_all_interrupts(nnp_pci);
+@@ -194,22 +223,30 @@ static irqreturn_t threaded_interrupt_handler(int irq, void *data)
+ 		       nnp_pci->card_status & card_status_int_mask);
+ 
+ 	if (nnp_pci->card_status & ELBI_PCI_STATUS_CMDQ_READ_UPDATE) {
+-		spin_lock(&nnp_pci->lock);
+ 		should_wake = true;
+ 		nnp_pci->cmd_read_update_count++;
+-		spin_unlock(&nnp_pci->lock);
+ 	}
+ 
+ 	if (nnp_pci->card_status &
+-	    ELBI_PCI_STATUS_DOORBELL)
++	    ELBI_PCI_STATUS_DOORBELL) {
+ 		notify_card_doorbell_value(nnp_pci);
+ 
++		/* reset keep alive counter if card driver is down */
++		card_boot_state = FIELD_GET(NNP_CARD_BOOT_STATE_MASK,
++					    nnp_pci->card_doorbell_val);
++		if (card_boot_state != NNP_CARD_BOOT_STATE_DRV_READY &&
++		    card_boot_state != NNP_CARD_BOOT_STATE_CARD_READY)
++			nnp_pci->keep_alive = 0;
++	}
++
+ 	if (nnp_pci->card_status & ELBI_PCI_STATUS_RESPQ_NEW_RESPONSE)
+ 		nnp_process_commands(nnp_pci);
+ 
+ 	/* unmask interrupts */
+ 	unmask_interrupts(nnp_pci);
+ 
++	spin_unlock(&nnp_pci->lock);
++
+ 	if (should_wake)
+ 		wake_up_all(&nnp_pci->card_status_wait);
+ 
+@@ -524,6 +561,38 @@ static void inform_driver_ready(struct nnp_pci *nnp_pci)
+ 	nnp_mmio_write(nnp_pci, ELBI_PCI_HOST_DOORBELL_VALUE, doorbell_val);
+ }
+ 
++/* Those are defined forward but we call it from nnp_probe :( */
++static void nnp_interrupts_mask_reg_check(struct timer_list *timer);
++static void pcie_dev_reinit_work_handler(struct work_struct *work);
++
++static void start_hang_detect_timer(struct nnp_pci *nnp_pci)
++{
++	nnp_pci->hang = false;
++	nnp_pci->keep_alive = 0;
++	INIT_WORK(&nnp_pci->reset_work, pcie_dev_reinit_work_handler);
++	timer_setup(&nnp_pci->interrupts_mask_timer,
++		    nnp_interrupts_mask_reg_check, 0);
++	mod_timer(&nnp_pci->interrupts_mask_timer,
++		  jiffies + msecs_to_jiffies(interrupts_mask_check_timer_ms));
++	nnp_pci->periodic_on = 1;
++}
++
++static void stop_hang_detect_timer(struct nnp_pci *nnp_pci)
++{
++	if (nnp_pci->periodic_on) {
++		nnp_pci->periodic_on = 2;
++		del_timer_sync(&nnp_pci->interrupts_mask_timer);
++		nnp_pci->periodic_on = 0;
++	}
++
++	/*
++	 * cancel or wait for scheduled reset work to finish
++	 * (which might be launched from hang detection timer routine)
++	 */
++	if (work_pending(&nnp_pci->reset_work))
++		cancel_work_sync(&nnp_pci->reset_work);
++}
++
+ static int nnp_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
+ {
+ 	struct device *dev = &pdev->dev;
+@@ -601,6 +670,11 @@ static int nnp_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
+ 	/* Enable desired interrupts */
+ 	unmask_interrupts(nnp_pci);
+ 
++	/*
++	 * Register periodic timer to detect card hang or reset situtions.
++	 */
++	start_hang_detect_timer(nnp_pci);
++
+ 	return 0;
+ }
+ 
+@@ -608,11 +682,8 @@ static void nnp_remove(struct pci_dev *pdev)
+ {
+ 	struct nnp_pci *nnp_pci = pci_get_drvdata(pdev);
+ 
+-	mutex_lock(&nnp_pci->remove_reset_mutex);
+-
+-	/* stop service new interrupts */
+-	nnp_free_interrupts(nnp_pci, nnp_pci->pdev);
+-
++	/* spinlock is to synchronize with nnp_interrupts_mask_reg_check */
++	spin_lock(&nnp_pci->lock);
+ 	/*
+ 	 * Flag that the device is being removed and wake any possible
+ 	 * thread waiting on the card's command queue.
+@@ -625,8 +696,17 @@ static void nnp_remove(struct pci_dev *pdev)
+ 	 * is not an issue for next time the device will get inserted.
+ 	 */
+ 	nnp_pci->removing = true;
++	spin_unlock(&nnp_pci->lock);
+ 	wake_up_all(&nnp_pci->card_status_wait);
+ 
++	/* stop the hang detection timer */
++	stop_hang_detect_timer(nnp_pci);
++
++	mutex_lock(&nnp_pci->remove_reset_mutex);
++
++	/* stop service new interrupts */
++	nnp_free_interrupts(nnp_pci, nnp_pci->pdev);
++
+ 	/*
+ 	 * Inform card that host driver is down.
+ 	 * This will also clear any state on the card so that
+@@ -719,15 +799,21 @@ static void nnp_pci_err_resume(struct pci_dev *dev)
+ static void nnp_reset_prepare(struct pci_dev *dev)
+ {
+ 	struct nnp_pci *nnp_pci = NULL;
++	bool is_hang;
+ 
+ 	nnp_pci = pci_get_drvdata(dev);
+ 
+ 	dev_dbg(&nnp_pci->pdev->dev, "reset_prepare\n");
+ 	/* unlock will happen on nnp_reset_done */
+ 	mutex_lock(&nnp_pci->remove_reset_mutex);
++	if (nnp_pci->removing)
++		return;
++
++	is_hang = (!nnp_pci->in_reset && nnp_pci->hang);
+ 
+-	nnpdev_reset_prepare(&nnp_pci->nnpdev, false);
++	nnpdev_reset_prepare(&nnp_pci->nnpdev, is_hang);
+ 	nnp_pci->in_reset = true;
++	stop_hang_detect_timer(nnp_pci);
+ }
+ 
+ static void nnp_reset_done(struct pci_dev *dev)
+@@ -741,6 +827,9 @@ static void nnp_reset_done(struct pci_dev *dev)
+ 
+ 	dev_dbg(&nnp_pci->pdev->dev, "reset_done\n");
+ 
++	if (nnp_pci->removing)
++		goto done; // device removed before reset has started
++
+ 	do {
+ 		pci_read_config_dword(dev, 0x4, &cmd);
+ 		dev_dbg(&nnp_pci->pdev->dev,
+@@ -756,6 +845,7 @@ static void nnp_reset_done(struct pci_dev *dev)
+ 		/* restore interrupt mask (was reset by the device) */
+ 		nnp_mmio_write(nnp_pci, ELBI_PCI_MSI_MASK, ~card_status_int_mask);
+ 		inform_driver_ready(nnp_pci);
++		start_hang_detect_timer(nnp_pci);
+ 	}
+ 
+ 	if (cmd == 0xffffffff || rc) {
+@@ -773,9 +863,109 @@ static void nnp_reset_done(struct pci_dev *dev)
+ 		nnpdev_reset_done(&nnp_pci->nnpdev);
+ 	}
+ 
++done:
+ 	mutex_unlock(&nnp_pci->remove_reset_mutex);
+ }
+ 
++static void pcie_dev_reinit_work_handler(struct work_struct *work)
++{
++	struct nnp_pci *nnp_pci = container_of(work, struct nnp_pci,
++					       reset_work);
++
++	if (!nnp_pci->removing) {
++		nnp_reset_prepare(nnp_pci->pdev);
++		nnp_reset_done(nnp_pci->pdev);
++	}
++}
++
++static void nnp_interrupts_mask_reg_check(struct timer_list *timer)
++{
++	struct nnp_pci *nnp_pci = from_timer(nnp_pci, timer,
++					     interrupts_mask_timer);
++	u32 interrupts_mask_val;
++	u32 card_doorbell;
++	u32 h_db;
++	u8 card_boot_state;
++	bool sched_reset_work = false;
++
++	spin_lock(&nnp_pci->lock);
++	interrupts_mask_val = nnp_mmio_read(nnp_pci, ELBI_PCI_MSI_MASK);
++
++	if (interrupts_mask_val & card_status_int_mask) {
++		/*
++		 * This device "self-reset" should not happen, this is
++		 * an error state that needs be logged.
++		 */
++		dev_err(&nnp_pci->pdev->dev,
++			"NNPI Device reset detected, starting recovery...");
++
++		nnp_mmio_write(nnp_pci, ELBI_PCI_MSI_MASK, ~card_status_int_mask);
++
++		/* Do PCIe hw device reset */
++		sched_reset_work = true;
++	} else if (!nnp_pci->hang &&
++		   !nnp_pci->removing) {
++		/*
++		 * If card driver is up - send keep alive doorbell interrupt
++		 * to card. Card driver should respond with the keep alive
++		 * value, if card does not respond within two periodic timer
++		 * interrupts (i.e. 6 seconds) then the card is in hanged state.
++		 */
++		card_doorbell = nnp_mmio_read(nnp_pci,
++					      ELBI_HOST_PCI_DOORBELL_VALUE);
++		card_boot_state = FIELD_GET(NNP_CARD_BOOT_STATE_MASK,
++					    card_doorbell);
++		if (card_boot_state == NNP_CARD_BOOT_STATE_DRV_READY ||
++		    card_boot_state == NNP_CARD_BOOT_STATE_CARD_READY) {
++			if (nnp_pci->keep_alive > 0) {
++				int card_keep_alive =
++					FIELD_GET(NNP_CARD_KEEP_ALIVE_MASK,
++						  card_doorbell);
++				int d = nnp_pci->keep_alive - card_keep_alive;
++
++				if (d > 1 || d < -1) {
++					/* Card is hang !!! */
++					dev_info(&nnp_pci->pdev->dev,
++						 "NNPI Device hang detected !!!\n");
++					sched_reset_work = true;
++					nnp_pci->hang = true;
++					nnp_pci->keep_alive = 0;
++					goto do_unlock;
++				}
++			}
++
++			if (nnp_pci->keep_alive < 14)
++				nnp_pci->keep_alive++;
++			else
++				nnp_pci->keep_alive = 1;
++
++			h_db = nnp_mmio_read(nnp_pci,
++					     ELBI_PCI_HOST_DOORBELL_VALUE);
++			h_db &= ~(NNP_HOST_KEEP_ALIVE_MASK);
++			h_db |= FIELD_PREP(NNP_HOST_KEEP_ALIVE_MASK,
++					   nnp_pci->keep_alive);
++			nnp_mmio_write(nnp_pci, ELBI_PCI_HOST_DOORBELL_VALUE,
++				       h_db);
++		} else {
++			nnp_pci->keep_alive = 0;
++		}
++	}
++
++do_unlock:
++	spin_unlock(&nnp_pci->lock);
++
++	// do not start work or re-init timer if timer is being deleted
++	if (nnp_pci->periodic_on != 1)
++		return;
++
++	if (sched_reset_work)
++		schedule_work(&nnp_pci->reset_work);
++	else
++		mod_timer(&nnp_pci->interrupts_mask_timer,
++			  jiffies +
++			  msecs_to_jiffies(interrupts_mask_check_timer_ms));
++}
++
+ static struct pci_error_handlers nnp_pci_err_handlers = {
+ 	.error_detected = nnp_pci_err_error_detected,
+ 	.mmio_enabled = nnp_pci_err_mmio_enabled,
+-- 
+1.8.3.1
+
