@@ -564,13 +564,13 @@ static void dispatch_next_subjobs(struct di_job *job,
 		project_hook_dispatch_new_job(dev, ntw);
 
 		if (dev->prev_reg_config.cbd_entries_nr !=
-			cfg_default.mmio_cbd_entries_nr_offset) {
+			dev->fifo_desc->fifo.entries) {
 			/** Configure CBDT entry size only for cold run*/
 			cve_os_write_mmio_32(dev,
 				cfg_default.mmio_cbd_entries_nr_offset,
 				dev->fifo_desc->fifo.entries);
 			dev->prev_reg_config.cbd_entries_nr =
-				cfg_default.mmio_cbd_entries_nr_offset;
+				dev->fifo_desc->fifo.entries;
 		}
 	} else {
 		ASSERT(dev->is_cold_run == 0);
@@ -738,7 +738,7 @@ void ice_di_set_shared_read_reg(struct cve_device *dev, struct ice_network *ntw,
 
 
 #ifdef IDC_ENABLE
-int set_idc_registers(struct ice_network *ntw, uint8_t lock)
+int set_idc_registers(struct cve_device *ice_list, uint8_t lock)
 {
 	uint64_t value, val64, ice_pe_val;
 	int ret = 0;
@@ -750,7 +750,6 @@ int set_idc_registers(struct ice_network *ntw, uint8_t lock)
 	bool all_on = true;
 	uint64_t mask = 0;
 	u64 t;
-	struct ice_pnetwork *pntw = ntw->pntw;
 
 	if (lock) {
 		ret = cve_os_lock(&dg->poweroff_dev_list_lock,
@@ -763,7 +762,7 @@ int set_idc_registers(struct ice_network *ntw, uint8_t lock)
 		}
 	}
 
-	dev = pntw->ice_list;
+	dev = ice_list;
 	do {
 		if (dev->power_state == ICE_POWER_ON) {
 
@@ -793,7 +792,7 @@ int set_idc_registers(struct ice_network *ntw, uint8_t lock)
 
 		dev = cve_dle_next(dev, owner_list);
 
-	} while (dev != pntw->ice_list);
+	} while (dev != ice_list);
 
 	if (all_on)
 		goto out;
@@ -822,7 +821,7 @@ int set_idc_registers(struct ice_network *ntw, uint8_t lock)
 				ICE_POWER_ON);
 
 			dev = cve_dle_next(dev, owner_list);
-		} while (dev != pntw->ice_list);
+		} while (dev != ice_list);
 
 		goto out;
 	}
@@ -854,7 +853,7 @@ int set_idc_registers(struct ice_network *ntw, uint8_t lock)
 				ICE_POWER_OFF);
 
 			dev = cve_dle_next(dev, owner_list);
-		} while (dev != pntw->ice_list);
+		} while (dev != ice_list);
 
 		cve_os_log_default(CVE_LOGLEVEL_ERROR,
 			"Initialization of ICEs failed. Expected=%llx, Received=%llx\n",
@@ -897,7 +896,7 @@ int set_idc_registers(struct ice_network *ntw, uint8_t lock)
 		}
 
 		dev = cve_dle_next(dev, owner_list);
-	} while (dev != pntw->ice_list);
+	} while (dev != ice_list);
 
 	/* based on the Power Enabled ICE mask, prepare an equivalent ICE
 	 * normal/error interrupt mask. This avoid reading those MMIOs
@@ -1665,9 +1664,15 @@ static inline void __read_isr_q(struct idc_device *dev,
 				status_hl = (status_hl >> 1);
 				index++;
 			}
-			tail = (tail + 1) % IDC_ISR_BH_QUEUE_SZ;
+		} else {
+			cve_os_log_default(CVE_LOGLEVEL_ERROR,
+				"Spurious BH IsrQNode[%d] idc_status:0x%llx ice_status:0x%llx\n",
+				tail, qnode->idc_status, qnode->ice_status);
 		}
+
+		tail = (tail + 1) % IDC_ISR_BH_QUEUE_SZ;
 	}
+
 	*q_tail = tail;
 }
 
@@ -1715,7 +1720,6 @@ void cve_di_interrupt_handler_deferred_proc(struct idc_device *dev)
 	struct cve_device_group *dg;
 
 	u32 head, tail;
-	struct dev_isr_status *isr_status_node;
 
 	DO_TRACE(trace__icedrvBottomHalf(
 				SPH_TRACE_OP_STATE_QUEUED,
@@ -1740,15 +1744,6 @@ void cve_di_interrupt_handler_deferred_proc(struct idc_device *dev)
 		/* Q Empty*/
 		cve_os_log(CVE_LOGLEVEL_INFO,
 			"ISR-BH Q is EMPTY, nothing to do\n");
-		goto end;
-	}
-
-	isr_status_node = &dev->isr_status[tail];
-	if (!isr_status_node->valid) {
-		cve_os_log_default(CVE_LOGLEVEL_ERROR,
-				"Spurious BH IsrQNode[%d] idc_status:0x%llx ice_status:0x%llx\n",
-				tail, isr_status_node->idc_status,
-				isr_status_node->ice_status);
 		goto end;
 	}
 

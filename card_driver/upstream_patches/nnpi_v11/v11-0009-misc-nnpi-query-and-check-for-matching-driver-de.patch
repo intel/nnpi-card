@@ -1,0 +1,267 @@
+From 0bdc263f1f1632af1ad1145444aa6965a7ece8a4 Mon Sep 17 00:00:00 2001
+From: Guy Zadicario <guy.zadicario@intel.com>
+Date: Sun, 15 Nov 2020 10:08:53 +0200
+Subject: [PATCH v11 09/14] misc: nnpi: query and check for matching
+ driver<->device protocol version
+
+Check that the card booted SW stack is compatible with the driver running
+on the host. The ipc protocol between the driver and device may change from
+time to time, when releasing new versions of the device boot image.
+When the device boots and signals to the host that it is booted and ready
+(through doorbell change interrupt), the driver sends it a "query version"
+command. In response, the device sends back a "query version reply"
+response with information of the IPC protocol version which it supports.
+Only when the version check passes, the device is considered as booted and
+ready for operation. If the version check fails, the device is put in error
+state. In order to recover from this error condition, a device reset is
+required.
+
+Signed-off-by: Guy Zadicario <guy.zadicario@intel.com>
+Reviewed-by: Vaibhav Agarwal <vaibhav.agarwal@intel.com>
+---
+ drivers/misc/intel-nnpi/device.c | 140 +++++++++++++++++++++++++++++++++++++++
+ drivers/misc/intel-nnpi/device.h |  20 ++++++
+ 2 files changed, 160 insertions(+)
+
+diff --git a/drivers/misc/intel-nnpi/device.c b/drivers/misc/intel-nnpi/device.c
+index d4f8cb7..47c8fe2 100644
+--- a/drivers/misc/intel-nnpi/device.c
++++ b/drivers/misc/intel-nnpi/device.c
+@@ -63,6 +63,111 @@ void nnpdev_module_fini(void)
+ 	ida_destroy(&dev_ida);
+ }
+ 
++/**
++ * process_query_version_reply() - process a "query_version_reply" response
++ * @work: work struct of the calling work
++ *
++ * This function processes a "query_version_reply" response message from
++ * the device which is sent as reply to query_version command submitted
++ * earlier.
++ * The function checks that the ipc protocol version that is supported by the
++ * device matches the one supported by the driver. If there is no match the
++ * device state is put in error.
++ * There are two ipc protocol versions which are checked:
++ * 'protocol_version': is ipc protocol version of command and response messages
++ *         That are built (for commands) and processed by this kernel mode
++ *         driver. The protocol is defined in ipc_include/ipc_protocol.h
++ *         A mismatch is possible in cases that the device has booted with
++ *         a wrong/older version of the card boot image.
++ * 'chan_protocol_version': is ipc protocol of command and responses which are
++ *         supported by the device but are built and processed in user-space.
++ *         The structure of the commands and responses are mostly opaque to
++ *         the kernel mode driver. This separation allows to update the
++ *         device boot image and user-space library to support new sets
++ *         of commands without changing the kernel driver.
++ *         The restriction for such commands and responses is that the lowest
++ *         16-bits of the command/response are defined to include the
++ *         command/response opcode and the channel id.
++ *         The kernel driver should also know for each possible command and
++ *         response opcode the size of the message. This info is received
++ *         from the device within this "query_version_reply" response
++ *         encoded in the chan_resp_op_size and chan_cmd_op_size fields
++ *         of the response.
++ */
++static void process_query_version_reply(struct work_struct *work)
++{
++	struct query_version_work *query_version_work;
++	struct nnp_device *nnpdev;
++	u32 protocol_version;
++	u32 card_boot_state;
++	u32 val;
++
++	query_version_work =
++		container_of(work, struct query_version_work, work);
++	nnpdev = container_of(query_version_work,
++			      struct nnp_device, query_version_work);
++	protocol_version = NNP_IPC_PROTOCOL_VERSION;
++	card_boot_state = FIELD_GET(NNP_CARD_BOOT_STATE_MASK,
++				    nnpdev->card_doorbell_val);
++
++	nnpdev->protocol_version =
++		query_version_work->protocol_version;
++	nnpdev->chan_protocol_version =
++		query_version_work->chan_protocol_version;
++
++	if (NNP_VERSION_MAJOR(query_version_work->protocol_version) !=
++	    NNP_VERSION_MAJOR(protocol_version) ||
++	    NNP_VERSION_MINOR(query_version_work->protocol_version) !=
++	    NNP_VERSION_MINOR(protocol_version) ||
++	    query_version_work->chan_resp_op_size == 0) {
++		nnpdev_set_boot_state(nnpdev, NNP_DEVICE_FAILED_VERSION);
++		/* set host driver state in doorbell register */
++		val = FIELD_PREP(NNP_HOST_DRV_STATE_MASK,
++				 NNP_HOST_DRV_STATE_VERSION_ERROR);
++		nnp_set_host_doorbell_value(nnpdev->hw_dev, val);
++	} else if (card_boot_state == NNP_CARD_BOOT_STATE_DRV_READY) {
++		nnpdev_set_boot_state(nnpdev, NNP_DEVICE_CARD_DRIVER_READY);
++	} else if (card_boot_state == NNP_CARD_BOOT_STATE_CARD_READY) {
++		/* Card driver finished initialization */
++		nnpdev_set_boot_state(nnpdev,
++				      NNP_DEVICE_CARD_DRIVER_READY |
++				      NNP_DEVICE_CARD_READY |
++				      NNP_DEVICE_CARD_ENABLED);
++	}
++
++	query_version_work->running = false;
++}
++
++static int handle_query_version_reply3(struct nnp_device *nnpdev,
++				       const u64 *msgbuf, int avail_qwords)
++{
++	int msg_qwords = 3; /* QUERY_VERSION_REPLY3 response len is 3 qwords */
++
++	if (avail_qwords < msg_qwords)
++		return 0;
++
++	/*
++	 * This should not happen, but if it does, just ignore the message
++	 * There is no fear in race condition on "running" flag as only
++	 * single version reply message should be processed after each
++	 * device reset.
++	 */
++	if (nnpdev->query_version_work.running)
++		return msg_qwords;
++
++	nnpdev->query_version_work.running = true;
++	nnpdev->query_version_work.protocol_version =
++		FIELD_GET(NNP_C2H_VERSION_REPLY_QW0_PROT_VER_MASK, msgbuf[0]);
++	nnpdev->query_version_work.chan_protocol_version =
++		FIELD_GET(NNP_C2H_VERSION_REPLY_QW0_CHAN_VER_MASK, msgbuf[0]);
++	nnpdev->query_version_work.chan_resp_op_size = msgbuf[1];
++	nnpdev->query_version_work.chan_cmd_op_size = msgbuf[2];
++
++	queue_work(nnpdev->wq, &nnpdev->query_version_work.work);
++
++	return msg_qwords;
++}
++
+ /*
+  * handle_bios_protocol - process a message from HWQ coming from bios.
+  * bios protocol may have different size messages.
+@@ -91,6 +196,7 @@ typedef int (*response_handler)(struct nnp_device *nnpdev, const u64 *msgbuf,
+ 				int avail_qwords);
+ 
+ static response_handler resp_handlers[NNP_IPC_C2H_OPCODE_LAST + 1] = {
++	[NNP_IPC_C2H_OP_QUERY_VERSION_REPLY3] = handle_query_version_reply3,
+ 	[NNP_IPC_C2H_OP_BIOS_PROTOCOL] = handle_bios_protocol
+ };
+ 
+@@ -357,6 +463,20 @@ void nnpdev_set_boot_state(struct nnp_device *nnpdev, u32 mask)
+ 				"Unexpected error while loading boot image. rc=%d\n",
+ 				ret);
+ 	}
++
++	/* Handle transition to active state */
++	if (((state & NNP_DEVICE_CARD_DRIVER_READY) ||
++	     (state & NNP_DEVICE_CARD_READY)) &&
++	    !(prev_state & NNP_DEVICE_CARD_DRIVER_READY) &&
++	    !(prev_state & NNP_DEVICE_CARD_READY)) {
++		u32 val;
++
++		/* set host driver state to "Driver ready" */
++		val = FIELD_PREP(NNP_HOST_DRV_STATE_MASK,
++				 NNP_HOST_DRV_STATE_READY);
++		nnp_set_host_doorbell_value(nnpdev->hw_dev, val);
++
++	}
+ }
+ 
+ /**
+@@ -426,6 +546,7 @@ struct nnp_device *nnpdev_create(struct nnp_hw_dev *hw_dev)
+ 
+ 	kref_init(&nnpdev->ref);
+ 	spin_lock_init(&nnpdev->lock);
++	INIT_WORK(&nnpdev->query_version_work.work, process_query_version_reply);
+ 
+ 	return nnpdev;
+ 
+@@ -458,6 +579,7 @@ static void doorbell_changed_handler(struct work_struct *work)
+ 	u32 error_state;
+ 	u32 doorbell_val = req->val;
+ 	struct nnp_device *nnpdev = req->nnpdev;
++	u64 query_cmd;
+ 
+ 	nnpdev->card_doorbell_val = doorbell_val;
+ 
+@@ -505,6 +627,24 @@ static void doorbell_changed_handler(struct work_struct *work)
+ 		case NNP_CARD_BOOT_STATE_BIOS_FLASH_STARTED:
+ 			nnpdev_set_boot_state(nnpdev,
+ 					      NNP_DEVICE_BIOS_UPDATE_STARTED);
++			break;
++		case NNP_CARD_BOOT_STATE_DRV_READY:
++		case NNP_CARD_BOOT_STATE_CARD_READY:
++			/* card is up - send "query_version" command */
++			query_cmd = FIELD_PREP(NNP_H2C_OP_MASK,
++					       NNP_IPC_H2C_OP_QUERY_VERSION);
++			if (nnpdev_queue_msg(nnpdev->cmdq, query_cmd) ||
++			    nnp_msched_queue_sync(nnpdev->cmdq))
++				dev_err(nnpdev->hw_dev->dev,
++					"Query version msg error\n");
++			break;
++
++		case NNP_CARD_BOOT_STATE_NOT_READY:
++			/* card is down reset the device boot and error state */
++			spin_lock(&nnpdev->lock);
++			nnpdev->state = 0;
++			spin_unlock(&nnpdev->lock);
++			break;
+ 		default:
+ 			break;
+ 		}
+diff --git a/drivers/misc/intel-nnpi/device.h b/drivers/misc/intel-nnpi/device.h
+index 296b307..2d1c402 100644
+--- a/drivers/misc/intel-nnpi/device.h
++++ b/drivers/misc/intel-nnpi/device.h
+@@ -52,6 +52,15 @@
+ 
+ #define NNP_DEVICE_RESPONSE_BUFFER_LEN  32
+ 
++struct query_version_work {
++	struct work_struct work;
++	u64 chan_resp_op_size;
++	u64 chan_cmd_op_size;
++	u16 protocol_version;
++	u16 chan_protocol_version;
++	bool running;
++};
++
+ /**
+  * struct nnp_device - structure for NNP-I "logical" device info
+  * @ref: refcount this object
+@@ -78,8 +87,12 @@
+  * @bios_version_str: the device's started bios version string
+  * @bios_system_info_valid: true if @bios_system_info has been filled and valid
+  * @state: current device boot state mask (see device state bits above)
++ * @protocol_version: version of host->card ipc protocol
++ * @chan_protocol_version: version of user-space->card commands ipc protocol
+  * @curr_boot_state: last boot state field received from device doorbell reg
+  * @card_doorbell_val: last received device doorbell register value.
++ * @query_version_work: work struct used to schedule processing of version
++ *                      reply response message arrived from device.
+  */
+ struct nnp_device {
+ 	struct kref            ref;
+@@ -108,12 +121,19 @@ struct nnp_device {
+ 
+ 	u32            state;
+ 	u32            curr_boot_state;
++	unsigned short protocol_version;
++	unsigned short chan_protocol_version;
+ 	u32            card_doorbell_val;
++
++	struct query_version_work query_version_work;
+ };
+ 
+ void nnpdev_module_init(void);
+ void nnpdev_module_fini(void);
+ 
++#define nnpdev_queue_msg(q, m) \
++	nnp_msched_queue_add_msg((q), (u64 *)&(m), sizeof((m)) / sizeof(u64))
++
+ void nnpdev_get(struct nnp_device *nnpdev);
+ void nnpdev_put(struct nnp_device *nnpdev);
+ 
+-- 
+1.8.3.1
+

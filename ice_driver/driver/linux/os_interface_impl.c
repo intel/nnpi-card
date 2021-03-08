@@ -1695,6 +1695,18 @@ int cve_probe_common(struct cve_os_device *linux_device, int dev_ind)
 		icemask_user, icemask_reg, enable_llc_config_via_axi_reg,
 		sph_soc, ice_sch_preemption);
 
+	/* reset the valid flag of each device before init */
+	{
+		u8 idx = 0;
+
+		while (idx < NUM_ICE_UNIT) {
+			/* set it to 0 before init and set it to one
+			 * selectively based based on fuse and user mask
+			 */
+			linux_device->idc_dev.cve_dev[idx].is_valid = 0;
+			idx++;
+		}
+	}
 
 	active_ice = (~g_icemask) & VALID_ICE_MASK;
 	if (!active_ice) {
@@ -1777,6 +1789,12 @@ int cve_probe_common(struct cve_os_device *linux_device, int dev_ind)
 		goto create_idc;
 	}
 
+	/*read the power status of the ICEs as they might have been
+	 * switch ON during init
+	 */
+	pe_reg_value = cve_os_read_idc_mmio(
+			&linux_device->idc_dev.cve_dev[0],
+			cfg_default.bar0_mem_icepe_offset);
 	dg->sphpb.sphpb_cbs = sph_power_balancer_register_driver(&icedrv_pbcbs);
 	if (!dg->sphpb.sphpb_cbs) {
 		cve_os_log(CVE_LOGLEVEL_ERROR,

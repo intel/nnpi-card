@@ -447,8 +447,19 @@ static void sphcs_inf_context_chan_cleanup(struct sphcs_cmd_chan *chan, void *cb
 {
 	struct inf_context *context = (struct inf_context *)cb_ctx;
 
+	NNP_SPIN_LOCK_BH(&g_the_sphcs->inf_data->lock_bh);
+	if (chan->destroy_cb == NULL ||
+	    inf_context_get(context) == 0) { // if release is already in progress
+		NNP_SPIN_UNLOCK_BH(&g_the_sphcs->inf_data->lock_bh);
+		return; // context is released, nothing to cleanup
+	}
+	NNP_SPIN_UNLOCK_BH(&g_the_sphcs->inf_data->lock_bh);
+
 	inf_context_destroy_objects(context);
 	find_and_destroy_context(g_the_sphcs->inf_data, context->protocol_id);
+	NNP_ASSERT(context->destroyed != 0);
+	context->destroyed = -1; // no need to notify
+	inf_context_put(context); // release the ref taken for this function
 }
 
 enum event_val create_context(struct sphcs *sphcs, uint16_t protocol_id, uint8_t flags, uint32_t uid, struct sphcs_cmd_chan *chan)
@@ -4152,21 +4163,52 @@ int sphcs_free_resource(struct sphcs  *sphcs,
 	return rc;
 }
 
+static inline struct inf_devres *get_devres_from_p2p_buf(struct sphcs_p2p_buf *buf)
+{
+	struct inf_devres *devres = container_of(buf, struct inf_devres, p2p_buf);
+
+	if (unlikely(buf == NULL ||
+		     !is_inf_devres_ptr(devres) ||
+		     inf_devres_get(devres) == 0))
+		return NULL;
+
+	if (unlikely(!is_inf_devres_ptr(devres))) { // don't use after free
+		sph_log_warn(GENERAL_LOG, "p2p buf from DESTROYED devres.\n");
+		return NULL;
+	}
+
+	NNP_ASSERT(inf_devres_is_p2p(devres));
+
+	return devres;
+}
+
 static void sphcs_inf_new_data_arrived(struct sphcs_p2p_buf *buf)
 {
-	struct inf_devres *devres;
+	struct inf_devres *devres = get_devres_from_p2p_buf(buf);
 	unsigned long flags;
 
-	sph_log_debug(START_UP_LOG, "New data arrived (buf id %u)\n", buf->buf_id);
+	if (unlikely(devres == NULL)) {
+		sph_log_err(EXECUTE_COMMAND_LOG, "New data arrived for non-existing buffer.\n");
+		return;
+	}
 
-	devres = container_of(buf, struct inf_devres, p2p_buf);
+	NNP_SPIN_LOCK_IRQSAVE(&devres->lock_irq, flags);
+	if (unlikely(buf->peer_dev == NULL)) {
+		NNP_SPIN_UNLOCK_IRQRESTORE(&devres->lock_irq, flags);
+		sph_log_err(EXECUTE_COMMAND_LOG, "New data arrived for not paired buffer(%hhu), devres(%hu).\n", buf->buf_id, devres->protocol_id);
+		inf_devres_put(devres);
+		return;
+	}
+
+	NNP_ASSERT(devres->is_p2p_dst);
+
+	sph_log_debug(EXECUTE_COMMAND_LOG, "New data arrived (buf id %hhu).\n", buf->buf_id);
+
 	DO_TRACE(trace_credit(devres->context->protocol_id,
 			      devres->protocol_id,
 			      buf->buf_id,
 			      sphcs_p2p_get_peer_dev_id(buf)));
 
-	/* Update should be atomic */
-	NNP_SPIN_LOCK_IRQSAVE(&devres->lock_irq, flags);
 	inf_devres_set_dirty(devres, false);
 	devres->p2p_buf.ready = true;
 	NNP_SPIN_UNLOCK_IRQRESTORE(&devres->lock_irq, flags);
@@ -4174,26 +4216,93 @@ static void sphcs_inf_new_data_arrived(struct sphcs_p2p_buf *buf)
 	/* advance sched tick and try execute next requests */
 	atomic_add(2, &devres->context->sched_tick);
 	inf_devres_try_execute(devres);
+
+	inf_devres_put(devres);
 }
 
 static void sphcs_inf_data_consumed(struct sphcs_p2p_buf *buf)
 {
-	struct inf_devres *devres;
+	struct inf_devres *devres = get_devres_from_p2p_buf(buf);
+	unsigned long flags;
 
-	sph_log_debug(START_UP_LOG, "Data consumed (buf id %u)\n", buf->buf_id);
+	if (unlikely(devres == NULL)) {
+		sph_log_err(EXECUTE_COMMAND_LOG, "Data consumed for non-existing buffer.\n");
+		return;
+	}
 
-	devres = container_of(buf, struct inf_devres, p2p_buf);
+	NNP_SPIN_LOCK_IRQSAVE(&devres->lock_irq, flags);
+	if (unlikely(buf->peer_dev == NULL)) {
+		NNP_SPIN_UNLOCK_IRQRESTORE(&devres->lock_irq, flags);
+		sph_log_err(EXECUTE_COMMAND_LOG, "Data consumed for not paired buffer(%hhu), devres(%hu).\n", buf->buf_id, devres->protocol_id);
+		inf_devres_put(devres);
+		return;
+	}
+
+	NNP_ASSERT(devres->is_p2p_src);
+
+	sph_log_debug(EXECUTE_COMMAND_LOG, "Data consumed (buf id %hhu)\n", buf->buf_id);
 
 	devres->p2p_buf.ready = true;
+	NNP_SPIN_UNLOCK_IRQRESTORE(&devres->lock_irq, flags);
 
 	/* advance sched tick and try execute next requests */
 	atomic_add(2, &devres->context->sched_tick);
 	inf_devres_try_execute(devres);
+
+	inf_devres_put(devres);
+}
+
+static enum event_val sphcs_inf_dst_devres_peer(struct sphcs_p2p_buf *buf, struct sphcs_p2p_peer_dev *peer_dev)
+{
+	struct inf_devres *devres = get_devres_from_p2p_buf(buf);
+	enum event_val eval = NNP_IPC_NO_ERROR;
+	unsigned long flags;
+
+	if (unlikely(devres == NULL)) {
+		sph_log_err(CREATE_COMMAND_LOG, "Peer is being connected to non-existing buffer.\n");
+		return NNP_IPC_NO_SUCH_DEVRES;
+	}
+
+	NNP_SPIN_LOCK_IRQSAVE(&devres->lock_irq, flags);
+	if (unlikely(devres->destroyed == -1)) {
+		// teardown (inf_context_destroy_objects) is in progress and
+		// disconnected(kref put) this devres if needed, don't proceed.
+		eval = NNP_IPC_NO_SUCH_DEVRES;
+		goto done;
+	}
+
+	if (unlikely((peer_dev != NULL) == (buf->peer_dev != NULL))) { //if (connect == connected)
+		sph_log_err(CREATE_COMMAND_LOG, "%s request received for already %sconnected p2p buf(%hhu).\n",
+			    (peer_dev != NULL) ? "Connect" : "Disconnect", (buf->peer_dev != NULL) ? "" : "dis", buf->buf_id);
+		eval = NNP_IPC_NOT_SUPPORTED;
+		goto done;
+	}
+
+	buf->peer_dev = peer_dev;
+
+	sph_log_debug(CREATE_COMMAND_LOG, "Peer is being %sconnected to buf (id %hhu).\n", peer_dev != NULL ? "" : "dis", buf->buf_id);
+
+	if (peer_dev != NULL) { // connect
+		devres->p2p_buf.ready = devres->is_p2p_src;
+		if (devres->is_p2p_dst) // for src buf  p2p copy holds the ref
+			inf_devres_get(devres);
+	} else {
+		devres->p2p_buf.ready = false;
+		if (devres->is_p2p_dst) // for src buf  p2p copy holds the ref
+			inf_devres_put(devres);
+	}
+
+done:
+	NNP_SPIN_UNLOCK_IRQRESTORE(&devres->lock_irq, flags);
+	inf_devres_put(devres); // for get_devres_from_p2p_buf
+
+	return eval;
 }
 
 static struct sphcs_p2p_cbs s_p2p_cbs = {
 		.new_data_arrived = sphcs_inf_new_data_arrived,
 		.data_consumed = sphcs_inf_data_consumed,
+		.dst_devres_peer = sphcs_inf_dst_devres_peer
 };
 
 int inference_init(struct sphcs *sphcs)
@@ -4330,8 +4439,8 @@ static int sched_status_show(struct seq_file *m, void *v)
 	struct inf_req_sequence *seq;
 	struct inf_exec_req *req;
 	u64 curr_time;
-	int i;
-	int num_contexts = 0;
+	unsigned int i;
+	unsigned int num_contexts = 0;
 	struct sysinfo sinfo;
 
 	if (!g_the_sphcs)
@@ -4344,44 +4453,44 @@ static int sched_status_show(struct seq_file *m, void *v)
 		num_contexts++;
 		NNP_SPIN_LOCK(&context->lock);
 		if (!context->attached || context->destroyed || context->runtime_detach_sent)
-			seq_printf(m, "Context %d attach state: attached=%d destroyed=%d runtime_detach_sent=%d\n",
+			seq_printf(m, "Context %hu attach state: attached=%d destroyed=%d runtime_detach_sent=%d\n",
 				   context->protocol_id,
 				   context->attached,
 				   context->destroyed,
 				   context->runtime_detach_sent);
 		if (list_empty(&context->active_seq_list)) {
-			seq_printf(m, "Context %d: No scheduled commands, state=%d\n", context->protocol_id, context->state);
+			seq_printf(m, "Context %hu: No scheduled commands, state=%d\n", context->protocol_id, context->state);
 		} else {
-			seq_printf(m, "Context %d: state=%d\n", context->protocol_id, context->state);
+			seq_printf(m, "Context %hu: state=%d\n", context->protocol_id, context->state);
 			list_for_each_entry(seq, &context->active_seq_list, node) {
 				req = container_of(seq,
 						   struct inf_exec_req,
 						   seq);
 				if (req->cmd_type == CMDLIST_CMD_INFREQ) {
-					seq_printf(m, "\tinfer command %d network %d\n",
+					seq_printf(m, "\tinfer command %hu network %hu\n",
 						  req->infreq->protocol_id,
 						  req->infreq->devnet->protocol_id);
 					if (req->cmd != NULL)
-						seq_printf(m, "\t\tcommand list %d\n", req->cmd->protocol_id);
+						seq_printf(m, "\t\tcommand list %hu\n", req->cmd->protocol_id);
 					seq_printf(m, "\t\tin_progress: %d\n", req->in_progress);
-					seq_printf(m, "\t\tpriority: %d\n", req->priority);
-					seq_printf(m, "\t\ttime: %lld\n", curr_time - req->time);
+					seq_printf(m, "\t\tpriority: %hhu\n", req->priority);
+					seq_printf(m, "\t\ttime: %llu\n", curr_time - req->time);
 				} else if (req->cmd_type == CMDLIST_CMD_COPY) {
-					seq_printf(m, "\tcopy command %d\n", req->copy->protocol_id);
+					seq_printf(m, "\tcopy command %hu\n", req->copy->protocol_id);
 					if (req->cmd != NULL)
-						seq_printf(m, "\t\tcommand list %d\n", req->cmd->protocol_id);
+						seq_printf(m, "\t\tcommand list %hu\n", req->cmd->protocol_id);
 					seq_printf(m, "\t\tin_progress: %d\n", req->in_progress);
-					seq_printf(m, "\t\tpriority: %d\n", req->priority);
-					seq_printf(m, "\t\ttime: %lld\n", curr_time - req->time);
+					seq_printf(m, "\t\tpriority: %hhu\n", req->priority);
+					seq_printf(m, "\t\ttime: %llu\n", curr_time - req->time);
 				} else if (req->cmd_type == CMDLIST_CMD_COPYLIST) {
-					seq_printf(m, "\tcopy list command idx=%d, n_copies=%d\n",
+					seq_printf(m, "\tcopy list command idx=%hu, n_copies=%hu\n",
 						   req->cpylst->idx_in_cmd,
 						   req->cpylst->n_copies);
 					if (req->cmd != NULL)
-						seq_printf(m, "\t\tcommand list %d\n", req->cmd->protocol_id);
+						seq_printf(m, "\t\tcommand list %hu\n", req->cmd->protocol_id);
 					seq_printf(m, "\t\tin_progress: %d\n", req->in_progress);
-					seq_printf(m, "\t\tpriority: %d\n", req->priority);
-					seq_printf(m, "\t\ttime: %lld\n", curr_time - req->time);
+					seq_printf(m, "\t\tpriority: %hhu\n", req->priority);
+					seq_printf(m, "\t\ttime: %llu\n", curr_time - req->time);
 				} else {
 					seq_printf(m, "\tUNKNWON COMMAND TYPE %d !!!\n", req->cmd_type);
 				}
@@ -4424,8 +4533,8 @@ static int ctx_status_show(struct seq_file *m, void *v)
 	struct inf_req *infreq;
 	struct inf_cmd_list *cmd;
 	struct inf_sync_point *sync_point;
-	int i, j, k;
-	int num_contexts = 0;
+	unsigned int i, j, k;
+	unsigned int num_contexts = 0;
 
 	if (!g_the_sphcs)
 		return -1;
@@ -4434,29 +4543,40 @@ static int ctx_status_show(struct seq_file *m, void *v)
 	//NNP_SPIN_LOCK_BH(&inf_data->lock_bh);
 	hash_for_each(inf_data->context_hash, i, context, hash_node) {
 		num_contexts++;
-		seq_printf(m, "Context %d attach state: attached=%d destroyed=%d runtime_detach_sent=%d ref_count=%d\n",
+		seq_printf(m, "Context %hu attach state: attached=%d destroyed=%d runtime_detach_sent=%d ref_count=%d\n",
 			   context->protocol_id,
 			   context->attached,
 			   context->destroyed,
 			   context->runtime_detach_sent,
-			   kref_read(&context->ref));
+			   atomic_read(&context->ref));
 
 		//NNP_SPIN_LOCK(&context->lock);
 		hash_for_each(context->cmd_hash, j, cmd, hash_node)
-			seq_printf(m, "\tcmdlist %d destroyed=%d\n", cmd->protocol_id, cmd->destroyed);
+			seq_printf(m, "\tcmdlist %hu destroyed=%d ref_count=%u\n", cmd->protocol_id, cmd->destroyed, kref_read(&cmd->ref));
 		hash_for_each(context->copy_hash, j, copy, hash_node)
-			seq_printf(m, "\tcopy %d destroyed=%d\n", copy->protocol_id, copy->destroyed);
+			seq_printf(m, "\tcopy %hu destroyed=%d ref_count=%u\n", copy->protocol_id, copy->destroyed, kref_read(&copy->ref));
 		hash_for_each(context->devnet_hash, j, devnet, hash_node) {
-			seq_printf(m, "\tdevnet %d destroyed=%d\n", devnet->protocol_id, devnet->destroyed);
+			seq_printf(m, "\tdevnet %hu destroyed=%d ref_count=%u\n", devnet->protocol_id, devnet->destroyed, kref_read(&devnet->ref));
 			//NNP_SPIN_LOCK(&devnet->lock);
 			hash_for_each(devnet->infreq_hash, k, infreq, hash_node)
-				seq_printf(m, "\t\tinfreq %d destroyed=%d\n", infreq->protocol_id, infreq->destroyed);
+				seq_printf(m, "\t\tinfreq %hu destroyed=%d ref_count=%u\n", infreq->protocol_id, infreq->destroyed, kref_read(&infreq->ref));
 			//NNP_SPIN_UNLOCK(&devnet->lock);
 		}
-		hash_for_each(context->devres_hash, j, devres, hash_node)
-			seq_printf(m, "\tdevres %d destroyed=%d\n", devres->protocol_id, devres->destroyed);
+		hash_for_each(context->devres_hash, j, devres, hash_node) {
+			seq_printf(m, "\tdevres %hu destroyed=%d, dirty=%d, ref_count=%u.\n",
+				   devres->protocol_id, devres->destroyed, devres->is_dirty, kref_read(&devres->ref));
+			if (inf_devres_is_p2p(devres)) {
+				struct sphcs_p2p_buf *buf = &devres->p2p_buf;
+
+				seq_printf(m, "\t\tp2p %s buf_id %hhu, %s\n", devres->is_p2p_src ? "src" : "dst",
+					   buf->buf_id, buf->peer_dev != NULL ? "connected:" : "disconnected.");
+				if (buf->peer_dev != NULL)
+					seq_printf(m, "\t\tready=%d, peer_buf_id %hhu, peer_dev %hhu.\n",
+						   buf->ready, buf->peer_buf_id, sphcs_p2p_get_peer_dev_id(buf));
+			}
+		}
 		list_for_each_entry(sync_point, &context->sync_points, node)
-			seq_printf(m, "\tsync_point %d host_sync_id=%d\n", sync_point->seq_id, sync_point->host_sync_id);
+			seq_printf(m, "\tsync_point %u host_sync_id=%hu\n", sync_point->seq_id, sync_point->host_sync_id);
 		//NNP_SPIN_UNLOCK(&context->lock);
 	}
 	//NNP_SPIN_UNLOCK_BH(&inf_data->lock_bh);

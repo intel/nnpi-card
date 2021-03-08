@@ -20,6 +20,7 @@
 #define SPH_TRACE_USER_DATA		 user_data
 #define SPH_TRACE_IDS_MAP		 ids_map
 #define NNP_TRACE_CLOCK_STAMP		 clock_stamp
+#define SPH_TRACE_HWTRACE		 hwtrace
 
 #define SPH_TRACE_FIELD_STATE		"state"
 

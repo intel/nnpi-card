@@ -203,15 +203,19 @@ static int hw_sim_dma_edit_lli(void *hw_handle, struct lli_desc *outLli, uint64_
 	return 0;
 }
 
-static int hw_sim_dma_start_xfer_h2c(void *hw_handle, int channel, u32 priority, dma_addr_t lli_addr, u64 size)
+static int hw_sim_dma_start_xfer_h2c(void *hw_handle, int channel, u32 priority, struct lli_desc *lli, int listidx, u64 size)
 {
-	hw_sim_descriptor.post_dma_sgl_h2c_p(channel, lli_addr);
+	if (listidx >= SPH_LLI_MAX_LISTS)
+		return -EINVAL;
+	hw_sim_descriptor.post_dma_sgl_h2c_p(channel, lli->dma_addr + lli->offsets[listidx]);
 	return 0;
 }
 
-static int hw_sim_dma_start_xfer_c2h(void *hw_handle, int channel, u32 priority, dma_addr_t lli_addr, u64 size)
+static int hw_sim_dma_start_xfer_c2h(void *hw_handle, int channel, u32 priority, struct lli_desc *lli, int listidx, u64 size)
 {
-	hw_sim_descriptor.post_dma_sgl_c2h_p(channel, lli_addr);
+	if (listidx >= SPH_LLI_MAX_LISTS)
+		return -EINVAL;
+	hw_sim_descriptor.post_dma_sgl_c2h_p(channel, lli->dma_addr + lli->offsets[listidx]);
 	return 0;
 }
 

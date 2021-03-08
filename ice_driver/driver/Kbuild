@@ -40,6 +40,10 @@ ifdef NEXT_E2E
 subdir-ccflags-y += -DNEXT_E2E
 endif
 
+ifdef ICEDRV_ICE_SWITCH_ON
+subdir-ccflags-y += -DICE_SWITCH_ON
+endif
+
 ifdef DEBUG
 subdir-ccflags-y += -D_DEBUG
 subdir-ccflags-y += -g
