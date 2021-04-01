@@ -293,6 +293,13 @@ struct cve_device {
 	u32 tlc_reg_val;
 
 	struct ice_reg_stored_config prev_reg_config;
+
+	/* To map software device context handle
+	 * Each ICE to have a unique dev context
+	 * mapped once ICEs are borrowed
+	 */
+	u32 mapped_dev_ctx_id;
+
 };
 
 struct llc_pmon_config {
@@ -841,9 +848,6 @@ struct ice_pnetwork {
 	/* total number of network */
 	u32 ntw_count;
 
-	/* Resource Mapped */
-	u8 resource_mapped;
-
 	/* Completion event required*/
 	u32 produce_completion;
 
@@ -1077,6 +1081,9 @@ struct ice_network {
 	u64 infer_buf_page_config[ICEDRV_PAGE_ALIGNMENT_MAX];
 	/* Number of buffers every CreateInfer desc must send */
 	u32 num_inf_buf;
+
+	/* Resource Mapped */
+	u8 resource_mapped;
 };
 
 struct ice_infer {

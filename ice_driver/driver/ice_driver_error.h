@@ -134,6 +134,8 @@ enum ice_kerror_type {
 	ICEDRV_KERROR_INVALID_JG_COUNT, /*[1152]*/
 	/** Invalid Parent Network Handle */
 	ICEDRV_KERROR_INVALID_PNTW_HANDLE, /*[1153]*/
+	/** Invalid ICE count request */
+	ICEDRV_KERROR_INVALID_ICE_COUNT /*[1154]*/
 };
 
 #endif /* _ICE_DRIVER_ERROR_H_ */

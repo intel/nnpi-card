@@ -447,6 +447,8 @@ static void __prepare_cbdt(struct di_job *job,
 		desc.commands_nr = subjob->cb.commands_nr;
 		set_desc_subjob(&desc, subjob);
 		desc.status = cfg_default.cve_status_dispatched;
+		/* Reset flags before programming */
+		desc.flags.fixed_size = 0;
 		/* Always setting this flag because same CBD is being executed
 		 * by all InferRequests. No CBD reset is performed by Driver.
 		 */
@@ -562,16 +564,6 @@ static void dispatch_next_subjobs(struct di_job *job,
 
 		/* call project hook right before ringing the doorbell */
 		project_hook_dispatch_new_job(dev, ntw);
-
-		if (dev->prev_reg_config.cbd_entries_nr !=
-			dev->fifo_desc->fifo.entries) {
-			/** Configure CBDT entry size only for cold run*/
-			cve_os_write_mmio_32(dev,
-				cfg_default.mmio_cbd_entries_nr_offset,
-				dev->fifo_desc->fifo.entries);
-			dev->prev_reg_config.cbd_entries_nr =
-				dev->fifo_desc->fifo.entries;
-		}
 	} else {
 		ASSERT(dev->is_cold_run == 0);
 		if (job->has_scb) {
@@ -597,6 +589,21 @@ static void dispatch_next_subjobs(struct di_job *job,
 					inf_job->dummy_ice_id);
 		}
 	}
+
+	/* For multi sub graph execution, each sub graph can have different
+	 * CBD length. So CBD register programming cannot be restricted to
+	 * just cold run. Driver needs to check if its different from previous
+	 * programming
+	 */
+	if (dev->prev_reg_config.cbd_entries_nr !=
+			dev->fifo_desc->fifo.entries) {
+		cve_os_write_mmio_32(dev,
+				cfg_default.mmio_cbd_entries_nr_offset,
+				dev->fifo_desc->fifo.entries);
+		dev->prev_reg_config.cbd_entries_nr =
+			dev->fifo_desc->fifo.entries;
+	}
+
 	iceva += (job->first_cb_desc * cbd_size);
 	db -= job->first_cb_desc;
 

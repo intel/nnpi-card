@@ -137,6 +137,8 @@ int cve_device_init(struct cve_device *dev, int index, u64 pe_value)
 
 	ice_reset_prev_reg_config(&dev->prev_reg_config);
 
+	dev->mapped_dev_ctx_id = INVALID_ENTRY;
+
 #ifdef ICE_SWITCH_ON
 	retval = set_idc_registers(dev, true);
 	if (retval)
