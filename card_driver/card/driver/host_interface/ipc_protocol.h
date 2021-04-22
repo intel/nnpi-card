@@ -1,5 +1,5 @@
 /********************************************
- * Copyright (C) 2019-2020 Intel Corporation
+ * Copyright (C) 2019-2021 Intel Corporation
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  ********************************************/
@@ -47,7 +47,7 @@ NNP_STATIC_ASSERT(NNP_PAGE_SHIFT <= PAGE_SHIFT,
 					     ((minor) & 0x1f) << 5 | \
 					     ((dot) & 0x1f))
 
-#define NNP_IPC_PROTOCOL_VERSION NNP_MAKE_VERSION(4, 0, 0)
+#define NNP_IPC_PROTOCOL_VERSION NNP_MAKE_VERSION(4, 1, 0)
 
 #define NNP_IPC_DMA_PFN_BITS    45   /* size of physical address in protocol */
 #define NNP_DMA_ADDR_ALIGN_BITS NNP_PAGE_SHIFT
@@ -217,7 +217,8 @@ CHECK_MESSAGE_SIZE(union h2c_setup_crash_dump_msg, 2);
 union h2c_setup_sys_info_page {
 	struct {
 		__le64 opcode    :  6;
-		__le64 reserved  :  13;
+		__le64 num_page  :  10;
+		__le64 reserved  :  3;
 		__le64 dma_addr  : NNP_IPC_DMA_PFN_BITS;
 	};
 

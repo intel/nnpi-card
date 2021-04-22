@@ -1,5 +1,5 @@
 /********************************************
- * Copyright (C) 2019-2020 Intel Corporation
+ * Copyright (C) 2019-2021 Intel Corporation
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  ********************************************/
@@ -59,6 +59,7 @@ struct sphcs {
 	size_t inbound_mem_size;
 	dma_addr_t inbound_mem_dma_addr;
 
+	size_t     host_sys_info_num_page;
 	dma_addr_t host_sys_info_dma_addr;
 	bool       host_sys_info_dma_addr_valid;
 

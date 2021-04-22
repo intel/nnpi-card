@@ -1,5 +1,5 @@
 /********************************************
- * Copyright (C) 2019-2020 Intel Corporation
+ * Copyright (C) 2019-2021 Intel Corporation
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  ********************************************/
@@ -158,7 +158,12 @@
 static int dma_timeout_secs;
 static bool dma_rd_hang;
 static bool dma_wr_hang;
-
+static enum {
+	NO_RECOVERY = 0,
+	HANG_NORMAL_RECOVERY,
+	HANG_FATAL_RECOVERY,
+	HANG_SILENT_RECOVERY
+} dma_recovery_mode;
 
 /* 200 MB/s is minimum b/w expected */
 #define MIN_TRANSFER_BW_PER_SECOND (200 * (1 << 20))
@@ -189,6 +194,35 @@ module_param(dma_lli_min_split,  int, 0600);
 //1 - disable read , 2 - disable write , 3 -disable w/r
 static int dma_disable_interrupt;
 module_param(dma_disable_interrupt, int, 0644);
+
+struct sph_dma_data_element {
+	uint32_t control;
+	uint32_t transfer_size;
+	uint32_t source_address_low;
+	uint32_t source_address_high;
+	uint32_t dest_address_low;
+	uint32_t dest_address_high;
+};
+NNP_STATIC_ASSERT(sizeof(struct sph_dma_data_element) == 6 * sizeof(uint32_t), "struct sph_dma_data_element size mismatch");
+
+static struct dma_term {
+	void *dummy_vptr;
+	dma_addr_t dummy_addr;
+	dma_addr_t host_addr;
+
+	struct sph_dma_data_element *h2c_term;
+	struct sph_dma_data_element *c2h_term;
+	dma_addr_t                   h2c_term_addr;
+	dma_addr_t                   c2h_term_addr;
+} dma_term;
+
+#define MAX_TERM_DUMMY_SIZE (3 * 1024)
+#define MIN_DMA_TERM_SIZE   (1024)
+#define MIN_DMA_TERM_SIZE_C2H   (1024)
+
+static int dma_term_dummy_size = MIN_DMA_TERM_SIZE;
+static int dma_term_dummy_sz_c2h = MIN_DMA_TERM_SIZE_C2H;
+module_param(dma_term_dummy_size,  int, 0600);
 
 /* interrupt mask bits we enable and handle at interrupt level */
 static u32 s_host_status_int_mask =
@@ -256,16 +290,6 @@ struct nnp_pci_device {
 	struct sph_dma_channel c2h_channels[NUM_C2H_CHANNELS];
 };
 
-struct sph_dma_data_element {
-	uint32_t control;
-	uint32_t transfer_size;
-	uint32_t source_address_low;
-	uint32_t source_address_high;
-	uint32_t dest_address_low;
-	uint32_t dest_address_high;
-};
-NNP_STATIC_ASSERT(sizeof(struct sph_dma_data_element) == 6 * sizeof(uint32_t), "struct sph_dma_data_element size mismatch");
-
 struct sph_lli_header {
 	struct sph_dma_data_element *cut_element;
 	uint32_t cut_element_transfer_size;
@@ -274,6 +298,8 @@ struct sph_lli_header {
 	uint32_t num_lists_keep;
 	uint64_t xfer_size_keep;
 	struct sph_dma_data_element cut_element_next;
+	struct sph_dma_data_element *llp_element[SPH_LLI_MAX_LISTS];
+	struct sph_dma_data_element *cut_llp_element_keep;
 	uint64_t size;
 };
 
@@ -511,12 +537,12 @@ static void read_dma_regs(struct nnp_pci_device *nnp_pci,
 						DMA_SAR_HIGH_OFF_RDCH(i));
 		out->h2c[i].src <<= 32;
 		out->h2c[i].src |= (u64)nnp_mmio_read(nnp_pci,
-						      DMA_DAR_LOW_OFF_RDCH(i));
+						      DMA_SAR_LOW_OFF_RDCH(i));
 		out->h2c[i].dst = nnp_mmio_read(nnp_pci,
 						DMA_DAR_HIGH_OFF_RDCH(i));
 		out->h2c[i].dst <<= 32;
 		out->h2c[i].dst |= (u64)nnp_mmio_read(nnp_pci,
-						      DMA_SAR_LOW_OFF_RDCH(i));
+						      DMA_DAR_LOW_OFF_RDCH(i));
 		out->h2c[i].llp = nnp_mmio_read(nnp_pci,
 						DMA_LLP_HIGH_OFF_RDCH(i));
 		out->h2c[i].llp <<= 32;
@@ -833,12 +859,91 @@ static u32 pre_complete_channel_dma_xfer(struct sph_dma_channel *channel)
 	return usTime;
 }
 
+/* retrieve channel status and remaining transfer size of the given channel(chan) */
+static void get_channel_status(struct nnp_pci_device *nnp_pci, int chan,
+			bool c2h, u32 *chan_status, u32 *xfer_size)
+{
+	u32 control1;
+
+	if (c2h) {
+		control1 = nnp_mmio_read(nnp_pci, DMA_CH_CONTROL1_OFF_WRCH(chan));
+		*xfer_size = nnp_mmio_read(nnp_pci, DMA_TRANSFER_SIZE_OFF_WRCH(chan));
+	} else {
+		control1 = nnp_mmio_read(nnp_pci, DMA_CH_CONTROL1_OFF_RDCH(chan));
+		*xfer_size = nnp_mmio_read(nnp_pci, DMA_TRANSFER_SIZE_OFF_RDCH(chan));
+	}
+
+	*chan_status = (control1 & DMA_CTRL_CHANNEL_STATUS_MASK) >> DMA_CTRL_CHANNEL_STATUS_OFF;
+	sph_log_debug(DMA_LOG, "CH:%d c2h:%u ChStatus:%u XferSize:%u\n",
+			chan, c2h, *chan_status, *xfer_size);
+}
+
+
+/* return 1 if channel was stuck and xfer size = 0 else return 0 */
+static u8 check_completed_hang_status(struct nnp_pci_device *nnp_pci, int chan, bool c2h)
+{
+	u32 chan_status;
+	u32 xfer_size;
+
+	if (dma_recovery_mode != HANG_SILENT_RECOVERY)
+		return 0;
+
+	get_channel_status(nnp_pci, chan, c2h, &chan_status, &xfer_size);
+
+	if (!xfer_size && chan_status == DMA_CTRL_CHANNEL_STATUS_RUNNING)
+		return 1;
+
+	return 0;
+}
+
+
+static int get_hanged_xfer_status(struct nnp_pci_device *nnp_pci, int chan,
+			bool c2h, u8 complete_xfer_hang, u8 *recovery_action)
+{
+	u32 chan_status;
+	u32 xfer_size;
+
+	*recovery_action = SPHCS_RA_RESET_DMA;
+
+	if (dma_recovery_mode != HANG_SILENT_RECOVERY)
+		return SPHCS_DMA_STATUS_FAILED;
+
+	get_channel_status(nnp_pci, chan, c2h, &chan_status, &xfer_size);
+
+	if (!xfer_size && chan_status == DMA_CTRL_CHANNEL_STATUS_RUNNING) {
+		sph_log_info(DMA_LOG,
+			"CH:%d c2h:%u DMA Hang but xfer has completed, will try silent recovery\n",
+			chan, c2h);
+		return SPHCS_DMA_STATUS_DONE;
+	}
+
+	/* 0 is written by the driver. So 0 denotes that this request is not
+	 * picked by the DMA yet
+	 */
+	if (chan_status == 0 && complete_xfer_hang) {
+		sph_log_info(DMA_LOG,
+			"CH:%d c2h:%u DMA Hang but channel in inactive state, will retry xfer\n",
+			chan, c2h);
+		/* request retry post reset */
+		*recovery_action |= SPHCS_RA_RETRY_DMA;
+		return SPHCS_DMA_STATUS_DONE;
+	}
+
+	sph_log_info(DMA_LOG,
+		"CH:%d c2h:%u DMA Hang with unknown scenario ChStatus:%u XferSize:%u CompleteXferHang:%u\n",
+			chan, c2h, chan_status, xfer_size, complete_xfer_hang);
+
+	return SPHCS_DMA_STATUS_FAILED;
+}
+
 static void nnp_dma_hang_detection(void *ctx)
 {
 	struct nnp_pci_device *nnp_pci = (struct nnp_pci_device *)ctx;
 	u8 i, error_mask = 0;
 	u32 h2c_time[NUM_H2C_CHANNELS];
 	u32 c2h_time[NUM_C2H_CHANNELS];
+	int status;
+	u8 h2c_xfer_ch_hang = 0, c2h_xfer_ch_hang = 0, recovery_action = 0;
 
 	NNP_SPIN_LOCK_BH(&nnp_pci->dma_hang_detection_lock_bh);
 	error_mask = nnp_is_dma_hanged(nnp_pci);
@@ -847,16 +952,22 @@ static void nnp_dma_hang_detection(void *ctx)
 		sph_log_err(GENERAL_LOG, "Dma read channels hang detected!!! reset dma engine\n");
 		dma_rd_hang = true;
 		for (i = 0; i < NUM_H2C_CHANNELS; i++) {
-			if (error_mask & (1 << i))
+			if (error_mask & (1 << i)) {
 				h2c_time[i] = pre_complete_channel_dma_xfer(&nnp_pci->h2c_channels[i]);
+				if (nnp_pci->dmaSched != NULL)
+					h2c_xfer_ch_hang |= check_completed_hang_status(nnp_pci, i, false);
+			}
 		}
 	}
 	if (error_mask & C2H_HANG_DETECTOR_MASK) {
 		sph_log_err(GENERAL_LOG, "Dma write channels hang detected!!! reset dma engine\n");
 		dma_wr_hang = true;
 		for (i = 0; i < NUM_C2H_CHANNELS; i++) {
-			if (error_mask & (1 << (i + NUM_H2C_CHANNELS)))
+			if (error_mask & (1 << (i + NUM_H2C_CHANNELS))) {
 				c2h_time[i] = pre_complete_channel_dma_xfer(&nnp_pci->c2h_channels[i]);
+				if (nnp_pci->dmaSched != NULL)
+					c2h_xfer_ch_hang |= check_completed_hang_status(nnp_pci, i, true);
+			}
 		}
 	}
 	NNP_SPIN_UNLOCK_BH(&nnp_pci->dma_hang_detection_lock_bh);
@@ -864,15 +975,19 @@ static void nnp_dma_hang_detection(void *ctx)
 	if (error_mask & H2C_HANG_DETECTOR_MASK) {
 		for (i = 0; i < NUM_H2C_CHANNELS; i++) {
 			/* send int upstream */
-			if ((error_mask & (1 << i)) && nnp_pci->dmaSched != NULL)
-				s_callbacks->dma.h2c_xfer_complete_int(nnp_pci->dmaSched, i, SPHCS_DMA_STATUS_FAILED, SPHCS_RA_RESET_DMA, h2c_time[i]);
+			if ((error_mask & (1 << i)) && nnp_pci->dmaSched != NULL) {
+				status = get_hanged_xfer_status(nnp_pci, i, false, h2c_xfer_ch_hang, &recovery_action);
+				s_callbacks->dma.h2c_xfer_complete_int(nnp_pci->dmaSched, i, status, recovery_action, h2c_time[i]);
+			}
 		}
 	}
 	if (error_mask & C2H_HANG_DETECTOR_MASK) {
 		for (i = 0; i < NUM_C2H_CHANNELS; i++) {
 			/* send int upstream */
-			if ((error_mask & (1 << (i + NUM_H2C_CHANNELS))) && nnp_pci->dmaSched != NULL)
-				s_callbacks->dma.c2h_xfer_complete_int(nnp_pci->dmaSched, i, SPHCS_DMA_STATUS_FAILED, SPHCS_RA_RESET_DMA, c2h_time[i]);
+			if ((error_mask & (1 << (i + NUM_H2C_CHANNELS))) && nnp_pci->dmaSched != NULL) {
+				status = get_hanged_xfer_status(nnp_pci, i, true, c2h_xfer_ch_hang, &recovery_action);
+				s_callbacks->dma.c2h_xfer_complete_int(nnp_pci->dmaSched, i, status, recovery_action, c2h_time[i]);
+			}
 		}
 	}
 }
@@ -963,6 +1078,55 @@ static ssize_t sph_store_dma_timeout(struct device *dev,
 }
 
 static DEVICE_ATTR(dma_timeout, 0644, sph_show_dma_timeout, sph_store_dma_timeout);
+
+static ssize_t sph_show_dma_recovery(struct device *dev,
+				     struct device_attribute *attr, char *buf)
+{
+	struct pci_dev *pdev = to_pci_dev(dev);
+	struct nnp_pci_device *nnp_pci;
+
+	nnp_pci = pci_get_drvdata(pdev);
+	if (!nnp_pci)
+		return -EINVAL;
+
+	switch (dma_recovery_mode) {
+	case NO_RECOVERY:
+		return sprintf(buf, "none\n");
+	case HANG_FATAL_RECOVERY:
+		return sprintf(buf, "fatal\n");
+	case HANG_SILENT_RECOVERY:
+		return sprintf(buf, "silent\n");
+	case HANG_NORMAL_RECOVERY:
+	default:
+		return sprintf(buf, "normal\n");
+	}
+}
+
+static ssize_t sph_store_dma_recovery(struct device *dev,
+				      struct device_attribute *attr,
+				      const char *buf, size_t count)
+{
+	struct pci_dev *pdev = to_pci_dev(dev);
+	struct nnp_pci_device *nnp_pci;
+
+	nnp_pci = pci_get_drvdata(pdev);
+	if (!nnp_pci)
+		return -ENODEV;
+	if (sysfs_streq(buf, "none"))
+		dma_recovery_mode = NO_RECOVERY;
+	else if (sysfs_streq(buf, "normal"))
+		dma_recovery_mode = HANG_NORMAL_RECOVERY;
+	else if (sysfs_streq(buf, "fatal"))
+		dma_recovery_mode = HANG_FATAL_RECOVERY;
+	else if (sysfs_streq(buf, "silent"))
+		dma_recovery_mode = HANG_SILENT_RECOVERY;
+	else
+		return -EINVAL;
+
+	return count;
+}
+
+static DEVICE_ATTR(dma_recovery, 0644, sph_show_dma_recovery, sph_store_dma_recovery);
 
 static void nnp_process_commands(struct nnp_pci_device *nnp_pci)
 {
@@ -1548,33 +1712,33 @@ static int sphcs_nnp_reset_wr_dma_engine(void *hw_handle)
 	struct nnp_pci_device *nnp_pci = (struct nnp_pci_device *)hw_handle;
 	uint8_t i, n;
 	uint32_t status;
-	bool reset_succeeded;
+	bool reset_succeeded = false;
 
-	if (dma_disable_interrupt == 3)
-		dma_disable_interrupt = 1;
-	else if (dma_disable_interrupt == 2)
-		dma_disable_interrupt = 0;
+	if (!dma_wr_hang || dma_recovery_mode != NO_RECOVERY) {
+		for (n = 0; n < DMA_RESET_MAX_RETRIES; ++n) {
+			sphcs_nnp_dma_abort_c2h(nnp_pci);
+			udelay(15);
 
-	for (n = 0; n < DMA_RESET_MAX_RETRIES; ++n) {
-		sphcs_nnp_dma_abort_c2h(nnp_pci);
-		udelay(15);
+			sphcs_nnp_dma_reset_c2h(nnp_pci);
 
-		sphcs_nnp_dma_reset_c2h(nnp_pci);
-
-		udelay(5);
-		reset_succeeded = true;
-		for (i = 0; i < NUM_C2H_CHANNELS; ++i) {
-			status = nnp_mmio_read(nnp_pci, DMA_CH_CONTROL1_OFF_WRCH(i));
-			status = (status & DMA_CTRL_CHANNEL_STATUS_MASK) >> DMA_CTRL_CHANNEL_STATUS_OFF;
-			if (status != DMA_CTRL_CHANNEL_STATUS_HALTED &&
-			    status != DMA_CTRL_CHANNEL_STATUS_STOPPED) {
-				reset_succeeded = false;
-				break;
+			udelay(5);
+			reset_succeeded = true;
+			for (i = 0; i < NUM_C2H_CHANNELS; ++i) {
+				status = nnp_mmio_read(nnp_pci, DMA_CH_CONTROL1_OFF_WRCH(i));
+				status = (status & DMA_CTRL_CHANNEL_STATUS_MASK) >> DMA_CTRL_CHANNEL_STATUS_OFF;
+				if (status != DMA_CTRL_CHANNEL_STATUS_HALTED &&
+				    status != DMA_CTRL_CHANNEL_STATUS_STOPPED) {
+					reset_succeeded = false;
+					break;
+				}
 			}
+			if (reset_succeeded)
+				break;
 		}
-		if (reset_succeeded)
-			break;
 	}
+
+	/* disable the user request post DMA reset cycle*/
+	dma_disable_interrupt &= ~(2);
 
 	if (!reset_succeeded) {
 		s_flr_mode = SPH_FLR_MODE_COLD;
@@ -1592,7 +1756,9 @@ static int sphcs_nnp_reset_wr_dma_engine(void *hw_handle)
 		NNP_SPIN_LOCK_BH(&nnp_pci->dma_hang_detection_lock_bh);
 		atomic64_and((u64)0xffffffff, &nnp_pci->dma_status);
 		NNP_SPIN_UNLOCK_BH(&nnp_pci->dma_hang_detection_lock_bh);
-		dma_wr_hang = 0;
+		dma_wr_hang = false;
+		if (dma_recovery_mode == HANG_FATAL_RECOVERY)
+			return 2;
 		return 1;
 	}
 
@@ -1625,33 +1791,33 @@ static int sphcs_nnp_reset_rd_dma_engine(void *hw_handle)
 	struct nnp_pci_device *nnp_pci = (struct nnp_pci_device *)hw_handle;
 	uint8_t i, n;
 	uint32_t status;
-	bool reset_succeeded;
+	bool reset_succeeded = false;
 
-	if (dma_disable_interrupt == 3)
-		dma_disable_interrupt = 2;
-	else if (dma_disable_interrupt == 1)
-		dma_disable_interrupt = 0;
+	if (!dma_rd_hang || dma_recovery_mode != NO_RECOVERY) {
+		for (n = 0; n < DMA_RESET_MAX_RETRIES; ++n) {
+			sphcs_nnp_dma_abort_h2c(nnp_pci);
+			udelay(15);
 
-	for (n = 0; n < DMA_RESET_MAX_RETRIES; ++n) {
-		sphcs_nnp_dma_abort_h2c(nnp_pci);
-		udelay(15);
+			sphcs_nnp_dma_reset_h2c(nnp_pci);
 
-		sphcs_nnp_dma_reset_h2c(nnp_pci);
-
-		udelay(5);
-		reset_succeeded = true;
-		for (i = 0; i < NUM_H2C_CHANNELS; ++i) {
-			status = nnp_mmio_read(nnp_pci, DMA_CH_CONTROL1_OFF_RDCH(i));
-			status = (status & DMA_CTRL_CHANNEL_STATUS_MASK) >> DMA_CTRL_CHANNEL_STATUS_OFF;
-			if (status != DMA_CTRL_CHANNEL_STATUS_HALTED &&
-			    status != DMA_CTRL_CHANNEL_STATUS_STOPPED) {
-				reset_succeeded = false;
-				break;
+			udelay(5);
+			reset_succeeded = true;
+			for (i = 0; i < NUM_H2C_CHANNELS; ++i) {
+				status = nnp_mmio_read(nnp_pci, DMA_CH_CONTROL1_OFF_RDCH(i));
+				status = (status & DMA_CTRL_CHANNEL_STATUS_MASK) >> DMA_CTRL_CHANNEL_STATUS_OFF;
+				if (status != DMA_CTRL_CHANNEL_STATUS_HALTED &&
+				    status != DMA_CTRL_CHANNEL_STATUS_STOPPED) {
+					reset_succeeded = false;
+					break;
+				}
 			}
+			if (reset_succeeded)
+				break;
 		}
-		if (reset_succeeded)
-			break;
 	}
+
+	/* disable the user request post DMA reset cycle*/
+	dma_disable_interrupt &= ~(1);
 
 	if (!reset_succeeded) {
 		s_flr_mode = SPH_FLR_MODE_COLD;
@@ -1670,6 +1836,8 @@ static int sphcs_nnp_reset_rd_dma_engine(void *hw_handle)
 		atomic64_and(((u64)0xffffffff) << 32, &nnp_pci->dma_status);
 		NNP_SPIN_UNLOCK_BH(&nnp_pci->dma_hang_detection_lock_bh);
 		dma_rd_hang = false;
+		if (dma_recovery_mode == HANG_FATAL_RECOVERY)
+			return 2;
 		return 1;
 	}
 
@@ -1752,6 +1920,76 @@ static int sphcs_sph_init_dma_engine(void *hw_handle)
 	return 0;
 }
 
+
+void sphcs_pcie_dma_term_setup(void         *hw_handle,
+			       dma_addr_t    host_dma_addr,
+			       uint32_t      num_page)
+{
+	struct nnp_pci_device *nnp_pci = (struct nnp_pci_device *)hw_handle;
+	struct sph_dma_data_element *elem;
+	dma_addr_t addr, host_addr, card_addr;
+
+	if (dma_term.dummy_vptr && host_dma_addr == dma_term.host_addr)
+		return;
+
+	/* allocate 1 extra page as requested. 1 page to be used for LLI */
+	if (!dma_term.dummy_vptr)
+		dma_term.dummy_vptr = dma_alloc_coherent(nnp_pci->dev,
+							(NNP_PAGE_SIZE * (num_page + 1)),
+							&dma_term.dummy_addr,
+							GFP_KERNEL);
+	if (!dma_term.dummy_vptr)
+		return;
+
+	elem = dma_term.dummy_vptr;
+	addr = dma_term.dummy_addr;
+
+	host_addr = host_dma_addr;
+	card_addr = dma_term.dummy_addr + 1024;
+
+	/* Setup terminator LLI for H2C */
+	dma_term.h2c_term = elem;
+	dma_term.h2c_term_addr = addr;
+	elem += 2;
+	addr += 2 * sizeof(*elem);
+	dma_term.h2c_term[0].control = DMA_CTRL_CB | DMA_CTRL_LIE;
+	dma_term.h2c_term[0].source_address_low = lower_32_bits(host_addr);
+	dma_term.h2c_term[0].source_address_high = upper_32_bits(host_addr);
+	dma_term.h2c_term[0].dest_address_low = lower_32_bits(card_addr);
+	dma_term.h2c_term[0].dest_address_high = upper_32_bits(card_addr);
+	dma_term.h2c_term[0].transfer_size = (NNP_PAGE_SIZE * num_page);
+	dma_term.h2c_term[1].control = 0;
+	dma_term.h2c_term[1].source_address_low = 0;
+	dma_term.h2c_term[1].source_address_high = 0;
+	dma_term.h2c_term[1].dest_address_low = 0;
+	dma_term.h2c_term[1].dest_address_high = 0;
+	dma_term.h2c_term[1].transfer_size = 0;
+
+	/* Setup terminator LLI for C2H */
+	dma_term.c2h_term = elem;
+	dma_term.c2h_term_addr = addr;
+	elem += 2;
+	addr += 2 * sizeof(*elem);
+	dma_term.c2h_term[0].control = DMA_CTRL_CB | DMA_CTRL_LIE;
+	dma_term.c2h_term[0].source_address_low = lower_32_bits(card_addr);
+	dma_term.c2h_term[0].source_address_high = upper_32_bits(card_addr);
+	dma_term.c2h_term[0].dest_address_low = lower_32_bits(host_addr);
+	dma_term.c2h_term[0].dest_address_high = upper_32_bits(host_addr);
+	dma_term.c2h_term[0].transfer_size = MAX_TERM_DUMMY_SIZE;
+	dma_term.c2h_term[1].control = 0;
+	dma_term.c2h_term[1].source_address_low = 0;
+	dma_term.c2h_term[1].source_address_high = 0;
+	dma_term.c2h_term[1].dest_address_low = 0;
+	dma_term.c2h_term[1].dest_address_high = 0;
+	dma_term.c2h_term[1].transfer_size = 0;
+
+	dma_term.host_addr = host_dma_addr;
+
+	dma_term_dummy_size = (NNP_PAGE_SIZE * num_page);
+	dma_term_dummy_sz_c2h = MIN_DMA_TERM_SIZE_C2H;
+
+}
+
 static void *dma_set_lli_data_element(void *lliPtr,
 				      dma_addr_t src,
 				      dma_addr_t dst,
@@ -1791,6 +2029,8 @@ static void *dma_set_lli_data_element(void *lliPtr,
 			lli->num_filled == (lli->num_elements - 1) :
 			list_off == (n - 1));
 	if (is_last) {
+		struct sph_lli_header *lli_header = lli->vptr;
+
 		/* Set local interrupt enable bit */
 		dataElement->control |= DMA_CTRL_LIE;
 
@@ -1802,6 +2042,8 @@ static void *dma_set_lli_data_element(void *lliPtr,
 		dataElement->dest_address_high = 0;
 		dataElement->transfer_size = 0;
 		dataElement->control = DMA_CTRL_LLP;
+
+		lli_header->llp_element[list_idx] = dataElement;
 	}
 
 	lli->num_filled = lli->num_filled + 1;
@@ -1984,8 +2226,10 @@ static void restore_lli(struct lli_desc *lli)
 		memcpy(next_element, &lli_header->cut_element_next, sizeof(*next_element));
 
 		lli->num_lists = lli_header->num_lists_keep;
-		if (lli_header->cut_list_idx < SPH_LLI_MAX_LISTS)
+		if (lli_header->cut_list_idx < SPH_LLI_MAX_LISTS) {
 			lli->xfer_size[lli_header->cut_list_idx] = lli_header->xfer_size_keep;
+			lli_header->llp_element[lli_header->cut_list_idx] = lli_header->cut_llp_element_keep;
+		}
 		lli_header->cut_element = NULL;
 		lli_header->num_lists_keep = 0;
 	}
@@ -2055,6 +2299,8 @@ int sphcs_sph_dma_edit_lli(void *hw_handle, struct lli_desc *outLli, uint64_t si
 	lli_header->num_lists_keep = outLli->num_lists;
 	lli_header->xfer_size_keep = outLli->xfer_size[list_idx];
 	lli_header->cut_list_idx = list_idx;
+	lli_header->cut_llp_element_keep = lli_header->llp_element[list_idx];
+	lli_header->llp_element[list_idx] = data_element;
 	outLli->num_lists = list_idx + 1;
 	outLli->xfer_size[list_idx] = size;
 	for (i = 0; i < list_idx; i++)
@@ -2081,13 +2327,38 @@ static inline void sphcs_sph_dma_set_ch_weights(struct nnp_pci_device *nnp_pci, 
 int sphcs_sph_dma_start_xfer_h2c(void      *hw_handle,
 				 int        channel,
 				 u32        priority,
-				 dma_addr_t lli_addr,
+				 struct lli_desc *lli,
+				 int        listidx,
 				 u64	    size)
 {
 	struct nnp_pci_device *nnp_pci = (struct nnp_pci_device *)hw_handle;
+	struct sph_lli_header *lli_header = lli->vptr;
+	dma_addr_t lli_addr;
 
 	if (!nnp_pci->bus_master_en)
 		return -EACCES;
+
+	if (listidx >= SPH_LLI_MAX_LISTS)
+		return -EINVAL;
+
+	lli_addr = lli->dma_addr + lli->offsets[listidx];
+
+	/*
+	 * Set LLP to either point to terminator element with extra data or
+	 * stop. Set local-interrupt-enable on previous element only when stop.
+	 */
+	if (dma_term_dummy_size &&
+	    lli_header->llp_element[listidx] &&
+	    lli_header->llp_element[listidx][-1].transfer_size < dma_term_dummy_size) {
+		lli_header->llp_element[listidx][-1].control &= ~(DMA_CTRL_LIE);
+		lli_header->llp_element[listidx]->control = DMA_CTRL_LLP | DMA_CTRL_CB;
+		lli_header->llp_element[listidx]->source_address_low = lower_32_bits(dma_term.h2c_term_addr);
+		lli_header->llp_element[listidx]->source_address_high = upper_32_bits(dma_term.h2c_term_addr);
+		dma_term.h2c_term->transfer_size = dma_term_dummy_size;
+	} else {
+		lli_header->llp_element[listidx][-1].control |= DMA_CTRL_LIE;
+		lli_header->llp_element[listidx]->control = DMA_CTRL_LLP;
+	}
 
 	/* program LLI mode */
 	nnp_mmio_write(nnp_pci,
@@ -2139,13 +2410,38 @@ int sphcs_sph_dma_start_xfer_h2c(void      *hw_handle,
 int sphcs_sph_dma_start_xfer_c2h(void      *hw_handle,
 				 int        channel,
 				 u32        priority,
-				 dma_addr_t lli_addr,
+				 struct lli_desc *lli,
+				 int        listidx,
 				 u64	    size)
 {
 	struct nnp_pci_device *nnp_pci = (struct nnp_pci_device *)hw_handle;
+	struct sph_lli_header *lli_header = lli->vptr;
+	dma_addr_t lli_addr;
 
 	if (!nnp_pci->bus_master_en)
 		return -EACCES;
+
+	if (listidx >= SPH_LLI_MAX_LISTS)
+		return -EINVAL;
+
+	lli_addr = lli->dma_addr + lli->offsets[listidx];
+
+	/*
+	 * Set LLP to either point to terminator element with extra data or
+	 * stop. Set local-interrupt-enable on previous element only when stop.
+	 */
+	if (dma_term_dummy_size &&
+	    lli_header->llp_element[listidx] &&
+	    lli_header->llp_element[listidx][-1].transfer_size < dma_term_dummy_sz_c2h) {
+		lli_header->llp_element[listidx][-1].control &= ~(DMA_CTRL_LIE);
+		lli_header->llp_element[listidx]->control = DMA_CTRL_LLP | DMA_CTRL_CB;
+		lli_header->llp_element[listidx]->source_address_low = lower_32_bits(dma_term.c2h_term_addr);
+		lli_header->llp_element[listidx]->source_address_high = upper_32_bits(dma_term.c2h_term_addr);
+		dma_term.c2h_term->transfer_size = dma_term_dummy_sz_c2h;
+	} else {
+		lli_header->llp_element[listidx][-1].control |= DMA_CTRL_LIE;
+		lli_header->llp_element[listidx]->control = DMA_CTRL_LLP;
+	}
 
 	/* program LLI mode */
 	nnp_mmio_write(nnp_pci,
@@ -2720,6 +3016,17 @@ static int nnp_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 		goto free_interrupts;
 	}
 
+	rc = device_create_file(nnp_pci->dev, &dev_attr_dma_recovery);
+	if (rc) {
+		sph_log_err(START_UP_LOG, "Failed to create attr rc=%d", rc);
+		device_remove_file(nnp_pci->dev, &dev_attr_dma_timeout);
+		device_remove_file(nnp_pci->dev, &dev_attr_dma_abort);
+		device_remove_file(nnp_pci->dev, &dev_attr_dma_regs);
+		device_remove_file(nnp_pci->dev, &dev_attr_gen3_eq_pset_req_vec);
+		device_remove_file(nnp_pci->dev, &dev_attr_link_width);
+		device_remove_file(nnp_pci->dev, &dev_attr_flr_mode);
+		goto free_interrupts;
+	}
 
 	/* update bus master state - enable DMA if bus master is set */
 	set_bus_master_state(nnp_pci);
@@ -2789,6 +3096,7 @@ static void nnp_remove(struct pci_dev *pdev)
 	device_remove_file(nnp_pci->dev, &dev_attr_dma_regs);
 	device_remove_file(nnp_pci->dev, &dev_attr_dma_abort);
 	device_remove_file(nnp_pci->dev, &dev_attr_dma_timeout);
+	device_remove_file(nnp_pci->dev, &dev_attr_dma_recovery);
 
 #ifdef ULT
 	debugfs_remove_recursive(s_debugfs_dir);
@@ -2815,6 +3123,15 @@ static void nnp_remove(struct pci_dev *pdev)
 					   nnp_pci->dma_hang_detection_periodic_timer_data_handler);
 		periodic_timer_delete(&nnp_pci->dma_hang_detection_periodic_timer);
 	}
+
+	/* total alloc size is  dma_term_dummy_size + 1 page(for LLI) */
+	if (dma_term.dummy_vptr) {
+		dma_free_coherent(nnp_pci->dev,
+				  (dma_term_dummy_size + NNP_PAGE_SIZE),
+				  dma_term.dummy_vptr, dma_term.dummy_addr);
+		dma_term.dummy_vptr = NULL;
+	}
+
 	iounmap(nnp_pci->mmio.va);
 	pci_release_regions(pdev);
 	pci_disable_device(pdev);
@@ -2849,6 +3166,7 @@ int sphcs_hw_init(struct sphcs_pcie_callbacks *callbacks)
 		goto error;
 	}
 
+	memset(&dma_term, 0, sizeof(dma_term));
 
 	return ret;
 

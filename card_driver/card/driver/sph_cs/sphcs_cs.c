@@ -1,5 +1,5 @@
 /********************************************
- * Copyright (C) 2019-2020 Intel Corporation
+ * Copyright (C) 2019-2021 Intel Corporation
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  ********************************************/
@@ -172,6 +172,7 @@ static void IPC_OPCODE_HANDLER(SETUP_SYS_INFO_PAGE)(
 	sph_log_info(CREATE_COMMAND_LOG, "Setup sys info page received\n");
 
 	sphcs->host_sys_info_dma_addr = NNP_IPC_DMA_PFN_TO_ADDR(msg->dma_addr);
+	sphcs->host_sys_info_num_page = msg->num_page;
 	sphcs->host_sys_info_dma_addr_valid = true;
 
 	/* send host sys_info packet, if available */
@@ -244,12 +245,14 @@ static struct sphcs_cmd_chan *find_and_remove_chan(struct sphcs *sphcs, uint16_t
 
 static void destroy_removed_chan(struct sphcs_cmd_chan *chan)
 {
+	void (*cb)(struct sphcs_cmd_chan *chan, void *cb_ctx);
 	int i;
 
 	drain_workqueue(chan->wq);
 
-	if (chan->destroy_cb)
-		(*chan->destroy_cb)(chan, chan->destroy_cb_ctx);
+	cb = chan->destroy_cb;
+	if (cb != NULL)
+		(*cb)(chan, chan->destroy_cb_ctx);
 
 	/* mark all c2h channels as "disconnected" to release any writers */
 	for (i = 0; i < NNP_IPC_MAX_CHANNEL_RINGBUFS; i++)

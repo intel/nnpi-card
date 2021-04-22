@@ -1,7 +1,7 @@
 #!/usr/bin/env python2
 #
 # NNP-I Linux Driver
-# Copyright (c) 2017-2019, Intel Corporation.
+# Copyright (c) 2017-2021, Intel Corporation.
 #
 # This program is free software; you can redistribute it and/or modify it
 # under the terms and conditions of the GNU General Public License,

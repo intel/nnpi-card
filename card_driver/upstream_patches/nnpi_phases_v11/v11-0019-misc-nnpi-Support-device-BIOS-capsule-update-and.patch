@@ -1,0 +1,628 @@
+From 93634d6a0648110afe597513e310c222e6dc0b85 Mon Sep 17 00:00:00 2001
+From: Guy Zadicario <guy.zadicario@intel.com>
+Date: Mon, 16 Nov 2020 10:22:55 +0200
+Subject: [PATCH v11 19/28] misc: nnpi: Support device BIOS capsule update and
+ per-device boot image
+
+Add per-device sysfs attribute to configure which boot image should be
+loaded for the device.
+
+There are two types of images that the card bios can process:
+a) A "boot image", which is the device's embedded linux boot image.
+   When the card BIOS receives that image the card will start booting the
+   card OS.
+b) A Capsule update image.
+   When the card BIOS receives this kind of image, a card BIOS update flow
+   will start. Card BIOS will be re-flashed, then a card cold-reset will
+   take place in order to let the card boot from the new BIOS. During this
+   cold-reset, the PCIe link will drop and the PCIe hot-plug driver
+   (pciehp) may kick in, if installed, and will remove and re-enumerate the
+   device.
+
+The card BIOS will recognize the type of image based on a magic number in
+the payload header and will start either booting or BIOS update depending
+on the received payload type.
+
+The default boot image for all devices is "intel/nnpi/disk.img", a new
+name may be specified through the "boot_image" sysfs attribute. After
+a device reset and after the selected boot image sent to the device,
+the name of the boot image will be reverted back to the default.
+
+Signed-off-by: Guy Zadicario <guy.zadicario@intel.com>
+Reviewed-by: Vaibhav Agarwal <vaibhav.agarwal@intel.com>
+---
+ Documentation/ABI/testing/sysfs-driver-intel_nnpi |   7 +
+ drivers/misc/intel-nnpi/bootimage.c               | 237 +++++++++++++++-------
+ drivers/misc/intel-nnpi/bootimage.h               |   6 +-
+ drivers/misc/intel-nnpi/device.c                  |  13 +-
+ drivers/misc/intel-nnpi/device.h                  |   2 +
+ drivers/misc/intel-nnpi/device_sysfs.c            |  30 +++
+ 6 files changed, 220 insertions(+), 75 deletions(-)
+
+diff --git a/Documentation/ABI/testing/sysfs-driver-intel_nnpi b/Documentation/ABI/testing/sysfs-driver-intel_nnpi
+index 598814e..8eac2ef 100644
+--- a/Documentation/ABI/testing/sysfs-driver-intel_nnpi
++++ b/Documentation/ABI/testing/sysfs-driver-intel_nnpi
+@@ -4,6 +4,13 @@ Kernelversion:  5.11
+ Contact:        guy.zadicario@intel.com
+ Description:    Total size in bytes of all allocated NNP-I host resources.
+ 
++What:           /sys/class/nnpi/nnpi<n>/boot_image
++Date:           Sep 2020
++Kernelversion:  5.11
++Contact:        guy.zadicario@intel.com
++Description:    Name of boot image firmware filename that will be used
++                on next device reset. Default is intel/nnpi/disk.img
++
+ What:           /sys/class/nnpi/nnpi<n>/total_unprotected_mem
+ Date:           Sep 2020
+ Kernelversion:  5.11
+diff --git a/drivers/misc/intel-nnpi/bootimage.c b/drivers/misc/intel-nnpi/bootimage.c
+index 83d0bad..b886e1b 100644
+--- a/drivers/misc/intel-nnpi/bootimage.c
++++ b/drivers/misc/intel-nnpi/bootimage.c
+@@ -38,54 +38,64 @@ enum image_state {
+ 
+ /**
+  * struct image_info - describes a boot image object
++ * @name: the name of the loaded boot image file
+  * @state: state indicating whether it is loaded or load failed
+  * @load_fail_err: zero or error code if @state is IMAGE_LOAD_FAILED.
++ * @is_capsule: true if the loaded image content is a bios capsule file
+  * @requested_nnpdev: the device which requests loading of the image
+  * @hostres: host resource object allocated for the image content
+  * @wait_list: list of devices waiting for the image to be loaded
+  * @wl_mutex: protects accesse to @wait_list
+  * @work: handle for placing the image load in a workqueue
++ * @node: list head node to include this image in a "list of images"
+  *
+  * This structure describe a request to load boot image from disk,
+  * there is one such structure for image name requested to be loaded.
+  */
+ struct image_info {
++	char                         name[MAX_IMAGE_NAME_LEN];
+ 	enum image_state             state;
+ 	int                          load_fail_err;
++	bool                         is_capsule;
+ 	struct nnp_device            *requested_nnpdev;
+ 	struct host_resource         *hostres;
+ 	struct list_head             wait_list;
+ 	struct mutex                 wl_mutex; /* protects @wait_list */
+ 	struct work_struct           work;
++	struct list_head             node;
+ };
+ 
+ /**
+  * struct nnp_bootloader - holds status of the boot loader
+- * @image_info: state of boot image load request
+- * @mutex: protects accesses to @image_info
++ * @boot_images: list of boot images that has been requested/loaded
++ * @mutex: protects accesses to @boot_images
+  * @gc_timer: timer object which schedules images garbage collect
+  * @gc_work: handle for placing the garbage collect in workqueue
+  * @unloading_module: true if bootloader is cleared during module unload time,
+- *                    this indicate that the boot image can be removed even
++ *                    this indicate that left boot images can be removed even
+  *                    when some devices are waiting for it to be loaded.
+  *
+  * structure to hold the state of the boot loader.
+  */
+ struct nnp_bootloader {
+-	struct image_info  *image_info;
+-	struct mutex       mutex; /* protects accesses to @image_info */
++	struct list_head   boot_images;
++	struct mutex       mutex; /* protects accesses to @boot_images */
+ 	struct timer_list  gc_timer;
+ 	struct work_struct gc_work;
+ 	bool               unloading_module;
+ };
+ 
++static efi_guid_t nnp_capsule_image_guid =
++	EFI_GUID(0x6dcbd5ed, 0xe82d, 0x4c44,
++		 0xbd, 0xa1, 0x71, 0x94, 0x19, 0x9a, 0xd9, 0x2a);
++
+ /* the interval, in milliseconds, for the boot image garbadge collect timer */
+ #define GC_INTERVAL_MS 30000
+ 
+ static void gc_work_handler(struct work_struct *work);
+ 
+ static struct nnp_bootloader boot_loader = {
+-	.image_info = NULL,
++	.boot_images = LIST_HEAD_INIT(boot_loader.boot_images),
+ 	.mutex = __MUTEX_INITIALIZER(boot_loader.mutex),
+ 	.gc_work = __WORK_INITIALIZER(boot_loader.gc_work, gc_work_handler),
+ 	.unloading_module = false,
+@@ -127,6 +137,9 @@ static inline void stop_gc_timer(void)
+  *          and @total_chunks are valid only in this case.
+  *  * -EAGAIN - image load has started but not yet completed, function
+  *              should be called again later to check the load status.
++ *  * -EPERM - Operation not permitted. Might be caused when boot image is
++ *             loaded but device bios does not permit booting the device since
++ *             capsule image is expected.
+  *  * other - error code. Image load has failed.
+  */
+ static int handle_image_load_state(struct nnp_device *nnpdev,
+@@ -154,6 +167,16 @@ static int handle_image_load_state(struct nnp_device *nnpdev,
+ 		return -EAGAIN;
+ 
+ 	case IMAGE_AVAILABLE:
++		if (nnpdev->is_recovery_bios && !image_info->is_capsule) {
++			/*
++			 * non-capsule image was loaded but card has
++			 * booted with recovery bios - reject image
++			 */
++			nnpdev_set_boot_state(nnpdev,
++					      NNP_DEVICE_BOOT_FAILED |
++					      NNP_DEVICE_CAPSULE_EXPECTED);
++			return -EPERM;
++		}
+ 		/* image successfully loaded, map it to the device */
+ 		ret = nnp_hostres_map_device(image_info->hostres, nnpdev,
+ 					     true, &page_list_addr,
+@@ -177,8 +200,9 @@ static int handle_image_load_state(struct nnp_device *nnpdev,
+ 
+ 	/* image successfully mapped - send it to the device to boot */
+ 	dev_dbg(nnpdev->hw_dev->dev,
+-		"Mapped boot image num_chunks=%u total_size=%u\n",
+-		total_chunks, image_size);
++		"Mapped boot image %s num_chunks=%u total_size=%u is_capsule=%d\n",
++		image_info->name, total_chunks, image_size,
++		image_info->is_capsule);
+ 
+ 	/* write image address directly to the command Q */
+ 	cmd[0] = FIELD_PREP(NNP_H2C_BOOT_IMAGE_READY_QW0_OP_MASK,
+@@ -220,28 +244,56 @@ static void image_load_done(struct image_info *image)
+ 	mutex_unlock(&image->wl_mutex);
+ }
+ 
++/**
++ * check_capsule_image() - check if buffer content is a bios capsule file.
++ * @image_ptr: pointer to buffer
++ * @image_size: size of buffer.
++ *
++ * This function check if the content of a buffer matches the header and GUID
++ * of a bios capsule image used to update the device bios.
++ *
++ * Return: true if buffer content is a bios capsule image.
++ */
++static bool check_capsule_image(const void *image_ptr, size_t image_size)
++{
++	efi_capsule_header_t *hdr = (efi_capsule_header_t *)image_ptr;
++
++	if (image_size > sizeof(*hdr) &&
++	    guid_equal(&hdr->guid, &nnp_capsule_image_guid) &&
++	    hdr->imagesize == image_size)
++		return true;
++
++	return false;
++}
++
+ static int load_firmware(struct image_info *image_info)
+ {
+ 	const struct firmware *fw;
+ 	struct device *dev = image_info->requested_nnpdev->hw_dev->dev;
+ 	struct kstat stat;
+ 	struct path path;
+-	static const char *fname = "/lib/firmware/" NNP_FIRMWARE_NAME;
++	char *fname;
+ 	void *vptr;
+ 	int ret;
+ 
+ 	/* find image file size */
++	fname = kasprintf(GFP_KERNEL, "/lib/firmware/%s", image_info->name);
++	if (!fname)
++		return -ENOMEM;
++
+ 	ret = kern_path(fname, LOOKUP_FOLLOW, &path);
+ 	if (ret) {
+ 		pr_err("Could not find image under /lib/firmware\n");
++		kfree(fname);
+ 		return ret;
+ 	}
+ 
+ 	ret = vfs_getattr(&path, &stat, STATX_SIZE, 0);
+ 	path_put(&path);
++	kfree(fname);
+ 	if (ret) {
+ 		pr_err("failed to get boot image size %s error=%d\n",
+-		       fname, ret);
++		       image_info->name, ret);
+ 		return ret;
+ 	}
+ 
+@@ -258,16 +310,18 @@ static int load_firmware(struct image_info *image_info)
+ 	 * in order to prevent cacheing of the boot image inside
+ 	 * firmware API
+ 	 */
+-	ret = request_firmware_into_buf(&fw, NNP_FIRMWARE_NAME, dev, vptr,
++	ret = request_firmware_into_buf(&fw, image_info->name, dev, vptr,
+ 					stat.size);
+ 	if (ret) {
+ 		pr_err("failed to load firmware %s ret==%d\n",
+-		       fname, ret);
++		       image_info->name, ret);
+ 		nnp_hostres_put(image_info->hostres);
+ 		image_info->hostres = NULL;
+ 		return ret;
+ 	}
+ 
++	image_info->is_capsule = check_capsule_image(vptr, stat.size);
++
+ 	release_firmware(fw);
+ 	image_info->state = IMAGE_AVAILABLE;
+ 
+@@ -288,53 +342,82 @@ static void load_image_handler(struct work_struct *work)
+ 	image_load_done(image_info);
+ }
+ 
++/**
++ * add_new_load_request() - adds new image load request
++ * @nnpdev: the requested device
++ * @image_name: boot image name to load
++ *
++ * This function is called on a request to load a boot image which is not
++ * in the list of images which already starts loading.
++ *
++ * Return: pointer to created image_info struct for this load request or error
++ *         on failure.
++ */
++static struct image_info *add_new_load_request(struct nnp_device *nnpdev,
++					       const char *image_name)
++{
++	struct image_info *image_info;
++
++	image_info = kzalloc(sizeof(*image_info), GFP_KERNEL);
++	if (!image_info)
++		return ERR_PTR(-ENOMEM);
++
++	strcpy(image_info->name, image_name);
++	image_info->state = IMAGE_REQUESTED;
++	image_info->requested_nnpdev = nnpdev;
++	INIT_LIST_HEAD(&image_info->wait_list);
++	mutex_init(&image_info->wl_mutex);
++	INIT_WORK(&image_info->work, load_image_handler);
++
++	/* add the requesting device to the image wait list */
++	list_add_tail(&nnpdev->image_wait_node, &image_info->wait_list);
++
++	return image_info;
++}
++
+ static void gc_work_handler(struct work_struct *work)
+ {
+-	struct image_info *image;
++	struct image_info *image, *n;
+ 
+ 	/* iterate on all images and remove no longer needed images */
+ 	mutex_lock(&boot_loader.mutex);
+-	if (!boot_loader.image_info)
+-		goto done;
+-
+-	image = boot_loader.image_info;
++	list_for_each_entry_safe(image, n, &boot_loader.boot_images, node) {
++		/*
++		 * remove the image if it is not in a middle of loading
++		 * and no devices are waiting for the image.
++		 * If we are unloading - force removing anyway.
++		 */
++		mutex_lock(&image->wl_mutex);
++		if (boot_loader.unloading_module ||
++		    (image->state != IMAGE_REQUESTED &&
++		     list_empty(&image->wait_list))) {
++			if (image->hostres)
++				nnp_hostres_put(image->hostres);
++			list_del(&image->node);
++			kfree(image);
++		}
++		mutex_unlock(&image->wl_mutex);
++	}
+ 
+ 	/*
+-	 * remove the image if it is not in a middle of loading
+-	 * and no devices are waiting for the image.
+-	 * If we are unloading - force removing anyway.
++	 * if no images are in progress or in use stop the garbadge collect
++	 * timer. On the next time a device will launch an image load, it will
++	 * get restarted
+ 	 */
+-	mutex_lock(&image->wl_mutex);
+-	if (boot_loader.unloading_module ||
+-	    (image->state != IMAGE_REQUESTED &&
+-	     list_empty(&image->wait_list))) {
+-		if (image->hostres)
+-			nnp_hostres_put(image->hostres);
+-		boot_loader.image_info = NULL;
+-		kfree(image);
+-	}
+-	mutex_unlock(&image->wl_mutex);
+-
+-	if (!boot_loader.image_info) {
+-		/*
+-		 * if no images are in progress or in use stop the garbadge collect
+-		 * timer. On the next time a device will launch an image load, it will
+-		 * get restarted
+-		 */
++	if (list_empty(&boot_loader.boot_images))
+ 		stop_gc_timer();
+-	}
+ 
+-done:
+ 	mutex_unlock(&boot_loader.mutex);
+ }
+ 
+ /**
+  * nnpdev_load_boot_image() - load boot image and send it to device
+  * @nnpdev: the device requested the image
++ * @image_name: boot image file name to load
+  *
+  * This function starts the flow of loading a boot image and map it to the
+  * requesting device.
+- * If the image is not already loaded or in progress of loading,
++ * If the requested image is not already loaded or in progress of loading,
+  * a work will be launched to load the image and EAGAIN will be returned.
+  * The function should be called again later-on to check the load status
+  * until it either success or fail with another error.
+@@ -342,48 +425,52 @@ static void gc_work_handler(struct work_struct *work)
+  * already started loading, the request for the new device will be added to
+  * the image "waiting list" and no new work will be launched to load the image
+  * again.
++ * The function also check the state of the requesting device and fail if the
++ * mapped boot image is not a bios capsule image while the device is in a state
++ * that can accept only capsule images.
+  *
+  * Return:
+  * * 0       - boot image was successfully loaded, mapped and sent to the device.
+  * * -EAGAIN - image load has started, function needs to be re-called again later.
++ * * -EPERM  - Operation not permitted. Might be caused when boot image is
++ *             loaded but device bios does not permit booting the device since
++ *             capsule image is expected.
+  * * other   - Error code. Image load has failed.
+  */
+-int nnpdev_load_boot_image(struct nnp_device *nnpdev)
++int nnpdev_load_boot_image(struct nnp_device *nnpdev, const char *image_name)
+ {
+ 	struct image_info *image_info;
+ 	int ret;
+ 
+-	/* check if the image is already loaded or in progress */
++	if (strlen(image_name) >= sizeof(image_info->name))
++		return -EINVAL;
++
++	/* check if the requested image is already loaded or in progress */
+ 	mutex_lock(&boot_loader.mutex);
+-	if (boot_loader.image_info) {
+-		ret = handle_image_load_state(nnpdev, boot_loader.image_info);
+-		goto done;
+-	}
++	list_for_each_entry(image_info, &boot_loader.boot_images, node)
++		if (!strcmp(image_name, image_info->name)) {
++			ret = handle_image_load_state(nnpdev, image_info);
++			goto done;
++		}
+ 
+-	/* initialize image load request */
+-	image_info = kzalloc(sizeof(*image_info), GFP_KERNEL);
+-	if (!image_info) {
+-		ret = -ENOMEM;
++	/* load request for new image name */
++	image_info = add_new_load_request(nnpdev, image_name);
++	if (IS_ERR(image_info)) {
++		ret = PTR_ERR(image_info);
+ 		goto done;
+ 	}
+ 
+-	image_info->state = IMAGE_REQUESTED;
+-	image_info->requested_nnpdev = nnpdev;
+-	INIT_LIST_HEAD(&image_info->wait_list);
+-	mutex_init(&image_info->wl_mutex);
+-	INIT_WORK(&image_info->work, load_image_handler);
+-
+-	/* add the requesting device to the image wait list */
+-	list_add_tail(&nnpdev->image_wait_node, &image_info->wait_list);
+-
+ 	/*
+-	 * start the garbadge collect timer
++	 * add the new image load request to list of images,
++	 * if this is the first image in list also start the
++	 * garbadge collect timer
+ 	 */
+-	start_gc_timer();
++	if (list_empty(&boot_loader.boot_images))
++		start_gc_timer();
++	list_add_tail(&image_info->node, &boot_loader.boot_images);
+ 
+ 	/* schedule work to load the image */
+ 	schedule_work(&image_info->work);
+-	boot_loader.image_info = image_info;
+ 	ret = -EAGAIN;
+ 
+ done:
+@@ -392,8 +479,9 @@ int nnpdev_load_boot_image(struct nnp_device *nnpdev)
+ }
+ 
+ /**
+- * nnpdev_unload_boot_image() - unmaps boot image for device
++ * nnpdev_unload_boot_image() - unmaps a boot image for device
+  * @nnpdev: the device
++ * @boot_image_name: image no longer needed
+  *
+  * This function is called when the device no longer need the boot image
+  * in memory. either because it was already copied to the device or when
+@@ -402,28 +490,35 @@ int nnpdev_load_boot_image(struct nnp_device *nnpdev)
+  *
+  * Return: error code or zero.
+  */
+-int nnpdev_unload_boot_image(struct nnp_device *nnpdev)
++int nnpdev_unload_boot_image(struct nnp_device *nnpdev,
++			     const char *boot_image_name)
+ {
+ 	struct image_info *image_info;
+ 	int ret = -ENOENT;
++	bool found = false;
+ 	struct nnp_device *d;
+ 
+ 	mutex_lock(&boot_loader.mutex);
+-	if (!boot_loader.image_info)
+-		return ret;
++	list_for_each_entry(image_info, &boot_loader.boot_images, node)
++		if (!strncmp(boot_image_name, image_info->name,
++			     MAX_IMAGE_NAME_LEN)) {
++			found = true;
++			break;
++		}
+ 
+-	image_info = boot_loader.image_info;
++	if (!found) {
++		mutex_unlock(&boot_loader.mutex);
++		return ret;
++	}
+ 
+ 	/* remove the device from the wait list of the image */
+ 	mutex_lock(&image_info->wl_mutex);
+-	list_for_each_entry(d, &image_info->wait_list,
+-			    image_wait_node)
++	list_for_each_entry(d, &image_info->wait_list, image_wait_node)
+ 		if (d == nnpdev) {
+ 			list_del(&nnpdev->image_wait_node);
+ 			break;
+ 		}
+ 	mutex_unlock(&image_info->wl_mutex);
+-
+ 	mutex_unlock(&boot_loader.mutex);
+ 
+ 	if (image_info->hostres)
+@@ -440,7 +535,7 @@ void nnp_bootimage_fini(void)
+ 	 * boot image still in memory
+ 	 */
+ 	mutex_lock(&boot_loader.mutex);
+-	if (boot_loader.image_info) {
++	if (!list_empty(&boot_loader.boot_images)) {
+ 		stop_gc_timer();
+ 		cancel_work_sync(&boot_loader.gc_work);
+ 	}
+diff --git a/drivers/misc/intel-nnpi/bootimage.h b/drivers/misc/intel-nnpi/bootimage.h
+index 2bfad8e..0b43528 100644
+--- a/drivers/misc/intel-nnpi/bootimage.h
++++ b/drivers/misc/intel-nnpi/bootimage.h
+@@ -11,7 +11,9 @@
+ 
+ void nnp_bootimage_fini(void);
+ 
+-int nnpdev_load_boot_image(struct nnp_device *nnpdev);
+-int nnpdev_unload_boot_image(struct nnp_device *nnpdev);
++int nnpdev_load_boot_image(struct nnp_device *nnpdev,
++			   const char *boot_image_name);
++int nnpdev_unload_boot_image(struct nnp_device *nnpdev,
++			     const char *boot_image_name);
+ 
+ #endif /* _NNPDRV_BOOTIMAGE_H */
+diff --git a/drivers/misc/intel-nnpi/device.c b/drivers/misc/intel-nnpi/device.c
+index 9c6b720..9c6a2f0 100644
+--- a/drivers/misc/intel-nnpi/device.c
++++ b/drivers/misc/intel-nnpi/device.c
+@@ -993,8 +993,14 @@ static void build_bios_version_string(struct nnp_device *nnpdev)
+ 
+ static int unload_boot_image(struct nnp_device *nnpdev)
+ {
++	int ret;
++
+ 	nnpdev->boot_image_loaded = false;
+-	return nnpdev_unload_boot_image(nnpdev);
++	ret = nnpdev_unload_boot_image(nnpdev, nnpdev->reset_boot_image_path);
++	/* reset back to default boot image (in case it was different) */
++	strcpy(nnpdev->reset_boot_image_path, NNP_FIRMWARE_NAME);
++
++	return ret;
+ }
+ 
+ /**
+@@ -1117,7 +1123,8 @@ void nnpdev_set_boot_state(struct nnp_device *nnpdev, u32 mask)
+ 		build_bios_version_string(nnpdev);
+ 		nnpdev->bios_system_info_valid = true;
+ 		nnpdev->boot_image_loaded = true;
+-		ret = nnpdev_load_boot_image(nnpdev);
++		ret = nnpdev_load_boot_image(nnpdev,
++					     nnpdev->reset_boot_image_path);
+ 
+ 		/*
+ 		 * EAGAIN means the image not available in memory
+@@ -1266,6 +1273,8 @@ struct nnp_device *nnpdev_create(struct nnp_hw_dev *hw_dev)
+ 
+ 	kref_init(&nnpdev->ref);
+ 	spin_lock_init(&nnpdev->lock);
++	/* set boot image path to be the default */
++	strcpy(nnpdev->reset_boot_image_path, NNP_FIRMWARE_NAME);
+ 	INIT_WORK(&nnpdev->query_version_work.work, process_query_version_reply);
+ 
+ 	return nnpdev;
+diff --git a/drivers/misc/intel-nnpi/device.h b/drivers/misc/intel-nnpi/device.h
+index 48874bb..7e80e1a 100644
+--- a/drivers/misc/intel-nnpi/device.h
++++ b/drivers/misc/intel-nnpi/device.h
+@@ -190,6 +190,7 @@ struct nnp_device_counters {
+  *        ecc counters and thresholds.
+  * @is_recovery_bios: true if device has booted from the recovery bios flash
+  * @boot_image_loaded: true if boot image load has started
++ * @reset_boot_image_path: boot image to load on next device reset.
+  * @response_buf: buffer of device response messages arrived from "pci" layer.
+  * @response_num_msgs: number of qwords available in @response_buf
+  * @cmd_chan_ida: allocate channel ids to be used in ipc protocol.
+@@ -253,6 +254,7 @@ struct nnp_device {
+ 	spinlock_t     lock;
+ 	bool           is_recovery_bios;
+ 	bool           boot_image_loaded;
++	char           reset_boot_image_path[PATH_MAX];
+ 
+ 	u64            response_buf[NNP_DEVICE_RESPONSE_BUFFER_LEN];
+ 	unsigned int   response_num_msgs;
+diff --git a/drivers/misc/intel-nnpi/device_sysfs.c b/drivers/misc/intel-nnpi/device_sysfs.c
+index f5cf154..1a9cfdf 100644
+--- a/drivers/misc/intel-nnpi/device_sysfs.c
++++ b/drivers/misc/intel-nnpi/device_sysfs.c
+@@ -16,6 +16,35 @@
+ #include "cmd_chan.h"
+ #include "nnp_inbound_mem.h"
+ 
++static ssize_t boot_image_show(struct device *dev,
++			       struct device_attribute *attr, char *buf)
++{
++	struct nnp_device *nnpdev;
++
++	nnpdev = dev_get_drvdata(dev);
++	if (!nnpdev)
++		return -EINVAL;
++
++	return sprintf(buf, "%s\n", nnpdev->reset_boot_image_path);
++}
++
++static ssize_t boot_image_store(struct device *dev,
++				struct device_attribute *attr,
++				const char *buf, size_t count)
++{
++	struct nnp_device *nnpdev;
++
++	nnpdev = dev_get_drvdata(dev);
++	if (!nnpdev)
++		return -EINVAL;
++
++	strncpy(nnpdev->reset_boot_image_path, buf, PATH_MAX - 1);
++	nnpdev->reset_boot_image_path[PATH_MAX - 1] = '\0';
++
++	return count;
++}
++static DEVICE_ATTR_RW(boot_image);
++
+ void nnpdev_sysfs_get_state_strings(struct nnp_device *nnpdev,
+ 				    const char **state, const char **boot_state,
+ 				    const char **fail_reason)
+@@ -618,6 +647,7 @@ static ssize_t dram_ecc_correctable_show(struct device *dev,
+ static DEVICE_ATTR_RO(dram_ecc_correctable);
+ 
+ static struct attribute *nnp_dev_attrs[] = {
++	&dev_attr_boot_image.attr,
+ 	&dev_attr_total_unprotected_mem.attr,
+ 	&dev_attr_total_protected_mem.attr,
+ 	&dev_attr_protocol_version.attr,
+-- 
+1.8.3.1
+
