@@ -99,6 +99,8 @@ struct config {
 	uint32_t ice_dso_filter_mask_low_ch1_reg_offset;
 	uint32_t ice_dso_filter_mask_high_ch1_reg_offset;
 	uint32_t ice_dso_filter_inv_ch1_reg_offset;
+	uint32_t ice_dso_cfg_dtf_src_cfg_src_en_mask;
+	uint32_t ice_dso_cfg_dtf_src_cfg_ch_en_mask;
 	uint32_t ice_dbg_cbbid_base;
 	uint32_t ice_dbg_cbbid_cfg_offset;
 	uint32_t ice_prog_cores_ctrl_offset;
