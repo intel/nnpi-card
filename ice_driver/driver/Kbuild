@@ -1,5 +1,5 @@
 #############################################
-#  Copyright (C) 2019-2020 Intel Corporation
+#  Copyright (C) 2019-2021 Intel Corporation
 #
 #  SPDX-License-Identifier: GPL-2.0-or-later
 #############################################
@@ -38,6 +38,10 @@ endif
 
 ifdef NEXT_E2E
 subdir-ccflags-y += -DNEXT_E2E
+endif
+
+ifdef ICEDRV_ICE_SWITCH_ON
+subdir-ccflags-y += -DICE_SWITCH_ON
 endif
 
 ifdef DEBUG
