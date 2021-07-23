@@ -1,5 +1,5 @@
 /********************************************
- * Copyright (C) 2019-2020 Intel Corporation
+ * Copyright (C) 2019-2021 Intel Corporation
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  ********************************************/
@@ -674,6 +674,7 @@ static void channel_hostres_op_work_handler(struct work_struct *work)
 	kfree(op);
 }
 
+/* NNP_IPC_H2C_OP_CHANNEL_HOSTRES_OP */
 void IPC_OPCODE_HANDLER(CHANNEL_HOSTRES_OP)(
 			struct sphcs               *sphcs,
 			union h2c_channel_hostres_op *cmd)
