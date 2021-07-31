@@ -24,7 +24,7 @@
 #define STR(x) _STR(x)
 
 #define SPH_MAJOR 0
-#define SPH_MINOR 11
+#define SPH_MINOR 12
 #define SPH_PATCH 0
 #define SPH_PATCH_MINOR 0
 
