@@ -1,0 +1,209 @@
+From 0b97b83e1917a7dc87e0bee48ca92dab3d3fa1cb Mon Sep 17 00:00:00 2001
+From: Guy Zadicario <guy.zadicario@intel.com>
+Date: Sun, 15 Nov 2020 14:22:34 +0200
+Subject: [PATCH v12 01/29] misc: nnpi: driver overview documentation
+
+Add overview documentation for the NNP-I device and driver.
+
+Signed-off-by: Guy Zadicario <guy.zadicario@intel.com>
+Reviewed-by: Vaibhav Agarwal <vaibhav.agarwal@intel.com>
+---
+ Documentation/misc-devices/intel-nnpi.txt | 186 ++++++++++++++++++++++++++++++
+ 1 file changed, 186 insertions(+)
+ create mode 100644 Documentation/misc-devices/intel-nnpi.txt
+
+diff --git a/Documentation/misc-devices/intel-nnpi.txt b/Documentation/misc-devices/intel-nnpi.txt
+new file mode 100644
+index 0000000..b9e4b8b
+--- /dev/null
++++ b/Documentation/misc-devices/intel-nnpi.txt
+@@ -0,0 +1,186 @@
++=========================
++Intel NNP-I device driver
++=========================
++
++Description
++===========
++NNP-I is a PCIe processor device targeted for AI deep learning inference
++applications. The device equipped with LPDDR4 memory, DMA engine, x86 cores
++and Inference Compute Engines (ICE). These ICE compute engines are
++designed for efficient and low power inference related computations.
++
++The device DRAM as well as the ICEs and other h/w components of the device
++are not accessible from host CPU, they are programmed and controlled by
++software components running on the device's x86 cores. The "host interface"
++to the device is a small sized "command queue" and "response queue"
++through which commands and responses can be sent and received to/from
++the device and two doorbell registers through which the host and device
++can communicate state.
++
++The device has a DMA engine which can copy data between host memory and
++device DRAM, an inference application flow running on the host is the
++following:
++  1) Allocate space on device DRAM for the network, input and output data
++     (device DRAM space allocation is handled by the device's software
++      stack and not by the host driver)
++  2) Load AI network onto the device DRAM
++  3) Allocate memory on host to hold the input and output data
++  4) Load host memory with input data
++  5) Schedule commands to the device to copy the input data to the device
++     DRAM, execute the inference work and copy the output data back to
++     host memory.
++
++The "device's software stack" consists of a BIOS image which is flashed on
++device and a full embedded linux image which is loaded to the device during
++device boot/reset process. The device BIOS and host driver communicate through
++the doorbell registers and the "command queue", the host driver loads the
++device's "boot image" to host memory and communicates the location of the
++image to the device BIOS, the device's BIOS copies that boot image to device
++DRAM using the DMA engine and starts booting the embedded linux running on the
++device's x86 cores.
++
++Each NNP-I device can support multiple application inference contexts, each
++context has its own space for device and host resource IDs.
++There is no hardware level restriction for one context to access resources of
++another context, however this is prevented by the card software stack by having a
++separate resource ID space for each context.
++
++There may be multiple NNP-I devices in a system. An inference application can
++hold contexts to multiple NNP-I devices and should be able to map and access
++the same host resource memory on all devices, however only if the host resource
++and all device contexts are created by the same application. The driver implements
++that requirement by exporting two char devices, one for host resource management
++and another for device access. The application must provide host resource chardev
++fd to the device chardev to allow access to host resources created from the
++same fd.
++
++ABI:
++====
++There are two character device classes created by the driver with IOCTL
++interface, (Interface for both is in include/uapi/misc/intel_nnpi.h):
++/dev/nnpi_host - Only a single instance of this character device is created
++                 by the driver, It has 4 IOCTLs for creating, destroying,
++                 lock and unlock host resources. "host resource" is a
++                 set of pinned memory pages on host which can be mapped
++                 to device pci space and accessed by the device's DMA engine.
++                 This char device is created on the first probed NNP-I device
++                 so it will not be present on systems with no NNP-I devices.
++/dev/nnpi%d - This is a character device with instance for each NNP-I device,
++              It support 5 IOCTLs for:
++              creating channel - A "channel" gives user-space the ability to
++                   send commands and receive responses from the device.
++                   For each channel an anon file descriptor is created and
++                   returned to the user, commands and responses to the device
++                   are sent and received using write and read operations on
++                   the channel fd. The driver validates each command sent and
++                   will reject unsupported or invalid commands.
++                   Commands written to a channel are added to a queue, each
++                   channel has its own command queue. A kernel
++                   thread, exist for each device (msg_scheduler), drains the
++                   command queues to the hardware command queue.
++                   The channel is destroyed by closing the returned channel fd.
++                   When creating a channel an open fd for /dev/nnpi_host
++                   needs to be provided, the channel object holds a reference
++                   to that file, and the channel can map/unmap only host
++                   resources which was created through that same fd.
++                   Each channel has a unique 10-bit ID allocated by the driver.
++                   Channel IDs 0-255 are used for inference contexts.
++                   Channel with ID >255 is used for non-inference related
++                   communication with the device (mainly maintenance, stats
++                   query, etc).
++              map/unmap host resource - Maps a host resource to device pci
++                   space and sends to the device a pagetable of the physical
++                   addresses of the resource pages. Each map has a unique
++                   16-bit ID, commands sent to the card can include such
++                   ID in order to reference a host resource.
++                   The ID space for host resources is private for each channel.
++              create/delete "ringbuffer" - This is exactly the same as
++                   map/unmap host resource but for special host resources,
++                   called ring buffers, used to transfer data along with
++                   some commands. There may be up to two host-to-card ring
++                   buffers and two card-to-host ring buffers.
++
++sysfs:
++======
++There are multiple sysfs attribute for NNP-I device allowing to display
++device information and status, and some for control operations like enable/disable
++the device.
++Attributes are documented in Documentation/ABI/testing/sysfs-driver-intel_nnpi
++
++Device's command protocol
++=========================
++Commands to the device include 1, 2 or 3 64-bit values. The lower 6 bits in the
++command specify the command opcode. The opcode also defines the command size as
++each command has constant size. Commands which are targeted to a specific channel
++include the channel ID in bits 6-15 of the command and must use opcode value
++above or equal to 32.
++The definition of other bits is specific to each command.
++Responses from the device has the same format.
++
++The structures of the command and responses protocol is defined in
++ipc_include/ipc_protocol.h, structures of commands are prefixed with
++h2c_ and responses with c2h_ (a shortcut for host-to-card and card-to-host).
++
++NOTE: throughout the driver code, the term "protocol" and "ipc" has the same
++      meaning. Both related to the ipc protocol with the device.
++
++PCI BARs
++========
++The device exposes two 64-bit BARs:
++BAR0-1: 4KB including device registers to control the command and response hardware
++        queues (FIFOs), doorbell registers and control/interrupt status registers.
++        The offsets and bitfields of those registers are defined in
++        if_include/nnpi_elbi.h
++
++BAR2-3: Device Memory region of 64MB. The host has read/write access to this region.
++        The first 16KB of this region holds device crash dump in case the device
++        software stack has crashed (Obviously, this is an erronous state that should
++        never happen, but when it does the crash dump help debugging).
++        The layout of this 16KB is defined in if_include/nnp_inbound_mem.h
++        This region will be filled by the device on event of crash and can be
++        read by the host for debugging purposes.
++        The Rest of this memory region (64MB - 16KB) is used by peer-to-peer
++        applications to transfer data between two NNP-I devices.
++
++Terminology
++===========
++To avoid confusion and for better understanding of the code for new reviewers,
++here is a list of few definitions:
++
++command (or message):
++    A command that is sent to the device for execution.
++
++response:
++    A message sent from the device back to the host driver, this mainly sent
++    as responses for command submissions.
++
++event:
++    A special response which indicates some event occurring in the card, like
++    error condition, but not only. Successful completion of some requests are
++    also reported as events.
++
++protocol:
++    refers to the ipc protocol between the host and device.
++
++nnp_user:
++    Object created for each file descriptor opened for /dev/nnpi_host.
++    It manages host memory resources.
++    It is called nnp_user since usually application will open a single
++    file descriptor to /dev/nnpi_host and that defines a specific "user"
++    or application. Although it is possible for application to have
++    multiple of those, in this case the application will hold multiple "user"
++    objects. Host resources cannot be shared between two "user" objects.
++
++channel, cmd_chan:
++    "channel" or "cmd_chan" refers to a command channel object which is the
++    communication layer between user-space application and one NNP-I device.
++    It provides interface to send command messages to the device but also
++    to receive responses from the device. Each application can create one or
++    more channels to the same or different devices.
++    Each channel is associated with one NNP-I device and one nnp_user.
++    The channel can only access host memory resources belonging to that
++    nnp_user.
++
++ELBI
++    This acronym refers to the set of h/w registers of the NNP-I device which
++    are accessible through BAR0. It stands for: "External Local Bus Interface".
+-- 
+1.8.3.1
+

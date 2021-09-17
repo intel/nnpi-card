@@ -1,5 +1,5 @@
 /********************************************
- * Copyright (C) 2019-2020 Intel Corporation
+ * Copyright (C) 2019-2021 Intel Corporation
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  ********************************************/
@@ -46,14 +46,26 @@ static ssize_t store_imon_calib_entry(struct kobject *kobj,
 				struct kobj_attribute *attr,
 				const char *buf, size_t count);
 
+/* sysfs related functions, structures */
+static ssize_t show_offset_calib_entry(struct kobject *kobj,
+				struct kobj_attribute *attr,
+				char *buf);
+
+static ssize_t store_offset_calib_entry(struct kobject *kobj,
+				struct kobj_attribute *attr,
+				const char *buf, size_t count);
+
 static struct kobj_attribute vccin_imon_config_attr =
 __ATTR(vccin_imon, 0664, show_imon_calib_entry, store_imon_calib_entry);
 static struct kobj_attribute sa_imon_config_attr =
 __ATTR(sa_imon, 0664, show_imon_calib_entry, store_imon_calib_entry);
+static struct kobj_attribute offset_config_attr =
+__ATTR(offset, 0664, show_offset_calib_entry, store_offset_calib_entry);
 
 static struct attribute *imon_config_attrs[] = {
 	&vccin_imon_config_attr.attr,
 	&sa_imon_config_attr.attr,
+	&offset_config_attr.attr,
 	NULL,	/* need to NULL terminate the list of attributes */
 };
 
@@ -122,6 +134,42 @@ static ssize_t store_imon_calib_entry(struct kobject *kobj,
 	return count;
 }
 
+/* Function to show offset */
+static ssize_t show_offset_calib_entry(struct kobject *kobj,
+			       struct kobj_attribute *attr,
+			       char *buf)
+{
+	int16_t offset_value;
+	int ret;
+
+	ret = get_offset_calib_config(&offset_value);
+	if (unlikely(ret < 0))
+		return ret;
+
+	ret = sprintf(buf, "%hd\n", offset_value);
+
+	return ret;
+}
+
+/* Function to store imon offset and slope */
+static ssize_t store_offset_calib_entry(struct kobject *kobj,
+				struct kobj_attribute *attr,
+				const char *buf, size_t count)
+{
+	int16_t offset_value;
+	int ret;
+
+	ret = kstrtos16(buf, 0, &offset_value);
+	if (unlikely(ret < 0))
+		return ret;
+
+	ret = set_offset_calib_config(offset_value);
+	if (unlikely(ret < 0))
+		return ret;
+
+	return count;
+}
+
 int sphpb_imon_conf_sysfs_init(struct sphpb_pb *sphpb)
 {
 	int ret;
@@ -141,4 +189,3 @@ void sphpb_imon_conf_sysfs_deinit(struct sphpb_pb *sphpb)
 	/* Remove imon files config kobject */
 	sysfs_remove_group(sphpb->kobj, &imon_config_attr_group);
 }
-

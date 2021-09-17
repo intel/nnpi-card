@@ -1,5 +1,5 @@
 /********************************************
- * Copyright (C) 2019-2020 Intel Corporation
+ * Copyright (C) 2019-2021 Intel Corporation
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  ********************************************/
@@ -690,6 +690,9 @@ void store_ecc_err_count(struct cve_device *cve_dev)
 			ICEDRV_SWC_INFER_DEVICE_COUNTER_ECC_SERRCOUNT,
 			serr);
 
+	/* Reset ecc err count register as the current count is stored*/
+	cve_os_write_mmio_32(cve_dev,
+			cfg_default.mmio_ecc_serrcount_offset, 0);
 
 	__set_persistant_secc_counter(cve_dev->hswc, serr);
 
@@ -698,6 +701,10 @@ void store_ecc_err_count(struct cve_device *cve_dev)
 	ice_swc_counter_add(cve_dev->hswc,
 			ICEDRV_SWC_DEVICE_COUNTER_ECC_DERRCOUNT, derr);
 
+	/* Reset ecc err count register as the current count is stored*/
+	cve_os_write_mmio_32(cve_dev,
+			cfg_default.mmio_ecc_derrcount_offset, 0);
+
 	__set_persistant_decc_counter(cve_dev->hswc, derr);
 
 	parity_err = cve_os_read_mmio_32_force_print(cve_dev,
@@ -705,6 +712,10 @@ void store_ecc_err_count(struct cve_device *cve_dev)
 	ice_swc_counter_add(cve_dev->hswc_infer,
 			ICEDRV_SWC_INFER_DEVICE_COUNTER_PARITY_ERRCOUNT,
 			parity_err);
+
+	/* Reset parity err count register as the current count is stored*/
+	cve_os_write_mmio_32(cve_dev,
+			cfg_default.mmio_parity_errcount_offset, 0);
 
 	unmapped_err.val = cve_os_read_mmio_32_force_print(cve_dev,
 			cfg_default.mmio_unmapped_err_id_offset);
@@ -771,6 +782,33 @@ static void __dump_tlc_err_reg(struct cve_device *ice)
 			val[0], val[1]);
 }
 
+static void __dump_gecoe_dbg_reg(struct cve_device *ice)
+{
+	union gecoe_dbg_reg_t gecoe_dbg;
+
+	gecoe_dbg.val = cve_os_read_mmio_32(ice,
+			cfg_default.gecoe_base +
+			cfg_default.gecoe_dbg_reg_offset);
+	cve_os_log_default(CVE_LOGLEVEL_ERROR,
+			"ICE%d GeCoe Decoder Enable:0x%x Stream:0x%x DataOutOfRange:0x%x MetaOutOfRange:0x%x WrongBurstLen:0x%x IncorrectBypass:0x%x\n",
+			ice->dev_index,
+			gecoe_dbg.err_info.dec_enable,
+			gecoe_dbg.err_info.dec_stream,
+			gecoe_dbg.err_info.dec_data_out,
+			gecoe_dbg.err_info.dec_meta_out,
+			gecoe_dbg.err_info.dec_burst_len,
+			gecoe_dbg.err_info.dec_bypass);
+	cve_os_log_default(CVE_LOGLEVEL_ERROR,
+			"ICE%d GeCoe Encoder Enable:0x%x Stream:0x%x DataOutOfRange:0x%x MetaOutOfRange:0x%x WrongBurstLen:0x%x IncorrectBypass:0x%x\n",
+			ice->dev_index,
+			gecoe_dbg.err_info.enc_enable,
+			gecoe_dbg.err_info.enc_stream,
+			gecoe_dbg.err_info.enc_data_out,
+			gecoe_dbg.err_info.enc_meta_out,
+			gecoe_dbg.err_info.enc_burst_len,
+			gecoe_dbg.err_info.enc_bypass);
+}
+
 static void __dump_gp_reg(struct cve_device *ice)
 {
 	int i;
@@ -801,6 +839,7 @@ void ice_dump_hw_err_info(struct cve_device *ice)
 	__dump_mmu_fault_info(ice);
 	__dump_tlc_err_reg(ice);
 	__dump_gp_reg(ice);
+	__dump_gecoe_dbg_reg(ice);
 }
 
 void ice_dump_hw_cntr_info(struct ice_network *ntw)

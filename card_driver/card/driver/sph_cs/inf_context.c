@@ -1,5 +1,5 @@
 /********************************************
- * Copyright (C) 2019-2020 Intel Corporation
+ * Copyright (C) 2019-2021 Intel Corporation
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  ********************************************/
@@ -65,7 +65,7 @@ int inf_context_create(uint16_t             protocol_id,
 		goto freeCtx;
 	}
 
-	kref_init(&context->ref);
+	atomic_set(&context->ref, 1);
 	context->chan = chan;
 	context->magic = inf_context_create;
 	context->protocol_id = protocol_id;
@@ -148,10 +148,14 @@ int inf_context_runtime_attach(struct inf_context *context)
 	return 0;
 }
 
-void inf_context_runtime_detach(struct inf_context *context)
+static void inf_context_runtime_detach(struct inf_context *context)
 {
 	int ret;
 
+	NNP_ASSERT(context->runtime_detach_sent);
+
+	if (context->attached <= 0)
+		return;
 	/*
 	 * insert an EOF command to the runtime to cause it to exit.
 	 * If failed to insert EOF command (should not happen) then signal
@@ -175,11 +179,8 @@ int is_inf_context_ptr(void *ptr)
 		context->magic == inf_context_create);
 }
 
-static void release_context(struct kref *kref)
+static void release_context(struct inf_context *context)
 {
-	struct inf_context *context = container_of(kref,
-						   struct inf_context,
-						   ref);
 	struct inf_devres *devres;
 	struct inf_copy *copy;
 	struct inf_sync_point *sync_point;
@@ -188,9 +189,8 @@ static void release_context(struct kref *kref)
 
 	NNP_SPIN_LOCK_BH(&g_the_sphcs->inf_data->lock_bh);
 	hash_del(&context->hash_node);
-	NNP_SPIN_UNLOCK_BH(&g_the_sphcs->inf_data->lock_bh);
-
 	context->chan->destroy_cb = NULL;
+	NNP_SPIN_UNLOCK_BH(&g_the_sphcs->inf_data->lock_bh);
 
 	inf_cmd_queue_fini(&context->cmdq);
 
@@ -239,7 +239,7 @@ void inf_context_destroy_objects(struct inf_context *context)
 	struct inf_cmd_list *cmd;
 	struct inf_sync_point *sync_point;
 	int i;
-	bool found = true;
+	bool connected, found;
 	unsigned long flags;
 
 	do {
@@ -324,22 +324,29 @@ void inf_context_destroy_objects(struct inf_context *context)
 	NNP_SPIN_UNLOCK(&context->lock);
 
 	do {
+		connected = false;
 		found = false;
 		NNP_SPIN_LOCK(&context->lock);
 		hash_for_each(context->devres_hash, i, devres, hash_node) {
 			NNP_SPIN_LOCK_IRQSAVE(&devres->lock_irq, flags);
 			if (devres->destroyed == 0)
 				found = true;
+			if (devres->destroyed != -1 &&
+			    devres->is_p2p_dst &&
+			    devres->p2p_buf.peer_dev != NULL) // connected
+				connected = true;
 			devres->destroyed = -1;
 			NNP_SPIN_UNLOCK_IRQRESTORE(&devres->lock_irq, flags);
-
-			if (found) {
+			if (connected || found) {
 				NNP_SPIN_UNLOCK(&context->lock);
-				inf_devres_put(devres);
+				if (connected)
+					inf_devres_put(devres);
+				if (found)
+					inf_devres_put(devres);
 				break;
 			}
 		}
-	} while (found);
+	} while (connected || found);
 	NNP_SPIN_UNLOCK(&context->lock);
 
 	do {
@@ -361,30 +368,40 @@ void inf_context_destroy_objects(struct inf_context *context)
 
 int inf_context_get(struct inf_context *context)
 {
-	return kref_get_unless_zero(&context->ref);
+	return atomic_inc_not_zero(&context->ref);
 }
 
 int inf_context_put(struct inf_context *context)
 {
 	bool send_runtime = false;
+	int usage_count;
 
 	if (!context)
 		return 0;
 
+	usage_count = atomic_dec_if_positive(&context->ref);
+	NNP_ASSERT(usage_count >= 0);
+
 	/*
 	 * send runtime detach request to runtime
-	 * if only runtime and daemon will remain attached after the put
+	 * if only runtime and daemon remained attached after the put
 	 */
 	NNP_SPIN_LOCK(&context->lock);
 	if (context->attached > 0 &&
 	    !context->runtime_detach_sent)
-		send_runtime = context->runtime_detach_sent = (kref_read(&context->ref) <= (context->daemon_ref_released ? 2 : 3));
+		send_runtime = context->runtime_detach_sent = (usage_count <= (context->daemon_ref_released ? 1 : 2));
 	NNP_SPIN_UNLOCK(&context->lock);
 
 	if (send_runtime)
 		inf_context_runtime_detach(context);
 
-	return kref_put(&context->ref, release_context);
+	if (usage_count == 0) {
+		release_context(context);
+
+		return 1;
+	}
+
+	return 0;
 }
 
 /* This function evaluates if a sync point has reached and send out

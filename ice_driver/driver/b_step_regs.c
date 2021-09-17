@@ -1,5 +1,5 @@
 /********************************************
- * Copyright (C) 2019-2020 Intel Corporation
+ * Copyright (C) 2019-2021 Intel Corporation
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  ********************************************/
@@ -85,6 +85,8 @@ const struct config cfg_b = {
 	.ice_dso_filter_mask_low_ch1_reg_offset		= ICE_OBS_ENC_REGS_ICE_OBS_DSO_DTF_OBS_MEM_REGS_DSO_FILTER_MASK_LOW_CH1_REG_MMOFFSET,
 	.ice_dso_filter_mask_high_ch1_reg_offset	= ICE_OBS_ENC_REGS_ICE_OBS_DSO_DTF_OBS_MEM_REGS_DSO_FILTER_MASK_HIGH_CH1_REG_MMOFFSET,
 	.ice_dso_filter_inv_ch1_reg_offset		= ICE_OBS_ENC_REGS_ICE_OBS_DSO_DTF_OBS_MEM_REGS_DSO_FILTER_INV_CH1_REG_MMOFFSET,
+	.ice_dso_cfg_dtf_src_cfg_src_en_mask		= ICE_OBS_DTF_OBS_ENC_REGS_DSO_CFG_DTF_SRC_CONFIG_REG_SRC_EN_MASK,
+	.ice_dso_cfg_dtf_src_cfg_ch_en_mask		= ICE_OBS_DTF_OBS_ENC_REGS_DSO_CFG_DTF_SRC_CONFIG_REG_CHANNEL_ENABLE_MASK,
 	.ice_dbg_cbbid_base				= CVE_DEBUGCBBID_BASE,
 	.ice_dbg_cbbid_cfg_offset	 		= CVE_DEBUGCBBID_DEBUG_CBBID_CFG_REG_MMOFFSET,
 	.ice_prog_cores_ctrl_offset			= CVE_MMIO_HUB_PROG_CORES_CONTROL_MMOFFSET,
@@ -303,4 +305,6 @@ const struct config cfg_b = {
 	.mmio_prog_cores_control_ivp_runstall_mask = MMIO_HUB_MEM_PROG_CORES_CONTROL_IVP_RUNSTALL_MASK,
 	.mmio_prog_cores_control_asip0_runstall_mask = MMIO_HUB_MEM_PROG_CORES_CONTROL_ASIP0_RUNSTALL_MASK,
 	.mmio_prog_cores_control_asip1_runstall_mask = MMIO_HUB_MEM_PROG_CORES_CONTROL_ASIP1_RUNSTALL_MASK,
+	.gecoe_base = CVE_GECOE_BASE,
+	.gecoe_dbg_reg_offset = CVE_GECOE_GECOE_DBG_REG_MMOFFSET,
 };

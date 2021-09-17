@@ -1,5 +1,5 @@
 /********************************************
- * Copyright (C) 2019-2020 Intel Corporation
+ * Copyright (C) 2019-2021 Intel Corporation
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  ********************************************/
@@ -183,10 +183,12 @@ enum BIOS_SAGV_CONFIG_POLICIES {
 #define BIOS_OC_INTERFACE_SUBCMD_WRITE_VCCIN_MAX_LIMIT                  11
 
 // Mailbox subcommands and constants for #define MAILBOX_BIOS_CMD_VR_IMON_CALIBRATION
-#define BIOS_IMON_CALIBRATION_VCCIN_READ_SUBCOMMAND   0
-#define BIOS_IMON_CALIBRATION_VCCIN_WRITE_SUBCOMMAND  1
-#define BIOS_IMON_CALIBRATION_SA_READ_SUBCOMMAND      2
-#define BIOS_IMON_CALIBRATION_SA_WRITE_SUBCOMMAND     3
+#define BIOS_IMON_CALIBRATION_VCCIN_READ_SUBCOMMAND    0
+#define BIOS_IMON_CALIBRATION_VCCIN_WRITE_SUBCOMMAND   1
+#define BIOS_IMON_CALIBRATION_SA_READ_SUBCOMMAND       2
+#define BIOS_IMON_CALIBRATION_SA_WRITE_SUBCOMMAND      3
+#define BIOS_IMON_CALIBRATION_OFFSET_READ_SUBCOMMAND  20
+#define BIOS_IMON_CALIBRATION_OFFSET_WRITE_SUBCOMMAND 21
 
 
 /////////////////////////////////////////////////////////
@@ -256,3 +258,7 @@ int get_imon_vccin_calib_config(uint16_t *imon_offset,
 
 int set_imon_vccin_calib_config(uint16_t imon_offset,
 				uint16_t imon_slope);
+
+int get_offset_calib_config(int16_t *offset);
+
+int set_offset_calib_config(int16_t offset);
