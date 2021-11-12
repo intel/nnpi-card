@@ -1,0 +1,834 @@
+From d513cff598f99135ea241bd972084983cc130315 Mon Sep 17 00:00:00 2001
+From: Guy Zadicario <guy.zadicario@intel.com>
+Date: Sun, 15 Nov 2020 09:41:23 +0200
+Subject: [PATCH v12 07/14] misc: nnpi: NNP-I device boot flow
+
+Boot the NNP-I device after the device is powered-on or reset. When the
+NNP-I device comes up, it first loads and runs a BIOS image from the
+device's internal persistent storage. Once the BIOS is running, the host
+driver loads and provides a boot image to the device BIOS, and the BIOS
+uses it to run the Embedded Linux image and SW stack.
+
+Signed-off-by: Guy Zadicario <guy.zadicario@intel.com>
+Reviewed-by: Vaibhav Agarwal <vaibhav.agarwal@intel.com>
+---
+ drivers/misc/intel-nnpi/Makefile      |   2 +-
+ drivers/misc/intel-nnpi/bootimage.c   | 231 ++++++++++++++++++++++++++
+ drivers/misc/intel-nnpi/bootimage.h   |  44 +++++
+ drivers/misc/intel-nnpi/device.c      | 294 ++++++++++++++++++++++++++++++++++
+ drivers/misc/intel-nnpi/device.h      |  69 ++++++++
+ drivers/misc/intel-nnpi/nnp_hw.h      |   1 +
+ drivers/misc/intel-nnpi/nnp_hw_pcie.c |  15 ++
+ drivers/misc/intel-nnpi/nnpdrv_main.c |   1 +
+ 8 files changed, 656 insertions(+), 1 deletion(-)
+ create mode 100644 drivers/misc/intel-nnpi/bootimage.c
+ create mode 100644 drivers/misc/intel-nnpi/bootimage.h
+
+diff --git a/drivers/misc/intel-nnpi/Makefile b/drivers/misc/intel-nnpi/Makefile
+index 94adc85..aca5c4a 100644
+--- a/drivers/misc/intel-nnpi/Makefile
++++ b/drivers/misc/intel-nnpi/Makefile
+@@ -6,6 +6,6 @@
+ obj-m	:= intel_nnpidrv.o
+ 
+ intel_nnpidrv-y := nnpdrv_main.o nnp_hw_pcie.o device.o msg_scheduler.o \
+-		   hostres.o host_chardev.o nnp_user.o
++		   hostres.o host_chardev.o nnp_user.o bootimage.o
+ 
+ ccflags-y += -I$(srctree)/$(src)/ipc_include
+diff --git a/drivers/misc/intel-nnpi/bootimage.c b/drivers/misc/intel-nnpi/bootimage.c
+new file mode 100644
+index 0000000..92eb9ac
+--- /dev/null
++++ b/drivers/misc/intel-nnpi/bootimage.c
+@@ -0,0 +1,231 @@
++// SPDX-License-Identifier: GPL-2.0-only
++
++/* Copyright (C) 2019-2020 Intel Corporation */
++
++#define pr_fmt(fmt)   KBUILD_MODNAME ": " fmt
++
++#include "bootimage.h"
++#include <linux/bitfield.h>
++#include <linux/device.h>
++#include <linux/firmware.h>
++#include <linux/fs.h>
++#include <linux/namei.h>
++#include <linux/printk.h>
++#include <linux/sched.h>
++#include "device.h"
++#include "hostres.h"
++#include "ipc_protocol.h"
++#include "nnp_boot_defs.h"
++
++
++#define MAX_IMAGE_NAME_LEN   (NAME_MAX + 1)
++
++void nnpdev_boot_image_init(struct image_info *boot_image)
++{
++	boot_image->state = IMAGE_NONE;
++	boot_image->hostres = NULL;
++	mutex_init(&boot_image->mutex);
++}
++
++static int load_firmware(struct image_info *image_info)
++{
++	const struct firmware *fw;
++	struct nnp_device *nnpdev = container_of(image_info, struct nnp_device,
++						 boot_image);
++	struct device *dev = nnpdev->hw_dev->dev;
++	struct kstat stat;
++	struct path path;
++	static const char *fname = "/lib/firmware/" NNP_FIRMWARE_NAME;
++	void *vptr;
++	int ret;
++
++	/* find image file size */
++	ret = kern_path(fname, LOOKUP_FOLLOW, &path);
++	if (ret) {
++		pr_err("Could not find image under /lib/firmware\n");
++		return ret;
++	}
++
++	ret = vfs_getattr(&path, &stat, STATX_SIZE, 0);
++	path_put(&path);
++	if (ret) {
++		pr_err("failed to get boot image size %s error=%d\n",
++		       fname, ret);
++		return ret;
++	}
++
++	/* create host resource to hold the boot image content */
++	image_info->hostres = nnp_hostres_alloc(stat.size, DMA_TO_DEVICE);
++	if (IS_ERR(image_info->hostres))
++		return PTR_ERR(image_info->hostres);
++
++	vptr = nnp_hostres_vptr(image_info->hostres);
++
++	/*
++	 * load the image into the host resource.
++	 * We load directly to pre-allocated host resource memory
++	 * in order to prevent cacheing of the boot image inside
++	 * firmware API
++	 */
++	ret = request_firmware_into_buf(&fw, NNP_FIRMWARE_NAME, dev, vptr,
++					stat.size);
++	if (ret) {
++		pr_err("failed to load firmware %s ret==%d\n",
++		       fname, ret);
++		nnp_hostres_put(image_info->hostres);
++		image_info->hostres = NULL;
++		return ret;
++	}
++
++	release_firmware(fw);
++	image_info->state = IMAGE_AVAILABLE;
++
++	return 0;
++}
++
++static void load_image_handler(struct work_struct *work)
++{
++	struct image_info *image_info = container_of(work, struct image_info,
++						     work);
++	struct nnp_device *nnpdev = container_of(image_info, struct nnp_device,
++						 boot_image);
++	dma_addr_t page_list_addr;
++	unsigned int total_chunks;
++	unsigned int image_size;
++	u64 cmd[3];
++	u32 val;
++	int ret;
++
++	mutex_lock(&image_info->mutex);
++
++	/* load boot image from disk */
++	ret = load_firmware(image_info);
++	if (ret) {
++		image_info->state = IMAGE_LOAD_FAILED;
++		goto fail;
++	}
++
++	/* map image to the device */
++	ret = nnp_hostres_map_device(image_info->hostres, nnpdev,
++				     true, &page_list_addr,
++				     &total_chunks);
++	if (ret) {
++		nnp_hostres_put(image_info->hostres);
++		image_info->hostres = NULL;
++		image_info->state = IMAGE_NONE;
++		goto fail;
++	}
++
++	image_size = (unsigned int)nnp_hostres_get_size(image_info->hostres);
++
++	/* image successfully mapped - send it to the device to boot */
++	dev_dbg(nnpdev->hw_dev->dev,
++		"Mapped boot image num_chunks=%u total_size=%u\n",
++		total_chunks, image_size);
++
++	/* write image address directly to the command Q */
++	cmd[0] = FIELD_PREP(NNP_H2C_BOOT_IMAGE_READY_QW0_OP_MASK,
++			    NNP_IPC_H2C_OP_BIOS_PROTOCOL);
++	cmd[0] |= FIELD_PREP(NNP_H2C_BOOT_IMAGE_READY_QW0_TYPE_MASK,
++			     NNP_IPC_H2C_TYPE_BOOT_IMAGE_READY);
++	cmd[0] |= FIELD_PREP(NNP_H2C_BOOT_IMAGE_READY_QW0_SIZE_MASK,
++			     2 * sizeof(u64));
++
++	cmd[1] = (u64)page_list_addr + sizeof(struct dma_chain_header);
++
++	cmd[2] = FIELD_PREP(NNP_H2C_BOOT_IMAGE_READY_QW2_DESC_SIZE_MASK,
++			    total_chunks * sizeof(struct dma_chain_entry));
++	cmd[2] |= FIELD_PREP(NNP_H2C_BOOT_IMAGE_READY_QW2_IMAGE_SIZE_MASK,
++			     image_size);
++
++	mutex_unlock(&image_info->mutex);
++	return;
++
++fail:
++	/* notify card that boot image cannot be loaded */
++	val = FIELD_PREP(NNP_HOST_ERROR_MASK,
++			 NNP_HOST_ERROR_CANNOT_LOAD_IMAGE);
++	nnp_set_host_doorbell_value(nnpdev->hw_dev, val);
++	mutex_unlock(&image_info->mutex);
++}
++
++/**
++ * nnpdev_load_boot_image() - load boot image and send it to device
++ * @nnpdev: the device requested the image
++ *
++ * This function starts the flow of loading a boot image and map it to the
++ * requesting device. It will launch a work to load the boot image.
++ * It is an error to call this function if boot image load for the same
++ * device is already in progress.
++ *
++ * Return:
++ * * 0       - boot image was successfully loaded, mapped and sent to the device.
++ * * -EINVAL - image load is already in progress
++ */
++int nnpdev_load_boot_image(struct nnp_device *nnpdev)
++{
++	struct image_info *image_info = &nnpdev->boot_image;
++	int ret = 0;
++
++	/* check if the image is already loaded or in progress */
++	mutex_lock(&image_info->mutex);
++	if (image_info->state != IMAGE_NONE) {
++		ret = -EINVAL;
++		goto done;
++	}
++
++	/* initialize image load request */
++	image_info->state = IMAGE_REQUESTED;
++	INIT_WORK(&image_info->work, load_image_handler);
++
++	/* schedule work to load the image */
++	schedule_work(&image_info->work);
++
++done:
++	mutex_unlock(&image_info->mutex);
++	return ret;
++}
++
++/**
++ * nnpdev_unload_boot_image() - unmaps boot image for device
++ * @nnpdev: the device
++ *
++ * This function is called when the device no longer need the boot image
++ * in memory. either because it was already copied to the device or when
++ * the device is removed during the image load request is in progress.
++ * The function unmaps the device from the host resource.
++ *
++ * Return: error code or zero.
++ */
++int nnpdev_unload_boot_image(struct nnp_device *nnpdev)
++{
++	struct image_info *image_info = &nnpdev->boot_image;
++	int ret = 0;
++
++	mutex_lock(&image_info->mutex);
++	switch (image_info->state) {
++	case IMAGE_NONE:
++		ret = -EINVAL;
++		goto done;
++	case IMAGE_REQUESTED:
++		mutex_unlock(&image_info->mutex);
++		cancel_work_sync(&image_info->work);
++		mutex_lock(&image_info->mutex);
++		break;
++	case IMAGE_LOAD_FAILED:
++	case IMAGE_AVAILABLE:
++		break;
++	}
++
++	if (image_info->hostres) {
++		ret = nnp_hostres_unmap_device(image_info->hostres, nnpdev);
++		nnp_hostres_put(image_info->hostres);
++		image_info->hostres = NULL;
++	}
++
++	image_info->state = IMAGE_NONE;
++
++done:
++	mutex_unlock(&image_info->mutex);
++	return ret;
++}
+diff --git a/drivers/misc/intel-nnpi/bootimage.h b/drivers/misc/intel-nnpi/bootimage.h
+new file mode 100644
+index 0000000..9d64ee7
+--- /dev/null
++++ b/drivers/misc/intel-nnpi/bootimage.h
+@@ -0,0 +1,44 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++
++/* Copyright (C) 2019-2020 Intel Corporation */
++
++#ifndef _NNPDRV_BOOTIMAGE_H
++#define _NNPDRV_BOOTIMAGE_H
++
++#include <linux/mutex.h>
++#include <linux/workqueue.h>
++
++struct nnp_device;
++struct host_resource;
++
++enum image_state {
++	IMAGE_NONE = 0,
++	IMAGE_REQUESTED,
++	IMAGE_LOAD_FAILED,
++	IMAGE_AVAILABLE
++};
++
++/**
++ * struct image_info - describes a boot image object
++ * @state: state indicating whether it is loaded or load failed
++ * @mutex: protects accesses to @state and @hostres
++ * @load_fail_err: zero or error code if @state is IMAGE_LOAD_FAILED.
++ * @hostres: host resource object allocated for the image content
++ * @work: handle for placing the image load in a workqueue
++ *
++ * This structure describe a request to load boot image from disk,
++ * there is one such structure for each device.
++ */
++struct image_info {
++	enum image_state             state;
++	struct mutex                 mutex; /* protects @state and @hostres */
++	struct host_resource         *hostres;
++	struct work_struct           work;
++};
++
++
++void nnpdev_boot_image_init(struct image_info *boot_image);
++int nnpdev_load_boot_image(struct nnp_device *nnpdev);
++int nnpdev_unload_boot_image(struct nnp_device *nnpdev);
++
++#endif /* _NNPDRV_BOOTIMAGE_H */
+diff --git a/drivers/misc/intel-nnpi/device.c b/drivers/misc/intel-nnpi/device.c
+index 34e0ec6..dc785b9 100644
+--- a/drivers/misc/intel-nnpi/device.c
++++ b/drivers/misc/intel-nnpi/device.c
+@@ -5,6 +5,7 @@
+ #define pr_fmt(fmt)   KBUILD_MODNAME ": " fmt
+ 
+ #include "device.h"
++#include <linux/bitfield.h>
+ #include <linux/device.h>
+ #include <linux/idr.h>
+ #include <linux/jiffies.h>
+@@ -15,7 +16,9 @@
+ #include <linux/sched/clock.h>
+ #include <linux/wait.h>
+ #include <linux/workqueue.h>
++#include "bootimage.h"
+ #include "host_chardev.h"
++#include "nnp_boot_defs.h"
+ 
+ static unsigned int num_devices;
+ static DEFINE_MUTEX(device_num_mutex);
+@@ -59,6 +62,179 @@ void nnpdev_module_fini(void)
+ 	ida_destroy(&dev_ida);
+ }
+ 
++static void send_sysinfo_request_to_bios(struct nnp_device *nnpdev)
++{
++	u64 cmd[3];
++
++	cmd[0] = FIELD_PREP(NNP_H2C_BIOS_SYS_INFO_REQ_QW0_OP_MASK,
++			    NNP_IPC_H2C_OP_BIOS_PROTOCOL);
++	cmd[0] |= FIELD_PREP(NNP_H2C_BIOS_SYS_INFO_REQ_QW0_TYPE_MASK,
++			     NNP_IPC_H2C_TYPE_SYSTEM_INFO_REQ);
++	cmd[0] |= FIELD_PREP(NNP_H2C_BIOS_SYS_INFO_REQ_QW0_SIZE_MASK,
++			     2 * sizeof(u64));
++
++	cmd[1] = (u64)nnpdev->bios_system_info_dma_addr;
++
++	cmd[2] = FIELD_PREP(NNP_H2C_BIOS_SYS_INFO_REQ_QW2_SIZE_MASK,
++			    NNP_PAGE_SIZE);
++
++	nnp_cmdq_flush(nnpdev->hw_dev);
++
++	nnp_cmdq_write_mesg(nnpdev->hw_dev, cmd, 3);
++}
++
++/**
++ * build_bios_version_string() - builds printable string of bios version string
++ * @nnpdev: pointer to device structure
++ *
++ * Initializes nnpdev->bios_version_str with printable string of bios version
++ * from bios_system_info page.
++ */
++static void build_bios_version_string(struct nnp_device *nnpdev)
++{
++	unsigned int i;
++	__le16 *v;
++
++	if (!nnpdev->bios_system_info)
++		return;
++
++	/*
++	 * The bios version string in the bios's system info page
++	 * holds __le16 for each character in the version string.
++	 * (see struct nnp_c2h_bios_version)
++	 * Here we convert it to string of chars by taking only the
++	 * LSB from each 16-bit character
++	 */
++	v = (__le16 *)&nnpdev->bios_system_info->bios_ver;
++
++	/* check that bios version string is corrected null terminated */
++	if (nnpdev->bios_system_info->bios_ver.null_terminator != 0)
++		return;
++
++	for (i = 0; i < NNP_BIOS_VERSION_LEN - 1 && v[i] != 0; ++i)
++		nnpdev->bios_version_str[i] = v[i];
++
++	nnpdev->bios_version_str[i] = '\0';
++}
++
++static int unload_boot_image(struct nnp_device *nnpdev)
++{
++	nnpdev->boot_image_loaded = false;
++	return nnpdev_unload_boot_image(nnpdev);
++}
++
++/**
++ * nnpdev_set_boot_state() - sets new device state.
++ * @nnpdev: pointer to device structure
++ * @mask: mask of device state bits defined in device.h
++ *
++ * This function sets new device status and handles the state machine of
++ * device boot flow.
++ * It is being called when various device notifications are received or
++ * some error conditions are detected.
++ *
++ * The following flow describes the communication flow with the NNP-I device
++ * BIOS during the device boot flow, this function gets called when device
++ * state changes when progressing in this flow:
++ * 1) The device report its boot state through the "card doorbell" register,
++ *    that signals an interrupt to the host and the "pci" layer in the driver
++ *    calls the nnpdev_card_doorbell_value_changed function.
++ * 2) When the device signals that it is "Ready to boot", the host driver
++ *    sends it through the "command queue" an address of page in host memory.
++ * 3) The card BIOS fills the page of memory with card system info and change
++ *    the doorbell value to "sysinfo ready"
++ * 4) The host driver then initiate the boot image loading.
++ * 5) When boot image is ready in memory, the host driver send a
++ *    "Boot image ready" message and the card BIOS starts booting and changes
++ *    the doorbell value to indicate success or failure.
++ * 6) When receiving indication about success/failure the host driver signals
++ *    that the device no longer needs the boot image in memory.
++ *    When all devices no longer need the image it will be removed.
++ */
++void nnpdev_set_boot_state(struct nnp_device *nnpdev, u32 mask)
++{
++	u32 state, prev_state;
++	bool becomes_ready = false;
++	int ret;
++
++	/*
++	 * save previous state and modify current state
++	 * with the changed state mask
++	 */
++	spin_lock(&nnpdev->lock);
++	prev_state = nnpdev->state;
++	if ((mask & NNP_DEVICE_CARD_BOOT_STATE_MASK) != 0) {
++		/*
++		 * when boot state changes previous boot states are reset.
++		 * also, device error conditions is cleared.
++		 */
++		nnpdev->state &= ~(NNP_DEVICE_CARD_BOOT_STATE_MASK);
++		nnpdev->state &= ~(NNP_DEVICE_ERROR_MASK);
++	}
++	nnpdev->state |= mask;
++	state = nnpdev->state;
++	spin_unlock(&nnpdev->lock);
++
++	dev_dbg(nnpdev->hw_dev->dev,
++		"device state change 0x%x --> 0x%x\n", prev_state, state);
++
++	/* unload boot image if boot started or failed */
++	if (nnpdev->boot_image_loaded &&
++	    (((state & NNP_DEVICE_BOOT_STARTED) &&
++	      !(prev_state & NNP_DEVICE_BOOT_STARTED)) ||
++	     (state & NNP_DEVICE_BOOT_FAILED))) {
++		ret = unload_boot_image(nnpdev);
++		/* this should never fail */
++		if (ret)
++			dev_dbg(nnpdev->hw_dev->dev,
++				"Unexpected error while unloading boot image. rc=%d\n",
++				ret);
++	}
++
++	/* if in error state - no need to check rest of the states */
++	if (state & NNP_DEVICE_ERROR_MASK)
++		return;
++
++	if ((state & NNP_DEVICE_BOOT_BIOS_READY) &&
++	    !(prev_state & NNP_DEVICE_BOOT_BIOS_READY)) {
++		becomes_ready = true;
++		nnpdev->is_recovery_bios = false;
++	}
++
++	if ((state & NNP_DEVICE_BOOT_RECOVERY_BIOS_READY) &&
++	    !(prev_state & NNP_DEVICE_BOOT_RECOVERY_BIOS_READY)) {
++		becomes_ready = true;
++		nnpdev->is_recovery_bios = true;
++	}
++
++	if (becomes_ready ||
++	    mask == NNP_DEVICE_BOOT_BIOS_READY ||
++	    mask == NNP_DEVICE_BOOT_RECOVERY_BIOS_READY) {
++		if (!becomes_ready)
++			dev_dbg(nnpdev->hw_dev->dev,
++				"Re-sending sysinfo page to bios!!\n");
++
++		/* Send request to fill system_info buffer */
++		send_sysinfo_request_to_bios(nnpdev);
++		return;
++	}
++
++	/* Handle boot image request */
++	if ((state & NNP_DEVICE_BOOT_SYSINFO_READY) &&
++	    !(prev_state & NNP_DEVICE_BOOT_SYSINFO_READY) &&
++	    !nnpdev->boot_image_loaded) {
++		build_bios_version_string(nnpdev);
++		nnpdev->bios_system_info_valid = true;
++		nnpdev->boot_image_loaded = true;
++		ret = nnpdev_load_boot_image(nnpdev);
++
++		if (ret)
++			dev_err(nnpdev->hw_dev->dev,
++				"Unexpected error while loading boot image. rc=%d\n",
++				ret);
++	}
++}
++
+ /**
+  * nnpdev_create() - creates a nnp device structure.
+  * @hw_dev: pointer to the "hw" layer device structure for this NNP-I device
+@@ -105,10 +281,35 @@ struct nnp_device *nnpdev_create(struct nnp_hw_dev *hw_dev)
+ 		goto err_msg_sched;
+ 	}
+ 
++	nnpdev->wq = create_singlethread_workqueue("nnpdev_wq");
++	if (!nnpdev->wq) {
++		ret = -ENOMEM;
++		goto err_cmdq;
++	}
++
++	/* setup memory for bios system info */
++	nnpdev->bios_system_info =
++		dma_alloc_coherent(nnpdev->hw_dev->dev, NNP_PAGE_SIZE,
++				   &nnpdev->bios_system_info_dma_addr,
++				   GFP_KERNEL);
++	if (!nnpdev->bios_system_info) {
++		ret = -ENOMEM;
++		goto err_wq;
++	}
++
++	/* set host driver state to "Not ready" */
++	nnp_set_host_doorbell_value(nnpdev->hw_dev, 0);
++
+ 	kref_init(&nnpdev->ref);
++	spin_lock_init(&nnpdev->lock);
++	nnpdev_boot_image_init(&nnpdev->boot_image);
+ 
+ 	return nnpdev;
+ 
++err_wq:
++	destroy_workqueue(nnpdev->wq);
++err_cmdq:
++	nnp_msched_queue_destroy(nnpdev->cmdq);
+ err_msg_sched:
+ 	nnp_msched_destroy(nnpdev->cmdq_sched);
+ err_first_device:
+@@ -120,6 +321,75 @@ struct nnp_device *nnpdev_create(struct nnp_hw_dev *hw_dev)
+ 	return ERR_PTR(ret);
+ }
+ 
++struct doorbell_work {
++	struct work_struct work;
++	struct nnp_device  *nnpdev;
++	u32                val;
++};
++
++static void doorbell_changed_handler(struct work_struct *work)
++{
++	struct doorbell_work *req = container_of(work, struct doorbell_work,
++						 work);
++	u32 boot_state;
++	u32 error_state;
++	u32 doorbell_val = req->val;
++	struct nnp_device *nnpdev = req->nnpdev;
++
++	nnpdev->card_doorbell_val = doorbell_val;
++
++	error_state = FIELD_GET(NNP_CARD_ERROR_MASK, doorbell_val);
++	boot_state = FIELD_GET(NNP_CARD_BOOT_STATE_MASK, doorbell_val);
++
++	if (error_state) {
++		switch (error_state) {
++		case NNP_CARD_ERROR_NOT_CAPSULE:
++			nnpdev_set_boot_state(nnpdev,
++					      NNP_DEVICE_BOOT_FAILED |
++					      NNP_DEVICE_CAPSULE_EXPECTED);
++			break;
++		case NNP_CARD_ERROR_CORRUPTED_IMAGE:
++			nnpdev_set_boot_state(nnpdev,
++					      NNP_DEVICE_BOOT_FAILED |
++					      NNP_DEVICE_CORRUPTED_BOOT_IMAGE);
++			break;
++		case NNP_CARD_ERROR_CAPSULE_FAILED:
++			nnpdev_set_boot_state(nnpdev,
++					      NNP_DEVICE_BOOT_FAILED |
++					      NNP_DEVICE_CAPSULE_FAILED);
++			break;
++		default:
++			nnpdev_set_boot_state(nnpdev, NNP_DEVICE_BOOT_FAILED);
++		}
++	} else if (boot_state != nnpdev->curr_boot_state) {
++		nnpdev->curr_boot_state = boot_state;
++		switch (boot_state) {
++		case NNP_CARD_BOOT_STATE_BIOS_READY:
++			nnpdev_set_boot_state(nnpdev,
++					      NNP_DEVICE_BOOT_BIOS_READY);
++			break;
++		case NNP_CARD_BOOT_STATE_RECOVERY_BIOS_READY:
++			nnpdev_set_boot_state(nnpdev,
++					      NNP_DEVICE_BOOT_RECOVERY_BIOS_READY);
++			break;
++		case NNP_CARD_BOOT_STATE_BIOS_SYSINFO_READY:
++			nnpdev_set_boot_state(nnpdev,
++					      NNP_DEVICE_BOOT_SYSINFO_READY);
++			break;
++		case NNP_CARD_BOOT_STATE_BOOT_STARTED:
++			nnpdev_set_boot_state(nnpdev, NNP_DEVICE_BOOT_STARTED);
++			break;
++		case NNP_CARD_BOOT_STATE_BIOS_FLASH_STARTED:
++			nnpdev_set_boot_state(nnpdev,
++					      NNP_DEVICE_BIOS_UPDATE_STARTED);
++		default:
++			break;
++		}
++	}
++
++	kfree(req);
++}
++
+ /**
+  * nnpdev_card_doorbell_value_changed() - card doorbell changed notification
+  * @nnpdev: The nnp device
+@@ -132,8 +402,19 @@ struct nnp_device *nnpdev_create(struct nnp_hw_dev *hw_dev)
+ void nnpdev_card_doorbell_value_changed(struct nnp_device *nnpdev,
+ 					u32 doorbell_val)
+ {
++	struct doorbell_work *req;
++
+ 	dev_dbg(nnpdev->hw_dev->dev, "Got card doorbell value 0x%x\n",
+ 		doorbell_val);
++
++	req = kzalloc(sizeof(*req), GFP_KERNEL);
++	if (!req)
++		return;
++
++	req->nnpdev = nnpdev;
++	req->val = doorbell_val;
++	INIT_WORK(&req->work, doorbell_changed_handler);
++	queue_work(nnpdev->wq, &req->work);
+ }
+ 
+ /**
+@@ -179,6 +460,19 @@ static void free_device(struct work_struct *work)
+ 
+ 	dev_dbg(nnpdev->hw_dev->dev, "Freeing NNP-I device\n");
+ 
++	/*
++	 * if device is removed while boot image load is in-flight,
++	 * stop the image load and flag it is not needed.
++	 */
++	if (nnpdev->boot_image_loaded)
++		unload_boot_image(nnpdev);
++
++	dma_free_coherent(nnpdev->hw_dev->dev, NNP_PAGE_SIZE,
++			  nnpdev->bios_system_info,
++			  nnpdev->bios_system_info_dma_addr);
++
++	destroy_workqueue(nnpdev->wq);
++
+ 	nnp_msched_destroy(nnpdev->cmdq_sched);
+ 
+ 	ida_simple_remove(&dev_ida, nnpdev->id);
+diff --git a/drivers/misc/intel-nnpi/device.h b/drivers/misc/intel-nnpi/device.h
+index 53d7dc9..6b36bed 100644
+--- a/drivers/misc/intel-nnpi/device.h
++++ b/drivers/misc/intel-nnpi/device.h
+@@ -7,12 +7,50 @@
+ 
+ #include <linux/completion.h>
+ #include <linux/kref.h>
++#include <linux/spinlock.h>
+ #include <linux/workqueue.h>
++#include "bootimage.h"
++#include "ipc_protocol.h"
+ #include "msg_scheduler.h"
+ #include "nnp_hw.h"
+ 
+ #define NNP_MAX_DEVS		256
+ 
++#define NNP_FIRMWARE_NAME "intel/nnpi/disk.img"
++
++/* device state bits */
++#define NNP_DEVICE_BOOT_BIOS_READY        BIT(1)
++#define NNP_DEVICE_BOOT_RECOVERY_BIOS_READY BIT(2)
++#define NNP_DEVICE_BOOT_SYSINFO_READY     BIT(3)
++#define NNP_DEVICE_BOOT_STARTED           BIT(4)
++#define NNP_DEVICE_BIOS_UPDATE_READY      BIT(5)
++#define NNP_DEVICE_BIOS_UPDATE_STARTED    BIT(6)
++#define NNP_DEVICE_BIOS_UPDATE_DONE       BIT(7)
++#define NNP_DEVICE_CARD_DRIVER_READY      BIT(8)
++#define NNP_DEVICE_CARD_READY             BIT(9)
++#define NNP_DEVICE_CARD_ENABLED           BIT(10)
++
++#define NNP_DEVICE_CARD_BOOT_STATE_MASK   GENMASK(9, 1)
++
++#define NNP_DEVICE_ACTIVE_MASK       (NNP_DEVICE_CARD_READY | \
++				      NNP_DEVICE_CARD_ENABLED)
++
++#define NNP_DEVICE_FAILED_VERSION    BIT(16)
++#define NNP_DEVICE_BOOT_FAILED       BIT(17)
++#define NNP_DEVICE_HOST_DRIVER_ERROR BIT(18)
++#define NNP_DEVICE_KERNEL_CRASH	     BIT(20)
++#define NNP_DEVICE_PCI_ERROR         BIT(21)
++#define NNP_DEVICE_CARD_IN_RESET     BIT(22)
++#define NNP_DEVICE_FATAL_MCE_ERROR   BIT(23)
++#define NNP_DEVICE_FATAL_DRAM_ECC_ERROR   BIT(24)
++#define NNP_DEVICE_FATAL_ICE_ERROR   BIT(25)
++#define NNP_DEVICE_HANG              BIT(26)
++#define NNP_DEVICE_PROTOCOL_ERROR    BIT(27)
++#define NNP_DEVICE_CAPSULE_EXPECTED  BIT(28)
++#define NNP_DEVICE_CAPSULE_FAILED    BIT(29)
++#define NNP_DEVICE_CORRUPTED_BOOT_IMAGE BIT(30)
++#define NNP_DEVICE_ERROR_MASK        GENMASK(31, 16)
++
+ /**
+  * struct nnp_device - structure for NNP-I "logical" device info
+  * @ref: refcount this object
+@@ -26,6 +64,19 @@
+  *              submissions to the device's command queue.
+  * @cmdq: input queue to @cmdq_sched used to schedule driver internal commands
+  *        to be sent to the device.
++ * @wq: singlethread workqueue for processing device's response messages.
++ * @image_wait_node: list node to include this device is a list of devices
++ *                   waiting for the same boot image to be loaded from disk.
++ * @lock: protects accesses to @state
++ * @is_recovery_bios: true if device has booted from the recovery bios flash
++ * @boot_image_loaded: true if boot image load has started
++ * @bios_system_info_dma_addr: dma page allocated for bios system info.
++ * @bios_system_info: virtual pointer to bios system info page
++ * @bios_version_str: the device's started bios version string
++ * @bios_system_info_valid: true if @bios_system_info has been filled and valid
++ * @state: current device boot state mask (see device state bits above)
++ * @curr_boot_state: last boot state field received from device doorbell reg
++ * @card_doorbell_val: last received device doorbell register value.
+  */
+ struct nnp_device {
+ 	struct kref            ref;
+@@ -37,6 +88,22 @@ struct nnp_device {
+ 
+ 	struct nnp_msched       *cmdq_sched;
+ 	struct nnp_msched_queue *cmdq;
++
++	struct workqueue_struct *wq;
++	struct list_head        image_wait_node;
++	spinlock_t     lock; /* protects accesses to @state */
++	bool           is_recovery_bios;
++	bool           boot_image_loaded;
++
++	dma_addr_t                  bios_system_info_dma_addr;
++	struct nnp_c2h_system_info  *bios_system_info;
++	char                        bios_version_str[NNP_BIOS_VERSION_LEN];
++	bool                        bios_system_info_valid;
++
++	u32            state;
++	u32            curr_boot_state;
++	u32            card_doorbell_val;
++	struct image_info boot_image;
+ };
+ 
+ void nnpdev_module_init(void);
+@@ -45,4 +112,6 @@ struct nnp_device {
+ void nnpdev_get(struct nnp_device *nnpdev);
+ void nnpdev_put(struct nnp_device *nnpdev);
+ 
++void nnpdev_set_boot_state(struct nnp_device *nnpdev, u32 mask);
++
+ #endif
+diff --git a/drivers/misc/intel-nnpi/nnp_hw.h b/drivers/misc/intel-nnpi/nnp_hw.h
+index 4c494ce..8389468 100644
+--- a/drivers/misc/intel-nnpi/nnp_hw.h
++++ b/drivers/misc/intel-nnpi/nnp_hw.h
+@@ -45,6 +45,7 @@ struct nnp_hw_dev {
+  */
+ int nnp_cmdq_write_mesg(struct nnp_hw_dev *hw_dev, u64 *msg, u32 size);
+ int nnp_cmdq_flush(struct nnp_hw_dev *hw_dev);
++int nnp_set_host_doorbell_value(struct nnp_hw_dev *hw_dev, u32 value);
+ 
+ /*
+  * Functions implemented by the nnp "device" layer,
+diff --git a/drivers/misc/intel-nnpi/nnp_hw_pcie.c b/drivers/misc/intel-nnpi/nnp_hw_pcie.c
+index 1079343..e2e6758 100644
+--- a/drivers/misc/intel-nnpi/nnp_hw_pcie.c
++++ b/drivers/misc/intel-nnpi/nnp_hw_pcie.c
+@@ -441,6 +441,21 @@ int nnp_cmdq_flush(struct nnp_hw_dev *hw_dev)
+ 	return 0;
+ }
+ 
++int nnp_set_host_doorbell_value(struct nnp_hw_dev *hw_dev, u32 value)
++{
++	struct nnp_pci *nnp_pci = container_of(hw_dev, struct nnp_pci, hw_dev);
++
++	/*
++	 * The SELF_RESET bit is set only by the h/w layer,
++	 * do not allow higher layer to set it
++	 */
++	value &= ~(NNP_HOST_DRV_REQUEST_SELF_RESET_MASK);
++
++	nnp_mmio_write(nnp_pci, ELBI_PCI_HOST_DOORBELL_VALUE, value);
++
++	return 0;
++}
++
+ static int nnp_init_pci_device(struct nnp_pci *nnp_pci)
+ {
+ 	struct pci_dev *pdev = nnp_pci->pdev;
+diff --git a/drivers/misc/intel-nnpi/nnpdrv_main.c b/drivers/misc/intel-nnpi/nnpdrv_main.c
+index 311479f..9f41b54 100644
+--- a/drivers/misc/intel-nnpi/nnpdrv_main.c
++++ b/drivers/misc/intel-nnpi/nnpdrv_main.c
+@@ -43,3 +43,4 @@ static void __exit nnp_cleanup(void)
+ MODULE_LICENSE("GPL v2");
+ MODULE_DESCRIPTION("Intel(R) NNPI Host Driver");
+ MODULE_AUTHOR("Intel Corporation");
++MODULE_FIRMWARE(NNP_FIRMWARE_NAME);
+-- 
+1.8.3.1
+

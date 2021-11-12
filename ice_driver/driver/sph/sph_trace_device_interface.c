@@ -1,5 +1,5 @@
 /********************************************
- * Copyright (C) 2019-2020 Intel Corporation
+ * Copyright (C) 2019-2021 Intel Corporation
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  ********************************************/
@@ -3299,6 +3299,16 @@ static int ice_trace_set_job_observer_sysfs(u8 dso_reg_index, u32 dso_reg_val,
 	return ret;
 }
 
+/* Returns true if hwtrace is disabled */
+static bool ice_trace_is_dso_disable(u32 dso_reg_val)
+{
+	if ((dso_reg_val & cfg_default.ice_dso_cfg_dtf_src_cfg_src_en_mask) &&
+		(dso_reg_val & cfg_default.ice_dso_cfg_dtf_src_cfg_ch_en_mask))
+		return false;
+	else
+		return true;
+}
+
 static int ice_trace_set_ice_observer_sysfs(u8 dso_reg_index, u32 dso_reg_val,
 							u32 dev_index)
 {
@@ -3376,6 +3386,14 @@ static int ice_trace_set_ice_observer_sysfs(u8 dso_reg_index, u32 dso_reg_val,
 		cve_os_dev_log(CVE_LOGLEVEL_ERROR,
 					ice_dev->dev_index,
 					"ice_trace_write_dso_regs_sysfs() failed\n");
+
+	/* DSO_CFG_DTF_SRC_CONFIG_REG contains info on DSO channel
+	 * Set the DSO default config status to true if DSO channel
+	 * is disabled
+	 */
+	if (dso_reg_index == DSO_CFG_DTF_SRC_CONFIG_REG_INDEX)
+		ice_dev->dso.is_default_config =
+			ice_trace_is_dso_disable(dso_reg_val);
 
 unlock:
 	cve_os_unlock(&device_group->poweroff_dev_list_lock);
