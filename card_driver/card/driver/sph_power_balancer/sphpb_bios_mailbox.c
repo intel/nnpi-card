@@ -1,5 +1,5 @@
 /********************************************
- * Copyright (C) 2019-2020 Intel Corporation
+ * Copyright (C) 2019-2021 Intel Corporation
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  ********************************************/
@@ -256,9 +256,9 @@ int get_imon_vccin_calib_config(uint16_t *imon_offset, //fixed point S7.8
 	if (unlikely(ret < 0))
 		return ret;
 
-	if (imon_offset != NULL)
+	if (likely(imon_offset != NULL))
 		*imon_offset = data.imon_offset;
-	if (imon_slope != NULL)
+	if (likely(imon_slope != NULL))
 		*imon_slope = data.imon_slope;
 
 	return 0;
@@ -274,6 +274,47 @@ int set_imon_vccin_calib_config(uint16_t imon_offset, //fixed point S7.8
 
 	return write_bios_mailbox(MAILBOX_BIOS_CMD_VR_IMON_CALIBRATION,
 				  BIOS_IMON_CALIBRATION_VCCIN_WRITE_SUBCOMMAND,
+				  0,
+				  data.value,
+				  NULL);
+}
+
+union mailbox_offset_config {
+	struct {
+		s16 offset; //fixed point S7.8
+		u16 unused;
+	};
+	u32 value;
+};
+
+int get_offset_calib_config(int16_t *offset)
+{
+	union mailbox_offset_config data;
+	int ret;
+
+	ret = write_bios_mailbox(MAILBOX_BIOS_CMD_VR_IMON_CALIBRATION,
+				 BIOS_IMON_CALIBRATION_OFFSET_READ_SUBCOMMAND,
+				 0,
+				 0,
+				 &data.value);
+	if (unlikely(ret < 0))
+		return ret;
+
+	if (likely(offset != NULL))
+		*offset = data.offset;
+
+	return 0;
+}
+
+int set_offset_calib_config(int16_t offset)
+{
+	union mailbox_offset_config data = {
+		.offset = offset,
+		.unused = 0
+	};
+
+	return write_bios_mailbox(MAILBOX_BIOS_CMD_VR_IMON_CALIBRATION,
+				  BIOS_IMON_CALIBRATION_OFFSET_WRITE_SUBCOMMAND,
 				  0,
 				  data.value,
 				  NULL);

@@ -1,5 +1,5 @@
 /********************************************
- * Copyright (C) 2019-2020 Intel Corporation
+ * Copyright (C) 2019-2021 Intel Corporation
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  ********************************************/
@@ -52,6 +52,16 @@ int get_imon_vccin_calib_config(uint16_t *imon_offset, //fixed point S7.8
 
 int set_imon_vccin_calib_config(uint16_t imon_offset, //fixed point S7.8
 				uint16_t imon_slope)  //fixed point U1.15
+{
+	return 0;
+}
+
+int get_offset_calib_config(int16_t *offset)
+{
+	return 0;
+}
+
+int set_offset_calib_config(int16_t offset)
 {
 	return 0;
 }

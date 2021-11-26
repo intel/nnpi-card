@@ -1,0 +1,382 @@
+From a6de2112c1cbbec355ec15e77ad42233927a51f5 Mon Sep 17 00:00:00 2001
+From: Guy Zadicario <guy.zadicario@intel.com>
+Date: Sun, 15 Nov 2020 16:25:00 +0200
+Subject: [PATCH v17 16/30] misc: nnpi: device boot state sysfs visibility
+
+Add sysfs attributes to expose current device boot and active state.
+All attributes reside under /sys/class/nnpi/nnpi%d/ (%d is logical device
+
+Signed-off-by: Guy Zadicario <guy.zadicario@intel.com>
+---
+ Documentation/ABI/testing/sysfs-driver-intel_nnpi |  26 +++
+ drivers/misc/intel-nnpi/Makefile                  |   2 +-
+ drivers/misc/intel-nnpi/cmd_chan.c                |  10 ++
+ drivers/misc/intel-nnpi/device.h                  |   3 +
+ drivers/misc/intel-nnpi/device_chardev.c          |   8 +
+ drivers/misc/intel-nnpi/device_sysfs.c            | 199 ++++++++++++++++++++++
+ drivers/misc/intel-nnpi/device_sysfs.h            |  11 ++
+ 7 files changed, 258 insertions(+), 1 deletion(-)
+ create mode 100644 drivers/misc/intel-nnpi/device_sysfs.c
+ create mode 100644 drivers/misc/intel-nnpi/device_sysfs.h
+
+diff --git a/Documentation/ABI/testing/sysfs-driver-intel_nnpi b/Documentation/ABI/testing/sysfs-driver-intel_nnpi
+index b09880f..8d0ed55 100644
+--- a/Documentation/ABI/testing/sysfs-driver-intel_nnpi
++++ b/Documentation/ABI/testing/sysfs-driver-intel_nnpi
+@@ -3,3 +3,29 @@ Date:           Mar 2021
+ Kernelversion:  5.13
+ Contact:        guy.zadicario@intel.com
+ Description:    Total size in bytes of all allocated NNP-I host resources.
++
++What:           /sys/class/nnpi/nnpi<n>/protocol_version
++Date:           Mar 2021
++Kernelversion:  5.13
++Contact:        guy.zadicario@intel.com
++Description:    A version string describing the version of the device
++                command protocol version.
++
++What:           /sys/class/nnpi/nnpi<n>/boot_state
++Date:           Mar 2021
++Kernelversion:  5.13
++Contact:        guy.zadicario@intel.com
++Description:    Device boot state string, describing device boot
++                stage or "Ready" when boot completed.
++
++What:           /sys/class/nnpi/nnpi<n>/boot_fail_reason
++Date:           Mar 2021
++Kernelversion:  5.13
++Contact:        guy.zadicario@intel.com
++Description:    Device boot failure reason string.
++
++What:           /sys/class/nnpi/nnpi<n>/card_state
++Date:           Mar 2021
++Kernelversion:  5.13
++Contact:        guy.zadicario@intel.com
++Description:    Device operational state string.
+diff --git a/drivers/misc/intel-nnpi/Makefile b/drivers/misc/intel-nnpi/Makefile
+index a294cf0c..213ec28 100644
+--- a/drivers/misc/intel-nnpi/Makefile
++++ b/drivers/misc/intel-nnpi/Makefile
+@@ -6,7 +6,7 @@
+ obj-$(CONFIG_INTEL_NNPI) := intel_nnpi.o intel_nnpi_pcie.o
+ 
+ intel_nnpi-y := device.o msg_scheduler.o hostres.o host_chardev.o nnp_user.o \
+-                bootimage.o cmd_chan.o device_chardev.o
++                bootimage.o cmd_chan.o device_chardev.o device_sysfs.o
+ 
+ intel_nnpi_pcie-y := nnp_pcie.o
+ 
+diff --git a/drivers/misc/intel-nnpi/cmd_chan.c b/drivers/misc/intel-nnpi/cmd_chan.c
+index 97b0ad4..321be2f 100644
+--- a/drivers/misc/intel-nnpi/cmd_chan.c
++++ b/drivers/misc/intel-nnpi/cmd_chan.c
+@@ -361,6 +361,11 @@ int nnpdev_chan_create(struct nnp_device *nnpdev, int host_fd,
+ 	hash_add(nnpdev->cmd_chan_hash, &cmd_chan->hash_node,
+ 		 cmd_chan->chan_id);
+ 
++	/*
++	 * Channel with id <= 255 is an inference context channel
++	 */
++	if (cmd_chan->chan_id <= 255)
++		nnpdev->num_active_contexts++;
+ 	spin_unlock(&nnpdev->lock);
+ 
+ 	*out_cmd_chan = cmd_chan;
+@@ -528,6 +533,11 @@ void nnp_chan_disconnect(struct nnp_chan *cmd_chan)
+ 	nnpdev = cmd_chan->nnpdev;
+ 	cmd_chan->nnpdev = NULL;
+ 	cmd_chan->destroyed = true;
++	/*
++	 * Channel with id <= 255 is an inference context channel
++	 */
++	if (cmd_chan->chan_id <= 255)
++		nnpdev->num_active_contexts--;
+ 	mutex_unlock(&cmd_chan->dev_mutex);
+ 
+ 	/*
+diff --git a/drivers/misc/intel-nnpi/device.h b/drivers/misc/intel-nnpi/device.h
+index c71e40b..18ad751 100644
+--- a/drivers/misc/intel-nnpi/device.h
++++ b/drivers/misc/intel-nnpi/device.h
+@@ -39,6 +39,7 @@
+ #define NNP_DEVICE_FAILED_VERSION    BIT(16)
+ #define NNP_DEVICE_BOOT_FAILED       BIT(17)
+ #define NNP_DEVICE_HOST_DRIVER_ERROR BIT(18)
++#define NNP_DEVICE_FATAL_DMA_ERROR   BIT(19)
+ #define NNP_DEVICE_KERNEL_CRASH	     BIT(20)
+ #define NNP_DEVICE_PCI_ERROR         BIT(21)
+ #define NNP_DEVICE_CARD_IN_RESET     BIT(22)
+@@ -91,6 +92,7 @@ struct query_version_work {
+  * @state: current device boot state mask (see device state bits above)
+  * @protocol_version: version of host->card IPC protocol
+  * @chan_protocol_version: version of user-space->card IPC protocol
++ * @num_active_contexts: number of active inference contexts running.
+  * @curr_boot_state: last boot state field received from device doorbell reg
+  * @card_doorbell_val: last received device doorbell register value.
+  * @query_version_work: work struct used to schedule processing of version
+@@ -132,6 +134,7 @@ struct nnp_device {
+ 	u32            curr_boot_state;
+ 	unsigned short protocol_version;
+ 	unsigned short chan_protocol_version;
++	unsigned int   num_active_contexts;
+ 	u32            card_doorbell_val;
+ 	struct image_info boot_image;
+ 
+diff --git a/drivers/misc/intel-nnpi/device_chardev.c b/drivers/misc/intel-nnpi/device_chardev.c
+index f25f04f..5c0c186 100644
+--- a/drivers/misc/intel-nnpi/device_chardev.c
++++ b/drivers/misc/intel-nnpi/device_chardev.c
+@@ -15,6 +15,7 @@
+ 
+ #include "cmd_chan.h"
+ #include "device_chardev.h"
++#include "device_sysfs.h"
+ #include "nnp_user.h"
+ #include "ipc_c2h_events.h"
+ 
+@@ -733,6 +734,12 @@ int nnpdev_cdev_create(struct nnp_device *nnpdev)
+ 		return PTR_ERR(nnpdev->chardev);
+ 	}
+ 
++	ret = nnpdev_sysfs_init(nnpdev);
++	if (ret) {
++		device_destroy(class, MKDEV(MAJOR(devnum), nnpdev->id));
++		return ret;
++	}
++
+ 	return 0;
+ }
+ 
+@@ -744,6 +751,7 @@ void nnpdev_cdev_destroy(struct nnp_device *nnpdev)
+ 	/* disconnect all chardev clients from the device */
+ 	list_for_each_entry_safe(client, tmp, &nnpdev->cdev_clients, node)
+ 		disconnect_client(client, true);
++	nnpdev_sysfs_fini(nnpdev);
+ 	device_destroy(class, MKDEV(MAJOR(devnum), nnpdev->id));
+ 	cdev_del(&nnpdev->cdev);
+ 	mutex_unlock(&nnpdev->cdev_mutex);
+diff --git a/drivers/misc/intel-nnpi/device_sysfs.c b/drivers/misc/intel-nnpi/device_sysfs.c
+new file mode 100644
+index 0000000..edeb7ec
+--- /dev/null
++++ b/drivers/misc/intel-nnpi/device_sysfs.c
+@@ -0,0 +1,199 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/* Copyright (C) 2019-2021 Intel Corporation */
++
++#define pr_fmt(fmt)   KBUILD_MODNAME ": " fmt
++
++#include <linux/dev_printk.h>
++#include <linux/device.h>
++#include <linux/kobject.h>
++#include <linux/slab.h>
++#include <linux/sysfs.h>
++
++#include "cmd_chan.h"
++#include "device_sysfs.h"
++
++void nnpdev_sysfs_get_state_strings(struct nnp_device *nnpdev,
++				    const char **state, const char **boot_state,
++				    const char **fail_reason)
++{
++	/* Find Boot State */
++	if (!boot_state)
++		goto find_fail_reason;
++
++	if (nnpdev->state & NNP_DEVICE_ERROR_MASK)
++		*boot_state = "Failed";
++	else if (nnpdev->state & NNP_DEVICE_CARD_READY)
++		*boot_state = "Ready";
++	else if (nnpdev->state & NNP_DEVICE_CARD_DRIVER_READY)
++		*boot_state = "Driver Ready";
++	else if (nnpdev->state & NNP_DEVICE_BOOT_STARTED)
++		*boot_state = "Boot Started";
++	else if (nnpdev->state & NNP_DEVICE_BIOS_UPDATE_STARTED)
++		*boot_state = "Bios Update Started";
++	else if (nnpdev->state & (NNP_DEVICE_BOOT_BIOS_READY |
++				  NNP_DEVICE_BOOT_RECOVERY_BIOS_READY |
++				  NNP_DEVICE_BOOT_SYSINFO_READY))
++		*boot_state = nnpdev->is_recovery_bios ?
++					"Recovery Bios Ready" : "Bios Ready";
++	else
++		*boot_state = "Unknown";
++
++find_fail_reason:
++	if (!fail_reason)
++		goto find_state;
++
++	/* Find failure Reason*/
++	if (nnpdev->state & NNP_DEVICE_FAILED_VERSION)
++		*fail_reason = "version Mismatch";
++	else if (nnpdev->state & NNP_DEVICE_CAPSULE_EXPECTED)
++		*fail_reason = "Bios Update Required";
++	else if (nnpdev->state & NNP_DEVICE_CAPSULE_FAILED)
++		*fail_reason = "Bios Update Failed";
++	else if (nnpdev->state & NNP_DEVICE_CORRUPTED_BOOT_IMAGE)
++		*fail_reason = "Boot/Capsule image verification Failed";
++	else if (nnpdev->state & NNP_DEVICE_BOOT_FAILED)
++		*fail_reason = "Boot Failed";
++	else if (nnpdev->state & NNP_DEVICE_HOST_DRIVER_ERROR)
++		*fail_reason = "Driver Error";
++	else if (nnpdev->state & NNP_DEVICE_KERNEL_CRASH)
++		*fail_reason = "OS Crash";
++	else if (nnpdev->state & NNP_DEVICE_CARD_IN_RESET)
++		*fail_reason = "Reset in progress";
++	else if (nnpdev->state & NNP_DEVICE_FATAL_MCE_ERROR)
++		*fail_reason = "Fatal MCE Error";
++	else if (nnpdev->state & NNP_DEVICE_FATAL_DRAM_ECC_ERROR)
++		*fail_reason = "Fatal DRAM ECC Error";
++	else if (nnpdev->state & NNP_DEVICE_FATAL_ICE_ERROR)
++		*fail_reason = "Fatal ICE execution error";
++	else if (nnpdev->state & NNP_DEVICE_FATAL_DMA_ERROR)
++		*fail_reason = "Fatal DMA hang error";
++	else if (nnpdev->state & NNP_DEVICE_HANG)
++		*fail_reason = "Device Not Responding (Hang)";
++	else
++		*fail_reason = "None";
++
++find_state:
++	if (!state)
++		return;
++
++	/* find device state */
++	if (nnpdev->state & NNP_DEVICE_ERROR_MASK) {
++		*state = "Failed";
++	} else if ((nnpdev->state & NNP_DEVICE_ACTIVE_MASK) ==
++		 NNP_DEVICE_ACTIVE_MASK) {
++		*state = "Active";
++	} else if ((nnpdev->state & NNP_DEVICE_CARD_READY) &&
++		 !(nnpdev->state & NNP_DEVICE_CARD_ENABLED)) {
++		if (nnpdev->num_active_contexts)
++			*state = "Disabled";
++		else
++			*state = "Disabled and Idle";
++	} else {
++		*state = "Unknown";
++	}
++}
++
++static ssize_t boot_state_show(struct device *dev,
++			       struct device_attribute *attr, char *buf)
++{
++	struct nnp_device *nnpdev;
++	const char *boot_state;
++
++	nnpdev = dev_get_drvdata(dev);
++	if (!nnpdev)
++		return -EINVAL;
++
++	/* Find State strings*/
++	nnpdev_sysfs_get_state_strings(nnpdev, NULL, &boot_state, NULL);
++
++	return sprintf(buf, "%s\n", boot_state);
++}
++static DEVICE_ATTR_RO(boot_state);
++
++static ssize_t boot_fail_reason_show(struct device *dev,
++				     struct device_attribute *attr, char *buf)
++{
++	struct nnp_device *nnpdev;
++	const char *fail_reason;
++
++	nnpdev = dev_get_drvdata(dev);
++	if (!nnpdev)
++		return -EINVAL;
++
++	/* Find State strings*/
++	nnpdev_sysfs_get_state_strings(nnpdev, NULL, NULL, &fail_reason);
++
++	return sprintf(buf, "%s\n", fail_reason);
++}
++static DEVICE_ATTR_RO(boot_fail_reason);
++
++static ssize_t card_state_show(struct device *dev,
++			       struct device_attribute *attr, char *buf)
++{
++	struct nnp_device *nnpdev;
++	const char *state;
++
++	nnpdev = dev_get_drvdata(dev);
++	if (!nnpdev)
++		return -EINVAL;
++
++	/* Find State strings*/
++	nnpdev_sysfs_get_state_strings(nnpdev, &state, NULL, NULL);
++
++	return sprintf(buf, "%s\n", state);
++}
++static DEVICE_ATTR_RO(card_state);
++
++static ssize_t protocol_version_show(struct device *dev,
++				     struct device_attribute *attr, char *buf)
++{
++	struct nnp_device *nnpdev;
++
++	nnpdev = dev_get_drvdata(dev);
++	if (!nnpdev)
++		return -EINVAL;
++
++	return sprintf(buf, "%lu.%lu.%lu\n",
++		       NNP_VERSION_MAJOR(nnpdev->protocol_version),
++		       NNP_VERSION_MINOR(nnpdev->protocol_version),
++		       NNP_VERSION_DOT(nnpdev->protocol_version));
++}
++static DEVICE_ATTR_RO(protocol_version);
++
++static struct attribute *nnp_dev_attrs[] = {
++	&dev_attr_protocol_version.attr,
++	&dev_attr_boot_state.attr,
++	&dev_attr_boot_fail_reason.attr,
++	&dev_attr_card_state.attr,
++	NULL
++};
++
++static struct attribute_group nnp_dev_attrs_grp = {
++		.attrs = nnp_dev_attrs,
++};
++
++int nnpdev_sysfs_init(struct nnp_device *nnpdev)
++{
++	int ret;
++
++	ret = sysfs_create_group(&nnpdev->chardev->kobj, &nnp_dev_attrs_grp);
++	if (ret)
++		return ret;
++
++	ret = sysfs_create_link(&nnpdev->chardev->kobj,
++				&nnpdev->dev->kobj, "device");
++	if (ret)
++		goto fail_link;
++
++	return 0;
++
++fail_link:
++	sysfs_remove_group(&nnpdev->chardev->kobj, &nnp_dev_attrs_grp);
++	return ret;
++}
++
++void nnpdev_sysfs_fini(struct nnp_device *nnpdev)
++{
++	sysfs_remove_link(&nnpdev->chardev->kobj, "device");
++	sysfs_remove_group(&nnpdev->chardev->kobj, &nnp_dev_attrs_grp);
++}
+diff --git a/drivers/misc/intel-nnpi/device_sysfs.h b/drivers/misc/intel-nnpi/device_sysfs.h
+new file mode 100644
+index 0000000..e85f402
+--- /dev/null
++++ b/drivers/misc/intel-nnpi/device_sysfs.h
+@@ -0,0 +1,11 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++/* Copyright (C) 2019-2021 Intel Corporation */
++
++#include "device.h"
++
++void nnpdev_sysfs_get_state_strings(struct nnp_device *nnpdev,
++				    const char **state, const char **boot_state,
++				    const char **fail_reason);
++
++int nnpdev_sysfs_init(struct nnp_device *nnpdev);
++void nnpdev_sysfs_fini(struct nnp_device *nnpdev);
+-- 
+1.8.3.1
+
