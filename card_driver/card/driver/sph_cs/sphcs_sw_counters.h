@@ -1,5 +1,5 @@
 /********************************************
- * Copyright (C) 2019-2020 Intel Corporation
+ * Copyright (C) 2019-2021 Intel Corporation
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  ********************************************/
@@ -33,6 +33,8 @@ enum SPHCS_SW_COUNTERS_GLOBAL {
 	SPHCS_SW_COUNTERS_IPC_RESPONSES_COUNT,
 	SPHCS_SW_COUNTERS_IPC_RESPONSES_WAIT_TIME,
 	SPHCS_SW_COUNTERS_IPC_COMMANDS_SCHEDULED_COUNT,
+	SPHCS_SW_COUNTERS_DMA_H2C_SILENT_RECOVERY,
+	SPHCS_SW_COUNTERS_DMA_C2H_SILENT_RECOVERY,
 	SPHCS_SW_COUNTERS_DMA_0_H2C_COUNT,
 	SPHCS_SW_COUNTERS_DMA_0_H2C_BYTES,
 	SPHCS_SW_COUNTERS_DMA_0_H2C_BUSY,
@@ -90,6 +92,12 @@ static const struct nnp_sw_counter_info g_sphcs_sw_counters_info[] = {
 	/*SPHCS_SW_COUNTERS_IPC_COMMANDS_SCHEDULED_COUNT*/
 	{SPHCS_SW_COUNTERS_GROUP_IPC, "commands.scheduled_count",
 	 "Number of commands scheduled to be transferted on the command"},
+	/* SPHCS_SW_COUNTERS_DMA_H2C_SILENT_RECOVERY */
+	{SPHCS_SW_COUNTERS_GROUP_DMA, "h2c.silent_recovery",
+	 "Number of times DMA hang was silently recovered on host-to-card DMA engine"},
+	/* SPHCS_SW_COUNTERS_DMA_C2H_SILENT_RECOVERY */
+	{SPHCS_SW_COUNTERS_GROUP_DMA, "c2h.silent_recovery",
+	 "Number of times DMA hang was silently recovered on card-to-host DMA engine"},
 	/* SPHCS_SW_COUNTERS_DMA_0_H2C_COUNT */
 	{SPHCS_SW_COUNTERS_GROUP_DMA, "h2c.chan0.count",
 	 "Number of transfers on host-to-card DMA channel #0"},

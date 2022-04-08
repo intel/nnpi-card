@@ -3,7 +3,7 @@
 
 
 /*******************************************************************************
- * INTEL CORPORATION CONFIDENTIAL Copyright(c) 2017-2020 Intel Corporation. All Rights Reserved.
+ * INTEL CORPORATION CONFIDENTIAL Copyright(c) 2017-2021 Intel Corporation. All Rights Reserved.
  *
  * The source code contained or described herein and all documents related to the
  * source code ("Material") are owned by Intel Corporation or its suppliers or
@@ -78,7 +78,7 @@ void um_shm_list_init(const char              *shm_base,
 
 		prev_off = off;
 		off += entry_size;
-		head = (struct um_shm_list_head *)(shm_base + off);
+		head = (struct um_shm_list_head *)(void *)(shm_base + off);
 	}
 }
 
@@ -105,20 +105,20 @@ bool um_shm_list_alloc(struct um_shm_list *list,
 	const char *shm_base = (const char *)list - list->list_off;
 
 	struct um_shm_list_head *head =
-		(struct um_shm_list_head *)(shm_base + list->free_off);
+		(struct um_shm_list_head *)(void *)(shm_base + list->free_off);
 
 	// Get node out of the free list
 	list->free_off = head->next_off;
 	if (head->next_off) {
 		struct um_shm_list_head *next_head =
-			(struct um_shm_list_head *)(shm_base + head->next_off);
+			(struct um_shm_list_head *)(void *)(shm_base + head->next_off);
 		next_head->prev_off = 0;
 	}
 
 	// Put node as the new head
 	if (list->head_off) {
 		struct um_shm_list_head *cur_head =
-			(struct um_shm_list_head *)(shm_base + list->head_off);
+			(struct um_shm_list_head *)(void *)(shm_base + list->head_off);
 		cur_head->prev_off = head->off;
 	}
 	head->next_off = list->head_off;
@@ -127,7 +127,7 @@ bool um_shm_list_alloc(struct um_shm_list *list,
 	if (lock)
 		sem_post(lock);
 
-	elem = (T *)(shm_base + head->off - list->node_off);
+	elem = (T *)(void *)(shm_base + head->off - list->node_off);
 	return true;
 }
 
@@ -148,7 +148,7 @@ void um_shm_list_del(struct um_shm_list *list,
 	struct um_shm_list_head *prev_node = nullptr;
 	struct um_shm_list_head *next_node = nullptr;
 	if (node->prev_off) {
-		prev_node = (struct um_shm_list_head *)(shm_base +
+		prev_node = (struct um_shm_list_head *)(void *)(shm_base +
 							node->prev_off);
 		prev_node->next_off = node->next_off;
 	} else {
@@ -156,7 +156,7 @@ void um_shm_list_del(struct um_shm_list *list,
 	}
 
 	if (node->next_off) {
-		next_node = (struct um_shm_list_head *)(shm_base +
+		next_node = (struct um_shm_list_head *)(void *)(shm_base +
 							node->next_off);
 		next_node->prev_off = node->prev_off;
 	}
@@ -166,7 +166,7 @@ void um_shm_list_del(struct um_shm_list *list,
 	node->prev_off = 0;
 	node->next_off = list->free_off;
 	if (list->free_off) {
-		next_node = (struct um_shm_list_head *)(shm_base +
+		next_node = (struct um_shm_list_head *)(void *)(shm_base +
 							list->free_off);
 		next_node->prev_off = node->off;
 	}
@@ -192,7 +192,7 @@ bool um_shm_list_first(struct um_shm_list *list,
 
 	const char *shm_base = (const char *)list - list->list_off;
 
-	elem_ptr = (T *)(shm_base + list->head_off - list->node_off);
+	elem_ptr = (T *)(void *)(shm_base + list->head_off - list->node_off);
 	return true;
 }
 
@@ -210,6 +210,6 @@ bool um_shm_list_next(struct um_shm_list *list,
 
 	const char *shm_base = (const char *)list - list->list_off;
 
-	elem_ptr = (T *)(shm_base + node->next_off - list->node_off);
+	elem_ptr = (T *)(void *)(shm_base + node->next_off - list->node_off);
 	return true;
 }

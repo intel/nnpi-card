@@ -1,0 +1,819 @@
+From acceb982b4f81946999a5ff6bf1b23405556cd73 Mon Sep 17 00:00:00 2001
+From: Guy Zadicario <guy.zadicario@intel.com>
+Date: Thu, 12 Nov 2020 18:32:15 +0200
+Subject: [PATCH v12 03/29] misc: nnpi: msg_scheduler object and kernel thread
+
+Allocate a msg_scheduler object for each NNP-I device. Each msg_scheduler
+object manages multiple command queues - one for driver initiated commands
+(called "cmdq"), and the rest for commands coming from user-space. A kernel
+thread in the msg_scheduler schedules sending the commands from these
+queues to the NNP-I device by using the write_mesg function of the "hw"
+layer.
+
+A command to the device is formed as N number of unsigned 64-bit values,
+where N is either 1, 2 or 3.
+
+The msg_scheduler object is created on device creation and destroyed on
+device removal.
+
+Signed-off-by: Guy Zadicario <guy.zadicario@intel.com>
+Reviewed-by: Vaibhav Agarwal <vaibhav.agarwal@intel.com>
+---
+ drivers/misc/intel-nnpi/Makefile        |   2 +-
+ drivers/misc/intel-nnpi/device.c        |  19 +-
+ drivers/misc/intel-nnpi/device.h        |   8 +
+ drivers/misc/intel-nnpi/msg_scheduler.c | 349 ++++++++++++++++++++++++++++++++
+ drivers/misc/intel-nnpi/msg_scheduler.h | 161 +++++++++++++++
+ drivers/misc/intel-nnpi/nnp_hw.h        |   1 +
+ drivers/misc/intel-nnpi/nnp_hw_pcie.c   | 131 ++++++++++++
+ 7 files changed, 669 insertions(+), 2 deletions(-)
+ create mode 100644 drivers/misc/intel-nnpi/msg_scheduler.c
+ create mode 100644 drivers/misc/intel-nnpi/msg_scheduler.h
+
+diff --git a/drivers/misc/intel-nnpi/Makefile b/drivers/misc/intel-nnpi/Makefile
+index fc86dcf..a0685d3 100644
+--- a/drivers/misc/intel-nnpi/Makefile
++++ b/drivers/misc/intel-nnpi/Makefile
+@@ -5,6 +5,6 @@
+ 
+ obj-m	:= intel_nnpidrv.o
+ 
+-intel_nnpidrv-y := nnpdrv_main.o nnp_hw_pcie.o device.o
++intel_nnpidrv-y := nnpdrv_main.o nnp_hw_pcie.o device.o msg_scheduler.o
+ 
+ ccflags-y += -I$(srctree)/$(src)/ipc_include
+diff --git a/drivers/misc/intel-nnpi/device.c b/drivers/misc/intel-nnpi/device.c
+index 11b4b30..e3a2411 100644
+--- a/drivers/misc/intel-nnpi/device.c
++++ b/drivers/misc/intel-nnpi/device.c
+@@ -58,10 +58,26 @@ struct nnp_device *nnpdev_create(struct nnp_hw_dev *hw_dev)
+ 
+ 	nnpdev->hw_dev = hw_dev;
+ 
++	nnpdev->cmdq_sched = nnpdev_msched_create(nnpdev);
++	if (!nnpdev->cmdq_sched) {
++		ret = -ENOMEM;
++		goto err_ida;
++	}
++
++	nnpdev->cmdq = nnp_msched_queue_create(nnpdev->cmdq_sched);
++	if (!nnpdev->cmdq) {
++		ret = -ENOMEM;
++		goto err_msg_sched;
++	}
++
+ 	kref_init(&nnpdev->ref);
+ 
+ 	return nnpdev;
+ 
++err_msg_sched:
++	nnp_msched_destroy(nnpdev->cmdq_sched);
++err_ida:
++	ida_simple_remove(&dev_ida, nnpdev->id);
+ err_nnpdev:
+ 	kfree(nnpdev);
+ 	return ERR_PTR(ret);
+@@ -125,8 +141,9 @@ static void free_device(struct work_struct *work)
+ 
+ 	dev_dbg(nnpdev->hw_dev->dev, "Freeing NNP-I device\n");
+ 
+-	ida_simple_remove(&dev_ida, nnpdev->id);
++	nnp_msched_destroy(nnpdev->cmdq_sched);
+ 
++	ida_simple_remove(&dev_ida, nnpdev->id);
+ 	kfree(nnpdev);
+ 
+ 	/*
+diff --git a/drivers/misc/intel-nnpi/device.h b/drivers/misc/intel-nnpi/device.h
+index 5f506f4..53d7dc9 100644
+--- a/drivers/misc/intel-nnpi/device.h
++++ b/drivers/misc/intel-nnpi/device.h
+@@ -8,6 +8,7 @@
+ #include <linux/completion.h>
+ #include <linux/kref.h>
+ #include <linux/workqueue.h>
++#include "msg_scheduler.h"
+ #include "nnp_hw.h"
+ 
+ #define NNP_MAX_DEVS		256
+@@ -21,6 +22,10 @@
+  * @free_work: scheduled work struct used when refcount reaches zero for
+  *             freeing this structure.
+  * @id: NNP-I device number
++ * @cmdq_sched: message scheduler thread which schedule and serialize command
++ *              submissions to the device's command queue.
++ * @cmdq: input queue to @cmdq_sched used to schedule driver internal commands
++ *        to be sent to the device.
+  */
+ struct nnp_device {
+ 	struct kref            ref;
+@@ -29,6 +34,9 @@ struct nnp_device {
+ 	struct work_struct     free_work;
+ 
+ 	int                    id;
++
++	struct nnp_msched       *cmdq_sched;
++	struct nnp_msched_queue *cmdq;
+ };
+ 
+ void nnpdev_module_init(void);
+diff --git a/drivers/misc/intel-nnpi/msg_scheduler.c b/drivers/misc/intel-nnpi/msg_scheduler.c
+new file mode 100644
+index 0000000..3bfe8da
+--- /dev/null
++++ b/drivers/misc/intel-nnpi/msg_scheduler.c
+@@ -0,0 +1,349 @@
++// SPDX-License-Identifier: GPL-2.0-only
++
++/* Copyright (C) 2019-2020 Intel Corporation */
++
++/*
++ * message scheduler implementation.
++ *
++ * That implements a scheduler object which is used to serialize
++ * command submission to an nnpi device.
++ * It manages a list of message queues which hold command messages
++ * for submissions to the card.
++ * It also implements a kernel thread which schedules draining
++ * the message queues in round-robin fashion.
++ *
++ * An instance of this object is created for each NNP-I device.
++ * A message queue is created for each user created channel as well
++ * as one message queue which is used by the kernel driver itself.
++ */
++
++#include "msg_scheduler.h"
++#include <linux/err.h>
++#include <linux/interrupt.h>
++#include <linux/jiffies.h>
++#include <linux/kthread.h>
++#include <linux/list.h>
++#include <linux/mutex.h>
++#include <linux/printk.h>
++#include <linux/sched.h>
++#include <linux/seq_file.h>
++#include <linux/slab.h>
++#include <linux/spinlock.h>
++#include <linux/wait.h>
++#include "device.h"
++
++/**
++ * struct msg_entry - struct to hold a single command message
++ * @msg: command message payload
++ * @size: size in qwords
++ * @node: node to be included in list of command messages.
++ */
++struct msg_entry {
++	u64              msg[MSG_SCHED_MAX_MSG_SIZE];
++	unsigned int     size;
++	struct list_head node;
++};
++
++/**
++ * do_sched() - fetch and writes messages from one message queue.
++ * @sched: the scheduler
++ * @q: the queue to handle
++ *
++ * This function is called from the main scheduler thread to handle single
++ * message queue. It fetches 1 message from the queue and send them
++ * to the device.
++ *
++ * The function should be called when the scheduler mutex is held to prevent
++ * the queue from being destroyed.
++ *
++ * Return: zero on success, error code otherwise.
++ */
++static int do_sched(struct nnp_msched *sched, struct nnp_msched_queue *q)
++{
++	struct nnp_device *nnpdev = sched->nnpdev;
++	struct msg_entry *msg;
++	unsigned int left_msgs;
++	int ret;
++
++	lockdep_assert_held(&sched->mutex);
++
++	/* fetch one message from the queue */
++	spin_lock(&q->list_lock);
++	if (list_empty(&q->msgs)) {
++		spin_unlock(&q->list_lock);
++		return 0;
++	}
++
++	msg = list_first_entry(&q->msgs, struct msg_entry, node);
++	list_del(&msg->node);
++	left_msgs = --q->msgs_num;
++	spin_lock(&sched->total_msgs_lock);
++	sched->total_msgs--;
++	spin_unlock(&sched->total_msgs_lock);
++	spin_unlock(&q->list_lock);
++
++	/*
++	 * write the fetched message out,
++	 * note that the msg_handle function may sleep.
++	 */
++	ret = nnp_cmdq_write_mesg(nnpdev->hw_dev, msg->msg, msg->size);
++
++	kmem_cache_free(sched->slab_cache_ptr, msg);
++
++	/*
++	 * wake any waiting sync thread if the queue just
++	 * became empty
++	 */
++	if (!left_msgs)
++		wake_up_all(&q->sync_waitq);
++
++	return ret;
++}
++
++/**
++ * msg_sched_thread_func() - the main function of the scheduler thread.
++ * @data: pointer to the msg scheduler object.
++ *
++ * This is the main function of the scheduler kernel thread.
++ * It loops in round-robin fashion of all queues, pulls one message
++ * each time and send it to the device through the device's command
++ * h/w queue.
++ * For each application created channel to the device a different queue of
++ * command messages is allocated. This thread shcedules and serialize
++ * accesses to the command h/w queue.
++ *
++ * Return: 0 when thread is stopped
++ */
++static int msg_sched_thread_func(void *data)
++{
++	struct nnp_msched *dev_sched = data;
++	struct nnp_msched_queue *q;
++	bool need_sched;
++	int ret;
++
++	while (!kthread_should_stop()) {
++		mutex_lock(&dev_sched->mutex);
++		ret = 0;
++		list_for_each_entry(q, &dev_sched->queues, node) {
++			ret = do_sched(dev_sched, q);
++
++			/*
++			 * if failed to write into command queue, no point
++			 * trying rest of the message queues
++			 */
++			if (ret)
++				break;
++		}
++
++		/*
++		 * Wait for new messages to be available in some queue
++		 * if no messages are known to exist
++		 */
++		spin_lock(&dev_sched->total_msgs_lock);
++		set_current_state(TASK_INTERRUPTIBLE);
++		need_sched = (!dev_sched->total_msgs);
++		spin_unlock(&dev_sched->total_msgs_lock);
++		mutex_unlock(&dev_sched->mutex);
++		if (need_sched)
++			schedule();
++		set_current_state(TASK_RUNNING);
++	}
++
++	return 0;
++}
++
++struct nnp_msched_queue *nnp_msched_queue_create(struct nnp_msched *scheduler)
++{
++	struct nnp_msched_queue *queue;
++
++	queue = kzalloc(sizeof(*queue), GFP_KERNEL);
++	if (!queue)
++		return NULL;
++
++	INIT_LIST_HEAD(&queue->msgs);
++	spin_lock_init(&queue->list_lock);
++	queue->msgs_num = 0;
++	queue->scheduler = scheduler;
++	init_waitqueue_head(&queue->sync_waitq);
++
++	mutex_lock(&scheduler->mutex);
++	list_add_tail(&queue->node, &scheduler->queues);
++	mutex_unlock(&scheduler->mutex);
++
++	return queue;
++}
++
++int nnp_msched_queue_destroy(struct nnp_msched_queue *queue)
++{
++	struct msg_entry *msg_list_node;
++
++	/* detach the queue from list of scheduled queues */
++	mutex_lock(&queue->scheduler->mutex);
++	list_del(&queue->node);
++	mutex_unlock(&queue->scheduler->mutex);
++
++	/* destroy all the messages of the queue */
++	spin_lock(&queue->list_lock);
++	while (!list_empty(&queue->msgs)) {
++		msg_list_node = list_first_entry(&queue->msgs,
++						 struct msg_entry, node);
++		list_del(&msg_list_node->node);
++		kmem_cache_free(queue->scheduler->slab_cache_ptr, msg_list_node);
++	}
++	spin_unlock(&queue->list_lock);
++
++	kfree(queue);
++
++	return 0;
++}
++
++static inline bool is_queue_empty(struct nnp_msched_queue *queue)
++{
++	bool ret;
++
++	spin_lock(&queue->list_lock);
++	ret = list_empty(&queue->msgs);
++	spin_unlock(&queue->list_lock);
++
++	return ret;
++}
++
++int nnp_msched_queue_sync(struct nnp_msched_queue *queue)
++{
++	int ret;
++
++	/* Wait for the queue to be empty */
++	ret = wait_event_interruptible(queue->sync_waitq,
++				       is_queue_empty(queue));
++
++	return ret;
++}
++
++int nnp_msched_queue_add_msg(struct nnp_msched_queue *queue, u64 *msg,
++			     unsigned int size)
++{
++	unsigned int i;
++	struct msg_entry *msg_list_node;
++	bool throttled;
++
++	if (size > MSG_SCHED_MAX_MSG_SIZE)
++		return -EINVAL;
++
++	msg_list_node = kmem_cache_alloc(queue->scheduler->slab_cache_ptr,
++					 GFP_KERNEL);
++	if (!msg_list_node)
++		return -ENOMEM;
++
++	for (i = 0; i < size; i++)
++		msg_list_node->msg[i] = msg[i];
++
++	msg_list_node->size = size;
++
++	spin_lock(&queue->list_lock);
++	throttled = queue->throttled;
++	if (!throttled) {
++		list_add_tail(&msg_list_node->node, &queue->msgs);
++		queue->msgs_num++;
++		spin_lock(&queue->scheduler->total_msgs_lock);
++		queue->scheduler->total_msgs++;
++		spin_unlock(&queue->scheduler->total_msgs_lock);
++	}
++	spin_unlock(&queue->list_lock);
++
++	/* if queue flaged as throttled - silently ignore the message */
++	if (throttled) {
++		kmem_cache_free(queue->scheduler->slab_cache_ptr,
++				msg_list_node);
++		return 0;
++	}
++
++	wake_up_process(queue->scheduler->thread);
++
++	return 0;
++}
++
++void nnp_msched_queue_unthrottle(struct nnp_msched_queue *queue)
++{
++	spin_lock(&queue->list_lock);
++	queue->throttled = false;
++	spin_unlock(&queue->list_lock);
++}
++
++struct nnp_msched *nnpdev_msched_create(struct nnp_device *nnpdev)
++{
++	struct nnp_msched *dev_sched;
++
++	dev_sched = kzalloc(sizeof(*dev_sched), GFP_KERNEL);
++	if (!dev_sched)
++		return NULL;
++
++	dev_sched->slab_cache_ptr = kmem_cache_create("msg_sched_slab",
++						      sizeof(struct msg_entry),
++						      0, 0, NULL);
++	if (!dev_sched->slab_cache_ptr) {
++		kfree(dev_sched);
++		return NULL;
++	}
++
++	INIT_LIST_HEAD(&dev_sched->queues);
++
++	spin_lock_init(&dev_sched->total_msgs_lock);
++	mutex_init(&dev_sched->mutex);
++	dev_sched->nnpdev = nnpdev;
++
++	dev_sched->thread = kthread_run(msg_sched_thread_func, dev_sched,
++					"msg_sched_thread");
++	if (!dev_sched->thread) {
++		kmem_cache_destroy(dev_sched->slab_cache_ptr);
++		kfree(dev_sched);
++		return NULL;
++	}
++
++	return dev_sched;
++}
++
++void nnp_msched_destroy(struct nnp_msched *sched)
++{
++	struct nnp_msched_queue *q, *tmp;
++
++	nnp_msched_throttle_all(sched);
++
++	kthread_stop(sched->thread);
++
++	mutex_lock(&sched->mutex);
++	list_for_each_entry_safe(q, tmp, &sched->queues, node) {
++		/* destroy the queue */
++		list_del(&q->node);
++		kfree(q);
++	}
++	mutex_unlock(&sched->mutex);
++
++	kmem_cache_destroy(sched->slab_cache_ptr);
++
++	kfree(sched);
++}
++
++void nnp_msched_throttle_all(struct nnp_msched *sched)
++{
++	struct nnp_msched_queue *q;
++	struct msg_entry *msg, *tmp;
++
++	/*
++	 * For each queue:
++	 * 1) throttle the queue, so that no more messages will be inserted
++	 * 2) delete all existing messages
++	 */
++	mutex_lock(&sched->mutex);
++	list_for_each_entry(q, &sched->queues, node) {
++		spin_lock(&q->list_lock);
++		q->throttled = true;
++		list_for_each_entry_safe(msg, tmp, &q->msgs, node) {
++			list_del(&msg->node);
++			kmem_cache_free(sched->slab_cache_ptr, msg);
++		}
++		q->msgs_num = 0;
++		spin_unlock(&q->list_lock);
++		wake_up_all(&q->sync_waitq);
++	}
++	mutex_unlock(&sched->mutex);
++}
+diff --git a/drivers/misc/intel-nnpi/msg_scheduler.h b/drivers/misc/intel-nnpi/msg_scheduler.h
+new file mode 100644
+index 0000000..ee4cb89
+--- /dev/null
++++ b/drivers/misc/intel-nnpi/msg_scheduler.h
+@@ -0,0 +1,161 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++
++/* Copyright (C) 2019-2020 Intel Corporation */
++
++#ifndef _NNP_MSGF_SCHEDULER_H
++#define _NNP_MSGF_SCHEDULER_H
++
++#include <linux/fs.h>
++#include <linux/mutex.h>
++#include <linux/poll.h>
++#include <linux/workqueue.h>
++
++#define MSG_SCHED_MAX_MSG_SIZE 3  /* maximum command message size, i qwords */
++
++struct nnp_device;
++
++/**
++ * struct nnp_msched - structure for msg scheduler object
++ * @thread: kernel thread which schedules message writes to device
++ * @nnpdev: the device the scheduler write to
++ * @queues: list of message queues to schedule from
++ * @total_msgs_lock: protects accesses to @total_msgs
++ * @mutex: protectes modifications to @queues
++ * @total_msgs: total count of messages in all queues yet to be written.
++ * @slab_cache_ptr: used to allocate entries in msg queue list.
++ *
++ * We have one msg scheduler object allocated for each NNP-I device,
++ * It manages a list of command message queues and a kernel thread
++ * which schedules sending the commans messages to the device in a
++ * round-robin fashion.
++ */
++struct nnp_msched {
++	struct task_struct *thread;
++	struct nnp_device  *nnpdev;
++	struct list_head   queues;
++	spinlock_t         total_msgs_lock; /* protects @total_msgs */
++	struct mutex       mutex; /* protects @queues */
++	unsigned int       total_msgs;
++	struct kmem_cache  *slab_cache_ptr;
++};
++
++/**
++ * struct nnp_msched_queue - structure to hold one list of command messages
++ * @scheduler: the scheduler object this queue belongs to
++ * @node: node of this element in @queues in msg_sched
++ * @msgs: list of command messages
++ * @sync_waitq: waitq used for waiting until queue becomes empty
++ * @throttled: if true, all messages in the queue should be discarded and no new
++ *             messages can be added to it until it will become un-throttled.
++ * @msgs_num: number of messages in the queue
++ * @list_lock: protects @msgs
++ *
++ * This structure holds a list of command messages to be queued for submission
++ * to the device. Each application holding a channel for command submissions
++ * has its own command message queue.
++ */
++struct nnp_msched_queue {
++	struct nnp_msched *scheduler;
++	struct list_head  node;
++	struct list_head  msgs;
++	wait_queue_head_t sync_waitq;
++	bool              throttled;
++	unsigned int      msgs_num;
++	spinlock_t        list_lock; /* protects msg_list del/inserts */
++};
++
++/**
++ * nnpdev_msched_create() - creates msg scheduler object
++ * @nnpdev: the device this scheduler writes messages to.
++ *
++ * This function creates message scheduler object which can hold
++ * multiple message queues and a scheduling thread which pop messages
++ * from the different queues and synchronously send it down to the device
++ * for transmission.
++ *
++ * Return: pointer to allocated scheduler object or NULL on failure
++ */
++struct nnp_msched *nnpdev_msched_create(struct nnp_device *nnpdev);
++
++/**
++ * nnp_msched_destroy() - destroyes a msg scheduler object
++ * @sched: pointer to msg scheduler object
++ *
++ * This function will wait for the scheduler thread to complete
++ * and destroys the scheduler object as well as all messages and messages
++ * queues.
++ * NOTE: caller must make sure that no new queues and messages will be added
++ * while this function is in progress!
++ */
++void nnp_msched_destroy(struct nnp_msched *sched);
++
++/**
++ * nnp_msched_throttle_all() - Remove all messages and throttle all queues
++ * @sched: pointer to msg scheduler object
++ *
++ * This function removes all messages from all queues and mark all queues
++ * as throtled. no new messages can be added to a throttled queue until it
++ * becomes unthrottled.
++ *
++ * This function is called before the device is reset in order to stop sending
++ * any more messages to the device. When the reset is complete, the message
++ * queues are unthrottled. This is done to make sure that no messages generated
++ * before the reset will be sent to the device, also after the reset completes.
++ */
++void nnp_msched_throttle_all(struct nnp_msched *sched);
++
++/**
++ * nnp_msched_queue_create() - create a queue of messages handled by scheduler
++ * @scheduler: the msg scheduler object
++ * @weight: controls number of messages the scheduler should handle from
++ *          this queue before moving to other queues.
++ *
++ * Return: pointer to msg scheduler queue object, NULL on failure.
++ */
++struct nnp_msched_queue *nnp_msched_queue_create(struct nnp_msched *scheduler);
++
++/**
++ * nnp_msched_queue_destroy() - destroy a message queue object
++ * @queue: the message queue object to be destroyed.
++ *
++ * This function destroys a message queue object, if the queue is not
++ * empty from messages, the messages will be deleted and will be dropped.
++ * (will not get sent to the device).
++ *
++ * Return: 0 on success.
++ */
++int nnp_msched_queue_destroy(struct nnp_msched_queue *queue);
++
++/**
++ * nnp_msched_queue_sync() - wait for message queue to be emty
++ * @queue: the message queue object
++ *
++ * Return: 0 on success, error value otherwise.
++ */
++int nnp_msched_queue_sync(struct nnp_msched_queue *queue);
++
++/**
++ * nnp_msched_queue_add_msg() - adds a message packet to a message queue
++ * @queue: the message queue object
++ * @msg: pointer to message content
++ * @size: size of message in 64-bit units
++ *
++ * This function adds a message to the queue to be scheduled to be sent
++ * to the device. The message will be sent once the scheduler thread
++ * drains it from the queue.
++ *
++ * Return: 0 on success, error value otherwise
++ */
++int nnp_msched_queue_add_msg(struct nnp_msched_queue *queue, u64 *msg,
++			     unsigned int size);
++
++/**
++ * nnp_msched_queue_unthrottle() - marks a queue valid
++ * @queue: the message queue object
++ *
++ *  This function marks a queue as unthrottled if it became throttled
++ *  by a previous call to nnp_msched_throttle_all.
++ */
++void nnp_msched_queue_unthrottle(struct nnp_msched_queue *queue);
++
++#endif /* _NNP_MSGF_SCHEDULER_H */
+diff --git a/drivers/misc/intel-nnpi/nnp_hw.h b/drivers/misc/intel-nnpi/nnp_hw.h
+index 8c3943e..4c494ce 100644
+--- a/drivers/misc/intel-nnpi/nnp_hw.h
++++ b/drivers/misc/intel-nnpi/nnp_hw.h
+@@ -43,6 +43,7 @@ struct nnp_hw_dev {
+  * Functions implemented by the nnp "hw" layer,
+  * called by the nnp "device" layer
+  */
++int nnp_cmdq_write_mesg(struct nnp_hw_dev *hw_dev, u64 *msg, u32 size);
+ int nnp_cmdq_flush(struct nnp_hw_dev *hw_dev);
+ 
+ /*
+diff --git a/drivers/misc/intel-nnpi/nnp_hw_pcie.c b/drivers/misc/intel-nnpi/nnp_hw_pcie.c
+index b72c94b..1079343 100644
+--- a/drivers/misc/intel-nnpi/nnp_hw_pcie.c
++++ b/drivers/misc/intel-nnpi/nnp_hw_pcie.c
+@@ -75,6 +75,9 @@ struct nnp_memdesc {
+  *                    queue.
+  * @card_doorbell_val: card's doorbell register value, updated when doorbell
+  *                     interrupt is received.
++ * @cmdq_free_slots: number of slots in the device's command queue which known
++ *                   to be available.
++ * @cmdq_lock: protects @cmdq_free_slots calculation.
+  * @card_status: Last device interrupt status register, updated in interrupt
+  *               handler.
+  * @cmd_read_update_count: number of times the device has updated its read
+@@ -96,6 +99,9 @@ struct nnp_pci {
+ 	wait_queue_head_t card_status_wait;
+ 	u32             card_doorbell_val;
+ 
++	u32             cmdq_free_slots;
++	spinlock_t      cmdq_lock; /* protects @cmdq_free_slots */
++
+ 	u32             card_status;
+ 	u32             cmd_read_update_count;
+ };
+@@ -301,6 +307,130 @@ static void nnp_free_interrupts(struct nnp_pci *nnp_pci, struct pci_dev *pdev)
+ 	pci_free_irq_vectors(pdev);
+ }
+ 
++/**
++ * nnp_cmdq_write_mesg_nowait() - tries to write full message to command queue
++ * @nnp_pci: the device
++ * @msg: pointer to the command message
++ * @size: size of the command message in qwords
++ * @read_update_count: returns current cmd_read_update_count value,
++ *                     valid only if function returns -EAGAIN.
++ *
++ * Return:
++ * * 0: Success, command has been written
++ * * -EAGAIN: command queue does not have room for the entire command
++ *            message.
++ *            read_update_count returns the current value of
++ *            cmd_read_update_count counter which increments when the device
++ *            advance its command queue read pointer. The caller may wait
++ *            for this counter to be advanced past this point before calling
++ *            this function again to re-try the write.
++ */
++static int nnp_cmdq_write_mesg_nowait(struct nnp_pci *nnp_pci, u64 *msg,
++				      u32 size, u32 *read_update_count)
++{
++	u32 cmd_iosf_control;
++	u32 read_pointer, write_pointer;
++	unsigned long flags;
++	int i;
++
++	if (!size)
++		return 0;
++
++	spin_lock(&nnp_pci->cmdq_lock);
++
++	if (nnp_pci->cmdq_free_slots < size) {
++		/* read command fifo pointers and compute free slots in fifo */
++		spin_lock_irqsave(&nnp_pci->irq_lock, flags);
++		cmd_iosf_control = nnp_mmio_read(nnp_pci,
++						 ELBI_COMMAND_IOSF_CONTROL);
++		read_pointer = FIELD_GET(CMDQ_READ_PTR_MASK, cmd_iosf_control);
++		write_pointer =
++			FIELD_GET(CMDQ_WRITE_PTR_MASK, cmd_iosf_control);
++
++		nnp_pci->cmdq_free_slots = ELBI_COMMAND_FIFO_DEPTH -
++					   (write_pointer - read_pointer);
++
++		if (nnp_pci->cmdq_free_slots < size) {
++			*read_update_count = nnp_pci->cmd_read_update_count;
++			spin_unlock_irqrestore(&nnp_pci->irq_lock, flags);
++			spin_unlock(&nnp_pci->cmdq_lock);
++			return -EAGAIN;
++		}
++		spin_unlock_irqrestore(&nnp_pci->irq_lock, flags);
++	}
++
++	/* Write all but the last message without generating msi on card */
++	for (i = 0; i < size - 1; i++) {
++		nnp_mmio_write_8b(nnp_pci, ELBI_COMMAND_WRITE_WO_MSI_LOW,
++				  msg[i]);
++	}
++
++	/* Write last message with generating interrupt on card */
++	nnp_mmio_write_8b(nnp_pci, ELBI_COMMAND_WRITE_W_MSI_LOW, msg[i]);
++
++	nnp_pci->cmdq_free_slots -= size;
++
++	spin_unlock(&nnp_pci->cmdq_lock);
++
++	return 0;
++}
++
++/**
++ * check_read_count() - check if device has read commands from command FIFO
++ * @nnp_pci: the device
++ * @count: last known 'cmd_read_update_count' value
++ *
++ * cmd_read_update_count is advanced on each interrupt received because the
++ * device has advanced its read pointer into the command FIFO.
++ * This function checks the current cmd_read_update_count against @count and
++ * returns true if it is different. This is used to check if the device has
++ * freed some entries in the command FIFO after it became full.
++ *
++ * Return: true if current device read update count has been advanced
++ */
++static bool check_read_count(struct nnp_pci *nnp_pci, u32 count)
++{
++	bool ret;
++	unsigned long flags;
++
++	spin_lock_irqsave(&nnp_pci->irq_lock, flags);
++	ret = (count != nnp_pci->cmd_read_update_count);
++	spin_unlock_irqrestore(&nnp_pci->irq_lock, flags);
++
++	return ret;
++}
++
++/**
++ * nnp_cmdq_write_mesg() - writes a command message to device's command queue
++ * @hw_dev: the device handle
++ * @msg: The command message to write
++ * @size: size of the command message in qwords
++ *
++ * Return:
++ * * 0: Success, command has been written
++ */
++int nnp_cmdq_write_mesg(struct nnp_hw_dev *hw_dev, u64 *msg, u32 size)
++{
++	int rc;
++	u32 rcnt = 0;
++	struct nnp_pci *nnp_pci = container_of(hw_dev, struct nnp_pci, hw_dev);
++
++	do {
++		rc = nnp_cmdq_write_mesg_nowait(nnp_pci, msg, size, &rcnt);
++		if (rc != -EAGAIN)
++			break;
++
++		rc = wait_event_interruptible(nnp_pci->card_status_wait,
++					      check_read_count(nnp_pci, rcnt));
++	} while (!rc);
++
++	if (rc)
++		dev_dbg(&nnp_pci->pdev->dev,
++			"Failed to write message size %d rc=%d!!\n", size, rc);
++
++	return rc;
++}
++
+ int nnp_cmdq_flush(struct nnp_hw_dev *hw_dev)
+ {
+ 	struct nnp_pci *nnp_pci = container_of(hw_dev, struct nnp_pci, hw_dev);
+@@ -484,6 +614,7 @@ static int nnp_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
+ 	pci_set_drvdata(pdev, nnp_pci);
+ 
+ 	init_waitqueue_head(&nnp_pci->card_status_wait);
++	spin_lock_init(&nnp_pci->cmdq_lock);
+ 	spin_lock_init(&nnp_pci->irq_lock);
+ 
+ 	rc = nnp_init_pci_device(nnp_pci);
+-- 
+1.8.3.1
+

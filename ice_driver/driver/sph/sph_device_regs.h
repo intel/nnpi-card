@@ -1,5 +1,5 @@
 /********************************************
- * Copyright (C) 2019-2020 Intel Corporation
+ * Copyright (C) 2019-2021 Intel Corporation
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  ********************************************/
@@ -99,6 +99,8 @@ struct config {
 	uint32_t ice_dso_filter_mask_low_ch1_reg_offset;
 	uint32_t ice_dso_filter_mask_high_ch1_reg_offset;
 	uint32_t ice_dso_filter_inv_ch1_reg_offset;
+	uint32_t ice_dso_cfg_dtf_src_cfg_src_en_mask;
+	uint32_t ice_dso_cfg_dtf_src_cfg_ch_en_mask;
 	uint32_t ice_dbg_cbbid_base;
 	uint32_t ice_dbg_cbbid_cfg_offset;
 	uint32_t ice_prog_cores_ctrl_offset;
@@ -317,6 +319,8 @@ struct config {
 	uint32_t mmio_prog_cores_control_ivp_runstall_mask;
 	uint32_t mmio_prog_cores_control_asip0_runstall_mask;
 	uint32_t mmio_prog_cores_control_asip1_runstall_mask;
+	uint32_t gecoe_base;
+	uint32_t gecoe_dbg_reg_offset;
 };
 
 typedef union {
@@ -820,6 +824,27 @@ union tlc_error_handling_reg_t {
 		uint32_t err_category	: 8;
 		uint32_t cbb_id		: 16;
 	} cbb_err_code;
+
+	uint32_t val;
+};
+
+union gecoe_dbg_reg_t {
+	struct GECOE_ERROR_INFO_t {
+		uint32_t dec_enable	: 1;
+		uint32_t dec_stream	: 5;
+		uint32_t dec_data_out : 1;
+		uint32_t dec_meta_out : 1;
+		uint32_t dec_burst_len : 1;
+		uint32_t dec_bypass : 1;
+		uint32_t dec_dummy : 6;
+		uint32_t enc_enable	: 1;
+		uint32_t enc_stream	: 5;
+		uint32_t enc_data_out : 1;
+		uint32_t enc_meta_out : 1;
+		uint32_t enc_burst_len : 1;
+		uint32_t enc_bypass : 1;
+		uint32_t enc_dummy : 6;
+	} err_info;
 
 	uint32_t val;
 };
