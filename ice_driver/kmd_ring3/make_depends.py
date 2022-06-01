@@ -1,7 +1,7 @@
-#!/usr/bin/env python2
+#!/usr/bin/env python3
 #
 # NNP-I Linux Driver
-# Copyright (c) 2017-2019, Intel Corporation.
+# Copyright (c) 2017-2021, Intel Corporation.
 #
 # This program is free software; you can redistribute it and/or modify it
 # under the terms and conditions of the GNU General Public License,
@@ -15,6 +15,8 @@
 
 #	foreach : $(CC) $(CFLAGS) -MM $(NAME).c | sed "s@^[^ ]@$(OBJDIR)/&@" > $@
 
+from __future__ import absolute_import
+from __future__ import print_function
 import sys
 import subprocess
 
@@ -44,7 +46,7 @@ def print_deps_single(objdir, filename, flags):
 		cc='gcc'
 	cmd = [cc] + flags + ['-MM', filename]
 	deps = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT).communicate()[0]
-	print '%s/%s' % (objdir, deps)
+	print('%s/%s' % (objdir, deps))
 
 if	__name__ == '__main__':
 	main(sys.argv)

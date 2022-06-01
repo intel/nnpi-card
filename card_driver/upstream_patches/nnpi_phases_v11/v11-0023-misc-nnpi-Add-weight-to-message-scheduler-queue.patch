@@ -1,0 +1,316 @@
+From 7694be886f6f2065fb1a9e4a2dede8892c11adb2 Mon Sep 17 00:00:00 2001
+From: Guy Zadicario <guy.zadicario@intel.com>
+Date: Mon, 16 Nov 2020 15:02:22 +0200
+Subject: [PATCH v11 23/28] misc: nnpi: Add weight to message scheduler queue
+
+Add ability to give one channel more HW queue bandwidth than other
+channels.
+Add weight attribute for a channel to control how much commands should
+be sent in a raw from that channel before the message scheduler
+advance to the next channel in its round-robin loop.
+
+Signed-off-by: Guy Zadicario <guy.zadicario@intel.com>
+Reviewed-by: Vaibhav Agarwal <vaibhav.agarwal@intel.com>
+---
+ drivers/misc/intel-nnpi/cmd_chan.c       |  5 ++-
+ drivers/misc/intel-nnpi/cmd_chan.h       |  2 +-
+ drivers/misc/intel-nnpi/device.c         |  2 +-
+ drivers/misc/intel-nnpi/device_chardev.c | 28 ++++++++++---
+ drivers/misc/intel-nnpi/msg_scheduler.c  | 71 +++++++++++++++++++++-----------
+ drivers/misc/intel-nnpi/msg_scheduler.h  |  6 ++-
+ include/uapi/misc/intel_nnpi.h           |  1 +
+ 7 files changed, 81 insertions(+), 34 deletions(-)
+
+diff --git a/drivers/misc/intel-nnpi/cmd_chan.c b/drivers/misc/intel-nnpi/cmd_chan.c
+index 88b293a..2119e99 100644
+--- a/drivers/misc/intel-nnpi/cmd_chan.c
++++ b/drivers/misc/intel-nnpi/cmd_chan.c
+@@ -266,6 +266,7 @@ static inline int is_cmd_chan_file(struct file *f)
+  * nnpdev_chan_create() - creates a command channel object
+  * @nnpdev: the device
+  * @host_fd: opened file descriptor to "/dev/nnpi_host"
++ * @weight: message queue weight in message scheduler for this channel
+  * @min_id: minimum range for allocating ipc channel id for that channel
+  * @max_id: maximum range for allocating ipc channel id for that channel
+  * @get_device_events: true if this channel needs to receive device-level
+@@ -276,7 +277,7 @@ static inline int is_cmd_chan_file(struct file *f)
+  * the range [@min_id..@max_id]. channels in id range 0-255 are assumed to be
+  * used for inference related operations and have slightly special semantics.
+  */
+-int nnpdev_chan_create(struct nnp_device *nnpdev, int host_fd,
++int nnpdev_chan_create(struct nnp_device *nnpdev, int host_fd, u32 weight,
+ 		       unsigned int min_id, unsigned int max_id,
+ 		       bool get_device_events, struct nnp_chan **out_cmd_chan)
+ {
+@@ -316,7 +317,7 @@ int nnpdev_chan_create(struct nnp_device *nnpdev, int host_fd,
+ 		goto err_respq;
+ 	}
+ 
+-	cmd_chan->cmdq = nnp_msched_queue_create(nnpdev->cmdq_sched);
++	cmd_chan->cmdq = nnp_msched_queue_create(nnpdev->cmdq_sched, weight);
+ 	if (!cmd_chan->cmdq) {
+ 		ret = -ENOMEM;
+ 		goto err_file_get;
+diff --git a/drivers/misc/intel-nnpi/cmd_chan.h b/drivers/misc/intel-nnpi/cmd_chan.h
+index e9e1d8f..fa103bb 100644
+--- a/drivers/misc/intel-nnpi/cmd_chan.h
++++ b/drivers/misc/intel-nnpi/cmd_chan.h
+@@ -102,7 +102,7 @@ struct chan_hostres_map {
+ #define chan_broken(chan) ((chan)->card_critical_error.event_code)
+ #define chan_drv_fatal(chan) (is_card_fatal_drv_event(chan_broken(chan)))
+ 
+-int nnpdev_chan_create(struct nnp_device *nnpdev, int host_fd,
++int nnpdev_chan_create(struct nnp_device *nnpdev, int host_fd, u32 weight,
+ 		       unsigned int min_id, unsigned int max_id,
+ 		       bool get_device_events, struct nnp_chan **out_cmd_chan);
+ 
+diff --git a/drivers/misc/intel-nnpi/device.c b/drivers/misc/intel-nnpi/device.c
+index 84d1b71..4704c65 100644
+--- a/drivers/misc/intel-nnpi/device.c
++++ b/drivers/misc/intel-nnpi/device.c
+@@ -1229,7 +1229,7 @@ struct nnp_device *nnpdev_create(struct nnp_hw_dev *hw_dev)
+ 		goto err_first_device;
+ 	}
+ 
+-	nnpdev->cmdq = nnp_msched_queue_create(nnpdev->cmdq_sched);
++	nnpdev->cmdq = nnp_msched_queue_create(nnpdev->cmdq_sched, 1);
+ 	if (!nnpdev->cmdq) {
+ 		ret = -ENOMEM;
+ 		goto err_msg_sched;
+diff --git a/drivers/misc/intel-nnpi/device_chardev.c b/drivers/misc/intel-nnpi/device_chardev.c
+index f6267dc..1c695db 100644
+--- a/drivers/misc/intel-nnpi/device_chardev.c
++++ b/drivers/misc/intel-nnpi/device_chardev.c
+@@ -78,6 +78,17 @@ static int event_val_to_nnp_error(enum event_val event_val)
+ 	}
+ }
+ 
++struct ioctl_nnpi_create_channel_compat1 {
++	__s32    i_host_fd;
++	__s32    i_min_id;
++	__s32    i_max_id;
++	__s32    i_get_device_events;
++	__u32    i_protocol_version;
++	__s32    o_fd;
++	__u32    o_errno;
++	__u16    o_channel_id;
++};
++
+ static long create_channel(struct device_client_info *cinfo, void __user *arg,
+ 			   unsigned int size)
+ {
+@@ -87,13 +98,14 @@ static long create_channel(struct device_client_info *cinfo, void __user *arg,
+ 	u64 cmd;
+ 	u32 error_mask;
+ 	long ret = 0;
+-	unsigned int io_size = sizeof(req);
+ 
+-	/* only single size structure is currently supported */
+-	if (size != io_size)
++	/* compat1 structure size does not have i_weight field */
++	if (size == sizeof(struct ioctl_nnpi_create_channel_compat1))
++		req.i_weight = 1;
++	else if (size != sizeof(req))
+ 		return -EINVAL;
+ 
+-	ret = copy_from_user(&req, arg, io_size);
++	ret = copy_from_user(&req, arg, size);
+ 	if (ret != 0)
+ 		return -EFAULT;
+ 
+@@ -105,6 +117,10 @@ static long create_channel(struct device_client_info *cinfo, void __user *arg,
+ 	    req.i_max_id > 1023 || req.i_min_id < 0)
+ 		return -EINVAL;
+ 
++	/* limit command queue weight to 5 */
++	if (req.i_weight > 5)
++		return -EINVAL;
++
+ 	/*
+ 	 * Do not allow create command channel if device is in
+ 	 * error state.
+@@ -134,7 +150,7 @@ static long create_channel(struct device_client_info *cinfo, void __user *arg,
+ 		goto done;
+ 	}
+ 
+-	ret = nnpdev_chan_create(nnpdev, req.i_host_fd,
++	ret = nnpdev_chan_create(nnpdev, req.i_host_fd, req.i_weight,
+ 				 req.i_min_id, req.i_max_id,
+ 				 req.i_get_device_events, &chan);
+ 	if (ret < 0)
+@@ -193,7 +209,7 @@ static long create_channel(struct device_client_info *cinfo, void __user *arg,
+ 	}
+ 
+ done:
+-	if (copy_to_user(arg, &req, io_size) != 0)
++	if (copy_to_user(arg, &req, size) != 0)
+ 		return -EFAULT;
+ 
+ 	return ret;
+diff --git a/drivers/misc/intel-nnpi/msg_scheduler.c b/drivers/misc/intel-nnpi/msg_scheduler.c
+index 0c1e167..f8be6f6 100644
+--- a/drivers/misc/intel-nnpi/msg_scheduler.c
++++ b/drivers/misc/intel-nnpi/msg_scheduler.c
+@@ -50,8 +50,8 @@ struct msg_entry {
+  * @q: the queue to handle
+  *
+  * This function is called from the main scheduler thread to handle single
+- * message queue. It fetches 1 message from the queue and send them
+- * to the device.
++ * message queue. It fetches up to N messages from the queue and send them
++ * to the device. N is the 'weight' attribute defined for each queue.
+  *
+  * The function should be called when the scheduler mutex is held to prevent
+  * the queue from being destroyed.
+@@ -61,34 +61,53 @@ struct msg_entry {
+ static int do_sched(struct nnp_msched *sched, struct nnp_msched_queue *q)
+ {
+ 	struct nnp_device *nnpdev = sched->nnpdev;
+-	struct msg_entry *msg;
+ 	unsigned int left_msgs;
+-	int ret;
++	struct msg_entry *msg, *n;
++	struct list_head send_list;
++	int num_to_send;
++	int ret = 0;
+ 
+ 	lockdep_assert_held(&sched->mutex);
+ 
+-	/* fetch one message from the queue */
++	/*
++	 * fetch up to 'weight' messages from the queue
++	 * into the send list.
++	 */
+ 	spin_lock(&q->list_lock);
+-	if (list_empty(&q->msgs)) {
+-		spin_unlock(&q->list_lock);
+-		return 0;
++	num_to_send = 0;
++	INIT_LIST_HEAD(&send_list);
++	list_for_each_entry_safe(msg, n, &q->msgs, node) {
++		list_move_tail(&msg->node, &send_list);
++		left_msgs = --q->msgs_num;
++		spin_lock(&sched->total_msgs_lock);
++		sched->total_msgs--;
++		spin_unlock(&sched->total_msgs_lock);
++
++		if (++num_to_send >= q->weight)
++			break;
+ 	}
+-
+-	msg = list_first_entry(&q->msgs, struct msg_entry, node);
+-	list_del(&msg->node);
+-	left_msgs = --q->msgs_num;
+-	spin_lock(&sched->total_msgs_lock);
+-	sched->total_msgs--;
+-	spin_unlock(&sched->total_msgs_lock);
+ 	spin_unlock(&q->list_lock);
+ 
++	if (!num_to_send)
++		return 0;
++
+ 	/*
+-	 * write the fetched message out,
++	 * write the fetched messages out,
+ 	 * note that the msg_handle function may sleep.
+ 	 */
+-	ret = nnp_cmdq_write_mesg(nnpdev->hw_dev, msg->msg, msg->size);
+-
+-	kmem_cache_free(sched->slab_cache_ptr, msg);
++	list_for_each_entry_safe(msg, n, &send_list, node) {
++		/*
++		 * If failed in previous iteration we do not want to
++		 * write the message, but we still want to continue
++		 * and free all the fetched messages as they will never
++		 * be sent.
++		 */
++		if (!ret)
++			ret = nnp_cmdq_write_mesg(nnpdev->hw_dev, msg->msg,
++						  msg->size);
++		list_del(&msg->node);
++		kmem_cache_free(sched->slab_cache_ptr, msg);
++	}
+ 
+ 	/*
+ 	 * wake any waiting sync thread if the queue just
+@@ -105,9 +124,9 @@ static int do_sched(struct nnp_msched *sched, struct nnp_msched_queue *q)
+  * @data: pointer to the msg scheduler object.
+  *
+  * This is the main function of the scheduler kernel thread.
+- * It loops in round-robin fashion of all queues, pulls one message
+- * each time and send it to the device through the device's command
+- * h/w queue.
++ * It loops in round-robin fashion of all queues, pulls up to "weight"
++ * messages each time (configurable for each different queue) and send it
++ * the device through the device's command h/w queue.
+  * For each application created channel to the device a different queue of
+  * command messages is allocated. This thread shcedules and serialize
+  * accesses to the command h/w queue.
+@@ -152,7 +171,8 @@ static int msg_sched_thread_func(void *data)
+ 	return 0;
+ }
+ 
+-struct nnp_msched_queue *nnp_msched_queue_create(struct nnp_msched *scheduler)
++struct nnp_msched_queue *nnp_msched_queue_create(struct nnp_msched *scheduler,
++						 unsigned int weight)
+ {
+ 	struct nnp_msched_queue *queue;
+ 
+@@ -163,6 +183,11 @@ struct nnp_msched_queue *nnp_msched_queue_create(struct nnp_msched *scheduler)
+ 	INIT_LIST_HEAD(&queue->msgs);
+ 	spin_lock_init(&queue->list_lock);
+ 	queue->msgs_num = 0;
++
++	if (!weight)
++		weight = 1;
++	queue->weight = weight;
++
+ 	queue->scheduler = scheduler;
+ 	init_waitqueue_head(&queue->sync_waitq);
+ 
+diff --git a/drivers/misc/intel-nnpi/msg_scheduler.h b/drivers/misc/intel-nnpi/msg_scheduler.h
+index 16d0a3a..58a69f3 100644
+--- a/drivers/misc/intel-nnpi/msg_scheduler.h
++++ b/drivers/misc/intel-nnpi/msg_scheduler.h
+@@ -49,6 +49,8 @@ struct nnp_msched {
+  *             messages can be added to it until it will become un-throttled.
+  * @msgs_num: number of messages in the queue
+  * @list_lock: protects @msgs
++ * @weight: number of messages scheduler should consume from this queue
++ *          continuously before proceeding to next queue.
+  *
+  * This structure holds a list of command messages to be queued for submission
+  * to the device. Each application holding a channel for command submissions
+@@ -62,6 +64,7 @@ struct nnp_msched_queue {
+ 	bool              throttled;
+ 	unsigned int      msgs_num;
+ 	spinlock_t        list_lock; /* protects msg_list del/inserts */
++	unsigned int      weight;
+ };
+ 
+ /**
+@@ -112,7 +115,8 @@ struct nnp_msched_queue {
+  *
+  * Return: pointer to msg scheduler queue object, NULL on failure.
+  */
+-struct nnp_msched_queue *nnp_msched_queue_create(struct nnp_msched *scheduler);
++struct nnp_msched_queue *nnp_msched_queue_create(struct nnp_msched *scheduler,
++						 unsigned int weight);
+ 
+ /**
+  * nnp_msched_queue_destroy() - destroy a message queue object
+diff --git a/include/uapi/misc/intel_nnpi.h b/include/uapi/misc/intel_nnpi.h
+index b866db1..cd97674 100644
+--- a/include/uapi/misc/intel_nnpi.h
++++ b/include/uapi/misc/intel_nnpi.h
+@@ -212,6 +212,7 @@ struct ioctl_nnpi_create_channel {
+ 	__s32    o_fd;
+ 	__u32    o_errno;
+ 	__u16    o_channel_id;
++	__u16    i_weight;
+ };
+ 
+ /**
+-- 
+1.8.3.1
+

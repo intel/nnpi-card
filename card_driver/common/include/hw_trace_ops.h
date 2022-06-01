@@ -1,5 +1,5 @@
 /*******************************************************************************
- * INTEL CORPORATION CONFIDENTIAL Copyright(c) 2017-2020 Intel Corporation. All Rights Reserved.
+ * INTEL CORPORATION CONFIDENTIAL Copyright(c) 2017-2021 Intel Corporation. All Rights Reserved.
  *
  * The source code contained or described herein and all documents related to the
  * source code ("Material") are owned by Intel Corporation or its suppliers or
@@ -20,6 +20,7 @@
 
 #include "hwtrace_proto.h"
 
+#define  HWTRACE_OPS_RT_XML_DUMP_FILE "/tmp/runtime_xml_data.bin"
 
 class hw_trace_ops {
 public:
@@ -62,3 +63,4 @@ private:
 };
 
 void hwTraceOpsDumpCncData(const void *data, size_t size);
+void hwTraceOpsDumpCncDataToSwTrace(const void *data, size_t size);

@@ -1,0 +1,185 @@
+From 7b8c8ba8b2a9328ff8b7d80b05ff7b42c0f07a6e Mon Sep 17 00:00:00 2001
+From: Guy Zadicario <guy.zadicario@intel.com>
+Date: Wed, 13 Jan 2021 15:01:54 +0200
+Subject: [PATCH v15 30/30] misc: nnpi: Resize channel response ring buffer
+ when needed.
+
+Deal with applications that require to process a lot of response
+messages from the card in a very short time.
+When the channel's response queue ring buffer gets full, resize
+its size by factor of x2. Its initial size is 2K and must be
+power of two.
+---
+ drivers/misc/intel-nnpi/cmd_chan.c | 73 +++++++++++++++++++++++++++++---------
+ drivers/misc/intel-nnpi/cmd_chan.h |  2 ++
+ 2 files changed, 59 insertions(+), 16 deletions(-)
+
+diff --git a/drivers/misc/intel-nnpi/cmd_chan.c b/drivers/misc/intel-nnpi/cmd_chan.c
+index e53bce4..16d8bb7 100644
+--- a/drivers/misc/intel-nnpi/cmd_chan.c
++++ b/drivers/misc/intel-nnpi/cmd_chan.c
+@@ -16,13 +16,13 @@
+ #include "ipc_protocol.h"
+ #include "nnp_user.h"
+ 
+-#define RESPQ_BUF_SIZE    2048   /* must be power of 2 */
++#define RESPQ_INIT_BUF_SIZE    2048   /* must be power of 2 */
+ 
+ #define USER_MIN_OPCODE (NNP_IPC_C2H_OPCODE_LAST + 1)
+ 
+ static inline int respq_free_bytes(struct nnp_chan *chan)
+ {
+-	return CIRC_SPACE(chan->respq.head, chan->respq.tail, RESPQ_BUF_SIZE);
++	return CIRC_SPACE(chan->respq.head, chan->respq.tail, chan->respq_size);
+ }
+ 
+ static inline void respq_push(struct nnp_chan *chan, char *buf,
+@@ -30,7 +30,7 @@ static inline void respq_push(struct nnp_chan *chan, char *buf,
+ {
+ 	char *dst = chan->respq.buf + chan->respq.head;
+ 	int t = CIRC_SPACE_TO_END(chan->respq.head, chan->respq.tail,
+-				  RESPQ_BUF_SIZE);
++				  chan->respq_size);
+ 
+ 	if (t >= count) {
+ 		memcpy(dst, buf, count);
+@@ -38,14 +38,14 @@ static inline void respq_push(struct nnp_chan *chan, char *buf,
+ 		memcpy(dst, buf, t);
+ 		memcpy(chan->respq.buf, buf + t, count - t);
+ 	}
+-	chan->respq.head = (chan->respq.head + count) & (RESPQ_BUF_SIZE - 1);
++	chan->respq.head = (chan->respq.head + count) & (chan->respq_size - 1);
+ }
+ 
+ static inline void respq_pop(struct nnp_chan *chan, char *buf, int count)
+ {
+ 	char *src = chan->respq.buf + chan->respq.tail;
+ 	int t = CIRC_CNT_TO_END(chan->respq.head, chan->respq.tail,
+-				  RESPQ_BUF_SIZE);
++				chan->respq_size);
+ 
+ 	if (t >= count) {
+ 		memcpy(buf, src, count);
+@@ -53,7 +53,7 @@ static inline void respq_pop(struct nnp_chan *chan, char *buf, int count)
+ 		memcpy(buf, src, t);
+ 		memcpy(buf + t, chan->respq.buf, count - t);
+ 	}
+-	chan->respq.tail = (chan->respq.tail + count) & (RESPQ_BUF_SIZE - 1);
++	chan->respq.tail = (chan->respq.tail + count) & (chan->respq_size - 1);
+ }
+ 
+ /**
+@@ -76,7 +76,7 @@ static inline bool respq_is_msg_avail(struct nnp_chan *chan)
+ 	 * bytes are available (there is no message with zero size).
+ 	 */
+ 	ret = chan->destroyed ||
+-	      (CIRC_CNT(chan->respq.head, chan->respq.tail, RESPQ_BUF_SIZE) >
++	      (CIRC_CNT(chan->respq.head, chan->respq.tail, chan->respq_size) >
+ 	       sizeof(u32));
+ 	spin_unlock(&chan->lock);
+ 
+@@ -315,11 +315,12 @@ int nnpdev_chan_create(struct nnp_device *nnpdev, int host_fd, u32 weight,
+ 		goto err_ida;
+ 	}
+ 
+-	cmd_chan->respq_buf = kmalloc(RESPQ_BUF_SIZE, GFP_KERNEL);
++	cmd_chan->respq_buf = kmalloc(RESPQ_INIT_BUF_SIZE, GFP_KERNEL);
+ 	if (!cmd_chan->respq_buf) {
+ 		ret = -ENOMEM;
+ 		goto err_alloc;
+ 	}
++	cmd_chan->respq_size = RESPQ_INIT_BUF_SIZE;
+ 	cmd_chan->respq.buf = cmd_chan->respq_buf;
+ 
+ 	cmd_chan->host_file = nnp_host_file_get(host_fd);
+@@ -613,19 +614,59 @@ int nnp_chan_add_response(struct nnp_chan *cmd_chan, u64 *hw_msg, u32 size)
+ 
+ 	/* do we have space for the message in the current ring buffer? */
+ 	if (respq_free_bytes(cmd_chan) < (size + sizeof(u32))) {
++		unsigned int avail_size;
++		unsigned int new_size;
++		char         *new_buf;
++
+ 		spin_unlock(&cmd_chan->lock);
+ 
+ 		/*
+-		 * This should never happen in normal system operation since
+-		 * the ring-buffer is way big than will ever needed.
++		 * This should *rarely* happen in normal system operation since
++		 * the ring-buffer is way big than will normally needed.
+ 		 * We will get here only if the user application sleeps for
+-		 * a *very* long time without draining the responses, only
+-		 * that application will get affected in this case.
++		 * a *very* long time without draining the responses.
++		 * Still, in order to not loose the resoponse, we will resize
++		 * the ring buffer.
+ 		 */
+-		dev_err(cmd_chan->nnpdev->dev,
+-			"Response queue full for channel %d losing response!\n",
+-			cmd_chan->chan_id);
+-		return -ENOMEM;
++		new_size = cmd_chan->respq_size * 2;
++		new_buf = kmalloc(new_size, GFP_KERNEL);
++		spin_lock(&cmd_chan->lock);
++		if (!cmd_chan->nnpdev || cmd_chan->destroyed) {
++			/*
++			 * No need the new buffer if the device was removed
++			 * or the channel got closed while we was unlocked.
++			 */
++			spin_unlock(&cmd_chan->lock);
++			kfree(new_buf);
++			return 0;
++		}
++
++		/*
++		 * If allocation failed, we have no choice but to loose
++		 * the response. Only the application that uses that channel
++		 * will get affected.
++		 */
++		if (!new_buf) {
++			spin_unlock(&cmd_chan->lock);
++			dev_err(cmd_chan->nnpdev->dev,
++				"Response queue full for channel %d losing response!\n",
++				cmd_chan->chan_id);
++			return -ENOMEM;
++		}
++
++		/* copy data from old to new ring buffer */
++		avail_size = CIRC_CNT(cmd_chan->respq.head,
++				      cmd_chan->respq.tail,
++				      cmd_chan->respq_size);
++		if (avail_size > 0)
++			respq_pop(cmd_chan, new_buf, avail_size);
++		kfree(cmd_chan->respq_buf);
++		cmd_chan->respq_buf = new_buf;
++		cmd_chan->respq_size = new_size;
++		cmd_chan->respq.buf = cmd_chan->respq_buf;
++		cmd_chan->respq.tail = 0;
++		cmd_chan->respq.head = avail_size;
++		dev_dbg(cmd_chan->nnpdev->dev, "channel respq resized to %d\n", new_size);
+ 	}
+ 
+ 	/* push the response message to the ring buffer */
+diff --git a/drivers/misc/intel-nnpi/cmd_chan.h b/drivers/misc/intel-nnpi/cmd_chan.h
+index 864c30b..860f42f 100644
+--- a/drivers/misc/intel-nnpi/cmd_chan.h
++++ b/drivers/misc/intel-nnpi/cmd_chan.h
+@@ -44,6 +44,7 @@
+  * @resp_waitq: waitqueue used for waiting for response messages be available.
+  * @respq: circular buffer object that receive response messages from device.
+  * @respq_buf: buffer space allocated for circular response buffer.
++ * @respq_size: current allocated size of circular response buffer.
+  * @h2c_rb_hostres_map: host resource mapping used for each host-to-card ring buffer
+  *                  There may be up to 2 such ring buffers, both can be NULL.
+  * @c2h_rb_hostres_map: host resource mapping used for each card-to-host ring buffer
+@@ -74,6 +75,7 @@ struct nnp_chan {
+ 
+ 	struct circ_buf   respq;
+ 	char             *respq_buf;
++	unsigned int      respq_size;
+ 
+ 	struct nnpdev_mapping *h2c_rb_hostres_map[NNP_IPC_MAX_CHANNEL_RB];
+ 	struct nnpdev_mapping *c2h_rb_hostres_map[NNP_IPC_MAX_CHANNEL_RB];
+-- 
+1.8.3.1
+

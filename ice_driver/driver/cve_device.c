@@ -1,5 +1,5 @@
 /********************************************
- * Copyright (C) 2019-2020 Intel Corporation
+ * Copyright (C) 2019-2021 Intel Corporation
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  ********************************************/
@@ -27,8 +27,9 @@ int cve_device_init(struct cve_device *dev, int index, u64 pe_value)
 	u32 max_freq_allowed;
 
 	dev->dev_index = index;
+	dev->is_valid = 1;
 
-
+	cve_dle_init(&(dev)->owner_list, dev);
 	/* TODO : Need to be reconsidered - should this
 	 * initialization be part of device_interface init ?
 	 */
@@ -136,8 +137,16 @@ int cve_device_init(struct cve_device *dev, int index, u64 pe_value)
 
 	ice_reset_prev_reg_config(&dev->prev_reg_config);
 
+	dev->mapped_dev_ctx_id = INVALID_ENTRY;
+
+#ifdef ICE_SWITCH_ON
+	retval = set_idc_registers(dev, true);
+	if (retval)
+		cve_os_log(CVE_LOGLEVEL_ERROR,
+				"() failed: in ice power ON%d\n", retval);
+#endif
 	/* success */
-	return 0;
+	return retval;
 
 out:
 	return retval;

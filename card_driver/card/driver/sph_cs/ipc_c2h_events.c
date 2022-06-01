@@ -1,5 +1,5 @@
 /********************************************
- * Copyright (C) 2019-2020 Intel Corporation
+ * Copyright (C) 2019-2021 Intel Corporation
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  ********************************************/
@@ -160,7 +160,8 @@ const char *event_code_name(u32 event_code)
 
 void log_c2h_event(const char *msg, const union c2h_event_report *ev)
 {
-	sph_log_debug(IPC_LOG, "%s: %s(%u) val=%u ctx_id=%u (valid=%u) obj_id=%u (valid=%u) obj_id_2=%u (valid=%u)\n",
+	sph_log_debug_ratelimited(IPC_LOG, "%s: %s(%u) val=%u ctx_id=%u"
+		      "(valid=%u) obj_id=%u (valid=%u) obj_id_2=%u (valid=%u)\n",
 		      msg,
 		      event_code_name(ev->event_code),
 		      ev->event_code,
