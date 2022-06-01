@@ -1,5 +1,5 @@
 /********************************************
- * Copyright (C) 2019-2020 Intel Corporation
+ * Copyright (C) 2019-2021 Intel Corporation
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  ********************************************/
@@ -26,6 +26,7 @@
 #include "nnp_hwtrace_protocol.h"
 #include "nnp_debug.h"
 #include "sph_log.h"
+#include "sphcs_trace.h"
 #include "sphcs_dma_sched.h"
 #include "sphcs_cmd_chan.h"
 #include "sphcs_pcie.h"
@@ -815,7 +816,7 @@ void intel_th_activate(void *priv)
 			sphcs_hwtrace_window_header_cleanup(r->npk_res);
 	}
 
-
+	DO_TRACE(trace_hwtrace(SPH_TRACE_OP_STATUS_START));
 	g_the_sphcs->hw_tracing.hwtrace_status = NNPCS_HWTRACE_ACTIVATED;
 }
 
@@ -828,7 +829,7 @@ void intel_th_deactivate(void *priv)
 		return;
 	}
 
-
+	DO_TRACE(trace_hwtrace(SPH_TRACE_OP_STATUS_COMPLETE));
 	g_the_sphcs->hw_tracing.hwtrace_status = NNPCS_HWTRACE_DEACTIVATED;
 }
 
