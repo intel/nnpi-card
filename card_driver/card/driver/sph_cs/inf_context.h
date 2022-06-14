@@ -1,5 +1,5 @@
 /********************************************
- * Copyright (C) 2019-2020 Intel Corporation
+ * Copyright (C) 2019-2021 Intel Corporation
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  ********************************************/
@@ -38,7 +38,7 @@ enum context_state {
 
 struct inf_context {
 	void              *magic;
-	struct kref        ref;
+	atomic_t           ref;
 	uint16_t           protocol_id;
 	uint64_t           user_handle;
 	struct hlist_node  hash_node;
@@ -87,8 +87,6 @@ int inf_context_create(uint16_t             protocol_id,
 		       struct inf_context **out_context);
 
 int inf_context_runtime_attach(struct inf_context *context);
-
-void inf_context_runtime_detach(struct inf_context *context);
 
 int is_inf_context_ptr(void *ptr);
 
