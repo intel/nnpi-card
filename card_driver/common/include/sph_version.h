@@ -1,5 +1,5 @@
 /*******************************************************************************
- * INTEL CORPORATION CONFIDENTIAL Copyright(c) 2017-2020 Intel Corporation. All Rights Reserved.
+ * INTEL CORPORATION CONFIDENTIAL Copyright(c) 2017-2021 Intel Corporation. All Rights Reserved.
  *
  * The source code contained or described herein and all documents related to the
  * source code ("Material") are owned by Intel Corporation or its suppliers or
@@ -24,12 +24,12 @@
 #define STR(x) _STR(x)
 
 #define SPH_MAJOR 0
-#define SPH_MINOR 10
+#define SPH_MINOR 14
 #define SPH_PATCH 0
-#define SPH_PATCH_MINOR 1
+#define SPH_PATCH_MINOR 0
 
 #define NNP_VERSION  STR(VERSION: v.SPH_MAJOR.SPH_MINOR.SPH_PATCH.SPH_PATCH_MINOR)
-#define AUTHOR_STR   STR(AUTHOR: Intel Corporation 2018-2020)
+#define AUTHOR_STR   STR(AUTHOR: Intel Corporation 2018-2021)
 #define SPH_GIT_HASH STR(gh.GIT_HASH)
 
 #ident NNP_VERSION

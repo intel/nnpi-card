@@ -1,5 +1,5 @@
 /********************************************
- * Copyright (C) 2019-2020 Intel Corporation
+ * Copyright (C) 2019-2021 Intel Corporation
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  ********************************************/
@@ -1188,7 +1188,7 @@ int cve_osmm_inf_dma_buf_map(u64 inf_id,
 	if (retval < 0) {
 		cve_os_log(CVE_LOGLEVEL_ERROR,
 				"Safelib memcpy failed %d\n", retval);
-		goto out;
+		goto free_mem;
 	}
 
 	inf_alloc->dma_domain_array_size = ntw_alloc->dma_domain_array_size;
@@ -1203,24 +1203,32 @@ int cve_osmm_inf_dma_buf_map(u64 inf_id,
 	if (retval != 0) {
 		cve_os_log(CVE_LOGLEVEL_ERROR,
 			"ice_osmm_get_iceva failed %d\n", retval);
-		goto out;
+		goto free_mem;
 	}
 
 	retval = ice_osmm_get_sgt(NULL, alloc_addr, mem_type, inf_alloc);
 	if (retval != 0) {
 		cve_os_log(CVE_LOGLEVEL_ERROR,
 				"ice_osmm_get_sgt failed %d\n", retval);
-		ASSERT(false);
+		goto release_iceva;
 	}
 
 	retval = ice_osmm_set_pte(dma_domain_array_size, inf_alloc);
 	if (retval != 0) {
 		cve_os_log(CVE_LOGLEVEL_ERROR,
 			"ice_osmm_set_pte failed %d\n", retval);
-		ASSERT(false);
+		goto release_sgt;
 	}
 
 	*inf_halloc = (os_allocation_handle)inf_alloc;
+	goto out;
+
+release_sgt:
+	ice_osmm_release_sgt(inf_alloc);
+release_iceva:
+	ice_osmm_release_iceva(inf_alloc);
+free_mem:
+	OS_FREE(inf_alloc, sizeof(*inf_alloc));
 
 out:
 	FUNC_LEAVE();

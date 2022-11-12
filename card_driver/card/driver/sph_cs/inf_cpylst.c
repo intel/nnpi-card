@@ -1,5 +1,5 @@
 /********************************************
- * Copyright (C) 2019-2020 Intel Corporation
+ * Copyright (C) 2019-2021 Intel Corporation
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  ********************************************/
@@ -420,7 +420,7 @@ static int inf_cpylst_req_sched(struct inf_exec_req *req)
 		 cpylst->idx_in_cmd,
 		 req->cmd->protocol_id,
 		 cpylst->copies[0]->card2Host,
-		 cpylst->copies[0]->d2d ? sphcs_p2p_get_peer_dev_id(&(cpylst->copies[0]->devres->p2p_buf)) : -1,
+		 -1,
 		 req->size,
 		 cpylst->n_copies,
 		 req->lli->num_lists,
@@ -504,7 +504,7 @@ static int inf_cpylst_req_execute(struct inf_exec_req *req)
 		 cpylst->idx_in_cmd,
 		 cmd->protocol_id,
 		 cpylst->copies[0]->card2Host,
-		 cpylst->copies[0]->d2d ? sphcs_p2p_get_peer_dev_id(&(cpylst->copies[0]->devres->p2p_buf)) : -1,
+		 -1,
 		 req->size,
 		 req->cpylst->n_copies,
 		 req->lli->num_lists,
@@ -665,7 +665,7 @@ static void inf_cpylst_req_complete(struct inf_exec_req *req,
 		 cpylst->idx_in_cmd,
 		 req->cmd->protocol_id,
 		 cpylst->copies[0]->card2Host,
-		 cpylst->copies[0]->d2d ? sphcs_p2p_get_peer_dev_id(&(cpylst->copies[0]->devres->p2p_buf)) : -1,
+		 -1,
 		 req->size,
 		 req->cpylst->n_copies,
 		 req->lli->num_lists,

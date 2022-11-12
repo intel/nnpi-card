@@ -1,0 +1,499 @@
+From 23b7eb7cc22473a3e5451f8590d0beca2eb2a80d Mon Sep 17 00:00:00 2001
+From: Guy Zadicario <guy.zadicario@intel.com>
+Date: Mon, 16 Nov 2020 16:11:48 +0200
+Subject: [PATCH v11 27/28] misc: nnpi: Support host resource backed by dma-buf
+ object
+
+Add ability to create a host resource from dma-buf object created
+by another driver.
+
+Signed-off-by: Guy Zadicario <guy.zadicario@intel.com>
+Reviewed-by: Vaibhav Agarwal <vaibhav.agarwal@intel.com>
+---
+ drivers/misc/intel-nnpi/host_chardev.c |  34 +++++--
+ drivers/misc/intel-nnpi/hostres.c      | 173 ++++++++++++++++++++++++---------
+ drivers/misc/intel-nnpi/hostres.h      |  21 ++++
+ drivers/misc/intel-nnpi/nnp_user.c     |   4 +-
+ drivers/misc/intel-nnpi/nnp_user.h     |   3 +
+ include/uapi/misc/intel_nnpi.h         |   8 +-
+ 6 files changed, 188 insertions(+), 55 deletions(-)
+
+diff --git a/drivers/misc/intel-nnpi/host_chardev.c b/drivers/misc/intel-nnpi/host_chardev.c
+index 91dea9f..1b0c492 100644
+--- a/drivers/misc/intel-nnpi/host_chardev.c
++++ b/drivers/misc/intel-nnpi/host_chardev.c
+@@ -47,34 +47,50 @@ static enum dma_data_direction to_dma_dir(unsigned int nnp_dir)
+ 	}
+ }
+ 
++struct nnpdrv_ioctl_create_hostres_compat1 {
++	__u64 user_handle;
++	__u64 size;
++	__u32 usage_flags;
++};
++
+ static long create_hostres(struct nnp_user_info *user_info, void __user *arg,
+ 			   unsigned int size)
+ {
+ 	int ret;
+ 	struct nnpdrv_ioctl_create_hostres req;
++	int fd;
+ 	struct host_resource *hostres;
+ 	struct user_hostres *user_hostres_entry;
+-	void __user *uptr;
+-	unsigned int io_size = sizeof(req);
+ 
+-	if (size != io_size)
++	/* compat1 version of arg does not have dma_buf field */
++	if (size == sizeof(struct nnpdrv_ioctl_create_hostres_compat1))
++		req.dma_buf = 0;
++	else if (size != sizeof(req))
+ 		return -EINVAL;
+ 
+-	ret = copy_from_user(&req, arg, io_size);
++	ret = copy_from_user(&req, arg, size);
+ 	if (ret != 0)
+ 		return -EFAULT;
+ 
+ 	if (req.usage_flags & ~(IOCTL_RES_USAGE_VALID_MASK))
+ 		return -EINVAL;
+ 
+-	uptr = u64_to_user_ptr(req.user_handle);
+-	hostres = nnp_hostres_from_usermem(uptr, req.size,
+-					   to_dma_dir(req.usage_flags));
++	if (req.user_handle != 0) {
++		void __user *uptr = u64_to_user_ptr(req.user_handle);
++
++		hostres = nnp_hostres_from_usermem(uptr, req.size,
++						   to_dma_dir(req.usage_flags));
++		fd = -1;
++	} else {
++		hostres = nnp_hostres_from_dma_buf(req.dma_buf,
++						   to_dma_dir(req.usage_flags));
++		fd = req.dma_buf;
++	}
+ 
+ 	if (IS_ERR(hostres))
+ 		return PTR_ERR(hostres);
+ 
+-	ret = nnp_user_add_hostres(user_info, hostres, &user_hostres_entry);
++	ret = nnp_user_add_hostres(user_info, hostres, fd, &user_hostres_entry);
+ 	if (ret < 0) {
+ 		nnp_hostres_put(hostres);
+ 		return ret;
+@@ -89,7 +105,7 @@ static long create_hostres(struct nnp_user_info *user_info, void __user *arg,
+ 	nnp_hostres_put(hostres);
+ 
+ 	req.user_handle = user_hostres_entry->user_handle;
+-	if (copy_to_user(arg, &req, io_size)) {
++	if (copy_to_user(arg, &req, size)) {
+ 		ret = -EFAULT;
+ 		goto destroy_hostres_entry;
+ 	}
+diff --git a/drivers/misc/intel-nnpi/hostres.c b/drivers/misc/intel-nnpi/hostres.c
+index a339531..0e6f59dc 100644
+--- a/drivers/misc/intel-nnpi/hostres.c
++++ b/drivers/misc/intel-nnpi/hostres.c
+@@ -7,6 +7,7 @@
+ #include "hostres.h"
+ #include <linux/atomic.h>
+ #include <linux/bitfield.h>
++#include <linux/dma-buf.h>
+ #include <linux/err.h>
+ #include <linux/jiffies.h>
+ #include <linux/module.h>
+@@ -73,6 +74,8 @@ struct dev_mapping {
+  * @devices: list of devices this resource is mapped to (list of dev_mapping)
+  * @lock: protects fields modifications in this structure.
+  * @dir: specify if the resource can be copied to/from a device, or both.
++ * @external_buf: true if the memory of the resource is attachment to dma-buf
++ *                object, created by another entity.
+  * @pinned_mm: mm object used to pin the user allocated resource memory. NULL
+  *             if the resource was not allocated by user-space.
+  * @vptr: virtual pointer to the resource memory if allocated by
+@@ -80,8 +83,9 @@ struct dev_mapping {
+  * @start_offset: relevant only when @pinned_mm != NULL, 0 otherwise.
+  *                holds the offset within the first pinned page where resource
+  *                memory starts.
+- * @pages: array of resource memory pages.
+- * @n_pages: size of pages array.
++ * @pages: array of resource memory pages. valid only when external_buf is false.
++ * @n_pages: size of pages array, valid only when external_buf is false.
++ * @buf: pointer to attached dma-buf object, valid only when external_buf is true.
+  */
+ struct host_resource {
+ 	struct kref       ref;
+@@ -90,12 +94,20 @@ struct host_resource {
+ 	spinlock_t        lock; /* protects fields in this struct */
+ 	enum dma_data_direction dir;
+ 
++	bool              external_buf;
+ 	struct mm_struct *pinned_mm;
+ 	void             *vptr;
+ 	unsigned int      start_offset;
+ 
+-	struct page       **pages;
+-	unsigned int      n_pages;
++	union {
++		struct {
++			struct page **pages;
++			unsigned int n_pages;
++		};
++		struct {
++			struct dma_buf *buf;
++		};
++	};
+ };
+ 
+ /*
+@@ -110,6 +122,11 @@ static void release_hostres(struct kref *kref)
+ {
+ 	struct host_resource *r = container_of(kref, struct host_resource, ref);
+ 
++	if (r->external_buf) {
++		dma_buf_put(r->buf);
++		goto out_free;
++	}
++
+ 	if (!r->pinned_mm) {
+ 		vfree(r->vptr);
+ 		goto out_unaccount;
+@@ -122,6 +139,8 @@ static void release_hostres(struct kref *kref)
+ out_unaccount:
+ 	kvfree(r->pages);
+ 	atomic64_sub(r->size, &total_hostres_size);
++
++out_free:
+ 	kfree(r);
+ }
+ 
+@@ -143,10 +162,15 @@ static void release_mapping(struct kref *kref)
+ 	dma_unmap_sgtable(m->dev, &m->dma_chain_sgt, DMA_TO_DEVICE, 0);
+ 	sgl_free_order(m->dma_chain_sgt.sgl, m->dma_chain_order);
+ 
+-	dma_unmap_sg(m->dev, m->sgt->sgl,
+-		     m->sgt->orig_nents, m->res->dir);
+-	sg_free_table(m->sgt);
+-	kfree(m->sgt);
++	if (m->res->external_buf) {
++		dma_buf_unmap_attachment(m->dma_att, m->sgt, m->res->dir);
++		dma_buf_detach(m->res->buf, m->dma_att);
++	} else {
++		dma_unmap_sg(m->dev, m->sgt->sgl,
++			     m->sgt->orig_nents, m->res->dir);
++		sg_free_table(m->sgt);
++		kfree(m->sgt);
++	}
+ 
+ 	spin_lock(&m->res->lock);
+ 	list_del(&m->node);
+@@ -190,6 +214,8 @@ struct host_resource *nnp_hostres_alloc(size_t size,
+ 	if (!r)
+ 		return ERR_PTR(err);
+ 
++	r->external_buf = false;
++
+ 	r->n_pages = DIV_ROUND_UP(size, PAGE_SIZE);
+ 	r->vptr = vzalloc(r->n_pages * PAGE_SIZE);
+ 	if (!r->vptr)
+@@ -243,6 +269,8 @@ struct host_resource *nnp_hostres_from_usermem(void __user *user_ptr,
+ 	if (!r)
+ 		return ERR_PTR(-ENOMEM);
+ 
++	r->external_buf = false;
++
+ 	r->start_offset = offset_in_page(user_addr);
+ 	user_addr &= PAGE_MASK;
+ 
+@@ -300,6 +328,36 @@ struct host_resource *nnp_hostres_from_usermem(void __user *user_ptr,
+ 	return ERR_PTR(err);
+ }
+ 
++struct host_resource *nnp_hostres_from_dma_buf(int dma_buf_fd,
++					       enum dma_data_direction dir)
++{
++	struct host_resource *r;
++	struct dma_buf *dmabuf;
++
++	if (dma_buf_fd < 0 || dir == DMA_NONE)
++		return ERR_PTR(-EINVAL);
++
++	dmabuf = dma_buf_get(dma_buf_fd);
++	if (PTR_ERR_OR_ZERO(dmabuf))
++		/*
++		 * EBADF in case of dma_buf_fd is not fd;
++		 * EINVAL in case dma_buf_fd is fd, but not of dma_buf
++		 * in any case report invalid value
++		 */
++		return ERR_PTR(-EINVAL);
++
++	r = alloc_hostres(dmabuf->size, dir);
++	if (!r) {
++		dma_buf_put(dmabuf);
++		return ERR_PTR(-ENOMEM);
++	}
++
++	r->buf = dmabuf;
++	r->external_buf = true;
++
++	return r;
++}
++
+ /* Finds mapping by device and increase its refcount. NULL if not found*/
+ static struct dev_mapping *get_mapping_for_dev(struct host_resource *res,
+ 					       struct device *dev)
+@@ -541,27 +599,40 @@ int nnp_hostres_map_device(struct host_resource *res,
+ 	m->dev = nnpdev->hw_dev->dev;
+ 	m->res = res;
+ 
+-	m->sgt = kmalloc(sizeof(*m->sgt), GFP_KERNEL);
+-	if (!m->sgt) {
+-		ret = -ENOMEM;
+-		goto free_mapping;
+-	}
++	if (res->external_buf) {
++		m->dma_att = dma_buf_attach(res->buf, m->dev);
++		ret = PTR_ERR_OR_ZERO(m->dma_att);
++		if (ret < 0)
++			goto free_mapping;
+ 
+-	sge = __sg_alloc_table_from_pages(m->sgt, res->pages, res->n_pages, 0,
+-					  res->size + res->start_offset,
+-					  NNP_MAX_CHUNK_SIZE, NULL, 0,
+-					  GFP_KERNEL);
+-	if (IS_ERR(sge)) {
+-		ret = PTR_ERR(sge);
+-		goto free_sgt_struct;
+-	}
++		m->sgt = dma_buf_map_attachment(m->dma_att, res->dir);
++		ret = PTR_ERR_OR_ZERO(m->sgt);
++		if (ret < 0)
++			goto buf_detach;
++	} else {
++		m->sgt = kmalloc(sizeof(*m->sgt), GFP_KERNEL);
++		if (!m->sgt) {
++			ret = -ENOMEM;
++			goto free_mapping;
++		}
+ 
+-	ret = dma_map_sg(m->dev, m->sgt->sgl,
+-			 m->sgt->orig_nents, res->dir);
+-	if (ret < 0)
+-		goto free_sgt;
++		sge = __sg_alloc_table_from_pages(m->sgt, res->pages,
++						  res->n_pages, 0,
++						  res->size + res->start_offset,
++						  NNP_MAX_CHUNK_SIZE, NULL, 0,
++						  GFP_KERNEL);
++		if (IS_ERR(sge)) {
++			ret = PTR_ERR(sge);
++			goto free_sgt_struct;
++		}
+ 
+-	m->sgt->nents = ret;
++		ret = dma_map_sg(m->dev, m->sgt->sgl,
++				 m->sgt->orig_nents, res->dir);
++		if (ret < 0)
++			goto free_sgt;
++
++		m->sgt->nents = ret;
++	}
+ 
+ 	ret = build_ipc_dma_chain_array(m, use_one_entry, res->start_offset);
+ 	if (ret < 0)
+@@ -578,12 +649,18 @@ int nnp_hostres_map_device(struct host_resource *res,
+ 	return 0;
+ 
+ unmap:
+-	dma_unmap_sg(m->dev, m->sgt->sgl,
+-		     m->sgt->orig_nents, res->dir);
++	if (res->external_buf) {
++		dma_buf_unmap_attachment(m->dma_att, m->sgt, res->dir);
++buf_detach:
++		dma_buf_detach(res->buf, m->dma_att);
++	} else {
++		dma_unmap_sg(m->dev, m->sgt->sgl,
++			     m->sgt->orig_nents, res->dir);
+ free_sgt:
+-	sg_free_table(m->sgt);
++		sg_free_table(m->sgt);
+ free_sgt_struct:
+-	kfree(m->sgt);
++		kfree(m->sgt);
++	}
+ free_mapping:
+ 	kfree(m);
+ put_resource:
+@@ -602,34 +679,42 @@ int nnp_hostres_unmap_device(struct host_resource *res,
+ 
+ int nnp_hostres_user_lock(struct host_resource *res)
+ {
+-	struct dev_mapping *m;
+-
+ 	long ret = 0;
+ 
+ 	if (!res)
+ 		return -EINVAL;
+ 
+-	spin_lock(&res->lock);
+-	list_for_each_entry(m, &res->devices, node)
+-		dma_sync_sg_for_cpu(m->dev, m->sgt->sgl,
+-				    m->sgt->orig_nents, res->dir);
+-	spin_unlock(&res->lock);
++	if (res->external_buf) {
++		ret = dma_buf_begin_cpu_access(res->buf, res->dir);
++	} else {
++		struct dev_mapping *m;
++
++		spin_lock(&res->lock);
++		list_for_each_entry(m, &res->devices, node)
++			dma_sync_sg_for_cpu(m->dev, m->sgt->sgl,
++					    m->sgt->orig_nents, res->dir);
++		spin_unlock(&res->lock);
++	}
+ 
+ 	return ret;
+ }
+ 
+ int nnp_hostres_user_unlock(struct host_resource *res)
+ {
+-	struct dev_mapping *m;
+-
+ 	if (!res)
+ 		return -EINVAL;
+ 
+-	spin_lock(&res->lock);
+-	list_for_each_entry(m, &res->devices, node)
+-		dma_sync_sg_for_device(m->dev, m->sgt->sgl,
+-				       m->sgt->orig_nents, res->dir);
+-	spin_unlock(&res->lock);
++	if (res->external_buf) {
++		dma_buf_end_cpu_access(res->buf, res->dir);
++	} else {
++		struct dev_mapping *m;
++
++		spin_lock(&res->lock);
++		list_for_each_entry(m, &res->devices, node)
++			dma_sync_sg_for_device(m->dev, m->sgt->sgl,
++					       m->sgt->orig_nents, res->dir);
++		spin_unlock(&res->lock);
++	}
+ 
+ 	return 0;
+ }
+diff --git a/drivers/misc/intel-nnpi/hostres.h b/drivers/misc/intel-nnpi/hostres.h
+index 277daf9..8400a6b 100644
+--- a/drivers/misc/intel-nnpi/hostres.h
++++ b/drivers/misc/intel-nnpi/hostres.h
+@@ -33,6 +33,27 @@ struct host_resource *nnp_hostres_alloc(size_t size,
+ 					enum dma_data_direction dir);
+ 
+ /**
++ * nnp_hostres_from_dma_buf() - creates host resource form dma-buf
++ * @dma_buf_fd: File descriptor of struct dma_buf
++ * @dir: Resource direction (read or write or both)
++ *
++ * This function attaches to a dma-buf object memory and creates a host
++ * resource handle backed by the dma-buf memory pages.
++ * The resource can be Input(read by device), Output(write by device) and both.
++ * If this function fails, it returns error.
++ *
++ * The return handle can be used the same as described for the handle created
++ * by nnp_hostres_alloc.
++ *
++ * The handle should be released when no longer needed by a call to
++ * nnp_hostres_put.
++ *
++ * Return: pointer to created resource or error value
++ */
++struct host_resource *nnp_hostres_from_dma_buf(int dma_buf_fd,
++					       enum dma_data_direction dir);
++
++/**
+  * nnp_hostres_from_usermem() - Creates host resource from user-space memory
+  *
+  * @user_ptr: user virtual memory to pin
+diff --git a/drivers/misc/intel-nnpi/nnp_user.c b/drivers/misc/intel-nnpi/nnp_user.c
+index fd8397e..62a256f 100644
+--- a/drivers/misc/intel-nnpi/nnp_user.c
++++ b/drivers/misc/intel-nnpi/nnp_user.c
+@@ -36,7 +36,7 @@ void nnp_user_put(struct nnp_user_info *user_info)
+ }
+ 
+ int nnp_user_add_hostres(struct nnp_user_info *user_info,
+-			 struct host_resource *hostres,
++			 struct host_resource *hostres, int fd,
+ 			 struct user_hostres **user_hostres_entry)
+ {
+ 	struct user_hostres *hr_entry;
+@@ -60,6 +60,8 @@ int nnp_user_add_hostres(struct nnp_user_info *user_info,
+ 	nnp_user_get(user_info);
+ 	hr_entry->user_info = user_info;
+ 
++	hr_entry->fd = fd;
++
+ 	mutex_lock(&user_info->mutex);
+ 	/*
+ 	 * We allocate handle starting from 1 and not 0 to allow
+diff --git a/drivers/misc/intel-nnpi/nnp_user.h b/drivers/misc/intel-nnpi/nnp_user.h
+index 41e3744..884b16a 100644
+--- a/drivers/misc/intel-nnpi/nnp_user.h
++++ b/drivers/misc/intel-nnpi/nnp_user.h
+@@ -46,6 +46,7 @@ struct nnp_user_info {
+  * @hostres: the actual host resource object
+  * @user_handle: handle allocated from idr object, used as handle to this
+  *               object in ioctl ABI.
++ * @fd: non-zero if the host resource is created from existing dma-buf object
+  * @user_info: pointer to "user" which created this resource.
+  *             it is used only during destruction of the object.
+  *
+@@ -59,6 +60,7 @@ struct user_hostres {
+ 	struct list_head             node;
+ 	struct host_resource         *hostres;
+ 	int                          user_handle;
++	int                          fd;
+ 	struct nnp_user_info         *user_info;
+ };
+ 
+@@ -69,6 +71,7 @@ struct user_hostres {
+ 
+ int nnp_user_add_hostres(struct nnp_user_info *user_info,
+ 			 struct host_resource *hostres,
++			 int fd,
+ 			 struct user_hostres **user_hostres_entry);
+ 
+ void nnp_user_remove_hostres(struct user_hostres *hr_entry);
+diff --git a/include/uapi/misc/intel_nnpi.h b/include/uapi/misc/intel_nnpi.h
+index cd97674..371032d 100644
+--- a/include/uapi/misc/intel_nnpi.h
++++ b/include/uapi/misc/intel_nnpi.h
+@@ -91,12 +91,17 @@
+  * @user_handle: User virtual address on input. Resource handle on output.
+  * @size: User memory size on input. Host resource size on output.
+  * @usage_flags: resource usage flag bits, IOCTL_INF_RES_*
++ * @dma_buf: fd of dma-buf to attach to. Ignored if @user_handle is non-zero.
+  *
+  * argument structure for IOCTL_INF_CREATE_HOST_RESOURCE ioctl
+  *
+- * @user_handle should be initialized to a user virtual address and @size
++ * The value of @user_handle on input determines whether the host resource is
++ * backed by user memory or by dma-buf object allocated by another driver.
++ * If @user_handle is non-zero it specified a user virtual address and @size
+  * should be initialized with it's size, the user memory will be pinned and will
+  * hold the host resource content.
++ * If @user_handle is zero on input, then @dma_buf should be initialized with a
++ * dma-buf file descriptor, this dma-buf will be attached.
+  *
+  * On output, @user_handle is a handle to the created host resource that can be
+  * used later with other IOCTLs and @size is the size of the host resource.
+@@ -105,6 +110,7 @@ struct nnpdrv_ioctl_create_hostres {
+ 	__u64 user_handle;
+ 	__u64 size;
+ 	__u32 usage_flags;
++	__u32 dma_buf;
+ };
+ 
+ /**
+-- 
+1.8.3.1
+

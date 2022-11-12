@@ -1,6 +1,6 @@
 /*
  * NNP-I Linux Driver
- * Copyright (c) 2017-2019, Intel Corporation.
+ * Copyright (c) 2017-2021, Intel Corporation.
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms and conditions of the GNU General Public License,
@@ -307,7 +307,7 @@ void release_firmware(const struct firmware *fw) {
  * Coral should provide new kind of interrupt handler
  * where dev_id is not present in the argument.
 */
-static int cve_interrupt_handler(int irq)
+static int cve_interrupt_handler(int irq, void *dev_id, struct pt_regs * regs)
 {
 	int do_call_dpc = 0;
 	struct idc_device *idc_dev;
