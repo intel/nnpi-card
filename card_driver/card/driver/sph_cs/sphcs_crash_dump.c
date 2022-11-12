@@ -1,5 +1,5 @@
 /********************************************
- * Copyright (C) 2019-2020 Intel Corporation
+ * Copyright (C) 2019-2021 Intel Corporation
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  ********************************************/
@@ -56,27 +56,28 @@ int sphcs_crash_dump_dma_complete_callback(struct sphcs *sphcs,
 		int status,
 		u32 xferTimeUS)
 {
-	union c2h_event_report event;
+	union c2h_event_report event = {.value = 0};
 
+	if (sphcs->host_doorbell_val == 0)
+		return -1;
+
+	event.opcode = NNP_IPC_C2H_OP_EVENT_REPORT;
+	event.event_code = NNP_IPC_ERROR_OS_CRASHED;
 	if (status == SPHCS_DMA_STATUS_FAILED) {
-		/* dma failed */
-		/* TODO: send error event to host */
-	} else if (sphcs->host_doorbell_val != 0) {
-		/* Notify Host */
-		event.value = 0;
-		event.opcode = NNP_IPC_C2H_OP_EVENT_REPORT;
-		event.event_code = NNP_IPC_ERROR_OS_CRASHED;
+		if (g_the_sphcs->inbound_mem) //early notification already sent
+			return -1;
+		event.event_val = NNP_IPC_DMA_ERROR;
+	} else {
 		event.event_val = 0;
 		event.obj_id = (crash_dump_desc.actually_copied & 0xffff);
 		event.obj_id_2 = (crash_dump_desc.actually_copied >> 16) & 0xffff;
 		event.obj_valid = 1;
 		event.obj_valid_2 = 1;
-		sphcs->hw_ops->write_mesg(sphcs->hw_handle,
-					  &event.value,
-					  1);
 	}
 
-	return 0;
+	return sphcs->hw_ops->write_mesg(sphcs->hw_handle,
+					 &event.value,
+					 1);
 }
 
 static void dump(struct kmsg_dumper *dumper, enum kmsg_dump_reason reason)

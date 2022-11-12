@@ -1,5 +1,5 @@
 /********************************************
- * Copyright (C) 2019-2020 Intel Corporation
+ * Copyright (C) 2019-2021 Intel Corporation
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  ********************************************/
@@ -39,7 +39,7 @@ enum cve_device_reset_reason {
 	CVE_DI_RESET_DUE_PNTW_SWITCH = 0x40
 };
 
-int set_idc_registers(struct ice_network *ntw, uint8_t lock);
+int set_idc_registers(struct cve_device *ice_list, uint8_t lock);
 int unset_idc_registers(struct cve_device *dev, uint8_t lock);
 
 /*

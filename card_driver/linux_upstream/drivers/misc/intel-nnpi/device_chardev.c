@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 /********************************************
- * Copyright (C) 2019-2020 Intel Corporation
+ * Copyright (C) 2019-2021 Intel Corporation
  ********************************************/
 
 #include <linux/init.h>
@@ -11,7 +11,12 @@
 #include <linux/device.h>
 #include <linux/slab.h>
 #include <uapi/misc/intel_nnpi.h>
+#if (LINUX_VERSION_CODE > KERNEL_VERSION(5, 9, 0)) /* SPH_IGNORE_STYLE_CHECK */
+#include <linux/dma-map-ops.h>
+#else
+#include <linux/dma-mapping.h>
 #include <linux/dma-noncoherent.h>
+#endif
 #include "device_chardev.h"
 #include "nnp_log.h"
 #include "cmd_chan.h"
@@ -533,7 +538,7 @@ static long map_hostres(struct device_client_info *cinfo, void __user *arg)
 		const struct dma_map_ops *ops =
 			get_dma_ops(nnpdev->hw_device_info->hw_device);
 
-		if (dma_is_direct(ops))
+		if (likely(!ops))
 			req.o_sync_needed = !dev_is_dma_coherent(
 					nnpdev->hw_device_info->hw_device);
 		else

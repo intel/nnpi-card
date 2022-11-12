@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 /********************************************
- * Copyright (C) 2019-2020 Intel Corporation
+ * Copyright (C) 2019-2021 Intel Corporation
  ********************************************/
 
 #include <linux/module.h>
@@ -1431,7 +1431,7 @@ static void start_reset_work(struct nnp_pci_device *nnp_pci,
 }
 
 static pci_ers_result_t nnp_pci_err_error_detected(struct pci_dev *dev,
-						   enum pci_channel_state error)
+						   pci_channel_state_t error)
 {
 	struct nnp_pci_device *nnp_pci = NULL;
 

@@ -1,0 +1,68 @@
+From 3b1f6247520718966efb87214adc4249cd4acb2a Mon Sep 17 00:00:00 2001
+From: Guy Zadicario <guy.zadicario@intel.com>
+Date: Mon, 15 Mar 2021 09:52:51 +0200
+Subject: [PATCH v17 07/30] misc: nnpi: Disallow host memory resource access if
+ no NNP-I devices exist
+
+There is no point allowing a user application to create host resources
+on a system that does not equipped with any NNP-I devices.
+Fail openning the nnpi_host character device when no NNP-I devices are
+attached.
+
+Signed-off-by: Guy Zadicario <guy.zadicario@intel.com>
+---
+ drivers/misc/intel-nnpi/device.c       | 5 +++++
+ drivers/misc/intel-nnpi/device.h       | 2 ++
+ drivers/misc/intel-nnpi/host_chardev.c | 7 +++++++
+ 3 files changed, 14 insertions(+)
+
+diff --git a/drivers/misc/intel-nnpi/device.c b/drivers/misc/intel-nnpi/device.c
+index 9257035..c738b84 100644
+--- a/drivers/misc/intel-nnpi/device.c
++++ b/drivers/misc/intel-nnpi/device.c
+@@ -13,6 +13,11 @@
+ 
+ static DEFINE_IDA(dev_ida);
+ 
++bool nnpdev_no_devices(void)
++{
++	return ida_is_empty(&dev_ida);
++}
++
+ /**
+  * nnpdev_init() - initialize NNP-I device structure.
+  * @nnpdev: device to be initialized
+diff --git a/drivers/misc/intel-nnpi/device.h b/drivers/misc/intel-nnpi/device.h
+index 7d7ef60..562bbc4 100644
+--- a/drivers/misc/intel-nnpi/device.h
++++ b/drivers/misc/intel-nnpi/device.h
+@@ -36,6 +36,8 @@ struct nnp_device_ops {
+ 	int (*cmdq_write_mesg)(struct nnp_device *nnpdev, u64 *msg, u32 size);
+ };
+ 
++bool nnpdev_no_devices(void);
++
+ /*
+  * Functions exported by the device framework module which are
+  * called by the lower layer NNP-I device driver module
+diff --git a/drivers/misc/intel-nnpi/host_chardev.c b/drivers/misc/intel-nnpi/host_chardev.c
+index 8b02fff..ad9cff0 100644
+--- a/drivers/misc/intel-nnpi/host_chardev.c
++++ b/drivers/misc/intel-nnpi/host_chardev.c
+@@ -218,6 +218,13 @@ static int host_open(struct inode *inode, struct file *f)
+ 	if (!is_host_file(f))
+ 		return -EINVAL;
+ 
++	/*
++	 * No point to serve host resource creation while no
++	 * NNP-I devices exist in the system.
++	 */
++	if (nnpdev_no_devices())
++		return -ENODEV;
++
+ 	user_info = kzalloc(sizeof(*user_info), GFP_KERNEL);
+ 	if (!user_info)
+ 		return -ENOMEM;
+-- 
+1.8.3.1
+

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 /********************************************
- * Copyright (C) 2019-2020 Intel Corporation
+ * Copyright (C) 2019-2021 Intel Corporation
  ********************************************/
 
 #include "hostres.h"
@@ -420,6 +420,9 @@ int nnpdrv_hostres_dma_buf_create(int                           dma_buf_fd,
 int nnpdrv_hostres_vmap(struct nnpdrv_host_resource *res,
 			void                       **out_ptr)
 {
+	int ret = 0;
+	struct dma_buf_map map;
+
 	if (!res || !out_ptr)
 		return -EINVAL;
 
@@ -427,11 +430,12 @@ int nnpdrv_hostres_vmap(struct nnpdrv_host_resource *res,
 	 * dma-buf case
 	 */
 	if (res->external_buf) {
-		*out_ptr = dma_buf_vmap(res->buf);
-		if (*out_ptr)
-			return 0;
+		ret = dma_buf_vmap(res->buf, &map);
+		if (ret)
+			return ret;
 
-		return -ENOMEM;
+		*out_ptr = map.vaddr;
+		return 0;
 	}
 
 	/*
@@ -680,13 +684,13 @@ int nnpdrv_hostres_map_device(struct nnpdrv_host_resource *res,
 			goto free_mapping;
 		}
 
-		ret = __sg_alloc_table_from_pages(m->sgt,
+		ret = PTR_ERR_OR_ZERO(__sg_alloc_table_from_pages(m->sgt,
 						res->pages,
 						res->n_pages,
 						0,
 						res->size + res->start_offset,
-						NNP_MAX_CHUNK_SIZE,
-						GFP_KERNEL);
+						NNP_MAX_CHUNK_SIZE, NULL, 0,
+						GFP_KERNEL));
 		if (unlikely(ret < 0))
 			goto free_sgt_struct;
 
